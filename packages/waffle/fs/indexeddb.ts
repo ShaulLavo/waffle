@@ -851,9 +851,10 @@ export class IndexedDBStorage implements StorageBackend {
     return result;
   }
 
-  load(): Promise<PersistedIndex | undefined> {
+  load(signal?: AbortSignal): Promise<PersistedIndex | undefined> {
     return this.enqueue(async () => {
-      await this.initialize();
+      await this.initialize(signal);
+      signal?.throwIfAborted();
       if (!this.state) return;
       const index = this.index(this.state);
       return this.readOnly ? index : structuredClone(index);
@@ -1179,11 +1180,49 @@ export class IndexedDBStorage implements StorageBackend {
     };
   }
 
-  private async initialize(signal?: AbortSignal): Promise<void> {
-    if (this.initialized) return;
+  private async indexRecords(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    this.assertOwner();
     const tx = this.db.transaction(["metadata", "journal", "data"], "readonly");
+    this.transactions.add(tx);
+    const abort = () => {
+      try {
+        tx.abort();
+      } catch {}
+    };
+    const settled = completed(tx);
+    void settled.catch(() => {});
+    signal?.addEventListener("abort", abort, { once: true });
     const metadata = tx.objectStore("metadata"),
       journal = tx.objectStore("journal");
+    try {
+      const records = await Promise.all([
+        request(metadata.get(0)),
+        request(metadata.get(1)),
+        request(metadata.getAllKeys()),
+        request(journal.getAll()),
+        request(journal.getAllKeys()),
+        request(tx.objectStore("data").getAllKeys()),
+        request(metadata.get("format")),
+        request(metadata.get("commit")),
+        request(metadata.get("active")),
+        settled,
+      ]);
+      signal?.throwIfAborted();
+      this.assertOwner();
+      return records;
+    } catch (error) {
+      throw signal?.aborted ? signal.reason : (this.ownershipError ?? error);
+    } finally {
+      await settled.catch(() => {});
+      signal?.removeEventListener("abort", abort);
+      this.transactions.delete(tx);
+    }
+  }
+
+  private async initialize(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    if (this.initialized) return;
     const [
       first,
       second,
@@ -1194,18 +1233,7 @@ export class IndexedDBStorage implements StorageBackend {
       format,
       storedCommit,
       active,
-    ] = await Promise.all([
-      request(metadata.get(0)),
-      request(metadata.get(1)),
-      request(metadata.getAllKeys()),
-      request(journal.getAll()),
-      request(journal.getAllKeys()),
-      request(tx.objectStore("data").getAllKeys()),
-      request(metadata.get("format")),
-      request(metadata.get("commit")),
-      request(metadata.get("active")),
-      completed(tx),
-    ]);
+    ] = await this.indexRecords(signal);
     const stagedEmpty = validateDatabaseLayout(
       this.committedMode,
       format,
@@ -1224,6 +1252,7 @@ export class IndexedDBStorage implements StorageBackend {
         : undefined;
     const available = physical ? new Set(physical.keys()) : payloadKeys;
     const decoded = await Promise.all([decodeIndex(first), decodeIndex(second)]);
+    signal?.throwIfAborted();
     const bases: State["bases"] = [decoded[0], decoded[1]];
     for (const slot of [0, 1] as const)
       if (
@@ -1245,6 +1274,7 @@ export class IndexedDBStorage implements StorageBackend {
           journals.set(entry.generation, entry);
       }),
     );
+    signal?.throwIfAborted();
     const newest = recoverIndex(bases, journals, available);
     if (this.committedMode && !stagedEmpty)
       await this.recoverRequiredHead(storedCommit, active, newest, physical, journalKeys, dataKeys);
@@ -1358,6 +1388,7 @@ export class IndexedDBStorage implements StorageBackend {
     const manifests = new Map<string, ChunkManifest>();
     const chunks = new Map<string, Set<number>>();
     for (const key of keys) {
+      signal?.throwIfAborted();
       if (typeof key === "string") {
         const manifest = recoveryManifest(await this.readRecord(key, signal), key);
         if (manifest) manifests.set(key, manifest);

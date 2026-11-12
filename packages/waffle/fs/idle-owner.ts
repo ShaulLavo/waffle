@@ -184,7 +184,7 @@ export async function openIdle(
         assertOwned();
         const connection = IndexedDBStorage.readOnlyConnection(database, () => Promise.resolve());
         revoke = connection.revoke;
-        const index = await connection.storage.load();
+        const index = await connection.storage.load(signal);
         signal?.throwIfAborted();
         assertOwned();
         const owner = new IdleOwner(
