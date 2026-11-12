@@ -338,3 +338,183 @@ for (const stage of ["callback", "serialization"]) {
       expect(saved).toContain("false");
     }));
 }
+
+class PostPassDriver extends RouteDriver {
+  protected override async run(role: unknown, request: unknown): Promise<void> {
+    if (role !== "case") return super.run(role, request);
+    await this.send({ kind: "case-start", caseId: id });
+    await this.callback(this);
+  }
+  async passBody(): Promise<void> {
+    await this.send({ kind: "case-end", caseId: id, status: "pass", result: true });
+    await this.completeDocument();
+  }
+  async failAfterPass(): Promise<void> {
+    await this.send({ kind: "error", message: "POST_PASS_FAILURE" });
+  }
+}
+test("already admitted fixture serializes and completes after pass and document completion; new request is refused", () =>
+  withRoot(async (root) => {
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    let calls = 0,
+      closes = 0;
+    const a = adapter(
+      [
+        {
+          path: "/idle",
+          get: async () => {
+            calls++;
+            entered.resolve();
+            await release.promise;
+            return { after: "pass" };
+          },
+        },
+      ],
+      async () => {
+        closes++;
+      },
+    );
+    const d = new PostPassDriver(async (driver) => {
+      const pending = fetch(driver.origin + "/idle", { headers: driver.headers() });
+      try {
+        await entered.promise;
+        expect(driver instanceof PostPassDriver).toBe(true);
+        await d.passBody();
+        const refused = await fetch(driver.origin + "/idle", { headers: driver.headers() });
+        expect(refused.status).toBe(410);
+        expect(calls).toBe(1);
+        release.resolve();
+        const response = await pending;
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ after: "pass" });
+      } finally {
+        release.resolve();
+        await pending.catch(() => {});
+      }
+    });
+    const result = await runPageSuite(a, () => d, {
+      scratchRoot: root,
+      resultPath: join(root, "r.json"),
+      port: "ephemeral",
+    });
+    expect(result.exit).toBe(0);
+    expect(closes).toBe(1);
+    expect(result.cleanup.fixture.status).toBe("confirmed");
+    expect(result.cleanup.callbacks.status).toBe("confirmed");
+  }));
+for (const edge of ["deadline", "interrupt", "failure", "retire"] as const) {
+  test(`pending post-pass ${edge} aborts real handler, joins serialization and closes once`, () =>
+    withRoot(async (root) => {
+      const entered = Promise.withResolvers<void>(),
+        aborted = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      const order: string[] = [];
+      let pending: Promise<Response> | undefined;
+      let reason: unknown;
+      const a = adapter(
+        [
+          {
+            path: "/idle",
+            get: async ({ signal, deadline }) => {
+              expect(deadline).toBeGreaterThan(performance.now());
+              entered.resolve();
+              try {
+                await new Promise<never>((_resolve, reject) => {
+                  signal.addEventListener(
+                    "abort",
+                    () => {
+                      reason = signal.reason;
+                      order.push("abort");
+                      aborted.resolve();
+                      reject(signal.reason);
+                    },
+                    { once: true },
+                  );
+                });
+              } finally {
+                order.push("joined");
+              }
+            },
+          },
+        ],
+        async () => {
+          order.push("close");
+        },
+      );
+      const d = new PostPassDriver(async (driver) => {
+        pending = fetch(driver.origin + "/idle", { headers: driver.headers() });
+        void pending.catch(() => {});
+        await entered.promise;
+        await d.passBody();
+        order.push("pass");
+        if (edge === "interrupt") controller.abort("post-pass interruption");
+        if (edge === "failure") await d.failAfterPass();
+        if (edge === "deadline" || edge === "interrupt") await aborted.promise;
+      });
+      try {
+        const result = await runPageSuite(a, () => d, {
+          scratchRoot: root,
+          resultPath: join(root, "r.json"),
+          port: "ephemeral",
+          signal: controller.signal,
+          budgets: {
+            hello: 1000,
+            heartbeat: 1000,
+            case: edge === "deadline" ? 300 : 1000,
+            group: 2000,
+            run: 5000,
+          },
+        });
+        await aborted.promise;
+        expect(result.exit).toBe(2);
+        expect(order).toEqual(["pass", "abort", "joined", "close"]);
+        expect(result.cleanup.callbacks.status).toBe("confirmed");
+        expect(result.cleanup.fixture.status).toBe("confirmed");
+        expect(result.cleanup.server.status).toBe("confirmed");
+        if (edge === "deadline") expect(reason).toBeInstanceOf(DOMException);
+        if (edge === "deadline")
+          expect(reason instanceof DOMException && reason.name).toBe("TimeoutError");
+        if (edge !== "interrupt")
+          expect(result.failures.some((failure) => failure.category === "fixture")).toBe(true);
+        const status = await pending?.then(
+          (response) => response.status,
+          () => 0,
+        );
+        expect(status).not.toBe(200);
+      } finally {
+        controller.abort("test teardown");
+        await pending?.catch(() => {});
+      }
+    }));
+}
+
+test("fixture run deadline retains a caller's original same-process native startedAt", () =>
+  withRoot(async (root) => {
+    const startedAt = performance.now() - 1000;
+    const expected = startedAt + 5000;
+    let observed = 0;
+    const a = adapter([
+      {
+        path: "/idle",
+        get: async ({ deadline }) => {
+          observed = deadline;
+          return true;
+        },
+      },
+    ]);
+    const d = new RouteDriver(async (driver) => {
+      expect((await fetch(driver.origin + "/idle", { headers: driver.headers() })).status).toBe(
+        200,
+      );
+    });
+    const result = await runPageSuite(a, () => d, {
+      scratchRoot: root,
+      resultPath: join(root, "r.json"),
+      port: "ephemeral",
+      startedAt,
+      budgets: { hello: 1000, heartbeat: 1000, case: 5000, group: 5000, run: 5000 },
+    });
+    expect(observed).toBe(expected);
+    expect(result.exit).toBe(0);
+  }));

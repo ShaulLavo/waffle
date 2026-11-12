@@ -73,7 +73,7 @@ An unexposed fixed backing can return to its exact-shape pool after every member
 
 ## Lifetime and physical stop
 
-A member's memory, holds, transit pins, watches and slot return only after the broker's successful physical stop of that exact incarnation: notifications disposed, `Worker.terminate()` returned, and adapter cleanup succeeded. Logical exit, signal selection or filesystem quiescence alone do not release anything. If any stop step fails, cleanup after a failed `terminate` proves nothing: the member is retained as debt, keeps its slot and memory charged, and broker disposal reports it, so the page guard is kept. Late requests from a stopped or indebted incarnation are never answered. A stale incarnation cannot release its replacement.
+A member's memory, holds, member-owned transit pins, watches and slot return only after the broker's successful physical stop of that exact incarnation: notifications disposed, `Worker.terminate()` returned, and adapter cleanup succeeded. Logical exit, signal selection or filesystem quiescence alone do not release anything. If any stop step fails, cleanup after a failed `terminate` proves nothing: the member is retained as debt, keeps its slot and memory charged, and broker disposal reports it, so the page guard is kept. Late requests from a stopped or indebted incarnation are never answered. A stale incarnation cannot release its replacement. Group-owned pins survive every individual member's release.
 
 A member blocked in `futex_wait` is cancelled by that same hard stop. Group state lives with the page-side owner, never in a lock in guest memory, so it survives the stop.
 
@@ -85,14 +85,20 @@ Output pointers are checked before an import changes owner state. A misaligned o
 
 ## Regions and transit pins
 
-A region is freed when it has no holders and no pins. Every pin has exactly one owner, a member incarnation:
+A region is freed when it has no holders, pins or publications. Every pin has exactly one owner, either a member incarnation or its containing group:
 
 - `shm_pin` creates a pin owned by the publisher. A failed or aborted publication unpins it.
 - `shm_route(pin, pid)` hands the delivery to the member that will read it. A receiver that moves the port before reading routes it again to the new reader.
 - `shm_accept` turns the pin into a hold of the owner. `shm_unpin` discards it (port closed, message dropped).
-- The owner's successful physical stop releases every pin it owns. A pin outlives a dead member only when it was routed to a surviving consumer.
+- The member owner's successful physical stop releases every pin it still owns.
+- `shm_route_group(pin)` lets the current launched caller hand its own member pin to the group in one owner step. It preserves the ID and takes no new hold or quota charge. Unknown, unowned and already converted pins return `-EBADF` without mutation.
+- A group pin survives all individual member releases. Any current launched member of that same group may unpin it, with one success and then `-EBADF`. `shm_route` and `shm_accept` reject group pins with `-EBADF`. Reserved, retained, released and replaced incarnations gain no authority. Ordinary member-pin and publication ownership rules stay unchanged.
 
-There is no group-end-only reclamation: a long-lived group that keeps recycling workers returns to its baseline counters.
+Pin IDs are unsigned u32 values local to the caller's group. Coincident numbers in different groups name independent pins. Conversion uses no new ID and cannot bypass the existing total pin limit or identity-exhaustion refusal.
+
+Guests must record a pin ID in surviving shared storage before converting it if survivors need to reclaim it after creator death. A committed conversion survives even if the creator stops before receiving its success reply. If release wins first, the member pin disappears with its owner and the old incarnation cannot convert it. Guests must stop using the bytes before unpinning; an exit report alone does not establish physical stop.
+
+Unpinning returns an otherwise unreferenced region to the zeroed-on-reuse free list. It does not shrink committed backing, change member-page accounting or return a physical reservation. A long-lived group can explicitly reclaim group pins back to baseline. Pins deliberately left outstanding remain until group end, including while a reserved or retained member keeps the group alive.
 
 ## Publications
 

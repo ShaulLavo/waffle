@@ -88,7 +88,12 @@ export function storageWorker(): void {
   };
 }
 
-type StorageReply<T> = { allocation?: StorageEntry; error?: string; result: T };
+type StorageReply<T> = {
+  allocation?: StorageEntry;
+  idleQuota?: "cap" | "reset";
+  error?: string;
+  result: T;
+};
 export function storageCase<T>(
   request: WorkerRequest,
   allocate?: (entry: StorageEntry) => Promise<void>,
@@ -106,6 +111,16 @@ export function storageCase<T>(
       finish();
       reject(error);
     };
+    if (data.idleQuota) {
+      const control: unknown = Reflect.get(globalThis, "storageQuota");
+      const action =
+        typeof control === "function" ? control(data.idleQuota) : Promise.resolve(false);
+      void Promise.resolve(action).then(
+        (active) => worker.postMessage({ kind: "idle-quota-result", active }),
+        (error) => worker.postMessage({ kind: "idle-quota-result", error: String(error) }),
+      );
+      return;
+    }
     if (data.allocation && allocate) {
       void allocate(data.allocation).then(acknowledged, failed);
       return;

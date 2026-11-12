@@ -35,3 +35,5 @@ export type {
   SuiteFixture,
   FixtureDeclaration,
 } from "./fixture-owner.js";
+
+export type { ConsoleFailure, ConsoleSummary } from "./console-observation.js";

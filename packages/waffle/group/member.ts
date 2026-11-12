@@ -220,6 +220,9 @@ export function createGroupMember(
     shm_route(pin: number, pid: number): number {
       return call(GroupOp.ROUTE, pin, pid)[0]!;
     },
+    shm_route_group(pin: number): number {
+      return call(GroupOp.ROUTE_GROUP, pin)[0]!;
+    },
     shm_accept(pin: number, out: number): number {
       return answer(out, 3, GroupOp.ACCEPT, pin);
     },

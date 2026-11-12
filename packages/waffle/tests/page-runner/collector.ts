@@ -96,6 +96,14 @@ export type DocumentState = {
   host: HostPhase | null;
   tasks: Map<string, PageTask>;
 };
+export type FixtureLimits = Readonly<{ budgets: Budgets; runStartedAt: number }>;
+/** Collector-local response authority. Never passed to handlers or serialized. */
+export type FixtureAdmission = Readonly<{
+  state: DocumentState;
+  doc: string;
+  caseId: string;
+  deadline: number;
+}>;
 export class Collector {
   readonly diagnostics = new StallDiagnostics();
   private bootstrapArrivals = new WeakSet<DocumentState>();
@@ -160,6 +168,7 @@ export class Collector {
       consumers: HostConsumers;
       deadline: () => number;
       pending: number;
+      console: boolean;
     }
   >();
   bindObservation(
@@ -167,11 +176,18 @@ export class Collector {
     observation: DriverObservation | undefined,
     consumers: HostConsumers,
     deadline: () => number,
+    consoleDeclared = false,
   ): void {
     if (!observation) return;
     if (!this.owns(state) || this.observations.has(state))
       throw new Error("Observation owner already bound or unrelated");
-    this.observations.set(state, { observation, consumers, deadline, pending: 0 });
+    this.observations.set(state, {
+      observation,
+      consumers,
+      deadline,
+      pending: 0,
+      console: consoleDeclared,
+    });
     this.diagnostics.observe(
       this.documents.indexOf(state),
       () => observation.diagnosticSnapshot?.() ?? { unavailable: true },
@@ -179,6 +195,17 @@ export class Collector {
   }
   observation(state: DocumentState): DriverObservation | undefined {
     return this.observations.get(state)?.observation;
+  }
+  consoleObservation(state: DocumentState): DriverObservation | undefined {
+    const owner = this.observations.get(state);
+    return owner?.console ? owner.observation : undefined;
+  }
+  private consoleVerdict(state: DocumentState): string | null {
+    const summary = this.consoleObservation(state)?.console?.();
+    const first = summary?.first;
+    if (!first) return null;
+    const context = first.context === "page" ? "page" : `dedicated worker ${first.context.url}`;
+    return `Browser console error in ${context}: ${first.text}`;
   }
   async workerCloseQuery(
     value: unknown,
@@ -267,8 +294,15 @@ export class Collector {
     return [{ ...saved.attempt }];
   }
 
-  admitFixture(token: string, doc: string, caseId: string): DocumentState {
+  private readonly fixtureAdmissions = new WeakSet<FixtureAdmission>();
+  admitFixture(
+    token: string,
+    doc: string,
+    caseId: string,
+    limits: FixtureLimits,
+  ): FixtureAdmission {
     const state = this.documents.find((item) => item.token === token);
+    const outcome = this.outcomes[caseId];
     if (
       !state ||
       state !== this.active ||
@@ -278,10 +312,38 @@ export class Collector {
       state.group.role !== "case" ||
       state.group.caseIds[0] !== caseId ||
       state.owner.kind !== "coordinator" ||
-      this.outcomes[caseId]?.status !== "running"
+      outcome?.status !== "running"
     )
       throw new ObservationClosed("Fixture capability is not the live exact case document");
-    return state;
+    const { budgets, runStartedAt } = limits;
+    const documentMs = state.host ? (budgets.caseDocument ?? budgets.group) : budgets.group;
+    const deadline = Math.min(
+      runStartedAt + budgets.run,
+      state.startedAt + documentMs,
+      state.host ? Infinity : outcome.startedAt + budgets.case,
+    );
+    if (this.now() >= deadline) throw new ObservationClosed("Fixture deadline has expired");
+    const admission = Object.freeze({ state, doc, caseId, deadline });
+    this.fixtureAdmissions.add(admission);
+    return admission;
+  }
+  completeFixture(admission: FixtureAdmission): void {
+    if (!this.fixtureAdmissions.delete(admission))
+      throw new ObservationClosed("Fixture response authority is foreign or already consumed");
+    const { state, doc, caseId, deadline } = admission;
+    const outcome = this.outcomes[caseId];
+    const owned =
+      outcome?.status === "running" || (outcome?.status === "pass" && outcome.provisional);
+    if (
+      !owned ||
+      state !== this.active ||
+      state.doc !== doc ||
+      state.physical !== "live" ||
+      state.cutoff !== null ||
+      this.reply(false, state).kind !== "live" ||
+      this.now() >= deadline
+    )
+      throw new ObservationClosed("Fixture response is not owned by the live exact case document");
   }
   private reporting:
     | { kind: "live" | "cancelled" | "cleanup-failed" }
@@ -786,7 +848,10 @@ export class Collector {
     }
     try {
       this.policy.check(body.caseId, body.result);
-      this.outcomes[body.caseId] = { status: "pass", provisional: true };
+      const detail = this.consoleVerdict(state);
+      this.outcomes[body.caseId] = detail
+        ? { status: "fail", detail }
+        : { status: "pass", provisional: true };
     } catch (error) {
       this.outcomes[body.caseId] = { status: "fail", detail: `Host assertion: ${String(error)}` };
     }
@@ -881,7 +946,10 @@ export class Collector {
     state.cutoff = watermark;
     for (const id of state.group.caseIds) {
       const outcome = this.outcomes[id];
-      if (outcome?.status === "pass") outcome.provisional = false;
+      if (outcome?.status !== "pass") continue;
+      const detail = this.consoleVerdict(state);
+      if (detail) this.outcomes[id] = { status: "fail", detail };
+      else outcome.provisional = false;
     }
   }
   deadline(budgets: Budgets, runStartedAt: number): string | null {

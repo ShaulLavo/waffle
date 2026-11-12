@@ -332,6 +332,9 @@ export class SafariDriver implements Driver {
     let retirement: Promise<void> | undefined;
     const owned: DriverObservation = {
       failure: observer.failure,
+      ...(binding.console
+        ? { console: () => observer.console(), settleConsole: () => observer.settleConsole() }
+        : {}),
       navigationComplete: () => observer.navigationComplete(),
       check: () => observer.check(),
       workers: () => observer.workers(),

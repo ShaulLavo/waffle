@@ -551,7 +551,7 @@ test("retry after a failed unlink checkpoint respects a later relink", async () 
   release();
   const failures = await Promise.all([removalFailed, relinkFailed]);
   expect(failures[0]?.message).toContain("storage failed");
-  expect(failures[1]?.message).toContain("invalidated");
+  expect(failures[1]).toBe(failures[0]);
   store.gate = undefined;
   store.fail = false;
   await backend.flush();

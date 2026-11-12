@@ -759,8 +759,9 @@ shm_attach(handle, out{addr}) -> 0                    +1 hold for the caller
 shm_detach(handle) -> 0                               -1 hold
 shm_pin(handle, out{pin}) -> 0                        caller must hold; pin owned by caller
 shm_route(pin, pid) -> 0                              owner hands the delivery to member pid
+shm_route_group(pin: u32) -> i32                      owner hands the same pin to its group; 0 on success
 shm_accept(pin, out{handle, addr, len}) -> 0          owner only: +1 hold, pin consumed
-shm_unpin(pin) -> 0                                   owner only: delivery discarded
+shm_unpin(pin) -> 0                                   member owner, or any launched member for a group pin
 shm_publish(kind, primary, companion, meta, out{token}) -> 0   caller holds both regions
 shm_publication_open(token, kind, out{primary, primary_addr, primary_len,
                      companion, companion_addr, companion_len, meta}) -> 0   +1 hold per region
@@ -783,6 +784,23 @@ profile's bounds and their limits.
 `group_grow` chunks need not be contiguous with earlier ones. A negative `timeout_ns` waits
 forever; `count` `0xffffffff` wakes every waiter. Waits must be 4- or 8-byte aligned. Hard
 termination of the member's worker is the cancellation path for a blocked wait.
+
+`shm_route_group` converts the current launched caller's own member pin to a group pin in
+one owner step. It keeps the same unsigned 32-bit pin ID and changes no hold, pin count,
+quota charge or backing charge. Unknown, unowned and already group-owned pins return
+`-EBADF` without mutation. The pin survives every individual member's release and is
+dropped at group end, or earlier by `shm_unpin` from any current launched member of that
+same group. Concurrent unpins have one success, then `-EBADF`. `shm_route` and `shm_accept`
+return `-EBADF` for group pins. Reserved, retained, released and replaced incarnations
+gain no request authority. Ordinary member pins and publication authority are unchanged.
+
+Pin IDs use the caller's implicit group namespace. Equal numbers in different groups name
+independent pins; no import selects another group's state. All u32 values, including IDs
+above `0x7fffffff` passed as signed Wasm i32 arguments, retain their full unsigned value.
+Group pins count against the existing total pin limit. A region frees only after its last
+hold, pin and publication are gone. Releasing a region makes its pages reusable, without
+reducing the group's logical high-water backing charge or proving physical memory return.
+See [Regions and transit pins](memory-groups.md#regions-and-transit-pins) for guest cleanup.
 
 `shm_publish` returns `-EINVAL` for a zero `kind` or equal `primary` and `companion`, `-EBADF` when
 the caller does not hold a named region, and `-EAGAIN` when the publication limit or token space is

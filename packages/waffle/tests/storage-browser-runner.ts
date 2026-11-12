@@ -29,6 +29,7 @@ if (process.argv[2] === "ios-safari") {
   );
 }
 const lifecycle = new BrowserRunnerLifecycle();
+const observeLifecycle = process.env.STORAGE_LIFECYCLE_OBSERVER === "1";
 let origin = "",
   activeDiagnostics: NavigationDiagnostics | undefined,
   persistentShutdownFailed = false;
@@ -42,10 +43,17 @@ async function inWorker<T>(
   let context: BrowserContext | undefined, profile: string | undefined;
   try {
     if (persistent) {
-      profile = await lifecycle.directory(lifecycle.scratch, "webkit-opfs-profile-");
+      profile = await lifecycle.directory(lifecycle.scratch, "webkit-storage-profile-");
       context = await lifecycle.persistent("webkit", profile);
     } else context = await browser.newContext();
     const page = await context.newPage();
+    page.on("console", (message) => {
+      if (
+        message.text().startsWith("Storage usage measurement ") ||
+        message.text().startsWith("STORAGE_LIFECYCLE ")
+      )
+        console.log(message.text());
+    });
     const caseName =
       request.kind === "list"
         ? `${browser.browserType().name()} list storage cases`
@@ -59,6 +67,27 @@ async function inWorker<T>(
       caseName,
       report: console.error,
     });
+    const cdp =
+      browser.browserType().name() === "chromium" ? await context.newCDPSession(page) : undefined;
+    await page.exposeFunction("storageQuota", async (action: "cap" | "reset") => {
+      if (!cdp) return false;
+      const usage = await page.evaluate(
+        async () => (await navigator.storage.estimate()).usage ?? 0,
+      );
+      await cdp.send("Storage.overrideQuotaForOrigin", {
+        origin,
+        ...(action === "cap" ? { quotaSize: Math.max(1, usage - 1) } : {}),
+      });
+      return true;
+    });
+    // Bound Chromium's cached initial quota grant before the first IndexedDB connection.
+    if (
+      cdp &&
+      request.kind === "run" &&
+      (request.label === "idle workspace full origin open and read" ||
+        request.label.startsWith("checkpoint failure"))
+    )
+      await cdp.send("Storage.overrideQuotaForOrigin", { origin, quotaSize: 8 * 1024 * 1024 });
     return await page.evaluate(storageCase<T>, request);
   } finally {
     if (activeDiagnostics === diagnostics) activeDiagnostics = undefined;
@@ -137,9 +166,20 @@ try {
     {
       "/": "<!doctype html><title>Storage tests</title>",
       "/tests.js": await browserBundle(resolve(import.meta.dir, "storage-browser.ts")),
-      "/fs-worker.js": await browserBundle(resolve(import.meta.dir, "../browser/fs-worker.ts")),
+      "/fs-worker.js": await browserBundle(
+        resolve(
+          import.meta.dir,
+          observeLifecycle ? "fixtures/storage-lifecycle-fs-worker.ts" : "../browser/fs-worker.ts",
+        ),
+      ),
       "/open-fs-worker.js": await browserBundle(resolve(import.meta.dir, "storage-open-worker.ts")),
-      "/worker.js": `(${storageWorker.toString()})();`,
+      "/lifecycle-observer.js": observeLifecycle
+        ? await browserBundle(resolve(import.meta.dir, "storage-lifecycle-observer.ts"))
+        : "",
+      "/worker.js":
+        (observeLifecycle
+          ? 'import { installStorageLifecycleObserver } from "/lifecycle-observer.js"; installStorageLifecycleObserver("storage-case");\n'
+          : "") + `(${storageWorker.toString()})();`,
     },
     Number(process.env.STORAGE_TEST_PORT ?? 0),
     () => {

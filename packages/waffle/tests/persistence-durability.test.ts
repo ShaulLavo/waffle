@@ -536,9 +536,8 @@ for (const disposed of [false, true])
       if (disposed) backend.dispose();
       store.persistGate.released.resolve();
       await expect(first).rejects.toBe(failure);
-      await expect(second).rejects.toThrow(
-        disposed ? closedPersistence : "invalidated by a failed commit",
-      );
+      if (disposed) await expect(second).rejects.toThrow(closedPersistence);
+      else await expect(second).rejects.toBe(failure);
       expect(store.generations).toEqual([1]);
       if (disposed) return;
       store.persistError = undefined;

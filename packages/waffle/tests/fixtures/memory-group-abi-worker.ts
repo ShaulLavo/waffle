@@ -33,12 +33,49 @@ function publications(shm: GroupMember["imports"], memory: WebAssembly.Memory) {
 
 type Request =
   | { request: MemoryGroupMemberRequest; mode: "grow"; pages: readonly number[] }
-  | { request: MemoryGroupMemberRequest; mode: "outputs" | "publications" };
+  | { request: MemoryGroupMemberRequest; mode: "outputs" | "publications" | "group-pin" }
+  | { request: MemoryGroupMemberRequest; mode: "unpin"; pin: number; gate: SharedArrayBuffer };
+
+function racedUnpin(shm: GroupMember["imports"], pin: number, gate: SharedArrayBuffer): number {
+  const controls = new Int32Array(gate);
+  Atomics.add(controls, 0, 1);
+  Atomics.notify(controls, 0);
+  while (Atomics.load(controls, 1) === 0) Atomics.wait(controls, 1, 0);
+  return shm.shm_unpin!(pin | 0);
+}
 
 onmessage = ({ data }: MessageEvent<Request>) => {
   const member = createGroupMember(data.request, { checkActive() {} });
   const shm = member.imports;
   try {
+    if (data.mode === "unpin") {
+      postMessage(racedUnpin(shm, data.pin, data.gate));
+      return;
+    }
+    if (data.mode === "group-pin") {
+      const view = () => new DataView(member.memory.buffer);
+      const created = shm.shm_create!(65536, 65536, 16);
+      const handle = view().getUint32(16, true);
+      const addr = view().getUint32(20, true);
+      const pinned = shm.shm_pin!(handle, 24);
+      const pin = view().getUint32(24, true);
+      view().setUint32(addr, pin, true);
+      const detached = shm.shm_detach!(handle);
+      const routed = shm.shm_route_group!(pin | 0);
+      postMessage({
+        created,
+        pinned,
+        handle,
+        addr,
+        pin,
+        detached,
+        routed,
+        repeated: shm.shm_route_group!(pin | 0),
+        route: shm.shm_route!(pin | 0, 999),
+        accept: shm.shm_accept!(pin | 0, 32),
+      });
+      return;
+    }
     if (data.mode === "grow") {
       postMessage(
         data.pages.map((pages) => ({

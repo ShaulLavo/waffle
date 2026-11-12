@@ -35,6 +35,8 @@ export interface DriverObservation {
   readonly failure: Promise<Error>;
   diagnosticSnapshot?(): unknown;
   workerOrdinal?(worker: HostWorker | string): number | null;
+  console?(): import("./console-observation.js").ConsoleSummary;
+  settleConsole?(): Promise<void>;
   navigationComplete(): void;
   check(): void;
   workers(): readonly HostWorker[];
@@ -49,6 +51,7 @@ export interface DriverObservation {
   stop(): Promise<void>;
 }
 export type DriverObservationBinding = {
+  console?: boolean;
   window: string;
   bootstrapURL: string;
   expectedURL: string;

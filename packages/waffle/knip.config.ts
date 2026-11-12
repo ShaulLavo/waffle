@@ -34,7 +34,14 @@ export default {
         "tests/network-{failure,growth,resource}-control.ts",
         // Bundled and launched in a separate Node --expose-gc process.
         "tests/fixtures/root-return-gc.ts",
+        // Bundled dynamically for the storage lifecycle observer's service Worker.
+        "tests/fixtures/storage-lifecycle-fs-worker.ts",
         "tests/page-runner/*-page.ts",
+        // The Console control runner bundles these Worker scripts by path.
+        "tests/page-runner/console-controls.ts",
+        "tests/page-runner/console-control-worker.ts",
+        "tests/page-runner/console-late-control-page.ts",
+        "tests/page-runner/console-first-line-worker.ts",
         "tests/page-runner/storage-control-worker.ts",
         "tests/page-runner/host-storage-control-worker.ts",
         "tests/page-runner/consumer-control-worker.ts",
