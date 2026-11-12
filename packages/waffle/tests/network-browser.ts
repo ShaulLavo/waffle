@@ -609,6 +609,7 @@ export async function networkBrowserCases(
       "Intentional Preview 1 phase did not use the one real process owner",
     );
     return [
+      "runtime activation constructs zero WebAssembly.Memory/Instance and requests no network.wasm",
       "network-only phase completes with zero process activation; final Preview 1 phase uses one real broker and the same ledger",
       "Preview 1 loopback listener accepts a same-runtime Bun-shaped peer, pending poll, NONBLOCK, duplex and half-close through the normal worker",
       "Unix path socket node, duplex, half-close and unlink across scoped workers; unscoped and external connects denied; abstract name served by an unscoped worker without a node",

@@ -1511,3 +1511,75 @@ test("package setup explicitly prepares Waffle after the script-free install", (
 
 import "../../../tools/ci-release-coverage.test.ts";
 import "../../../tools/ci-release-download.test.ts";
+
+test("translated network inputs and assets share every exact cache and only one producer", () => {
+  for (const path of [
+    "tooling/network-translator.ts",
+    "tooling/network-translator/package.json",
+    "tooling/network-translator/bun.lock",
+    "tooling/network-growth.ts",
+  ]) {
+    expect(selected("network", `packages/waffle/${path}`), path).toBe(true);
+    expect(selected("browser", `packages/waffle/${path}`), path).toBe(true);
+  }
+  const producer = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  const key = String(record(producer?.with).key);
+  expect(key).toContain("network-wasm-v2-");
+  expect(key).toContain("tooling/network-translator/**");
+  expect(key).toContain("tooling/network-growth.ts");
+  for (const name of Object.keys(jobs)) {
+    if (!Array.isArray(record(jobs[name]).steps)) continue;
+    const steps = stepsFor(name);
+    const cache = steps.find((step) => step.id === "network-artifact");
+    if (!cache) continue;
+    expect(record(cache.with).key).toBe(key);
+    for (const artifact of ["network.buffer.js", "network.buffer.sha256", "network.growth.json"])
+      expect(String(record(cache.with).path)).toContain(artifact);
+    if (name === "network-wasm") continue;
+    expect(
+      steps.some(
+        (step) =>
+          typeof step.run === "string" && /build:network|provisionNetworkTranslator/.test(step.run),
+      ),
+    ).toBe(false);
+  }
+  expect(
+    stepsFor("network-wasm").filter((step) => String(step.run).includes("build:network")),
+  ).toHaveLength(1);
+});
+
+test("release, echo and xargs restore all translated artifacts under the producer key", async () => {
+  const producer = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  const key = record(producer?.with).key;
+  for (const name of ["release", "coreutils-echo", "findutils-xargs"]) {
+    const source = await Bun.file(
+      new URL(`../../../.github/workflows/${name}.yml`, import.meta.url),
+    ).text();
+    const value: unknown = Bun.YAML.parse(source);
+    const workflow = record(value);
+    for (const job of Object.values(record(workflow.jobs))) {
+      const steps = record(job).steps;
+      if (!Array.isArray(steps)) continue;
+      const cache = steps
+        .map(record)
+        .find((step) => ["network", "network-artifact"].includes(String(step.id)));
+      if (!cache) continue;
+      expect(record(cache.with).key).toBe(key);
+      for (const artifact of ["network.buffer.js", "network.buffer.sha256", "network.growth.json"])
+        expect(String(record(cache.with).path)).toContain(artifact);
+    }
+  }
+});
+
+test("compiler lifecycle and truly raw source proof run only in the network producer", () => {
+  const producer = stepsFor("network-wasm");
+  expect(producer.some((step) => String(step.run).includes("network-source-smoke.ts"))).toBe(true);
+  for (const [name, job] of Object.entries(jobs)) {
+    if (name === "network-wasm" || !Array.isArray(record(job).steps)) continue;
+    expect(
+      stepsFor(name).some((step) =>
+        /network-source-smoke|network-translator.test/.test(String(step.run)),
+      ),
+    ).toBe(false);
+  }
+});

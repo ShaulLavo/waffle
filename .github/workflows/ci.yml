@@ -61,6 +61,8 @@ jobs:
               - "packages/waffle/network/**"
               - "packages/waffle/tooling/build-network.ts"
               - "packages/waffle/tooling/network-translator.ts"
+              - "packages/waffle/tooling/network-translator.test.ts"
+              - "packages/waffle/tooling/network-source-smoke.ts"
               - "packages/waffle/tooling/network-translator/**"
               - "packages/waffle/tooling/network-growth.ts"
               - "packages/waffle/tooling/check-network-rust.ts"
@@ -364,6 +366,8 @@ jobs:
               - "packages/waffle/network/**"
               - "packages/waffle/tooling/build-network.ts"
               - "packages/waffle/tooling/network-translator.ts"
+              - "packages/waffle/tooling/network-translator.test.ts"
+              - "packages/waffle/tooling/network-source-smoke.ts"
               - "packages/waffle/tooling/network-translator/**"
               - "packages/waffle/tooling/network-growth.ts"
               - "packages/waffle/tooling/check-network-rust.ts"
@@ -482,6 +486,12 @@ jobs:
         working-directory: packages/waffle
         env:
           WAFFLE_TCP_MODULE: ${{ github.workspace }}/packages/waffle/browser/net/network.wasm
+      - name: Verify network compiler lifecycle and raw source installation
+        if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
+        working-directory: packages/waffle
+        run: |
+          bun test tooling/network-translator.test.ts
+          bun tooling/network-source-smoke.ts
       - name: Report exact artifact and Rust cache hits
         run: |
           echo "network artifact cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"

@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, writeFile, mkdtemp, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { NETWORK_TRANSLATOR, provisionNetworkTranslator } from "./network-translator";
-import { networkGrowth, verifyNetworkGrowth } from "./network-growth";
+import { NETWORK_TRANSLATOR, provisionNetworkTranslator } from "./network-translator.js";
+import { networkGrowth, verifyNetworkGrowth } from "./network-growth.js";
 
 export const NETWORK_ASSETS = [
   "network.wasm",

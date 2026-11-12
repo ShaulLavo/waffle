@@ -14,11 +14,15 @@ bun install --cwd site --frozen-lockfile
 bun run prepare:package
 ```
 
-`bun run build:network` builds the separate Rust WASM asset. `bun run size:network` reports its independent budgets. Native and compiled-module tests run with `WAFFLE_TCP_MODULE=$PWD/packages/waffle/browser/net/network.wasm bun run test:network:rust`.
+`bun run build:network` builds the Rust Wasm and its translated ArrayBuffer factory with pinned npm Binaryen 132 invoked by Bun. `bun run size:network` reports its independent budgets. Native and compiled-module tests run with `WAFFLE_TCP_MODULE=$PWD/packages/waffle/browser/net/network.wasm bun run test:network:rust`.
 
-`bun run --cwd packages/waffle tooling/build-network.ts --verify` checks the artifact against the current Rust inputs and its SHA-256 checksum without running Cargo. CI restores this artifact outside `packages/waffle/dist/` and sets `WAFFLE_NETWORK_PREBUILT=1`, so missing or corrupt bytes fail rather than building again.
+`bun run --cwd packages/waffle tooling/build-network.ts --verify` checks the artifact against all producer inputs, both SHA-256 checksums and the 136-slab allocator trace without running Cargo or the translator. CI restores this artifact outside `packages/waffle/dist/` and sets `WAFFLE_NETWORK_PREBUILT=1`, so missing, stale or corrupt assets fail before dist changes rather than building again.
 
 `bun run prepare:package` writes the Node entry points under `packages/waffle/dist/`. `packages/waffle/dist/` is ignored, and CI fails if `git ls-files packages/waffle/dist` lists anything.
+
+The compiler pin lives in `tooling/network-translator/{package.json,bun.lock}`, outside consumer dependencies. Raw source preparation provisions it into `WAFFLE_TOOL_CACHE` or the platform user cache; prepared archives carry both forms and require no compiler/download. Published tool directories are immutable: corrupt ones fail and must be removed manually when unused. Concurrent cold producers validate and reuse the winner. The separate native Binaryen 133 optimizer is unchanged. The network producer runs `bun tooling/network-source-smoke.ts` to test truly raw source without ancestor dependencies; set `WAFFLE_RAW_SOURCE_SCRATCH_ROOT` to an isolated data-drive directory if needed.
+
+[Virtual network allocation contract](network-memory.md) explains the conditional allocator bound, complete current-artifact trace and source identity.
 
 ## Check your change
 

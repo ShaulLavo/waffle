@@ -240,3 +240,30 @@ test("CI preparation fails rather than launching Cargo for a missing artifact", 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+for (const damage of ["missing", "corrupt", "pin", "growth"]) {
+  test(`prepare rejects ${damage} translated artifacts before deleting dist`, async () => {
+    const root = await networkFixture();
+    try {
+      await seedNetwork(root);
+      await mkdir(join(root, "dist"));
+      await writeFile(join(root, "dist/sentinel"), "preserve");
+      if (damage === "missing") await rm(join(root, "browser/net/network.buffer.js"));
+      if (damage === "corrupt")
+        await writeFile(join(root, "browser/net/network.buffer.js"), "corrupt");
+      if (damage === "pin")
+        await writeFile(join(root, "tooling/network-translator/package.json"), "changed pin");
+      if (damage === "growth") await writeFile(join(root, "browser/net/network.growth.json"), "{}");
+      await expect(
+        buildNodeModules(
+          root,
+          (path) => buildNetwork(path, forbidNetworkBuild),
+          () => {},
+        ),
+      ).rejects.toThrow();
+      expect(await Bun.file(join(root, "dist/sentinel")).text()).toBe("preserve");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}

@@ -1,6 +1,6 @@
 /** Generated factory's private, nonshared linear memory. Never pass it to a guest. */
 export interface BufferExports {
-  readonly memory: { readonly buffer: ArrayBuffer };
+  readonly memory: { readonly buffer: ArrayBuffer; grow(pages: number): number };
   readonly [name: string]: unknown;
 }
 export function instantiate(imports: {

@@ -25,8 +25,9 @@ const SLABS: usize = CHUNKS / SLAB_CHUNKS;
 pub const ENVELOPE_PAGES: usize = 16_384;
 /// Established for the pinned dlmalloc artifact by the complete 136-slab growth gate.
 /// Not a Rust allocator guarantee; producer/toolchain changes invalidate that gate.
+#[cfg(target_arch = "wasm32")]
 const SLAB_GROWTH_PAGES: usize = SLAB_CHUNKS + 1;
-const _: () = assert!(CHUNKS % SLAB_CHUNKS == 0 && CHUNKS <= u16::MAX as usize);
+const _: () = assert!(CHUNKS.is_multiple_of(SLAB_CHUNKS) && CHUNKS <= u16::MAX as usize);
 
 /// Counted chunk storage. `issued` only rises; released chunks wait in `free` for reuse.
 struct Pool {
@@ -382,7 +383,10 @@ impl VirtualNet {
         };
         let endpoint = &mut self.endpoints[position];
         let full = endpoint.in_flight == LIMIT;
-        endpoint.in_flight = endpoint.in_flight.saturating_sub(count).max(endpoint.received.len);
+        endpoint.in_flight = endpoint
+            .in_flight
+            .saturating_sub(count)
+            .max(endpoint.received.len);
         full && endpoint.in_flight < LIMIT
     }
     pub fn writable(&self, id: u32) -> bool {

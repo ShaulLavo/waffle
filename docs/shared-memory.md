@@ -71,3 +71,7 @@ Root adoption constructs the charged pipe registry and publishes it into `transp
 `runtime.sharedMemory.snapshot()` returns tracked holders, their declared sizes and states, available capacity, awaiting-collection bytes and debt. `effectiveBudgetBytes` is the admission cap after counted contradictions. The cap and contradiction history survive runtime disposal and later declarations, including the default. `check(plan)` is advisory and allocates nothing.
 
 Page-held backing stays charged until a finalization receipt, which proves local reachability only. Failed-stop debt never clears through finalization.
+
+## Runtime network owner
+
+The runtime's private Rust network executes as a nonshared ArrayBuffer factory. It constructs no WebAssembly.Memory or Instance and is never posted into a guest. This avoids WebKit's large fast-memory reservation for this small owner. It does not change guest descriptors, platform caps or memory-group accounting. The public `waffle/network` native adapter still loads real Wasm. See [virtual network allocation](network-memory.md) for resource counts and conditional linear-length bounds; no physical memory or native workload claim follows.

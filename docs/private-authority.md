@@ -213,3 +213,7 @@ path to them. Bootstrap carries the private exact-service fence only to the dedi
 The join proof is an allocation-local object identity, with no exported constructor. The signed
 admission word uses captured atomics and constructors. [GPU service reader lifetime](architecture.md#gpu-service-reader-lifetime)
 describes the separate reader, normal grant acknowledgement and retained allocation obligations.
+
+## Translated private network
+
+The lazy network factory and its mutable nonshared buffer execute only in the trusted page realm. The loader fixes the sole OS import to Unsupported. Factory exports, buffer and scratch views never enter a guest capability or message. Both owners return copied outputs and refresh views after growth. Guest graph checks exclude the factory, owner, namespace and loader, including dynamic imports. A terminal throw discards the export object and retires JavaScript sockets without reentering Rust. External runtime capabilities retain their existing policy.

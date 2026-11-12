@@ -1,5 +1,4 @@
-import { expect, test } from "bun:test";
-import { describe } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { loadBufferNetworkModule } from "../browser/net/buffer-module.js";
 import { loadNetworkModule } from "../browser/net/module.js";
 

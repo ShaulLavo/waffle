@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 
-export const NETWORK_GROWTH = { slabs: 136, slabPages: 65, envelopePages: 16384 } as const;
+const NETWORK_GROWTH = { slabs: 136, slabPages: 65, envelopePages: 16384 } as const;
 const PAGE = 65536;
-function call(exports: WebAssembly.Exports, name: string, ...args: number[]): number {
+function call(exports: Record<string, unknown>, name: string, ...args: number[]): number {
   const fn = exports[name];
   if (typeof fn !== "function") throw new Error(`Missing network export ${name}`);
   const result: unknown = fn(...args);
@@ -17,6 +17,12 @@ export async function networkGrowth(bytes: Uint8Array<ArrayBuffer>) {
   const exports = instance.exports;
   const memory = exports.memory;
   if (!(memory instanceof WebAssembly.Memory)) throw new Error("Missing network memory");
+  return traceNetworkGrowth(exports, memory);
+}
+export function traceNetworkGrowth(
+  exports: Record<string, unknown>,
+  memory: { readonly buffer: ArrayBuffer },
+) {
   const pointer = call(exports, "tcp_buffer");
   const initialPages = memory.buffer.byteLength / PAGE;
   const growthPages: number[] = [];
@@ -51,10 +57,39 @@ export async function networkGrowth(bytes: Uint8Array<ArrayBuffer>) {
     assert.ok(growthPages.every((pages) => pages <= NETWORK_GROWTH.slabPages));
     const peakPages = memory.buffer.byteLength / PAGE;
     assert.ok(peakPages <= NETWORK_GROWTH.envelopePages);
+    // Drain every fragmented queue intact, then close and reuse all records and chunks.
+    for (const id of ids) drain(exports, memory, pointer, id);
+    for (const id of ids) call(exports, "net_close", id);
+    assert.equal(call(exports, "net_usage", 0), 0);
+    assert.equal(call(exports, "net_usage", 3), 8704);
+    for (let pair = 0; pair < 256; pair++) {
+      const id = call(exports, "net_pair");
+      assert.ok(id > 0);
+      assert.equal(write(id, PAGE), PAGE);
+    }
+    assert.equal(memory.buffer.byteLength / PAGE, peakPages);
     return { initialPages, growthPages, peakPages };
   } finally {
     call(exports, "tcp_dispose");
   }
+}
+function drain(
+  exports: Record<string, unknown>,
+  memory: { readonly buffer: ArrayBuffer },
+  pointer: number,
+  id: number,
+): void {
+  const peer = call(exports, "net_peer", id);
+  let taken = 0;
+  for (
+    let count = call(exports, "net_take", peer, PAGE);
+    count > 0;
+    count = call(exports, "net_take", peer, PAGE)
+  ) {
+    assert.ok(new Uint8Array(memory.buffer, pointer, count).every((byte) => byte === (id & 255)));
+    taken += count;
+  }
+  assert.equal(taken, 1 << 20);
 }
 export function verifyNetworkGrowth(value: unknown): void {
   if (

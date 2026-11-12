@@ -15,6 +15,8 @@ export default {
   ignoreBinaries: ["cc"],
   ignoreIssues: {
     ...publicIssues,
+    // Generated factory declaration pairs with ignored JS; both tsc modes check its consumers.
+    "browser/net/network.buffer.d.ts": ["exports", "types"],
     // The routed service-worker entry invokes installation only in its own global scope.
     "tests/network-browser-service-worker.ts": ["exports"],
     // Browser fixtures invoke this export through the routed module name.
@@ -27,6 +29,9 @@ export default {
     ".": {
       entry: [
         "tests/**/*.test.ts",
+        "tooling/network-translator.test.ts",
+        "tooling/network-source-smoke.ts",
+        "tests/network-{failure,growth,resource}-control.ts",
         // Bundled and launched in a separate Node --expose-gc process.
         "tests/fixtures/root-return-gc.ts",
         "tests/page-runner/*-page.ts",

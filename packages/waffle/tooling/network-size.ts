@@ -8,7 +8,7 @@ export const NETWORK_BUDGET = {
   generatedRaw: 375_000,
   chunkRaw: 133_000,
   chunkGzip: 40_000,
-  bufferLoaderGzip: 1800,
+  bufferLoaderGzip: 900,
 };
 export function checkNetworkBudget(size: typeof NETWORK_BUDGET): void {
   for (const name of [

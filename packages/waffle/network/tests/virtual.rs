@@ -114,3 +114,61 @@ fn addressless_pair_reuses_credit_half_close_and_touches_no_port() {
     net.close(server);
     assert_eq!(net.listen(addr("127.0.0.1:0")).unwrap(), 49153);
 }
+
+#[test]
+fn quota_retains_halves_and_reuses_released_records() {
+    let mut net = VirtualNet::default();
+    let pairs: Vec<_> = (0..256).map(|_| net.pair().unwrap()).collect();
+    assert_eq!(net.pair().unwrap_err().kind(), ErrorKind::QuotaExceeded);
+    let peer = net.peer(pairs[0]).unwrap();
+    net.close(pairs[0]);
+    net.close(pairs[0]);
+    assert_eq!(net.usage().endpoints, 512);
+    assert_eq!(net.pair().unwrap_err().kind(), ErrorKind::QuotaExceeded);
+    net.close(peer);
+    assert!(net.pair().is_ok());
+}
+
+#[test]
+fn undelivered_bytes_cannot_release_credit() {
+    let mut net = VirtualNet::default();
+    let client = net.pair().unwrap();
+    let peer = net.peer(client).unwrap();
+    let packet = vec![7; 1 << 20];
+    assert_eq!(net.write(client, &packet).unwrap(), packet.len());
+    assert!(!net.consumed(peer, usize::MAX));
+    assert!(!net.writable(client));
+    assert_eq!(
+        net.write(client, b"x").unwrap_err().kind(),
+        ErrorKind::WouldBlock
+    );
+    let mut out = [0; 65536];
+    assert_eq!(net.take(peer, &mut out).unwrap(), out.len());
+    assert!(!net.writable(client));
+    assert!(net.consumed(peer, usize::MAX));
+    assert!(net.writable(client));
+    assert_eq!(net.write(client, &out).unwrap(), out.len());
+    assert!(!net.writable(client));
+}
+
+#[test]
+fn stale_duplicate_close_does_not_release_a_reused_client_port() {
+    let mut net = VirtualNet::default();
+    let target = addr("127.0.0.1:12345");
+    net.listen(target).unwrap();
+    let old = net.connect(target).unwrap();
+    net.close(old);
+    for _ in 0..16383 {
+        let client = net.connect(target).unwrap();
+        let peer = net.peer(client).unwrap();
+        net.close(client);
+        net.close(peer);
+    }
+    let current = net.connect(target).unwrap();
+    assert_eq!(net.local_addr(current).unwrap().port(), 49152);
+    net.close(old);
+    assert_eq!(
+        net.listen(addr("127.0.0.1:49152")).unwrap_err().kind(),
+        ErrorKind::AddrInUse
+    );
+}
