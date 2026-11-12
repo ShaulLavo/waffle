@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BrowserObservation } from "./browser-observation.js";
+import { loadBootstrap } from "./bootstrap-control.js";
 import { bounded, type DriverObservationBinding } from "./driver.js";
 import { PeerDriverFixture } from "./peer-driver-fixture.js";
 import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
@@ -20,6 +21,7 @@ class ObservedPeerFixture extends PeerDriverFixture {
   }
   override async navigate(url: string): Promise<void> {
     if (new URL(url).pathname === "/_waffle_observation_bootstrap") {
+      await loadBootstrap(url);
       this.bootstrap = url;
       const previous = this.ledgers.get(this.selected);
       if (previous?.closing) previous.terminated("worker", "playwright-worker-close");
