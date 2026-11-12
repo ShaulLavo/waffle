@@ -50,6 +50,7 @@ async function inWorker<T>(
     page.on("console", (message) => {
       if (
         message.text().startsWith("Storage usage measurement ") ||
+        message.text().startsWith("Storage release ") ||
         message.text().startsWith("STORAGE_LIFECYCLE ")
       )
         console.log(message.text());

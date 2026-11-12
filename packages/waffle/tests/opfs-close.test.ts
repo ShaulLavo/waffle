@@ -166,6 +166,9 @@ class DirectoryStandIn implements FileSystemDirectoryHandle {
 }
 
 class LockStandIn implements StorageLockManager {
+  query(): Promise<unknown> {
+    return Promise.resolve(undefined);
+  }
   held = false;
   releases = 0;
   readonly forced = deferred<never>();

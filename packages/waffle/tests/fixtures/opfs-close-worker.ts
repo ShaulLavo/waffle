@@ -171,6 +171,7 @@ function install(): void {
   }
 }
 const forwardingLocks: StorageLockManager = {
+  query: () => navigator.locks.query(),
   request<T>(
     storageName: string,
     options: Parameters<StorageLockManager["request"]>[1],

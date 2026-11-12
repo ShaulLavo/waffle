@@ -1,3 +1,4 @@
+import { storageReleaseCases } from "./storage-release-browser.js";
 import {
   assert,
   rejects,
@@ -800,6 +801,7 @@ function indexedDBCases(
         whenBusy,
         signal: controller.signal,
         locks: {
+          query: () => navigator.locks.query(),
           request(...args) {
             if (args[0] === `bun-wasm:filesystem:indexeddb:${name}`) lockRequests++;
             return navigator.locks.request(...args);
@@ -934,6 +936,7 @@ function indexedDBCases(
   test("epoch fencing rejects a stale writer before payload, journal and compaction writes", async (name) => {
     // No loss notification simulates a frozen tab waking while its hash was pending.
     const locks = {
+      query: () => Promise.resolve(undefined),
       async request<T>(_name: string, _options: unknown, callback: (lock: unknown) => Promise<T>) {
         return callback({});
       },
@@ -1276,6 +1279,7 @@ export function storageTests(
     .concat(
       indexedDBCases(filesystemWorkerURL, gatedWorkerURL, allocation),
       idleWorkspaceCases(filesystemWorkerURL, allocation),
+      storageReleaseCases(allocation),
       checkpointFailureCases(),
     )
     .map(({ label, run, compactEvery = 2 }) => ({

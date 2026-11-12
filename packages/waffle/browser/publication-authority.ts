@@ -1,4 +1,5 @@
 import { WorkspacePeer, workspaceRequest } from "../fs/publication-workspace.js";
+import { attemptCleanup, throwCleanupFailures } from "../fs/cleanup.js";
 import { FilesystemError } from "../core/filesystem.js";
 import {
   ResidentGrantAuthority,
@@ -395,8 +396,10 @@ export class ResidentAuthorityServer {
     this.channel.close();
     this.reconciling.clear();
     this.authority.dispose();
-    await this.guard.release();
-    await this.bootstrap.release();
+    const failures: unknown[] = [];
+    await attemptCleanup(failures, () => this.guard.release());
+    await attemptCleanup(failures, () => this.bootstrap.release());
+    throwCleanupFailures(failures, "Resident transport guard cleanup failed");
   }
 }
 
@@ -416,16 +419,19 @@ export async function serveResidentAuthority(
       true,
     );
     prospective = await acquirePublicationGuard(authority.workspace, "exclusive", signal, true);
-    await prospective.release();
+    const recovered = prospective;
     prospective = undefined;
+    await recovered.release();
     prospective = await acquirePublicationGuard(authority.workspace, "shared", signal);
     if (signal.aborted) throw new FilesystemError(11);
     authority.activate();
     return new ResidentAuthorityServer(authority, prospective, bootstrap);
   } catch (error) {
+    const failures: unknown[] = [error];
     authority.dispose();
-    await prospective?.release();
-    await bootstrap?.release();
+    await attemptCleanup(failures, () => prospective?.release());
+    await attemptCleanup(failures, () => bootstrap?.release());
+    throwCleanupFailures(failures, "Resident authority opening cleanup failed");
     throw error;
   }
 }
