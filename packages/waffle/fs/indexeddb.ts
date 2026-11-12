@@ -36,6 +36,7 @@ import {
 import { snapshotPublicationCheckpoint } from "./publication.js";
 import { INDEXEDDB_FORMAT } from "./vfs-format.js";
 import { maintenanceLock, type StorageLockManager } from "./storage-maintenance.js";
+import { attemptCleanup, throwCleanupFailures } from "./cleanup.js";
 export type { StorageLockManager } from "./storage-maintenance.js";
 import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
@@ -594,6 +595,7 @@ export class IndexedDBStorage implements StorageBackend {
   private closed = false;
   private closing?: Promise<void>;
   private ownershipError?: Error;
+  private ownershipRetirement?: Promise<void>;
   private transactions = new Set<IDBTransaction>();
   private committedEnvelope: CommitEnvelope | undefined;
   private committedRecord: ChecksummedRecord | undefined;
@@ -612,7 +614,7 @@ export class IndexedDBStorage implements StorageBackend {
   ) {
     db.onversionchange = () => {
       if (this.readOnly) this.loseOwnership();
-      void this.close();
+      void this.close().catch(() => {});
     };
   }
 
@@ -643,7 +645,9 @@ export class IndexedDBStorage implements StorageBackend {
       await storage.recoverCommitted();
       return storage;
     } catch (error) {
-      await storage.close();
+      const failures: unknown[] = [error];
+      await attemptCleanup(failures, () => storage.close());
+      throwCleanupFailures(failures, "Committed recovery cleanup failed");
       throw error;
     }
   }
@@ -830,9 +834,10 @@ export class IndexedDBStorage implements StorageBackend {
       } catch {}
     }
     this.db.close();
-    void Promise.allSettled(Array.from(this.readerWork).concat([this.tail])).then(() =>
-      this.retireMaintenance(),
-    );
+    this.ownershipRetirement = Promise.allSettled(
+      Array.from(this.readerWork).concat([this.tail]),
+    ).then(() => this.retireMaintenance());
+    void this.ownershipRetirement.catch(() => {});
     this.onOwnershipLost?.();
     return error;
   }
@@ -1166,7 +1171,7 @@ export class IndexedDBStorage implements StorageBackend {
           this.readers.recovery(new Set());
         }
         await this.unlock();
-        await this.retireMaintenance();
+        await (this.ownershipRetirement ?? this.retireMaintenance());
       });
     }
     return this.closing;

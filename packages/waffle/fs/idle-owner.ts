@@ -187,6 +187,13 @@ function ownershipLost(error: unknown, signal?: AbortSignal): boolean {
   return error instanceof DOMException && error.name === "AbortError" && !signal?.aborted;
 }
 
+function idleOwnershipCheck(opening: () => void, connection: () => void): () => void {
+  return () => {
+    opening();
+    connection();
+  };
+}
+
 export async function openIdle(
   name: string,
   signal?: AbortSignal,
@@ -234,15 +241,9 @@ export async function openIdle(
     let database: IDBDatabase | undefined;
     try {
       signal?.throwIfAborted();
-      if (!lock) {
-        ready.resolve("busy");
-        return;
-      }
+      if (!lock) return ready.resolve("busy");
       database = await existingDatabase(name, signal, (debt) => debts.push(debt));
-      if (!database || !(await isWorkspace(database))) {
-        ready.resolve("missing");
-        return;
-      }
+      if (!database || !(await isWorkspace(database))) return ready.resolve("missing");
       assertOwned();
       const connection = IndexedDBStorage.readOnlyConnection(database, () => Promise.resolve());
       revoke = connection.revoke;
@@ -253,10 +254,7 @@ export async function openIdle(
         name,
         connection.storage,
         index,
-        () => {
-          assertOwned();
-          connection.assertOwned();
-        },
+        idleOwnershipCheck(assertOwned, connection.assertOwned),
         release,
         signal,
       );
