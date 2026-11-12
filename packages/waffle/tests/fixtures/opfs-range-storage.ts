@@ -191,6 +191,7 @@ export class RangeFixture {
   private release = Promise.withResolvers<never>();
   private lifetime: Promise<unknown> = Promise.resolve();
   readonly locks: StorageLockManager = {
+    query: () => Promise.resolve(undefined),
     request: async (_name, _options, callback) => {
       this.held = true;
       const operation = Promise.race([callback({}), this.release.promise]);

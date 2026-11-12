@@ -134,6 +134,7 @@ describe("single-writer acquisition", () => {
   test("does not request a writer lock when opening the database fails", async () => {
     let held = false;
     const locks: StorageLockManager = withUncontendedMaintenance({
+      query: () => Promise.resolve(undefined),
       async request(_name, _options, callback) {
         held = true;
         try {
@@ -172,6 +173,7 @@ for (const whenBusy of ["takeover", "wait"] as const) {
       },
     } as unknown as IDBFactory;
     const locks: StorageLockManager = withUncontendedMaintenance({
+      query: () => Promise.resolve(undefined),
       async request() {
         locksRequested++;
         throw new Error("late open requested ownership");
@@ -254,6 +256,7 @@ for (const whenBusy of ["takeover", "wait"] as const)
       } as unknown as IDBDatabase;
       const factory = { open: () => opening } as unknown as IDBFactory;
       const locks: StorageLockManager = withUncontendedMaintenance({
+        query: () => Promise.resolve(undefined),
         async request(_name, _options, callback) {
           lockHeld = true;
           try {
@@ -329,6 +332,7 @@ test("IndexedDB publishes its close attempt before synchronous versionchange ree
   } as unknown as IDBDatabase;
   const opening = { result: database } as IDBOpenDBRequest;
   const locks: StorageLockManager = withUncontendedMaintenance({
+    query: () => Promise.resolve(undefined),
     request(_name, options) {
       if ("signal" in options)
         options.signal?.addEventListener("abort", () => claim.reject(options.signal?.reason), {
@@ -381,6 +385,7 @@ test("IndexedDB retains the original debt before native request and preserves a 
   const result = IndexedDBStorage.open("late-close-failure", {
     indexedDB: factory,
     locks: withUncontendedMaintenance({
+      query: () => Promise.resolve(undefined),
       async request() {
         throw new Error("claim must not start");
       },
@@ -436,6 +441,7 @@ for (const whenBusy of ["wait", "takeover"] as const)
     } as unknown as IDBDatabase;
     const opening = { result: database } as IDBOpenDBRequest;
     const locks: StorageLockManager = withUncontendedMaintenance({
+      query: () => Promise.resolve(undefined),
       async request(_name, _options, callback) {
         try {
           return await callback({});

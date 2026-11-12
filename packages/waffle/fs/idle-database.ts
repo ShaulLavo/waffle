@@ -2,6 +2,7 @@ import { INDEXEDDB_FORMAT } from "./vfs-format.js";
 import { IndexedDBStorage } from "./indexeddb.js";
 import { maintenanceLock } from "./storage-maintenance.js";
 import { VfsError } from "./vfs.js";
+import { attemptCleanup, throwCleanupFailures } from "./cleanup.js";
 
 function databaseRequest<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -95,28 +96,35 @@ export async function isWorkspace(database: IDBDatabase): Promise<boolean> {
   );
 }
 
+async function inspectStoredName(name: string): Promise<boolean> {
+  const maintenance = await maintenanceLock(navigator.locks, name, "shared");
+  if (maintenance === "busy") return false;
+  let database: IDBDatabase | undefined;
+  let storage: IndexedDBStorage | undefined;
+  const failures: unknown[] = [];
+  try {
+    database = await existingDatabase(name);
+    if (!database || !(await isWorkspace(database))) return false;
+    const connection = IndexedDBStorage.readOnlyConnection(database, () => Promise.resolve());
+    storage = connection.storage;
+    await storage.load();
+    return true;
+  } catch (error) {
+    if (!(error instanceof VfsError)) failures.push(error);
+    return false;
+  } finally {
+    const prior = failures.length;
+    await attemptCleanup(failures, () => storage?.close());
+    await attemptCleanup(failures, () => database?.close());
+    if (failures.length === prior) await attemptCleanup(failures, () => maintenance.release());
+    throwCleanupFailures(failures, "Stored workspace inspection cleanup failed");
+  }
+}
+
 export async function storedNames(): Promise<string[]> {
   const names: string[] = [];
   for (const { name } of await indexedDB.databases()) {
-    if (name === undefined) continue;
-    const maintenance = await maintenanceLock(navigator.locks, name, "shared");
-    if (maintenance === "busy") continue;
-    let database: IDBDatabase | undefined;
-    let storage: IndexedDBStorage | undefined;
-    try {
-      database = await existingDatabase(name);
-      if (!database || !(await isWorkspace(database))) continue;
-      const connection = IndexedDBStorage.readOnlyConnection(database, () => Promise.resolve());
-      storage = connection.storage;
-      await storage.load();
-      names.push(name);
-    } catch (error) {
-      if (!(error instanceof VfsError)) throw error;
-    } finally {
-      await storage?.close();
-      database?.close();
-      await maintenance.release();
-    }
+    if (name !== undefined && (await inspectStoredName(name))) names.push(name);
   }
   return names;
 }

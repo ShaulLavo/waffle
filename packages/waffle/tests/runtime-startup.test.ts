@@ -212,6 +212,7 @@ function indexedDBFixture() {
   } as unknown as IDBDatabase;
   const indexedDB = { open: () => opening } as unknown as IDBFactory;
   const locks: StorageLockManager = withUncontendedMaintenance({
+    query: () => Promise.resolve(undefined),
     request(_name, _options, callback) {
       return new Promise((resolve, reject) => {
         grant = () => {

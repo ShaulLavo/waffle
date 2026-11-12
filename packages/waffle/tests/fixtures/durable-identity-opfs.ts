@@ -82,6 +82,7 @@ export function identityOpfsFixture() {
     return value as unknown as FileSystemDirectoryHandle;
   }
   const locks: StorageLockManager = {
+    query: () => Promise.resolve(undefined),
     async request(_name, _options, callback) {
       return callback({});
     },

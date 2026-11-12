@@ -1,4 +1,6 @@
 import { allocateSharedControl } from "../memory/control.js";
+import { releasedAtBroker } from "./storage-maintenance.js";
+import { attemptCleanup, throwCleanupFailures } from "./cleanup.js";
 import {
   REQUEST_BUDGET_BYTES,
   requestLengths,
@@ -219,9 +221,10 @@ export async function acquirePublicationGuard(
 ): Promise<PublicationGuard> {
   const ready = Promise.withResolvers<void>();
   const held = Promise.withResolvers<void>();
+  const locks = navigator.locks;
   if (signal.aborted) throw new FilesystemError(11);
   const options: LockOptions = ifAvailable ? { mode, ifAvailable } : { mode, signal };
-  const done = navigator.locks.request(continuityKey(workspace), options, async (lock) => {
+  const done = locks.request(continuityKey(workspace), options, async (lock) => {
     if (!lock) {
       ready.reject(new FilesystemError(6));
       return;
@@ -241,7 +244,7 @@ export async function acquirePublicationGuard(
   return {
     release() {
       held.resolve();
-      return (released ??= done);
+      return (released ??= releasedAtBroker(locks, done));
     },
   };
 }
@@ -631,10 +634,11 @@ export class ResidentAttachment {
       if (signal.aborted || !this.active(attempt)) throw new FilesystemError(11);
       this.state = { kind: "current", client };
     } catch (error) {
-      await this.cleanupAttempt(attempt);
+      const failures: unknown[] = [error];
+      await attemptCleanup(failures, () => this.cleanupAttempt(attempt));
       if (this.state.kind === "attaching" && this.state.attempt === attempt)
         this.state = { kind: "unavailable" };
-      throw error;
+      throwCleanupFailures(failures, "Resident attachment opening cleanup failed");
     }
   }
   private async cleanupAttempt(attempt: AttachmentAttempt): Promise<void> {

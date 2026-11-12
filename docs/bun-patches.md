@@ -18,7 +18,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `fs/opfs.ts`                                                                                                                                | Adaptation            | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload, quota, queued lock ownership, startup milestones, failed-close ownership, acquisition registration, bounded range reads and pre-attempt cancellation/failed-owner guards are original glue. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
 | `tests/opfs-close{,-browser-observer}.test.ts`, `tests/opfs-close-browser{,-runner}.ts`, `tests/fixtures/opfs-close-{page,worker}.ts`       | Original adapter      | Waffle failed-close source controls and original-native-object browser observations. Test-only interception and labelled pre-physical-close injection; no upstream source copied.                                                                                                                                                                                                                                            |
 | `fs/indexeddb.ts`, `browser/shared-fs.ts`, `runtime.ts`                                                                                     | Original adapter      | Extend the existing startup abort/disposal handshake to every persistent open, including IndexedDB takeover; fence consumers before cleanup, abandon an unresolved database open, close late successes and abort in-flight epoch allocation without publishing ownership.                                                                                                                                                    |
-| `fs/vfs.ts`, `browser/{shared-fs,fs-worker}.ts`, `fs/{service,indexeddb,opfs}.ts`, `runtime.ts`                                             | Original adapter      | FAST/SAFE mode selection, descriptors, persisted format identities and typed startup diagnostics; existing payload layouts, locks and checkpoint algorithms remain unchanged.                                                                                                                                                                                                                                                |
+| `fs/vfs.ts`, `browser/{shared-fs,fs-worker,filesystem-worker-backend}.ts`, `fs/{service,indexeddb,opfs}.ts`, `runtime.ts`                   | Original adapter      | FAST/SAFE mode selection, descriptors, persisted format identities and typed startup diagnostics; existing payload layouts, locks and checkpoint algorithms remain unchanged.                                                                                                                                                                                                                                                |
 | `browser/shared-fs.ts`, `fs/{service,persistent}.ts`                                                                                        | Original adapter      | Ordinary ready disposal and terminal backend shutdown ownership, integrated from Waffle `e7d4e35` and `6a979e0` onto `93698f1`. Retain the original ACK, section/work joins and failed cleanup reasons; no upstream implementation copied.                                                                                                                                                                                   |
 | Inode permission query and enforcement                                                                                                      | Original adapter      | Original Waffle code, 2026-10-21; stored owner read/write, directory search/sticky, shared direct I/O checks and explicit saved-metadata adoption. No upstream source copied.                                                                                                                                                                                                                                                |
 | `core/memory-views.ts`                                                                                                                      | Original adapter      | Resizable-memory view helpers with exported TypeScript types; emitted JavaScript retains the runtime ABI's exact view identity.                                                                                                                                                                                                                                                                                              |
@@ -53,6 +53,32 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `tools/ci-release-download.ts`, `tools/ci-bootstrap-tools.ts`, CI download actions                                                          | Adapted code          | bun-wasm at `1bf9291451587b9b36786513dba817e855d470cb` and `b753bcd1fa4aff3089c304286c248a3da8a6e1e6`. Node-compatible API downloads and tool bootstrap, adapted to Waffle paths and inventory-based cache saving. See [CI release downloads](#ci-release-downloads).                                                                                                                                                        |
 | `tools/ci-native-prebuild.ts`                                                                                                               | Adapted code          | Cache filename calculation from `prebuild-install` 7.1.3 `util.js`, with Waffle-owned archive checksum validation. See [CI release downloads](#ci-release-downloads).                                                                                                                                                                                                                                                        |
 | `tools/ci-release-cache.ts`, Wasmtime action, CI coverage tests                                                                             | Original adapter      | Waffle-owned complete-asset inventory, pinned Wasmtime setup, and CI download guards. No external implementation copied. See [CI release downloads](#ci-release-downloads).                                                                                                                                                                                                                                                  |
+| `fs/{storage-maintenance,idle-owner,publication-attachment}.ts`                                                                             | Original adapter      | Same-context broker release confirmation. No upstream implementation copied. See [Web Locks release confirmation](#web-locks-release-confirmation).                                                                                                                                                                                                                                                                          |
+
+## Web Locks release confirmation
+
+`fs/storage-maintenance.ts` and the lease in `fs/publication-attachment.ts` are original
+Waffle interop code, not copied or adapted Chromium implementations. After releasing
+a maintenance or publication guard, Waffle joins the original native request and
+queries that same context's lock manager once. The idle owner's writer is released
+after maintenance cleanup and is confirmed separately. Normal IndexedDB close
+releases its writer first, so its subsequent maintenance confirmation covers both.
+
+This restores release-before-settlement ordering on Chromium 156.0.8078.4. The
+implementation rationale comes from Chromium's
+[`lock.cc`](https://chromium.googlesource.com/chromium/src/+/refs/tags/156.0.8078.4/third_party/blink/renderer/modules/locks/lock.cc),
+[`lock_manager.mojom`](https://chromium.googlesource.com/chromium/src/+/refs/tags/156.0.8078.4/third_party/blink/public/mojom/locks/lock_manager.mojom)
+and [Mojo associated-interface ordering](https://chromium.googlesource.com/chromium/src/+/refs/tags/156.0.8078.4/mojo/public/cpp/bindings/README.md).
+The handle closure and query share an ordered manager channel. The query reply
+confirms processing of that closure; an empty snapshot from another context does not.
+No upstream implementation was copied, and no acquisition, retry or timer is added.
+
+The query does not inspect or wait for unrelated holders and grants no guest lock
+authority. Chromium's contention notification does nothing to active pages and
+Workers but may evict unrelated same-origin holders from the back-forward cache.
+Confirmation failure rejects the original close or release and is retained on
+repeated calls. Independent cleanup failures retain the operation error first.
+OPFS's existing waiting lock acquisition is unchanged.
 
 ## GNU diffutils
 
@@ -152,7 +178,9 @@ The queued ownership requests, `whenBusy` settings, lifecycle state and abort/di
 handshake in `fs/{opfs,indexeddb,service}.ts`, `browser/{shared-fs,fs-worker}.ts` and
 `runtime.ts` are original Waffle adapters. They change only original ownership glue;
 the SLICC-kernel sync-handle retry algorithm at revision `88c5bb3` is retained.
-The fragment now also contains the original failed-close guards described below. Storage
+The fragment now also contains the original failed-close guards described below. The original
+`browser/filesystem-worker-backend.ts` adapter retains opening errors together with failed
+storage cleanup; no upstream implementation was copied. Storage
 setup occurs under its lock, and cancellation closes acquired resources before releasing
 that ownership. Pending IndexedDB opens now observe the same startup signal under both busy policies; cancellation acknowledges cleanup without waiting for the browser open and closes any late database success before ownership acquisition. No new upstream implementation was copied.
 

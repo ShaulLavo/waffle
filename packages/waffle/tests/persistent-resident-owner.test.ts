@@ -2,7 +2,7 @@ import { residentMemory } from "./fixtures/resident-memory";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation } from "../fs/file-identity";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { FilesystemClient } from "../fs/client";
 import { PersistentBackend } from "../fs/persistent";
 import { FilesystemService } from "../fs/service";
@@ -161,10 +161,18 @@ test("owner drain joins a detached checkpoint and keeps the domain live for fina
 });
 
 import { MemoryBackend } from "../fs/backend";
-import { ResidentAuthorityServer } from "../browser/publication-authority";
-import { ResidentChannel, residentDescriptor } from "../fs/publication-attachment";
+import { ResidentAuthorityServer, serveResidentAuthority } from "../browser/publication-authority";
+import {
+  ResidentChannel,
+  residentDescriptor,
+  acquirePublicationGuard,
+  type PublicationGuard,
+} from "../fs/publication-attachment";
 
-async function residentServer() {
+async function residentServer(guards?: {
+  continuity: PublicationGuard;
+  bootstrap: PublicationGuard;
+}) {
   const backend = new MemoryBackend();
   const service = new FilesystemService(backend);
   const pair = createFilesystemConnection(undefined, { limits, observe: true });
@@ -184,12 +192,12 @@ async function residentServer() {
   const releases: string[] = [];
   const server = new ResidentAuthorityServer(
     authority,
-    {
+    guards?.continuity ?? {
       async release() {
         releases.push("continuity");
       },
     },
-    {
+    guards?.bootstrap ?? {
       async release() {
         releases.push("bootstrap");
       },
@@ -199,14 +207,18 @@ async function residentServer() {
   return {
     backend,
     server,
+    authority,
     descriptor,
     channel,
     releases,
     async close() {
       channel.close();
-      await server.stop();
-      root.dispose();
-      service.dispose();
+      try {
+        await server.stop();
+      } finally {
+        root.dispose();
+        service.dispose();
+      }
     },
   };
 }
@@ -287,6 +299,7 @@ function pendingNativeClaim(closeFailure?: { value: unknown }, setupFailure?: Er
   } as unknown as IDBDatabase;
   const opening = { result: database } as IDBOpenDBRequest;
   const locks = {
+    query: () => Promise.resolve(undefined),
     request(name: string, options: LockOptions, callback: LockGrantedCallback<unknown>) {
       if (name.startsWith("bun-wasm:filesystem:indexeddb-maintenance:"))
         return Promise.resolve(callback({ name, mode: "shared" }));
@@ -494,5 +507,98 @@ test("epoch request setup failure retains owner guards until the original transa
   } finally {
     if (!terminal) owned.settleTransaction(false);
     await owned.close();
+  }
+});
+
+function guardEnvironment() {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  let queries = 0;
+  const failures = new Map<number, unknown>();
+  const locks = {
+    async request<T>(name: string, options: LockOptions, callback: LockGrantedCallback<T>) {
+      return callback({ name, mode: options.mode ?? "exclusive" });
+    },
+    async query() {
+      const index = ++queries;
+      if (failures.has(index)) throw failures.get(index);
+      return { held: [{ name: "unrelated", mode: "exclusive" }] };
+    },
+  };
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { locks } });
+  return {
+    failures,
+    get queries() {
+      return queries;
+    },
+    restore() {
+      if (original) Object.defineProperty(globalThis, "navigator", original);
+      else Reflect.deleteProperty(globalThis, "navigator");
+    },
+  };
+}
+function guardFailures(error: unknown, expected: unknown[]): void {
+  expect(error).toBeInstanceOf(AggregateError);
+  if (!(error instanceof AggregateError)) throw error;
+  expect(error.errors).toEqual(expected);
+  expect(error.cause).toBe(expected[0]);
+}
+
+test("resident final transport attempts both real guards and memoizes their failures", async () => {
+  const env = guardEnvironment(),
+    first = new Error("continuity"),
+    second = new Error("bootstrap");
+  const signal = new AbortController().signal;
+  const continuity = await acquirePublicationGuard("final", "shared", signal);
+  const bootstrap = await acquirePublicationGuard("bootstrap:final", "exclusive", signal);
+  const owned = await residentServer({ continuity, bootstrap });
+  try {
+    env.failures.set(1, first);
+    env.failures.set(2, second);
+    await owned.server.drainForOwner();
+    const closing = owned.server.finishStop();
+    guardFailures(await closing.catch((error: unknown) => error), [first, second]);
+    expect(owned.server.finishStop()).toBe(closing);
+    guardFailures(await closing.catch((error: unknown) => error), [first, second]);
+    expect(env.queries).toBe(2);
+  } finally {
+    await owned.close().catch(() => {});
+    env.restore();
+  }
+});
+
+for (const primary of [undefined, null, false, 0, "", new Error("activate")])
+  test(`authority opening preserves ${String(primary)} before both real guard failures`, async () => {
+    const env = guardEnvironment(),
+      first = new Error("shared guard"),
+      second = new Error("bootstrap");
+    const owned = await residentServer();
+    const activate = spyOn(owned.authority, "activate").mockImplementation(() => {
+      throw primary;
+    });
+    try {
+      env.failures.set(2, first);
+      env.failures.set(3, second);
+      const opening = serveResidentAuthority(owned.authority, new AbortController().signal);
+      guardFailures(await opening.catch((error: unknown) => error), [primary, first, second]);
+      expect(env.queries).toBe(3);
+    } finally {
+      activate.mockRestore();
+      await owned.close();
+      env.restore();
+    }
+  });
+
+test("authority transition confirmation is one exact failure and bootstrap still releases", async () => {
+  const env = guardEnvironment(),
+    failure = new Error("exclusive transition");
+  const owned = await residentServer();
+  try {
+    env.failures.set(1, failure);
+    const opening = serveResidentAuthority(owned.authority, new AbortController().signal);
+    expect(await opening.catch((error: unknown) => error)).toBe(failure);
+    expect(env.queries).toBe(2);
+  } finally {
+    await owned.close();
+    env.restore();
   }
 });

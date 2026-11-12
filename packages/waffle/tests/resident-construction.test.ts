@@ -49,6 +49,8 @@ function environment() {
   const opened = Promise.withResolvers<void>();
   const releaseOpen = Promise.withResolvers<void>();
   let blockOpen = false;
+  const queryFailures = new Map<number, unknown>();
+  let queries = 0;
   const values = {
     location: { origin: "https://construction.test" },
     FileSystemFileHandle: class {
@@ -63,6 +65,10 @@ function environment() {
         },
       },
       locks: {
+        async query() {
+          const index = ++queries;
+          if (queryFailures.has(index)) throw queryFailures.get(index);
+        },
         async request(name: string, options: LockOptions, callback: LockGrantedCallback<unknown>) {
           held.add(name);
           try {
@@ -79,6 +85,10 @@ function environment() {
     Object.defineProperty(globalThis, key, { configurable: true, value });
   return {
     native,
+    queryFailures,
+    get queries() {
+      return queries;
+    },
     held,
     releases,
     opened: opened.promise,
@@ -624,3 +634,30 @@ for (const failedAt of [1, 12]) {
     }
   });
 }
+
+test("real persistent owner final guard failure still joins independent bootstrap release", async () => {
+  const env = environment(),
+    first = new Error("owner continuity"),
+    second = new Error("owner bootstrap");
+  const owner = env.owner(memory());
+  try {
+    await owner.ready;
+    const before = env.queries;
+    env.queryFailures.set(before + 1, first);
+    env.queryFailures.set(before + 2, second);
+    const stopped = owner.stop();
+    const error = await stopped.catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    if (!(error instanceof AggregateError)) throw error;
+    expect(error.errors).toEqual([first, second]);
+    expect(error.cause).toBe(first);
+    expect(env.held.size).toBe(0);
+    expect(env.queries).toBe(before + 2);
+    expect(owner.stop()).toBe(stopped);
+    expect(await owner.stop().catch((error: unknown) => error)).toBe(error);
+    expect(env.queries).toBe(before + 2);
+  } finally {
+    await owner.stop().catch(() => {});
+    env.restore();
+  }
+});
