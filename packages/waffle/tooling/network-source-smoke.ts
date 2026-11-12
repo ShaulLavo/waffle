@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import manifest from "../package.json";
+import manifest from "../package.json" with { type: "json" };
 import { NETWORK_ASSETS } from "./build-network.js";
 
 async function rawNetworkInstall(root = join(import.meta.dir, "..")): Promise<void> {

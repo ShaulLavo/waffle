@@ -37,6 +37,7 @@ fn transport_reachability_errors_keep_distinct_wire_classes() {
         (ErrorKind::HostUnreachable, -14),
         (ErrorKind::NetworkUnreachable, -15),
         (ErrorKind::NetworkDown, -16),
+        (ErrorKind::QuotaExceeded, -17),
     ] {
         assert_eq!(encode_error(&kind.into()), code);
         assert_eq!(decode_error(code).kind(), kind);
