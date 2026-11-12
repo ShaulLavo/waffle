@@ -366,6 +366,66 @@ function unitDrive(limits: Budgets = budgets) {
     ),
   };
 }
+
+test("diagnostics retain the occupied owner queue and oldest queued purpose without dispatching another command", async () => {
+  const f = unitDrive();
+  const release = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  f.d.selectWindow = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+  const signal = new AbortController().signal;
+  const first = f.host.transport.selectWindow("private-handle", signal);
+  const second = f.host.transport.selectWindow("private-handle", signal);
+  try {
+    await entered.promise;
+    const queue = f.c.diagnostics.snapshot().current.queue;
+    expect(queue.actualPending).toBe(2);
+    expect(queue.currentOrdinal).toBe(queue.active[0]?.ordinal);
+    expect(queue.oldestWaiting?.ordinal).toBe(queue.active[1]?.ordinal);
+    expect(queue.active.map((entry) => entry.stages.at(-1)?.stage)).toEqual(["started", "queued"]);
+    expect(queue.active.map((entry) => entry.facts.purpose)).toEqual([
+      "other-command",
+      "other-command",
+    ]);
+    expect(queue.active[0]?.stages[0]?.at).toBeLessThanOrEqual(queue.active[1]?.stages[0]?.at ?? 0);
+    expect(JSON.stringify(queue)).not.toContain("private-handle");
+    release.resolve();
+    await Promise.all([first, second]);
+    expect(f.c.diagnostics.snapshot().current.queue.active).toEqual([]);
+    expect(f.c.diagnostics.snapshot().current.queue.completed).toHaveLength(2);
+  } finally {
+    release.resolve();
+    await Promise.allSettled([first, second]);
+    expect(await f.consumers.join(100)).toBe(true);
+  }
+});
+
+async function failDiagnosticCleanupSelection(): Promise<void> {
+  throw Error("CLEANUP_SELECTION");
+}
+
+test("a body failure freezes owner evidence before a later cleanup selection failure", () =>
+  fixture(async (root) => {
+    const d = new HostDriver();
+    const result = await runPageSuite(
+      adapter(async () => {
+        d.selectWindow = failDiagnosticCleanupSelection;
+        throw Error("ORIGINAL_BODY");
+      }),
+      () => d,
+      options(root),
+    );
+    expect(result.results.host).toMatchObject({
+      body: { status: "fail", error: expect.stringContaining("ORIGINAL_BODY") },
+    });
+    const saved = result.diagnostics.firstFailure;
+    expect(JSON.stringify(saved)).toContain("body-failed");
+    expect(JSON.stringify(saved)).not.toContain('"context":"cleanup"');
+    expect(JSON.stringify(result.diagnostics.current.queue)).toContain('"context":"cleanup"');
+    expect(result.diagnostics.firstFailure).toEqual(saved);
+  }));
 test("host phase clock starts after admission, not case-ready receipt", () => {
   const now = spyOn(performance, "now").mockReturnValue(100);
   try {

@@ -1,3 +1,9 @@
+import {
+  StallDiagnostics,
+  fixturePath,
+  evaluationCorrelation,
+  diagnosticOrdinal,
+} from "./stall-diagnostics.js";
 import { bounded, type DriverObservation } from "./driver.js";
 import type { HostConsumers } from "./owned-consumers.js";
 import { reportingFailure, type HostReply } from "./report-control.js";
@@ -91,6 +97,7 @@ export type DocumentState = {
   tasks: Map<string, PageTask>;
 };
 export class Collector {
+  readonly diagnostics = new StallDiagnostics();
   private bootstrapArrivals = new WeakSet<DocumentState>();
   private readonly bootstrapClosed = new WeakSet<DocumentState>();
   private readonly bootstrapWaiters = new Map<
@@ -165,11 +172,18 @@ export class Collector {
     if (!this.owns(state) || this.observations.has(state))
       throw new Error("Observation owner already bound or unrelated");
     this.observations.set(state, { observation, consumers, deadline, pending: 0 });
+    this.diagnostics.observe(
+      this.documents.indexOf(state),
+      () => observation.diagnosticSnapshot?.() ?? { unavailable: true },
+    );
   }
   observation(state: DocumentState): DriverObservation | undefined {
     return this.observations.get(state)?.observation;
   }
-  async workerCloseQuery(value: unknown): Promise<void> {
+  async workerCloseQuery(
+    value: unknown,
+    receipt: (ordinal: number) => void = () => {},
+  ): Promise<void> {
     if (
       !record(value) ||
       value.run !== this.run ||
@@ -204,10 +218,24 @@ export class Collector {
       throw new ObservationClosed("Worker close query admission expired or full");
     const workerURL = value.url;
     owner.pending++;
+    const trace = this.diagnostics.queries;
+    const ordinal = trace.begin("query-admitted", {
+      ...evaluationCorrelation(value),
+      peer: this.documents.indexOf(state),
+      generation: state.owner.kind === "peer" ? state.owner.generation : 0,
+      worker: owner.observation.workerOrdinal?.(workerURL) ?? null,
+      fixture: fixturePath(workerURL),
+      query: diagnosticOrdinal(value.query),
+    });
+    receipt(ordinal);
     try {
       await owner.consumers.invoke(() =>
         bounded(owner.observation.waitForWorkerURLClose(workerURL), ms, "Worker close query"),
       );
+      trace.mark(ordinal, "wait-resolved");
+    } catch (error) {
+      trace.mark(ordinal, "wait-rejected");
+      throw error;
     } finally {
       owner.pending--;
     }
@@ -295,6 +323,7 @@ export class Collector {
     for (const id of required) this.outcomes[id] = { status: "pending" };
   }
   fail(category: string, detail: string, state = this.active): void {
+    this.diagnostics.freeze("collector-failure");
     this.cancel();
     const document =
       state?.owner.kind === "peer"

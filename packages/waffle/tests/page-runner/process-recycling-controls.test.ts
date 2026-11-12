@@ -1,3 +1,4 @@
+import { StallDiagnostics } from "./stall-diagnostics.js";
 import { expect, test } from "bun:test";
 import type { SuiteResult } from "waffle/testing/page-runner";
 import { checkProcessControl } from "./process-recycling-controls.js";
@@ -11,6 +12,7 @@ function result(): SuiteResult {
     detail: "Owned resources stopped",
   };
   return {
+    diagnostics: new StallDiagnostics().snapshot(),
     firstCommandFailure: null,
     suite: "process-control",
     run: "control-run",

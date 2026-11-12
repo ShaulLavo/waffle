@@ -427,8 +427,12 @@ export class SafariObserver {
       const initialization = this.command("Worker.initialized", { workerId: worker.id });
       this.initializations.add(initialization);
       void initialization.then(
-        () => this.initializations.delete(initialization),
+        () => {
+          ledger.initialized(worker.id, true);
+          this.initializations.delete(initialization);
+        },
         (error: unknown) => {
+          ledger.initialized(worker.id, false);
           this.initializations.delete(initialization);
           this.lose(error);
         },

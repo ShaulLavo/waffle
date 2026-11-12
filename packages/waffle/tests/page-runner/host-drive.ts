@@ -1,3 +1,4 @@
+import { bindDiagnostics, type Facts, type Purpose } from "./stall-diagnostics.js";
 import type { AssetOwner } from "./asset-owner.js";
 import { bounded, type Driver, type DriverPressControl, type DriverObservation } from "./driver.js";
 import { HostConsumers } from "./owned-consumers.js";
@@ -37,6 +38,14 @@ async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T
 }
 export class HostDrive {
   private tail = Promise.resolve();
+  private queueEntry: number | undefined;
+  private diagnosticFacts(state = this.state): Facts {
+    return {
+      context: this.collector.diagnostics.context,
+      peer: this.collector.documents.indexOf(state),
+      generation: state.owner.kind === "peer" ? state.owner.generation : 0,
+    };
+  }
   private pending = 0;
   private readonly body = new AbortController();
   private deadline = Infinity;
@@ -101,19 +110,47 @@ export class HostDrive {
       },
     };
   }
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+  private enqueue<T>(
+    operation: () => Promise<T>,
+    purpose: Purpose = "other-command",
+    state = this.state,
+  ): Promise<T> {
+    const trace = this.collector.diagnostics.queue;
+    const ordinal = trace.begin("queued", { ...this.diagnosticFacts(state), purpose });
     const previous = this.tail;
     this.pending++;
-    const next = this.consumers.invoke(() => previous.then(operation));
+    this.collector.diagnostics.queuePending = this.pending;
+    const next = this.consumers.invoke(() =>
+      previous.then(() => this.queuedOperation(operation, ordinal)),
+    );
     this.tail = next.then(
       () => {
+        trace.end(ordinal, "completed");
         this.pending--;
+        this.collector.diagnostics.queuePending = this.pending;
       },
       () => {
+        trace.end(ordinal, "failed");
         this.pending--;
+        this.collector.diagnostics.queuePending = this.pending;
       },
     );
     return next;
+  }
+  private async queuedOperation<T>(operation: () => Promise<T>, ordinal: number): Promise<T> {
+    this.queueEntry = ordinal;
+    this.collector.diagnostics.queueCurrent = ordinal;
+    this.collector.diagnostics.queue.mark(ordinal, "started");
+    try {
+      return await operation();
+    } catch (error) {
+      if (!(error instanceof ExpressionFailure))
+        this.collector.diagnostics.freeze("host-command-failure");
+      throw error;
+    } finally {
+      this.queueEntry = undefined;
+      this.collector.diagnostics.queueCurrent = null;
+    }
   }
   private infrastructure(recovery = false): void {
     if (this.closed) throw new Error("Host command owner stopped");
@@ -181,6 +218,9 @@ try {
           recovery ? Infinity : this.started + this.budgets.run,
         ),
     transitioning = false,
+    purpose: Purpose = transitioning || mode === "peer-admission"
+      ? "peer-transition"
+      : "other-command",
   ): Promise<unknown> {
     const user = mode !== "host";
     const signals = [
@@ -189,29 +229,33 @@ try {
     ];
     if (user) signals.push(this.body.signal);
     const operationSignal = AbortSignal.any(signals);
-    const queued = this.enqueue(async () => {
-      if (user) this.checkBody();
-      try {
-        return await this.boundCommand(
-          source,
-          mode,
-          operationSignal,
-          () => {
-            this.infrastructure(recovery);
-            this.checkTarget(state, until, transitioning);
-            if (user) this.checkBody();
-          },
-          beforeDispatch,
-          recovery,
-          state,
-        );
-      } catch (error) {
-        if (!(error instanceof ExpressionFailure) && error !== this.body.signal.reason)
-          this.fault(error, state);
-        else if (this.driver.uncertain) this.fault(error, state);
-        throw error;
-      }
-    });
+    const queued = this.enqueue(
+      async () => {
+        if (user) this.checkBody();
+        try {
+          return await this.boundCommand(
+            source,
+            mode,
+            operationSignal,
+            () => {
+              this.infrastructure(recovery);
+              this.checkTarget(state, until, transitioning);
+              if (user) this.checkBody();
+            },
+            beforeDispatch,
+            recovery,
+            state,
+          );
+        } catch (error) {
+          if (!(error instanceof ExpressionFailure) && error !== this.body.signal.reason)
+            this.fault(error, state);
+          else if (this.driver.uncertain) this.fault(error, state);
+          throw error;
+        }
+      },
+      purpose,
+      state,
+    );
     return abortable(queued, operationSignal);
   }
   private async boundCommand(
@@ -224,11 +268,17 @@ try {
     state = this.state,
   ): Promise<unknown> {
     const request = <T>(send: () => Promise<T>) => this.checkedRequest(check, signal, send);
+    if (this.queueEntry !== undefined)
+      this.collector.diagnostics.queue.mark(this.queueEntry, "window-select");
     await request(() => this.driver.selectWindow(state.handle, signal));
+    if (this.queueEntry !== undefined)
+      this.collector.diagnostics.queue.mark(this.queueEntry, "handle-check");
     if ((await request(() => this.driver.handle(signal))) !== state.handle)
       throw new Error("Host window handle changed");
     check();
     beforeDispatch?.();
+    if (this.queueEntry !== undefined)
+      this.collector.diagnostics.queue.mark(this.queueEntry, "script-dispatch");
     const value = await request(() =>
       this.driver.script(this.guard(source, mode, recovery, state), signal),
     );
@@ -369,6 +419,7 @@ try {
       throw new Error("Peer generation revoked");
   }
   private fault(error: unknown, state = this.state): void {
+    this.collector.diagnostics.freeze("host-command-failure");
     if (!this.uncertain && !this.closed && this.state.cutoff === null)
       this.collector.fail("host-command", String(error), state);
     this.uncertain ||=
@@ -565,6 +616,7 @@ try {
   }
   failureEvidence(): unknown {
     return {
+      diagnostics: this.collector.diagnostics.snapshot(),
       caseId: this.state.group.caseIds[0],
       body: this.bodyFailure,
       assets: this.assets?.errors(this.state),
@@ -646,6 +698,12 @@ try {
         allocateDatabase: (prefix) => this.allocateDatabase(prefix),
         sleep: (ms) => this.sleep(ms),
       };
+      bindDiagnostics(
+        host,
+        this.collector.diagnostics,
+        this.collector.documents.indexOf(this.state),
+        0,
+      );
       this.checkBody();
       const returned = this.consumers.invoke(() => callback(host));
       this.bodyWork = { kind: "pending", promise: returned };
@@ -660,6 +718,9 @@ try {
       this.checkBody();
       verdict = { status: "pass", result: evidence };
     } catch (error) {
+      const trace = this.collector.diagnostics.lifecycle;
+      trace.end(trace.begin("body-failed", this.diagnosticFacts()), "failed");
+      this.collector.diagnostics.freeze("host-body-failure");
       if (error instanceof ObservationFailure) this.fault(error);
       const message = String(error);
       this.bodyFailure = {
@@ -673,6 +734,7 @@ try {
       this.signal.removeEventListener("abort", stop);
       this.revoke();
     }
+    this.collector.diagnostics.cleanup();
     this.collector.results[caseId] = { body: verdict, teardown: { status: "not-entered" } };
     const delivery = this.closeRemainingPeers().then(async () => {
       if (this.uncontainedPageTasks())
@@ -716,7 +778,7 @@ try {
       controller.signal.throwIfAborted();
       this.checkTarget(state, this.operationDeadline());
     };
-    return Object.freeze({
+    const capability: HostPeer = Object.freeze({
       signal: controller.signal,
       workers: async () => {
         valid();
@@ -728,10 +790,20 @@ try {
         return this.workerObservation(state).onWorker(callback);
       },
       waitForWorkerClose: (worker: HostWorker) => this.waitForWorkerClose(state, worker),
-      script: (source: string) => {
+      script: (source: string, purpose: Purpose = "other-command") => {
         valid();
         return abortable(
-          this.execute(source, "body", this.signal, undefined, false, state),
+          this.execute(
+            source,
+            "body",
+            this.signal,
+            undefined,
+            false,
+            state,
+            this.operationDeadline(),
+            false,
+            purpose,
+          ),
           this.body.signal,
         );
       },
@@ -753,6 +825,13 @@ try {
         return this.closePeer(state, false);
       },
     });
+    bindDiagnostics(
+      capability,
+      this.collector.diagnostics,
+      this.collector.documents.indexOf(state),
+      state.owner.kind === "peer" ? state.owner.generation : 0,
+    );
+    return capability;
   }
   private probeLive(signal: AbortSignal, until: number): boolean {
     return (
@@ -774,27 +853,31 @@ try {
       this.signal,
       AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
     ]);
-    const operation = this.enqueue(async () => {
-      try {
-        if (!this.probeLive(signal, until)) return "driver-lost";
-        const handles = await this.driver.handles(signal);
-        if (!this.probeLive(signal, until)) return "driver-lost";
-        if (!handles.includes(state.handle)) return "page-closed";
-        await this.driver.selectWindow(state.handle, signal);
-        if (!this.probeLive(signal, until)) return "driver-lost";
-        const handle = await this.driver.handle(signal);
-        if (!this.probeLive(signal, until)) return "driver-lost";
-        if (handle !== state.handle) return "page-reloaded";
-        const url = await this.driver.url(signal);
-        if (!this.probeLive(signal, until)) return "driver-lost";
-        if (url !== state.expectedURL) return "page-reloaded";
-        const value = await this.driver.script("return window.__pageRunner || null", signal);
-        if (!this.probeLive(signal, until)) return "driver-lost";
-        return record(value) && value.doc === state.doc ? "responsive" : "page-reloaded";
-      } catch {
-        return "driver-lost";
-      }
-    });
+    const operation = this.enqueue(
+      async () => {
+        try {
+          if (!this.probeLive(signal, until)) return "driver-lost";
+          const handles = await this.driver.handles(signal);
+          if (!this.probeLive(signal, until)) return "driver-lost";
+          if (!handles.includes(state.handle)) return "page-closed";
+          await this.driver.selectWindow(state.handle, signal);
+          if (!this.probeLive(signal, until)) return "driver-lost";
+          const handle = await this.driver.handle(signal);
+          if (!this.probeLive(signal, until)) return "driver-lost";
+          if (handle !== state.handle) return "page-reloaded";
+          const url = await this.driver.url(signal);
+          if (!this.probeLive(signal, until)) return "driver-lost";
+          if (url !== state.expectedURL) return "page-reloaded";
+          const value = await this.driver.script("return window.__pageRunner || null", signal);
+          if (!this.probeLive(signal, until)) return "driver-lost";
+          return record(value) && value.doc === state.doc ? "responsive" : "page-reloaded";
+        } catch {
+          return "driver-lost";
+        }
+      },
+      "liveness-probe",
+      state,
+    );
     return abortable(operation, signal).catch(() => "driver-lost");
   }
   private checkTransition(transition: PeerTransition, signal: AbortSignal, cleanup = false): void {
@@ -818,6 +901,7 @@ try {
       state,
       transition.deadline,
       true,
+      "peer-transition",
     );
     for (;;) {
       const observed = await this.execute(
@@ -848,50 +932,54 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough !
       AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
     ]);
     return abortable(
-      this.enqueue(async () => {
-        this.infrastructure(cleanup);
-        if (!cleanup) this.checkBody();
-        this.checkTarget(transition.source, until, true);
-        await this.driver.selectWindow(transition.source.handle, signal);
-        this.infrastructure(cleanup);
-        if (!cleanup) this.checkBody();
-        this.checkTarget(transition.source, until, true);
-        if ((await this.driver.handle(signal)) !== transition.source.handle)
-          throw new Error("Transition source handle changed");
-        this.infrastructure(cleanup);
-        if (!cleanup) this.checkBody();
-        const before = await this.driver.handles(signal);
-        this.infrastructure(cleanup);
-        if (!cleanup) this.checkBody();
-        this.checkTarget(transition.source, until, true);
-        if (!before.includes(transition.source.handle) || !before.includes(this.state.handle))
-          throw new Error("Transition source or coordinator handle missing");
-        const verified = await this.driver.script(
-          this.guard(
-            `const r=window.__pageRunner, t=h.transition;
+      this.enqueue(
+        async () => {
+          this.infrastructure(cleanup);
+          if (!cleanup) this.checkBody();
+          this.checkTarget(transition.source, until, true);
+          await this.driver.selectWindow(transition.source.handle, signal);
+          this.infrastructure(cleanup);
+          if (!cleanup) this.checkBody();
+          this.checkTarget(transition.source, until, true);
+          if ((await this.driver.handle(signal)) !== transition.source.handle)
+            throw new Error("Transition source handle changed");
+          this.infrastructure(cleanup);
+          if (!cleanup) this.checkBody();
+          const before = await this.driver.handles(signal);
+          this.infrastructure(cleanup);
+          if (!cleanup) this.checkBody();
+          this.checkTarget(transition.source, until, true);
+          if (!before.includes(transition.source.handle) || !before.includes(this.state.handle))
+            throw new Error("Transition source or coordinator handle missing");
+          const verified = await this.driver.script(
+            this.guard(
+              `const r=window.__pageRunner, t=h.transition;
 return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough === ${watermark} &&
  r.ackedThrough === ${watermark} && r.pending === 0 && !r.failure;`,
-            "host",
-            cleanup,
-            transition.source,
-          ),
-          signal,
-        );
-        this.infrastructure(cleanup);
-        if (!cleanup) this.checkBody();
-        this.checkTarget(transition.source, until, true);
-        if (!record(verified) || verified.kind !== "value" || verified.value !== true)
-          throw new Error("Transition source barrier changed");
-        this.collector.executeTransition(transition, watermark);
-        try {
-          return await action(signal, before);
-        } catch (error) {
-          transition.progress = { kind: "failed", detail: String(error) };
-          transition.source.physical = "unconfirmed";
-          this.fault(error, transition.source);
-          throw error;
-        }
-      }),
+              "host",
+              cleanup,
+              transition.source,
+            ),
+            signal,
+          );
+          this.infrastructure(cleanup);
+          if (!cleanup) this.checkBody();
+          this.checkTarget(transition.source, until, true);
+          if (!record(verified) || verified.kind !== "value" || verified.value !== true)
+            throw new Error("Transition source barrier changed");
+          this.collector.executeTransition(transition, watermark);
+          try {
+            return await action(signal, before);
+          } catch (error) {
+            transition.progress = { kind: "failed", detail: String(error) };
+            transition.source.physical = "unconfirmed";
+            this.fault(error, transition.source);
+            throw error;
+          }
+        },
+        "peer-transition",
+        transition.source,
+      ),
       signal,
     );
   }
@@ -1112,6 +1200,18 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
     this.peerSignals.get(state)?.abort(new Error("Peer closed"));
     const observation = this.collector.observation(state);
     const workers = observation?.workers() ?? [];
+    const trace = this.collector.diagnostics.lifecycle;
+    const ordinal = trace.begin("physical-close-requested", {
+      ...this.diagnosticFacts(state),
+      workerCount: workers.length,
+      workersTruncated: Math.max(0, workers.length - 64),
+      workers: workers
+        .flatMap((worker) => {
+          const id = observation?.workerOrdinal?.(worker);
+          return id === null || id === undefined ? [] : [id];
+        })
+        .slice(0, 64),
+    });
     const closing = this.transitionCommand(transition, cleanup, async (signal, before) => {
       this.infrastructure(cleanup);
       if (!cleanup) this.checkBody();
@@ -1126,14 +1226,20 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
       )
         throw new Error("Exact peer close not confirmed");
       this.collector.completeTransition(transition, state.handle, null, remaining);
+      trace.mark(ordinal, "physical-close-confirmed");
+      trace.mark(ordinal, "worker-receipts-pending");
     });
     const completed = closing.then(async () => {
-      if (!observation) return;
+      if (!observation) {
+        trace.end(ordinal, "completed");
+        return;
+      }
       await bounded(
         Promise.all(workers.map((worker) => observation.waitForWorkerClose(worker))),
         Math.max(0, until - performance.now()),
         "owned peer browser Worker close",
       );
+      trace.end(ordinal, "worker-receipts-joined");
     });
     this.closes.set(state, completed);
     return completed;
@@ -1186,6 +1292,8 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
       true,
       this.state,
       this.teardownDeadline(),
+      false,
+      "verdict",
     );
   }
 }

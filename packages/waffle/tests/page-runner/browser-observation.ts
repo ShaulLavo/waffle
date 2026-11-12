@@ -1,3 +1,4 @@
+import { BoundedTrace, fixturePath } from "./stall-diagnostics.js";
 import type { DriverObservation } from "./driver.js";
 import { HostConsumers } from "./owned-consumers.js";
 import {
@@ -38,6 +39,7 @@ type Lifetime =
   | { kind: "lost"; error: Error };
 export type WorkerCloseSource = "safari-worker-terminated" | "playwright-worker-close";
 type WorkerRecord = {
+  ordinal: number;
   worker: HostWorker;
   close: ReturnType<typeof Promise.withResolvers<void>>;
   terminal: { kind: "live" } | { kind: "closed"; source: WorkerCloseSource };
@@ -89,6 +91,24 @@ export function requestEvent(
 
 /** A single exact target lifetime. Reduction is independent of awaited driver commands. */
 export class BrowserObservation implements DriverObservation {
+  private readonly diagnostics = new BoundedTrace("host-monotonic-ms");
+  diagnosticSnapshot() {
+    return { lifetime: this.lifetime.kind, workers: this.diagnostics.snapshot() };
+  }
+  workerOrdinal(worker: HostWorker | string): number | null {
+    return (
+      (typeof worker === "string" ? this.latest.get(worker) : this.owned.get(worker))?.ordinal ??
+      null
+    );
+  }
+  initialized(id: string, success: boolean): void {
+    const entry = this.identities.get(id);
+    if (entry)
+      this.diagnostics.mark(
+        entry.ordinal,
+        success ? "initialization-acknowledged" : "initialization-failed",
+      );
+  }
   private lifetime: Lifetime = { kind: "active" };
   private readonly failureResult = Promise.withResolvers<Error>();
   readonly failure = this.failureResult.promise;
@@ -127,6 +147,7 @@ export class BrowserObservation implements DriverObservation {
       kind: "lost",
       error: error instanceof Error ? error : new Error(String(error)),
     };
+    this.diagnostics.end(this.diagnostics.begin("observer-lost"), "failed");
     this.failureResult.resolve(this.lifetime.error);
     this.closeAdmission();
   }
@@ -149,7 +170,12 @@ export class BrowserObservation implements DriverObservation {
       throw new Error("Worker observation bound exceeded");
     if (this.lifetime.kind === "closed") throw new Error("Worker creation after document close");
     const worker: HostWorker = Object.freeze({ kind: "dedicated-worker", url: metadata });
+    const ordinal = this.diagnostics.begin("native-created", {
+      worker: this.identities.size + 1,
+      fixture: fixturePath(metadata),
+    });
     const entry: WorkerRecord = {
+      ordinal,
       worker,
       close: Promise.withResolvers<void>(),
       terminal: { kind: "live" },
@@ -167,6 +193,7 @@ export class BrowserObservation implements DriverObservation {
     const entry = this.live.get(id);
     if (!entry) throw new Error("Termination for an unobserved Worker");
     entry.terminal = { kind: "closed", source };
+    this.diagnostics.end(entry.ordinal, source);
     this.live.delete(id);
     entry.close.resolve();
     this.lifecycle.push(Object.freeze({ kind: "closed", worker: entry.worker }));
@@ -294,6 +321,7 @@ export class BrowserObservation implements DriverObservation {
   }
   stop(): Promise<void> {
     if (this.closing && this.live.size) this.lose(new Error("Missing final browser Worker close"));
+    this.diagnostics.end(this.diagnostics.begin("observer-retired"), "completed");
     this.stopped.resolve(new Error("Worker observation retired"));
     this.revoke();
     return (this.retirement ??= this.consumers.invoke(() => this.stopOnce()));

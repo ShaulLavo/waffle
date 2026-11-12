@@ -65,6 +65,18 @@ test("the real collector close route waits outside driver serialization and auth
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ closed: true });
     expect((await query(f.query)).status).toBe(200);
+    const diagnostic = f.collector.diagnostics.snapshot().current;
+    expect(diagnostic.queries.completed.at(-1)?.stages.map((item) => item.stage)).toEqual([
+      "query-admitted",
+      "wait-resolved",
+      "response-created",
+    ]);
+    expect(
+      diagnostic.queries.completed.some(
+        (entry) => entry.stages.at(-1)?.stage === "response-failed",
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(diagnostic)).not.toMatch(/owned.test|token|documentURL|worker.js/);
     f.state.physical = "closed";
     expect((await query(f.query)).status).toBe(410);
     expect(f.collector.failures).toEqual([]);
@@ -74,6 +86,60 @@ test("the real collector close route waits outside driver serialization and auth
     await server.server.stop(true);
   }
 });
+
+for (const end of ["before-query", "after-query", "physical-close", "lost", "retired"] as const)
+  test(`exact close diagnostic progression survives ${end} without a fabricated receipt`, async () => {
+    const f = fixture();
+    f.observation.initialized("worker", true);
+    if (end === "before-query") f.observation.terminated("worker", "safari-worker-terminated");
+    const waiting = f.collector.workerCloseQuery({ ...f.query, query: 7 });
+    try {
+      const entry = f.collector.diagnostics.snapshot().current.queries.active[0];
+      expect(entry?.facts).toMatchObject({
+        peer: 0,
+        generation: 0,
+        worker: 1,
+        query: 7,
+        fixture: "other-worker",
+      });
+      if (end === "physical-close") {
+        f.observation.beginDocumentClose();
+        f.observation.documentClosed();
+        let settled = false;
+        void waiting.then(() => {
+          settled = true;
+        });
+        await Bun.sleep(0);
+        expect(settled).toBe(false);
+      }
+      if (end === "lost") f.observation.lose(Error("private-observer-error"));
+      else if (end === "retired") await f.observation.stop();
+      else if (end !== "before-query")
+        f.observation.terminated("worker", "safari-worker-terminated");
+      if (end === "lost" || end === "retired") await expect(waiting).rejects.toThrow();
+      else await waiting;
+      const snapshot = f.collector.diagnostics.snapshot().current;
+      expect(snapshot.queries.active[0]?.stages.at(-1)?.stage).toBe(
+        end === "lost" || end === "retired" ? "wait-rejected" : "wait-resolved",
+      );
+      const native = f.observation.diagnosticSnapshot().workers;
+      const receipt = native.completed.find((item) => item.facts.worker === 1);
+      if (end === "lost" || end === "retired") expect(receipt).toBeUndefined();
+      else
+        expect(receipt?.stages.map((item) => item.stage)).toEqual([
+          "native-created",
+          "initialization-acknowledged",
+          "safari-worker-terminated",
+        ]);
+      expect(JSON.stringify(snapshot)).not.toMatch(
+        /owned.test|private-observer-error|documentURL|token/,
+      );
+    } finally {
+      await f.observation.stop().catch(() => {});
+      await waiting.catch(() => {});
+      expect(await f.consumers.join(100)).toBe(true);
+    }
+  });
 
 test("query cancellation cannot discharge actual close debt and observation loss rejects pending queries", async () => {
   const f = fixture();

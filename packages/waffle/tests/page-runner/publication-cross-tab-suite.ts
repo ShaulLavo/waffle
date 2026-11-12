@@ -8,6 +8,7 @@ import {
   crossTabTimeoutMs,
 } from "../publication-cross-tab-inventory.js";
 import { nativeCrossTabLifecycle, type CrossTabWorkerEvent } from "./publication-cross-tab-host.js";
+import { diagnosticsFor } from "./stall-diagnostics.js";
 import { record, type HostCase } from "./protocol.js";
 import type { SuiteAdapter } from "./consumer.js";
 
@@ -16,8 +17,11 @@ async function drive(host: HostCase): Promise<unknown> {
   const events: CrossTabWorkerEvent[] = [];
   const command = crossTabCommand(nativeCrossTabLifecycle(host, events), (...values) => {
     console.log(...values);
-    if (typeof values[0] === "string" && values[0].startsWith("PASS "))
+    if (typeof values[0] === "string" && values[0].startsWith("PASS ")) {
       labels.push(values[0].slice(5));
+      const trace = diagnosticsFor(host)?.diagnostics.labels;
+      if (trace) trace.end(trace.begin("label", { label: labels.length }), "completed");
+    }
   });
   const origin = await host.script("return location.origin;");
   if (typeof origin !== "string") throw new Error("Missing cross-tab origin");

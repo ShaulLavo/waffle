@@ -33,6 +33,8 @@ export interface DriverPressControl {
 }
 export interface DriverObservation {
   readonly failure: Promise<Error>;
+  diagnosticSnapshot?(): unknown;
+  workerOrdinal?(worker: HostWorker | string): number | null;
   navigationComplete(): void;
   check(): void;
   workers(): readonly HostWorker[];
