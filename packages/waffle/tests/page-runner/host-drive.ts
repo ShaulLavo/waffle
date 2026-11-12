@@ -160,7 +160,7 @@ if (!c || !r || !h || c.run !== identity.run || c.token !== identity.token ||
  r.doc !== identity.doc || r.retired || location.href !== identity.url ||
  !${JSON.stringify(phases)}.includes(h.phase))
  return {kind:'binding-error'};
-if (!${JSON.stringify(recovery)} && r.failure) return {kind:'reporter-error', error:String(r.failure)};
+if (!${JSON.stringify(recovery)} && r.failure) return {kind:'reporter-error', error:String(r.failure), controlFailure:r.controlFailure};
 try {
  const value = new Function("h", "window", "location", ${JSON.stringify(source)})(h, window, location);
  if (value && typeof value.then === 'function') { Promise.resolve(value).catch(() => {}); return {kind:'expression-error', error:'Use host.task for asynchronous work'}; }
@@ -235,7 +235,9 @@ try {
     if (!record(value)) throw new Error("Malformed bound command answer");
     if (value.kind === "binding-error") throw new Error("Host document binding changed");
     if (value.kind === "reporter-error")
-      throw new ObservationFailure(`Page reporting failed: ${String(value.error)}`);
+      throw new ObservationFailure(
+        `Page reporting failed: ${String(value.error)}; control=${JSON.stringify(value.controlFailure)}`,
+      );
     if (value.kind === "expression-error" && typeof value.error === "string")
       throw new ExpressionFailure(value.error);
     if (value.kind !== "void" && (value.kind !== "value" || !("value" in value)))

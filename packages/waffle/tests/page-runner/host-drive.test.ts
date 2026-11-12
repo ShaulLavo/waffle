@@ -12,6 +12,7 @@ import { HostDrive } from "./host-drive.js";
 import { HostConsumers } from "./owned-consumers.js";
 import { Collector } from "./collector.js";
 import { FakeDriver } from "./fake-driver.js";
+import type { Observation } from "./ordered-reporter.js";
 import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
 import {
   record,
@@ -34,6 +35,7 @@ class HostDriver extends FakeDriver {
   config: Record<string, unknown> = {};
   effects: number[] = [];
   reportFailure: string | null = null;
+  controlFailure: Observation["controlFailure"] = null;
   retired = false;
   dispatchGate: Promise<void> | undefined;
   completionBeforeResponse = false;
@@ -71,7 +73,12 @@ class HostDriver extends FakeDriver {
     const window = {
       __suiteConfiguration: this.config,
       __pageRunner: record(runner)
-        ? { ...runner, failure: this.reportFailure, retired: this.retired }
+        ? {
+            ...runner,
+            failure: this.reportFailure,
+            retired: this.retired,
+            controlFailure: this.controlFailure,
+          }
         : runner,
       effects: this.effects,
       __hostCase: {
@@ -530,6 +537,34 @@ test("escaped multibyte body and disposal errors fit both unchanged report bound
   );
   expect(body.length).toBeGreaterThan(0);
 });
+
+test("bound host guard retains the owning control failure and still refuses dispatch", () =>
+  fixture(async (root) => {
+    const d = new HostDriver();
+    const result = await runPageSuite(
+      adapter(async (host) => {
+        d.reportFailure = "Collector heartbeat failed";
+        d.controlFailure = {
+          run: String(d.config.run),
+          doc: d.currentDoc,
+          method: "POST",
+          path: "/heartbeat",
+          phase: "transport",
+          status: null,
+          error: "TimeoutError: control timeout",
+          abort: "TimeoutError: control timeout",
+        };
+        await host.script("window.effects.push(71)");
+        return true;
+      }),
+      () => d,
+      options(root),
+    );
+    expect(result.exit).toBe(2);
+    expect(d.effects).toEqual([]);
+    expect(result.failures[0]?.detail).toContain(JSON.stringify(d.controlFailure));
+    expect(result.failures[0]?.detail).toContain("Collector heartbeat failed");
+  }));
 
 for (const failure of ["reporter", "collector"]) {
   test(

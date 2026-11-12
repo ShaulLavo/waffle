@@ -5,14 +5,31 @@ import {
   reportQueuedByteLimit,
   type ReportIdentity,
 } from "./report-chunks.js";
-import { record, resultByteLimit } from "./protocol.js";
+import { formatHostError, record, resultByteLimit } from "./protocol.js";
 import { hostReply, type HostReply, type ReportingFailure } from "./report-control.js";
+type ControlFailure = {
+  run: string;
+  doc: string;
+  path: string;
+  method: string;
+  error: string;
+  abort: string | null;
+} & ({ phase: "transport"; status: null } | { phase: "reply"; status: number });
+function controlError(error: unknown): string {
+  try {
+    if (error instanceof DOMException) return `${error.name}: ${error.message}`.slice(0, 1024);
+  } catch {
+    // A hostile exception must not replace the rejected control request.
+  }
+  return formatHostError(error).slice(0, 1024);
+}
 export type Observation = {
   doc: string;
   ackedThrough: number;
   pending: number;
   failure: string | null;
   retired: boolean;
+  controlFailure: ControlFailure | null;
 };
 declare global {
   interface Window {
@@ -35,6 +52,7 @@ export class OrderedReporter<B extends object> {
     pending: 0,
     failure: null,
     retired: false,
+    controlFailure: null,
   };
   private readonly encoder = new TextEncoder();
   private readonly encode = this.encoder.encode.bind(this.encoder);
@@ -240,8 +258,23 @@ export class OrderedReporter<B extends object> {
       this.controlDrain = idle.promise;
       this.controlSettled = idle.resolve;
     }
+    let response: Response | undefined;
     try {
-      return await this.hostReply(await this.post(url, init));
+      response = await this.post(url, init);
+      return await this.hostReply(response);
+    } catch (error) {
+      this.observation.controlFailure ??= {
+        run: this.run,
+        doc: this.observation.doc,
+        path: url.split("?")[0] ?? url,
+        method: init.method ?? "GET",
+        error: controlError(error),
+        abort: init.signal?.aborted ? controlError(init.signal.reason) : null,
+        ...(response
+          ? { phase: "reply", status: response.status }
+          : { phase: "transport", status: null }),
+      };
+      throw error;
     } finally {
       if (--this.controlCount === 0) this.controlSettled?.();
     }

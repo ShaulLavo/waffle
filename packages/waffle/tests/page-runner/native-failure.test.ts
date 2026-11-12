@@ -157,6 +157,46 @@ test("local HTTP command preserves its original WebDriver exception even when ob
   }
 });
 
+test("local SafariDriver response retains reporter control facts separately from driver HTTP status", async () => {
+  const controlFailure = {
+    run: "control-run",
+    doc: "control-document",
+    method: "POST",
+    path: "/heartbeat",
+    phase: "transport",
+    status: null,
+    error: "TimeoutError: control timeout",
+    abort: "TimeoutError: control timeout",
+  };
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/session") return sessionResponse();
+      return Response.json({
+        value: path.endsWith("/execute/sync")
+          ? { kind: "reporter-error", error: "Collector heartbeat failed", controlFailure }
+          : null,
+      });
+    },
+  });
+  const failures: CommandFailure[] = [];
+  const driver = new SafariDriver(udid, "no-native-resources", (facts) => failures.push(facts));
+  try {
+    await driver.startControl(server.url.origin, AbortSignal.timeout(2000));
+    await expect(driver.script("control", AbortSignal.timeout(2000))).rejects.toThrow(
+      JSON.stringify(controlFailure),
+    );
+    expect(failures[0]).toMatchObject({ stage: "envelope", status: 200 });
+    expect(driver.uncertain).toBe(true);
+  } finally {
+    await driver.stop();
+    await server.stop(true);
+  }
+  expect(server.pendingRequests).toBe(0);
+});
+
 for (const cleanupFails of [false, true]) {
   test(`host persists first native control failure with heartbeat age and unchanged cleanup ${cleanupFails}`, async () => {
     const fixture = controlServer("/window/handles", "unknown error", cleanupFails);
