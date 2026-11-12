@@ -6,7 +6,7 @@ import { nativeMain } from "./native.js";
 import { PlaywrightDriver } from "./playwright-driver.js";
 import { runPageSuite, type SuiteAdapter, type SuiteResult } from "./suite-host.js";
 
-export const consoleControlModes = [
+const consoleControlModes = [
   "page-clean",
   "page-error",
   "worker-only",
@@ -17,8 +17,8 @@ export const consoleControlModes = [
   "clean-self-close",
   "clean-completion-terminate",
 ] as const;
-export type ConsoleControlMode = (typeof consoleControlModes)[number];
-export function consoleControlAdapter(
+type ConsoleControlMode = (typeof consoleControlModes)[number];
+function consoleControlAdapter(
   mode: ConsoleControlMode,
   marker: string,
 ): SuiteAdapter<{ mode: string; marker: string }> {
@@ -45,11 +45,7 @@ export function consoleControlAdapter(
     budgets: () => ({ hello: 10_000, heartbeat: 10_000, case: 15_000, group: 20_000, run: 60_000 }),
   };
 }
-export function checkConsoleControl(
-  result: SuiteResult,
-  mode: ConsoleControlMode,
-  marker: string,
-): void {
+function checkConsoleControl(result: SuiteResult, mode: ConsoleControlMode, marker: string): void {
   const error = mode === "page-error" || mode.startsWith("worker-");
   assert.equal(result.exit, error ? 1 : 0, `Qualification failed: ${JSON.stringify(result)}`);
   assert.deepEqual(result.failures, [], "Infrastructure failure is not console detection");
@@ -91,7 +87,7 @@ export function checkConsoleControl(
     assert.equal(url.searchParams.get("marker"), marker);
   }
 }
-export async function runConsoleControls(
+async function runConsoleControls(
   engine: "chromium" | "webkit" | "ios-safari",
   root: string,
   modes: readonly ConsoleControlMode[] = consoleControlModes,
