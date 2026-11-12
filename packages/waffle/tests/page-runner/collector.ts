@@ -90,6 +90,14 @@ export type DocumentState = {
   host: HostPhase | null;
   tasks: Map<string, PageTask>;
 };
+export type FixtureLimits = Readonly<{ budgets: Budgets; runStartedAt: number }>;
+/** Collector-local response authority. Never passed to handlers or serialized. */
+export type FixtureAdmission = Readonly<{
+  state: DocumentState;
+  doc: string;
+  caseId: string;
+  deadline: number;
+}>;
 export class Collector {
   private bootstrapArrivals = new WeakSet<DocumentState>();
   private readonly bootstrapClosed = new WeakSet<DocumentState>();
@@ -258,8 +266,15 @@ export class Collector {
     return [{ ...saved.attempt }];
   }
 
-  admitFixture(token: string, doc: string, caseId: string): DocumentState {
+  private readonly fixtureAdmissions = new WeakSet<FixtureAdmission>();
+  admitFixture(
+    token: string,
+    doc: string,
+    caseId: string,
+    limits: FixtureLimits,
+  ): FixtureAdmission {
     const state = this.documents.find((item) => item.token === token);
+    const outcome = this.outcomes[caseId];
     if (
       !state ||
       state !== this.active ||
@@ -269,10 +284,38 @@ export class Collector {
       state.group.role !== "case" ||
       state.group.caseIds[0] !== caseId ||
       state.owner.kind !== "coordinator" ||
-      this.outcomes[caseId]?.status !== "running"
+      outcome?.status !== "running"
     )
       throw new ObservationClosed("Fixture capability is not the live exact case document");
-    return state;
+    const { budgets, runStartedAt } = limits;
+    const documentMs = state.host ? (budgets.caseDocument ?? budgets.group) : budgets.group;
+    const deadline = Math.min(
+      runStartedAt + budgets.run,
+      state.startedAt + documentMs,
+      state.host ? Infinity : outcome.startedAt + budgets.case,
+    );
+    if (this.now() >= deadline) throw new ObservationClosed("Fixture deadline has expired");
+    const admission = Object.freeze({ state, doc, caseId, deadline });
+    this.fixtureAdmissions.add(admission);
+    return admission;
+  }
+  completeFixture(admission: FixtureAdmission): void {
+    if (!this.fixtureAdmissions.delete(admission))
+      throw new ObservationClosed("Fixture response authority is foreign or already consumed");
+    const { state, doc, caseId, deadline } = admission;
+    const outcome = this.outcomes[caseId];
+    const owned =
+      outcome?.status === "running" || (outcome?.status === "pass" && outcome.provisional);
+    if (
+      !owned ||
+      state !== this.active ||
+      state.doc !== doc ||
+      state.physical !== "live" ||
+      state.cutoff !== null ||
+      this.reply(false, state).kind !== "live" ||
+      this.now() >= deadline
+    )
+      throw new ObservationClosed("Fixture response is not owned by the live exact case document");
   }
   private reporting:
     | { kind: "live" | "cancelled" | "cleanup-failed" }

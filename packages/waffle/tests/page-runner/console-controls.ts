@@ -3,6 +3,12 @@ import { mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { browserBundle } from "../browser-runner-lifecycle.js";
 import { nativeMain } from "./native.js";
+import {
+  LateConsoleControl,
+  isLateConsoleMode,
+  lateConsoleModes,
+  type LateConsoleMode,
+} from "./console-late-control.js";
 import { PlaywrightDriver } from "./playwright-driver.js";
 import { runPageSuite, type SuiteAdapter, type SuiteResult } from "./suite-host.js";
 
@@ -90,7 +96,7 @@ function checkConsoleControl(result: SuiteResult, mode: ConsoleControlMode, mark
 async function runConsoleControls(
   engine: "chromium" | "webkit" | "ios-safari",
   root: string,
-  modes: readonly ConsoleControlMode[] = consoleControlModes,
+  modes: readonly (ConsoleControlMode | LateConsoleMode)[] = consoleControlModes,
 ): Promise<void> {
   assert.ok(isAbsolute(root), "Absolute result directory required");
   const scratchRoot = process.env.STORAGE_SCRATCH_ROOT;
@@ -101,6 +107,10 @@ async function runConsoleControls(
   await mkdir(root, { recursive: true });
   for (const mode of modes) {
     const marker = `waffle-console-${mode}-${crypto.randomUUID()}`;
+    if (isLateConsoleMode(mode)) {
+      await runLateConsoleControl(engine, root, scratchRoot, mode, marker);
+      continue;
+    }
     const adapter = consoleControlAdapter(mode, marker);
     const resultPath = join(root, `${mode}.json`);
     if (engine === "ios-safari")
@@ -116,6 +126,38 @@ async function runConsoleControls(
     console.log(`${engine} ${mode} qualified at ${resultPath}`);
   }
 }
+async function runLateConsoleControl(
+  engine: "chromium" | "webkit" | "ios-safari",
+  root: string,
+  scratchRoot: string,
+  mode: LateConsoleMode,
+  marker: string,
+): Promise<void> {
+  const control = new LateConsoleControl(
+    mode,
+    marker,
+    engine === "ios-safari" ? "console-api" : "playwright-console",
+  );
+  const adapter = control.adapter(consoleControlAdapter("page-clean", marker));
+  const resultPath = join(root, `${mode}.json`);
+  try {
+    await control.run(async () => {
+      if (engine === "ios-safari")
+        return nativeMain(adapter, ["--result", resultPath], { scratchRoot, port: "ephemeral" });
+      return runPageSuite(adapter, (scratch) => new PlaywrightDriver(engine, scratch), {
+        resultPath,
+        scratchRoot,
+        port: "ephemeral",
+      });
+    });
+  } finally {
+    // run() has already restored observations and prototypes, even if this write fails.
+    await Bun.write(`${resultPath}.late.json`, JSON.stringify(control.evidence(), null, 2));
+  }
+  const result: SuiteResult = await Bun.file(resultPath).json();
+  control.check(result);
+  console.log(`${engine} ${mode} qualified at ${resultPath}`);
+}
 if (import.meta.main) {
   const [engine, root, mode] = process.argv.slice(2);
   assert.ok(
@@ -123,7 +165,10 @@ if (import.meta.main) {
     "Expected chromium, webkit or ios-safari",
   );
   assert.ok(root, "Absolute result directory required");
-  const selected = consoleControlModes.filter((value) => value === mode);
+  const allModes: readonly (ConsoleControlMode | LateConsoleMode)[] = new Array<
+    ConsoleControlMode | LateConsoleMode
+  >().concat(consoleControlModes, lateConsoleModes);
+  const selected = allModes.filter((value) => value === mode);
   assert.ok(mode === undefined || selected.length === 1, "Unknown console control");
   await runConsoleControls(engine, root, mode === undefined ? consoleControlModes : selected);
 }

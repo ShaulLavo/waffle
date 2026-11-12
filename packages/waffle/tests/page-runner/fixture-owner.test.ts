@@ -32,7 +32,10 @@ test("fixture is inert until start and joins actual callback before one close", 
     scratch: "unused",
     signal: new AbortController().signal,
   });
-  const pending = owner.get("/idle", new AbortController().signal);
+  const pending = owner.get("/idle", {
+    signal: new AbortController().signal,
+    deadline: performance.now() + 1000,
+  });
   await entered.promise;
   owner.revoke("stop");
   const result = await owner.finish(performance.now() + 20);
@@ -120,3 +123,54 @@ for (const error of [null, undefined, false, ""]) {
     expect(cleanup.fixture.status).toBe("unconfirmed");
   });
 }
+
+test("deadline abort does not settle a callback that ignores it or erase its join debt", async () => {
+  const aborted = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  let closes = 0;
+  const owner = new FixtureOwner({
+    caseId: "deadline",
+    create: () => ({
+      start: async () => [
+        {
+          path: "/held",
+          get: async ({ signal }) => {
+            signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+            await release.promise;
+            return { serialized: true };
+          },
+        },
+      ],
+      close: async () => {
+        closes++;
+      },
+    }),
+  });
+  await owner.start({
+    origin: "http://localhost",
+    run: "r",
+    scratch: "unused",
+    signal: new AbortController().signal,
+  });
+  const pending = owner.get("/held", {
+    signal: new AbortController().signal,
+    deadline: performance.now() + 30,
+  });
+  void pending.catch(() => {});
+  try {
+    await aborted.promise;
+    const result = await owner.finish(performance.now() + 1);
+    expect(result.callbacks.status).toBe("unconfirmed");
+    expect(result.fixture.status).toBe("unconfirmed");
+    expect(closes).toBe(0);
+    release.resolve();
+    await expect(pending).rejects.toThrow();
+    await owner.closed;
+    expect(closes).toBe(1);
+    expect(result.callbacks.status).toBe("unconfirmed");
+  } finally {
+    release.resolve();
+    await pending.catch(() => {});
+    await owner.closed;
+  }
+});

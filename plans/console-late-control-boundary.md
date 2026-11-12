@@ -1,8 +1,8 @@
 # Late Console control boundary
 
-Status: Approved task, stopped at a fixture authority boundary. No late control is qualified.
+Status: Approved. The admission/completion split and four selected late controls are implemented. Independent implementation review and native late qualification remain coordinator gates.
 
-## Observed blocker
+## Original blocker
 
 The owned HTTP fixture cannot release a successful response after provisional body success.
 `fixtureResponse` in `tests/page-runner/suite-host.ts` calls `Collector.admitFixture` before
@@ -24,11 +24,17 @@ complete while that same document has a provisional passing outcome and has not 
 Cancellation, document replacement, a failed outcome and retirement must still reject it.
 Retain the existing run ownership, abort handling and callback join requirements.
 
-This extends fixture response authority and needs the coordinator's design disposition
-before implementation. Do not bypass the second check or decorate collector state to
-pretend the case is still running.
+The approved design gives each admitted response a collector-local, single-use identity.
+Completion checks the exact live document, running or provisional outcome, reporting state,
+retirement and the earliest captured original case, document and run deadline. The handler
+receives that deadline and an aborting signal. New requests still require a running case.
 
-Once that contract is accepted, the four independent controls can release their existing
+The deadline bounds cooperative callback waiting and completion authorization after JSON
+serialization, including handlers that ignore the new field. It does not preempt synchronous
+work or prove physical HTTP delivery. The fixture owner joins actual callback/serialization
+work before one close; final `server.stop(true)` still owns transport teardown.
+
+The four independent selected controls release their existing
 owned HTTP gate around the public `settleConsole` method. Before-cutoff controls release
 after the policy accepts the actual body, require real marker delivery, then call the original
 cutoff. After-cutoff controls first await the original cutoff, then release and require real
@@ -37,6 +43,6 @@ original reducer first and record the exact page or worker context. Restore deco
 abort every held fixture phase during teardown. Every wait must honor the remaining original
 control budgets.
 
-The original nine bodies, checks, budgets and default/selected CLI remain unchanged. Their
+The original nine bodies, checks, budgets and default invocation remain unchanged. The selected-mode CLI also accepts the four late modes. Their
 individual native evidence does not qualify the separate failed nine-command native session
 creation run. Native late controls and independent review remain coordinator work.

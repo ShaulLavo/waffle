@@ -22,6 +22,7 @@ import {
   ReportRejected,
   type DocumentState,
   type CollectorPolicy,
+  type FixtureLimits,
   type Group,
 } from "./collector.js";
 import {
@@ -52,12 +53,20 @@ function probePort(port: number): void {
   const listener = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
   listener.stop(true);
 }
+function selectedFixture(
+  declaration: FixtureDeclaration | undefined,
+  selected: readonly string[],
+  fail: (detail: string) => void,
+): FixtureOwner | undefined {
+  if (!declaration || !selected.includes(declaration.caseId)) return;
+  return new FixtureOwner(declaration, fail);
+}
 export function serveCollector(
   collector: Collector,
   assets: Record<string, Blob | string>,
   page: HostedPage = defaultPage,
   port = Number(process.env.STORAGE_TEST_PORT ?? 0),
-  application?: FixtureOwner,
+  fixtures?: { owner: FixtureOwner; limits: FixtureLimits },
   consumers = new HostConsumers(),
 ) {
   validatePage(page);
@@ -83,8 +92,8 @@ export function serveCollector(
           fail: (category, detail) => collector.fail(category, detail),
         });
         if (report) return report;
-        if (application?.has(url.pathname))
-          return await fixtureResponse(request, collector, application);
+        if (fixtures?.owner.has(url.pathname))
+          return await fixtureResponse(request, server, collector, fixtures);
         if (request.method !== "GET" && request.method !== "HEAD")
           return new Response("Method not allowed", { status: 405, headers });
         if (url.pathname === "/report" || url.pathname === "/heartbeat")
@@ -225,8 +234,9 @@ function documentTeardown(
 }
 async function fixtureResponse(
   request: Request,
+  transport: { timeout(request: Request, seconds: number): void },
   collector: Collector,
-  application: FixtureOwner,
+  fixtures: { owner: FixtureOwner; limits: FixtureLimits },
 ): Promise<Response> {
   if (request.method !== "GET")
     return new Response("Method not allowed", {
@@ -237,9 +247,19 @@ async function fixtureResponse(
   const token = request.headers.get("X-Waffle-Fixture"),
     doc = request.headers.get("X-Waffle-Document");
   if (!token || !doc) throw new ObservationClosed("Missing fixture capability");
-  collector.admitFixture(token, doc, application.declaration.caseId);
-  const encoded = await application.get(new URL(request.url).pathname, request.signal);
-  collector.admitFixture(token, doc, application.declaration.caseId);
+  const admission = collector.admitFixture(
+    token,
+    doc,
+    fixtures.owner.declaration.caseId,
+    fixtures.limits,
+  );
+  // Only admitted requests disable the idle timeout. Final server.stop(true) owns transport teardown.
+  transport.timeout(request, 0);
+  const encoded = await fixtures.owner.get(new URL(request.url).pathname, {
+    signal: request.signal,
+    deadline: admission.deadline,
+  });
+  collector.completeFixture(admission);
   return new Response(encoded, { headers: { ...headers, "Content-Type": "application/json" } });
 }
 function retirementCommand(collector: Collector, url: URL): ReturnType<Collector["reply"]> {
@@ -757,10 +777,9 @@ export async function runPageSuite<R>(
       process.env.STORAGE_SCRATCH_ROOT ??
       (process.platform === "darwin" ? join(homedir(), "tmp") : "/work/tmp");
     validateDeclarations(adapter, required, page);
-    if (adapter.fixture && selected.includes(adapter.fixture.caseId))
-      application = new FixtureOwner(adapter.fixture, (detail) => {
-        if (!sealed) collector.fail("fixture", detail);
-      });
+    application = selectedFixture(adapter.fixture, selected, (detail) => {
+      if (!sealed) collector.fail("fixture", detail);
+    });
     controller.signal.addEventListener("abort", () => application?.revoke("run cancelled"), {
       once: true,
     });
@@ -781,7 +800,14 @@ export async function runPageSuite<R>(
     const assets = await untilAborted(producing, signal);
     checkExecution();
     validateAssets(assets, page);
-    fixture = serveCollector(collector, assets, page, port, application, consumers);
+    fixture = serveCollector(
+      collector,
+      assets,
+      page,
+      port,
+      application && { owner: application, limits: { budgets, runStartedAt: started } },
+      consumers,
+    );
     workerEntry = workerLocation(adapter.serviceWorker, fixture.origin, run, assets);
     if (application) {
       const startup = application.start(
