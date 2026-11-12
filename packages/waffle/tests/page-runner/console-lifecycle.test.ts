@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BrowserObservation } from "./browser-observation.js";
 import { loadBootstrap } from "./bootstrap-control.js";
@@ -77,7 +78,7 @@ for (const mode of [
   "assertion-detach",
 ] as const) {
   test(`ordinary console observation owns cleanup through ${mode}`, async () => {
-    const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? "/work/tmp", "wcc-cpu-"));
+    const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "wcc-cpu-"));
     const controller = new AbortController();
     const driver = new ConsoleDriver(mode, controller);
     const adapter: SuiteAdapter<Record<string, never>> = {
