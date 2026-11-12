@@ -1,4 +1,4 @@
-import type { Frame, Page, Request, Worker } from "playwright";
+import type { ConsoleMessage, Frame, Page, Request, Worker } from "playwright";
 import type { DriverObservationBinding, DriverObservation } from "./driver.js";
 import { BrowserObservation, type RequestObservation } from "./browser-observation.js";
 
@@ -68,16 +68,59 @@ export function observePlaywrightPage(
   const lost = () => ledger.documentClosed();
   const crashed = () => ledger.lose(new Error("Observed Playwright page crashed"));
   const abort = () => ledger.lose(new Error("Observation admission aborted"));
-  const ledger = new BrowserObservation("existing-playwright-page", binding.consumers, async () => {
-    page.off("framenavigated", navigation);
-    page.off("worker", workerCreated);
-    page.off("request", request);
-    page.off("close", lost);
-    page.off("crash", crashed);
-    binding.signal.removeEventListener("abort", abort);
-    for (const [worker, listener] of closers) worker.off("close", listener);
-    closers.clear();
-  });
+  const consoleMessage = (message: ConsoleMessage) => {
+    if (message.type() !== "error") return;
+    try {
+      const worker = message.worker();
+      if (worker) workerCreated(worker);
+      ledger.consoleMessage(worker ? identity(worker) : "page", {
+        source: "playwright-console",
+        type: message.type(),
+        text: message.text(),
+        url: message.location().url,
+        line: message.location().lineNumber,
+        column: message.location().columnNumber,
+      });
+    } catch (error) {
+      ledger.lose(error);
+    }
+  };
+  const pageerror = (error: Error) =>
+    ledger.consoleMessage("page", { source: "playwright-pageerror", text: error.message });
+  let settled: Promise<void> | undefined;
+  const settleConsole = () =>
+    (settled ??= binding.consumers
+      .invoke(async () => {
+        await page.evaluate(() => undefined);
+        ledger.consoleState.freeze();
+      })
+      .catch((error: unknown) => {
+        ledger.lose(error);
+        throw error;
+      }));
+  const ledger = new BrowserObservation(
+    "existing-playwright-page",
+    binding.consumers,
+    async () => {
+      page.off("console", consoleMessage);
+      page.off("pageerror", pageerror);
+      page.off("framenavigated", navigation);
+      page.off("worker", workerCreated);
+      page.off("request", request);
+      page.off("close", lost);
+      page.off("crash", crashed);
+      binding.signal.removeEventListener("abort", abort);
+      for (const [worker, listener] of closers) worker.off("close", listener);
+      closers.clear();
+    },
+    undefined,
+    undefined,
+    settleConsole,
+  );
+  if (binding.console) {
+    page.on("console", consoleMessage);
+    page.on("pageerror", pageerror);
+  }
   page.on("framenavigated", navigation);
   page.on("worker", workerCreated);
   page.on("request", request);

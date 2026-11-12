@@ -98,6 +98,7 @@ export class Collector {
       consumers: HostConsumers;
       deadline: () => number;
       pending: number;
+      console: boolean;
     }
   >();
   bindObservation(
@@ -105,14 +106,32 @@ export class Collector {
     observation: DriverObservation | undefined,
     consumers: HostConsumers,
     deadline: () => number,
+    consoleDeclared = false,
   ): void {
     if (!observation) return;
     if (!this.owns(state) || this.observations.has(state))
       throw new Error("Observation owner already bound or unrelated");
-    this.observations.set(state, { observation, consumers, deadline, pending: 0 });
+    this.observations.set(state, {
+      observation,
+      consumers,
+      deadline,
+      pending: 0,
+      console: consoleDeclared,
+    });
   }
   observation(state: DocumentState): DriverObservation | undefined {
     return this.observations.get(state)?.observation;
+  }
+  consoleObservation(state: DocumentState): DriverObservation | undefined {
+    const owner = this.observations.get(state);
+    return owner?.console ? owner.observation : undefined;
+  }
+  private consoleVerdict(state: DocumentState): string | null {
+    const summary = this.consoleObservation(state)?.console?.();
+    const first = summary?.first;
+    if (!first) return null;
+    const context = first.context === "page" ? "page" : `dedicated worker ${first.context.url}`;
+    return `Browser console error in ${context}: ${first.text}`;
   }
   async workerCloseQuery(value: unknown): Promise<void> {
     if (
@@ -698,7 +717,10 @@ export class Collector {
     }
     try {
       this.policy.check(body.caseId, body.result);
-      this.outcomes[body.caseId] = { status: "pass", provisional: true };
+      const detail = this.consoleVerdict(state);
+      this.outcomes[body.caseId] = detail
+        ? { status: "fail", detail }
+        : { status: "pass", provisional: true };
     } catch (error) {
       this.outcomes[body.caseId] = { status: "fail", detail: `Host assertion: ${String(error)}` };
     }
@@ -793,7 +815,10 @@ export class Collector {
     state.cutoff = watermark;
     for (const id of state.group.caseIds) {
       const outcome = this.outcomes[id];
-      if (outcome?.status === "pass") outcome.provisional = false;
+      if (outcome?.status !== "pass") continue;
+      const detail = this.consoleVerdict(state);
+      if (detail) this.outcomes[id] = { status: "fail", detail };
+      else outcome.provisional = false;
     }
   }
   deadline(budgets: Budgets, runStartedAt: number): string | null {

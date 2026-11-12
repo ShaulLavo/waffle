@@ -1,3 +1,8 @@
+import {
+  ConsoleObservation,
+  type ConsoleFailure,
+  type WorkerConsoleOrder,
+} from "./console-observation.js";
 import type { DriverObservation } from "./driver.js";
 import { HostConsumers } from "./owned-consumers.js";
 import {
@@ -106,13 +111,32 @@ export class BrowserObservation implements DriverObservation {
   private requestBytes = 0;
   private retirement: Promise<void> | undefined;
   closingNavigationURL: string | undefined;
+  readonly consoleState = new ConsoleObservation(() => this.consoleOrders());
   constructor(
     readonly target: string,
     private readonly consumers: HostConsumers,
     private readonly cleanup: () => Promise<void>,
     private readonly bounds = { workers: 4096, requests: 20_000, bytes: 32 << 20 },
     private readonly confirmNavigation: () => void = () => {},
+    readonly settleConsole: () => Promise<void> = async () => {
+      throw new Error("Console observation not enabled");
+    },
+    private readonly consoleOrders: () => readonly WorkerConsoleOrder[] = () => [],
   ) {}
+  console(): ReturnType<ConsoleObservation["summary"]> {
+    return this.consoleState.summary();
+  }
+  consoleMessage(context: "page" | string, failure: Omit<ConsoleFailure, "context">): void {
+    if (context === "page") return this.consoleState.added({ ...failure, context });
+    const worker = this.identities.get(context)?.worker;
+    if (!worker) throw new Error("Console message from an unobserved Worker");
+    this.consoleState.added({ ...failure, context: worker });
+  }
+  workerIdentity(id: string): HostWorker {
+    const worker = this.identities.get(id)?.worker;
+    if (!worker) throw new Error("Unknown console Worker");
+    return worker;
+  }
   navigationComplete(): void {
     this.check();
     this.confirmNavigation();
@@ -127,6 +151,7 @@ export class BrowserObservation implements DriverObservation {
       kind: "lost",
       error: error instanceof Error ? error : new Error(String(error)),
     };
+    this.consoleState.lose(this.lifetime.error.message);
     this.failureResult.resolve(this.lifetime.error);
     this.closeAdmission();
   }

@@ -65,6 +65,8 @@ export class PlaywrightDriver implements Driver {
     let retirement: Promise<void> | undefined;
     return {
       failure: observation.failure,
+      console: () => observation.console!(),
+      settleConsole: () => observation.settleConsole!(),
       navigationComplete: () => observation.navigationComplete(),
       check: () => observation.check(),
       workers: () => observation.workers(),

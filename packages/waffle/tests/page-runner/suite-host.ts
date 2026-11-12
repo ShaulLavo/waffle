@@ -137,9 +137,9 @@ async function observeDocument(
   item: SuiteCase<unknown> | null,
   binding: import("./driver.js").DriverObservationBinding,
 ) {
-  if (!item?.observation) return;
+  if (!item?.observation && !item?.console) return;
   const observe = driver.observe?.bind(driver);
-  if (!item.drive || !observe)
+  if (!observe || (item.observation && !item.drive))
     throw new Error("Declared browser observation is unavailable on this driver");
   await driver.navigate(binding.bootstrapURL, binding.signal);
   return binding.consumers.invoke(() => observe(binding));
@@ -240,6 +240,7 @@ export type SuiteResult = {
     peer: string | null;
     generation: number | null;
     physical: DocumentState["physical"];
+    console: import("./console-observation.js").ConsoleSummary | null;
   }[];
   transitions: {
     id: string;
@@ -316,9 +317,14 @@ export type SuiteCase<R> = {
   label: string;
   request: (run: string) => R;
   query?: (run: string) => Readonly<Record<string, string>>;
-  drive?: (host: HostCase) => Promise<unknown>;
-  observation?: "workers-and-requests";
-};
+} & (
+  | { drive?: never; observation?: never; console?: "fail-on-error" }
+  | {
+      drive?: (host: HostCase) => Promise<unknown>;
+      observation?: "workers-and-requests";
+      console?: never;
+    }
+);
 export type SuiteAdapter<R> = {
   suite: string;
   inventory(): SuiteCase<R>[];
@@ -331,8 +337,15 @@ export type SuiteAdapter<R> = {
   budgets(selected: number): Budgets;
 };
 function selectCases<R>(adapter: SuiteAdapter<R>, options: RunOptions) {
-  const inventory = adapter.inventory(),
-    required = inventory.map((item) => item.id);
+  const inventory = adapter.inventory();
+  for (const item of inventory) {
+    if (
+      item.console !== undefined &&
+      (item.console !== "fail-on-error" || item.drive || item.observation)
+    )
+      throw new Error("Console policy requires an ordinary page case and fail-on-error");
+  }
+  const required = inventory.map((item) => item.id);
   const selectedCases = inventory.filter(
     (item) => !options.filter || item.label.includes(options.filter),
   );
@@ -556,99 +569,123 @@ export async function runPageSuite<R>(
       expectedURL: url,
       signal: operationSignal,
       consumers,
+      console: item?.console === "fail-on-error",
     });
-    collector.bindObservation(state, observation, consumers, () => started + budgets.run);
-    await navigateDocument({
-      driver,
-      url,
-      signal: operationSignal,
-      hello: budgets.hello,
-      observation,
-    });
-    const resultDeadline =
-      group.role === "case" && adapter.resultWaitMs !== undefined
-        ? performance.now() + adapter.resultWaitMs
+    try {
+      if (item?.console) {
+        void observation?.failure.then((error) =>
+          collector.fail("browser-observation", error.message, state),
+        );
+        if (!observation?.console || !observation.settleConsole)
+          throw new Error("Console observation unavailable");
+      }
+      collector.bindObservation(
+        state,
+        observation,
+        consumers,
+        () => started + budgets.run,
+        !!item?.console,
+      );
+      await navigateDocument({
+        driver,
+        url,
+        signal: operationSignal,
+        hello: budgets.hello,
+        observation,
+      });
+      const resultDeadline =
+        group.role === "case" && adapter.resultWaitMs !== undefined
+          ? performance.now() + adapter.resultWaitMs
+          : undefined;
+      const host = item?.drive
+        ? new HostDrive(
+            driver,
+            collector,
+            state,
+            consumers,
+            budgets,
+            started,
+            operationSignal,
+            (peer, lookup) => {
+              if (!fixture || peer.owner.kind !== "peer" || !("request" in configuration))
+                throw new Error("Missing peer configuration owner");
+              const peerConfiguration = {
+                run,
+                token: peer.token,
+                group: group.id,
+                role: "peer",
+                caseId: item.id,
+                request: configuration.request,
+                peer: peer.owner.peer,
+                generation: peer.owner.generation,
+                execution: "host",
+                ledger: collector.ledger,
+              };
+              fixture.configurations.set(lookup, peerConfiguration);
+              fixture.configurations.set(peer.token, peerConfiguration);
+            },
+            fixture.assetOwner,
+            observation,
+          )
         : undefined;
-    const host = item?.drive
-      ? new HostDrive(
-          driver,
-          collector,
+      if (host) hostCases.push(host);
+      const documentDriver = host?.transport ?? driver;
+      if (host && item?.drive) {
+        await awaitState(
           state,
-          consumers,
+          () => state.host?.kind === "ready",
+          collector,
+          documentDriver,
           budgets,
           started,
           operationSignal,
-          (peer, lookup) => {
-            if (!fixture || peer.owner.kind !== "peer" || !("request" in configuration))
-              throw new Error("Missing peer configuration owner");
-            const peerConfiguration = {
-              run,
-              token: peer.token,
-              group: group.id,
-              role: "peer",
-              caseId: item.id,
-              request: configuration.request,
-              peer: peer.owner.peer,
-              generation: peer.owner.generation,
-              execution: "host",
-              ledger: collector.ledger,
-            };
-            fixture.configurations.set(lookup, peerConfiguration);
-            fixture.configurations.set(peer.token, peerConfiguration);
-          },
-          fixture.assetOwner,
-          observation,
-        )
-      : undefined;
-    if (host) hostCases.push(host);
-    const documentDriver = host?.transport ?? driver;
-    if (host && item?.drive) {
+        );
+        await host.admit();
+        await host.drive(item.drive);
+        priorFailures = collector.failures.length;
+      }
+      const teardown = documentTeardown(host, resultDeadline, operationSignal);
       await awaitState(
         state,
-        () => state.host?.kind === "ready",
+        () => state.complete,
         collector,
         documentDriver,
         budgets,
-        started,
-        operationSignal,
+        cleanupOnly ? performance.now() : started,
+        teardown.signal,
+        priorFailures,
+        teardown.deadline,
       );
-      await host.admit();
-      await host.drive(item.drive);
-      priorFailures = collector.failures.length;
+      if (host?.uncontainedPageWork()) throw new Error("Uncontained page task or teardown");
+      if (collector.reply(false, state).kind === "cancelled")
+        throw new Error("Reporting cancelled before retirement");
+      state.retiring = true;
+      await awaitState(
+        state,
+        () => state.ready,
+        collector,
+        documentDriver,
+        budgets,
+        cleanupOnly ? performance.now() : started,
+        teardown.signal,
+        priorFailures,
+        teardown.deadline,
+      );
+      await retireDocument(state, collector, documentDriver, teardown.signal, priorFailures);
+      operationSignal.throwIfAborted();
+      if (!cleanupOnly) checkDeadline();
+      operationSignal.throwIfAborted();
+      fixture.configurations.delete(token);
+      if (item?.id === adapter.fixture?.caseId) application?.revoke("case document retired");
+    } finally {
+      if (item?.console && observation) {
+        await observation
+          .stop()
+          .catch((error: unknown) =>
+            collector.fail("browser-observation-cleanup", String(error), state),
+          );
+      }
     }
-    const teardown = documentTeardown(host, resultDeadline, operationSignal);
-    await awaitState(
-      state,
-      () => state.complete,
-      collector,
-      documentDriver,
-      budgets,
-      cleanupOnly ? performance.now() : started,
-      teardown.signal,
-      priorFailures,
-      teardown.deadline,
-    );
-    if (host?.uncontainedPageWork()) throw new Error("Uncontained page task or teardown");
-    if (collector.reply(false, state).kind === "cancelled")
-      throw new Error("Reporting cancelled before retirement");
-    state.retiring = true;
-    await awaitState(
-      state,
-      () => state.ready,
-      collector,
-      documentDriver,
-      budgets,
-      cleanupOnly ? performance.now() : started,
-      teardown.signal,
-      priorFailures,
-      teardown.deadline,
-    );
-    await retireDocument(state, collector, documentDriver, teardown.signal, priorFailures);
-    operationSignal.throwIfAborted();
-    if (!cleanupOnly) checkDeadline();
-    operationSignal.throwIfAborted();
-    fixture.configurations.delete(token);
-    if (item?.id === adapter.fixture?.caseId) application?.revoke("case document retired");
   }
   async function interruptedFinish(error: unknown): Promise<void> {
     if (
@@ -795,6 +832,7 @@ export async function runPageSuite<R>(
       peer: state.owner.kind === "peer" ? state.owner.peer : null,
       generation: state.owner.kind === "peer" ? state.owner.generation : null,
       physical: state.physical,
+      console: collector.consoleObservation(state)?.console?.() ?? null,
     })),
     transitions: collector.transitions.map((transition) => ({
       id: transition.id,
@@ -945,6 +983,7 @@ export async function retireDocument(
     const source = `const r = window.__pageRunner; if (!r || r.doc !== ${JSON.stringify(state.doc)} || r.pending !== 0 || r.failure || r.ackedThrough !== ${state.messages.length - 1}) return null; r.retired = true; return { doc: r.doc, ackedThrough: r.ackedThrough };`;
     const value = await driver.script(source, signal);
     if (record(value) && value.doc === state.doc && typeof value.ackedThrough === "number") {
+      await collector.consoleObservation(state)?.settleConsole?.();
       collector.retire(state, value.ackedThrough);
       return;
     }

@@ -1,3 +1,5 @@
+import { consoleMessage, consoleFailure, consoleExpired } from "./safari-console.js";
+import type { WorkerConsoleOrder } from "./console-observation.js";
 import { randomUUID } from "node:crypto";
 import { bounded, type DriverObservationBinding } from "./driver.js";
 import {
@@ -17,8 +19,15 @@ import { record } from "./protocol.js";
 type Message =
   | { kind: "reply"; id: number; answer: Record<string, unknown> }
   | { kind: "event"; method: string; params: Record<string, unknown> };
-type Pending = ReturnType<typeof Promise.withResolvers<unknown>>;
+type Pending = ReturnType<typeof Promise.withResolvers<unknown>> & {
+  route?: string;
+  reduced?: () => void;
+};
+type WorkerConsole = { -readonly [K in keyof WorkerConsoleOrder]: WorkerConsoleOrder[K] };
 type Command =
+  | "Console.enable"
+  | "Console.disable"
+  | "Worker.sendMessageToWorker"
   | "Page.enable"
   | "Page.disable"
   | "Worker.enable"
@@ -79,7 +88,11 @@ export class SafariObserver {
   private enabledPage = false;
   private enabledWorker = false;
   private enabledNetwork = false;
+  private enabledConsole = false;
+  private order = 0;
+  private readonly workerConsole = new Map<string, WorkerConsole>();
   private ledger: BrowserObservation | undefined;
+  private consoleCutoff: Promise<void> | undefined;
   private closeWork: Promise<void> | undefined;
   private abort: (() => void) | undefined;
   constructor(private readonly binding: DriverObservationBinding) {}
@@ -197,6 +210,11 @@ export class SafariObserver {
       () => this.close(),
       undefined,
       () => this.navigationComplete(),
+      () => this.settleConsole(),
+      () =>
+        Object.freeze(
+          Array.from(this.workerConsole.values(), (entry) => Object.freeze({ ...entry })),
+        ),
     );
     this.ledger = ledger;
     this.abort = () => {
@@ -217,6 +235,10 @@ export class SafariObserver {
     });
     if (identity.result.value !== wanted)
       throw new Error("Inspector exact owned bootstrap identity mismatch");
+    if (this.binding.console) {
+      await this.command("Console.enable", {});
+      this.enabledConsole = true;
+    }
     // Page supplies Network frame/loader identities; acknowledge it before admitting requests.
     await this.command("Page.enable", {});
     this.enabledPage = true;
@@ -348,8 +370,9 @@ export class SafariObserver {
     if (this.target && this.target !== info.targetId) throw new Error("Inspector target replaced");
     this.target = info.targetId;
   }
-  private reply(message: Extract<Message, { kind: "reply" }>): void {
+  private reply(message: Extract<Message, { kind: "reply" }>, route?: string): void {
     const pending = this.pending.get(message.id);
+    if (!pending || pending.route !== route) throw new Error("Unowned Inspector reply route");
     if ("error" in message.answer) {
       const error = new Error(`Inspector command refused: ${JSON.stringify(message.answer.error)}`);
       pending?.reject(error);
@@ -357,6 +380,7 @@ export class SafariObserver {
       return;
     }
     if (!pending) throw new Error("Unowned Inspector reply");
+    pending.reduced?.();
     pending.resolve(message.answer.result);
     this.pending.delete(message.id);
   }
@@ -400,31 +424,111 @@ export class SafariObserver {
     if (method === "Worker.workerCreated") {
       const worker = workerEvent(params);
       if (!ledger.created(worker.id, worker.url)) return;
-      const initialization = this.command("Worker.initialized", { workerId: worker.id });
-      this.initializations.add(initialization);
-      void initialization.then(
-        () => this.initializations.delete(initialization),
-        (error: unknown) => {
-          this.initializations.delete(initialization);
-          this.lose(error);
+      const enabling = this.binding.console
+        ? this.enableWorkerConsole(worker.id)
+        : Promise.resolve();
+      const initialization = this.command(
+        "Worker.initialized",
+        { workerId: worker.id },
+        false,
+        () => {
+          const state = this.workerConsole.get(worker.id);
+          if (state) state.initialized = ++this.order;
         },
       );
+      const startup = Promise.all([enabling, initialization]);
+      this.trackInitialization(startup);
     }
-    if (method === "Worker.workerTerminated")
-      ledger.terminated(terminatedWorker(params), "safari-worker-terminated");
+    if (method === "Worker.dispatchMessageFromWorker" && this.binding.console)
+      this.workerMessage(params);
+    if (method === "Console.messageAdded" && this.binding.console)
+      this.consoleEvent("page", params);
+    if (method === "Worker.workerTerminated") {
+      const id = terminatedWorker(params);
+      ledger.terminated(id, "safari-worker-terminated");
+      const state = this.workerConsole.get(id);
+      if (state) state.terminated = ++this.order;
+      if (state && (!state.forwarded || !state.replied || !state.initialized))
+        throw new Error(`Worker console enable pending at termination: ${JSON.stringify(state)}`);
+    }
     if (method === "Network.requestWillBeSent" || method === "Network.requestServedFromMemoryCache")
       this.request(params, method, sequence);
+  }
+  private trackInitialization(initialization: Promise<unknown>): void {
+    this.initializations.add(initialization);
+    void initialization.then(
+      () => this.initializations.delete(initialization),
+      (error: unknown) => {
+        this.initializations.delete(initialization);
+        this.lose(error);
+      },
+    );
+  }
+  private consoleEvent(context: string, params: unknown): void {
+    const message = consoleMessage(params);
+    if (consoleExpired(message)) throw new Error("Inspector console buffer expired");
+    if (consoleFailure(message)) this.ledger?.consoleMessage(context, message);
+  }
+  private workerMessage(params: Record<string, unknown>): void {
+    if (typeof params.workerId !== "string" || typeof params.message !== "string")
+      throw new Error("Invalid Inspector worker console envelope");
+    this.ledger?.workerIdentity(params.workerId);
+    const message = parseMessage(params.message);
+    if (message.kind === "reply") return this.reply(message, params.workerId);
+    if (message.method === "Console.messageAdded")
+      this.consoleEvent(params.workerId, message.params);
+  }
+  private enableWorkerConsole(id: string): Promise<unknown> {
+    const worker = this.ledger?.workerIdentity(id);
+    if (!worker) throw new Error("Missing console worker identity");
+    const state: WorkerConsole = { worker, enableWritten: ++this.order };
+    this.workerConsole.set(id, state);
+    const replyID = this.nextID++;
+    const pending: Pending = {
+      ...Promise.withResolvers<unknown>(),
+      route: id,
+      reduced: () => {
+        state.replied = ++this.order;
+      },
+    };
+    this.pending.set(replyID, pending);
+    const forwarded = this.command(
+      "Worker.sendMessageToWorker",
+      {
+        workerId: id,
+        message: JSON.stringify({ id: replyID, method: "Console.enable", params: {} }),
+      },
+      false,
+      () => {
+        state.forwarded = ++this.order;
+      },
+    );
+    return bounded(Promise.all([pending.promise, forwarded]), 3000, "Worker Console.enable").catch(
+      (error: unknown) => {
+        this.lose(error);
+        throw error;
+      },
+    );
+  }
+  private settleConsole(): Promise<void> {
+    if (!this.binding.console || !this.ledger)
+      return Promise.reject(new Error("Console observation not enabled"));
+    // This page reply cuts off the observed stream. It does not drain independent workers.
+    return (this.consoleCutoff ??= this.command("Console.enable", {}, false, () =>
+      this.ledger?.consoleState.freeze(),
+    ).then(() => {}));
   }
   private command(
     method: Command,
     params: Record<string, unknown>,
     cleanup = false,
+    reduced?: () => void,
   ): Promise<unknown> {
     return this.binding.consumers.invoke(async () => {
       this.check(cleanup);
       const id = this.nextID++,
         outer = this.nextID++;
-      const pending = Promise.withResolvers<unknown>();
+      const pending: Pending = { ...Promise.withResolvers<unknown>(), reduced };
       this.pending.set(id, pending);
       const forwarded = Promise.withResolvers<unknown>();
       this.pending.set(outer, forwarded);
@@ -467,6 +571,7 @@ export class SafariObserver {
       if (this.targetRetired) return;
       if (this.enabledNetwork) await this.command("Network.disable", {}, true);
       if (this.enabledWorker) await this.command("Worker.disable", {}, true);
+      if (this.enabledConsole) await this.command("Console.disable", {}, true);
       if (this.enabledPage) await this.command("Page.disable", {}, true);
       if (this.attached && !this.failed) await this.detach();
       if (this.failed) throw this.failed;

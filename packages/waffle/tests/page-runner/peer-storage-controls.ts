@@ -35,6 +35,7 @@ async function storageControl(
     inventory: () =>
       inventory.map((item) => ({
         ...item,
+        console: undefined,
         drive: async (host: Parameters<NonNullable<typeof item.drive>>[0]) => {
           await host.task(`const name='peer-foreign-'+window.__suiteConfiguration.run;
 await new Promise((resolve,reject)=>{const request=indexedDB.open(name,1); request.onsuccess=()=>{request.result.close();resolve();};request.onerror=()=>reject(request.error);});
