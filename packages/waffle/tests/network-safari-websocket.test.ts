@@ -63,7 +63,7 @@ for (const target of ["ios-safari", "webkit"] as const)
       });
       const config = await routes
         .find((route) => route.path === "/relay-config")!
-        .get({ signal: new AbortController().signal });
+        .get({ signal: new AbortController().signal, deadline: performance.now() + 1000 });
       assert.ok(config && typeof config === "object");
       assert.ok("endpoint" in config && typeof config.endpoint === "string");
       assert.ok("token" in config && typeof config.token === "string");
@@ -106,7 +106,7 @@ for (const target of ["ios-safari", "webkit"] as const)
       expect(adapter.budgets(1)).toEqual(networkBudgets());
       const idle = await routes
         .find((route) => route.path === "/relay-idle")!
-        .get({ signal: new AbortController().signal });
+        .get({ signal: new AbortController().signal, deadline: performance.now() + 1000 });
       expect(idle).toEqual({ sockets: 0, active: 0 });
     } finally {
       await client?.close();

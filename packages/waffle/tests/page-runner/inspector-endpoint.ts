@@ -2,9 +2,27 @@ import { execFile } from "node:child_process";
 import { readFile, lstat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
-import { parseReceipt, RECEIPT_MAX_BYTES } from "./inspector-endpoint-receipt.js";
+import {
+  parseReceipt,
+  RECEIPT_MAX_BYTES,
+  type UniqueEndpoint,
+} from "./inspector-endpoint-receipt.js";
 
 const discover = promisify(execFile);
+
+function sameSocketBinding(
+  left: UniqueEndpoint["socket"],
+  right: UniqueEndpoint["socket"],
+): boolean {
+  // Descriptor aliases may change between otherwise valid complete discoveries.
+  return (
+    left.path === right.path &&
+    left.addressLength === right.addressLength &&
+    left.node.uid === right.node.uid &&
+    left.node.dev === right.node.dev &&
+    left.node.ino === right.node.ino
+  );
+}
 
 /** Revalidate the supplied receipt using the explicitly supplied read-only native helper. */
 export async function inspectorEndpoint(
@@ -34,7 +52,7 @@ export async function inspectorEndpoint(
   if (
     current.bootSession !== endpoint.bootSession ||
     JSON.stringify(current.process) !== JSON.stringify(endpoint.process) ||
-    JSON.stringify(current.socket) !== JSON.stringify(endpoint.socket)
+    !sameSocketBinding(current.socket, endpoint.socket)
   )
     throw new Error("Inspector endpoint live process/socket binding changed after discovery");
   const node = await lstat(current.socket.path);

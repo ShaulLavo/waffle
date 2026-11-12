@@ -48,6 +48,7 @@ export async function retainedWorkerControl(
     inventory: () => [
       {
         ...item,
+        console: undefined,
         drive: async (host: Parameters<NonNullable<typeof item.drive>>[0]) => {
           const request = await host.script("return window.__suiteConfiguration.request;");
           assert.ok(record(request) && typeof request.name === "string");

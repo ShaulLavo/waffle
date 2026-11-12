@@ -8,6 +8,9 @@ export interface FixtureContext {
   readonly signal: AbortSignal;
 }
 export interface FixtureRequest {
+  /** Earliest original case/document/run performance.now() deadline. Completion is
+   * authorized before it; HTTP delivery can occur later. Synchronous work is cooperative. */
+  readonly deadline: number;
   readonly signal: AbortSignal;
 }
 export interface FixtureRoute {
@@ -45,6 +48,7 @@ export function reservedPath(path: string): boolean {
       "/favicon.ico",
       "/_waffle_worker_close",
       "/_waffle_observation_bootstrap",
+      "/_waffle_observation_arrival",
     ].includes(path) ||
     path === "/_waffle_owned" ||
     path.startsWith("/_waffle_owned/")
@@ -105,14 +109,20 @@ export class FixtureOwner {
   has(path: string): boolean {
     return this.routes.has(path);
   }
-  get(path: string, requestSignal: AbortSignal): Promise<string> {
+  get(path: string, request: FixtureRequest): Promise<string> {
     if (this.revoked) return Promise.reject(new Error("Fixture admission revoked"));
     const route = this.routes.get(path);
     if (!route) return Promise.reject(new Error("Unknown fixture route"));
-    const signal = AbortSignal.any([requestSignal, this.controller.signal]);
+    const signal = AbortSignal.any([
+      request.signal,
+      this.controller.signal,
+      AbortSignal.timeout(Math.max(0, Math.ceil(request.deadline - performance.now()))),
+    ]);
     const operation = Promise.resolve().then(async () => {
       signal.throwIfAborted();
-      const value = await route({ signal });
+      if (performance.now() >= request.deadline)
+        throw new DOMException("Fixture deadline expired", "TimeoutError");
+      const value = await route({ signal, deadline: request.deadline });
       signal.throwIfAborted();
       const encoded = jsonSnapshot(value);
       signal.throwIfAborted();

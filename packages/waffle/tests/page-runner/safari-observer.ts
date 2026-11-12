@@ -1,3 +1,5 @@
+import { consoleMessage, consoleFailure, consoleExpired } from "./safari-console.js";
+import type { WorkerConsoleOrder } from "./console-observation.js";
 import { randomUUID } from "node:crypto";
 import { bounded, type DriverObservationBinding } from "./driver.js";
 import {
@@ -17,8 +19,16 @@ import { record } from "./protocol.js";
 type Message =
   | { kind: "reply"; id: number; answer: Record<string, unknown> }
   | { kind: "event"; method: string; params: Record<string, unknown> };
-type Pending = ReturnType<typeof Promise.withResolvers<unknown>>;
+type ReplyRoute = { kind: "target" } | { kind: "page" } | { kind: "worker"; id: string };
+type Pending = ReturnType<typeof Promise.withResolvers<unknown>> & {
+  route: ReplyRoute;
+  reduced?: () => void;
+};
+type WorkerConsole = { -readonly [K in keyof WorkerConsoleOrder]: WorkerConsoleOrder[K] };
 type Command =
+  | "Console.enable"
+  | "Console.disable"
+  | "Worker.sendMessageToWorker"
   | "Page.enable"
   | "Page.disable"
   | "Worker.enable"
@@ -33,6 +43,11 @@ type MetadataWait = {
   pending: ReturnType<typeof Promise.withResolvers<InspectorEnvelope>>;
 };
 export const observationIdentityExpression = `JSON.stringify({url:location.href,marker:document.documentElement.getAttribute('data-waffle-observation')})`;
+
+function sameReplyRoute(expected: ReplyRoute, actual: ReplyRoute): boolean {
+  if (expected.kind === "worker") return actual.kind === "worker" && expected.id === actual.id;
+  return expected.kind === actual.kind;
+}
 
 function parseMessage(text: string): Message {
   if (Buffer.byteLength(text) > 1 << 20) throw new Error("Inspector JSON size bound exceeded");
@@ -79,7 +94,11 @@ export class SafariObserver {
   private enabledPage = false;
   private enabledWorker = false;
   private enabledNetwork = false;
+  private enabledConsole = false;
+  private order = 0;
+  private readonly workerConsole = new Map<string, WorkerConsole>();
   private ledger: BrowserObservation | undefined;
+  private consoleCutoff: Promise<void> | undefined;
   private closeWork: Promise<void> | undefined;
   private abort: (() => void) | undefined;
   constructor(private readonly binding: DriverObservationBinding) {}
@@ -197,6 +216,11 @@ export class SafariObserver {
       () => this.close(),
       undefined,
       () => this.navigationComplete(),
+      () => this.settleConsole(),
+      () =>
+        Object.freeze(
+          Array.from(this.workerConsole.values(), (entry) => Object.freeze({ ...entry })),
+        ),
     );
     this.ledger = ledger;
     this.abort = () => {
@@ -217,6 +241,10 @@ export class SafariObserver {
     });
     if (identity.result.value !== wanted)
       throw new Error("Inspector exact owned bootstrap identity mismatch");
+    if (this.binding.console) {
+      await this.command("Console.enable", {});
+      this.enabledConsole = true;
+    }
     // Page supplies Network frame/loader identities; acknowledge it before admitting requests.
     await this.command("Page.enable", {});
     this.enabledPage = true;
@@ -240,8 +268,32 @@ export class SafariObserver {
     }
     const selected = matches[0];
     if (matches.length !== 1 || !selected)
-      throw new Error("Exact owned bootstrap not uniquely listed");
+      throw new Error(
+        `Exact owned bootstrap not uniquely listed: ${this.listingCounts(matches.length, pages)}`,
+      );
     return selected;
+  }
+  private listingCounts(matches: number, rows: number): string {
+    const applications = Array.from(this.listings.values(), (listing, index) => {
+      const values = Object.values(listing);
+      const pageRows = values.filter(
+        (row) =>
+          isDict(row) &&
+          ["WIRTypeWeb", "WIRTypeWebPage", "WIRTypePage"].includes(String(row.WIRTypeKey)),
+      ).length;
+      const owned = values.filter(
+        (row) => isDict(row) && row.WIRURLKey === this.binding.bootstrapURL,
+      ).length;
+      return { application: index + 1, rows: values.length, pageRows, matches: owned };
+    });
+    return JSON.stringify({
+      matches,
+      applications: this.applications.size,
+      listings: this.listings.size,
+      rows,
+      pageRows: applications.reduce((sum, application) => sum + application.pageRows, 0),
+      perApplication: applications,
+    });
   }
   private selectRow(application: string, row: unknown, matches: Selection[]): void {
     if (!isDict(row) || row.WIRURLKey !== this.binding.bootstrapURL) return;
@@ -314,7 +366,7 @@ export class SafariObserver {
     )
       throw new Error("Unexpected chunked Inspector data");
     const message = parseMessage(messageText(args.WIRMessageDataKey));
-    if (message.kind === "reply") return this.reply(message);
+    if (message.kind === "reply") return this.reply(message, { kind: "target" });
     if (message.method === "Target.targetCreated") return this.createdTarget(message.params);
     if (message.method === "Target.targetDestroyed") {
       if (message.params.targetId !== this.target || !this.ledger?.closing)
@@ -331,7 +383,7 @@ export class SafariObserver {
     if (message.params.targetId !== this.target || typeof message.params.message !== "string")
       throw new Error("Inspector target lifetime changed");
     const inner = parseMessage(message.params.message);
-    if (inner.kind === "reply") return this.reply(inner);
+    if (inner.kind === "reply") return this.reply(inner, { kind: "page" });
     this.event(inner.method, inner.params, event.sequence);
   }
   private createdTarget(params: Record<string, unknown>): void {
@@ -348,15 +400,17 @@ export class SafariObserver {
     if (this.target && this.target !== info.targetId) throw new Error("Inspector target replaced");
     this.target = info.targetId;
   }
-  private reply(message: Extract<Message, { kind: "reply" }>): void {
+  private reply(message: Extract<Message, { kind: "reply" }>, route: ReplyRoute): void {
     const pending = this.pending.get(message.id);
+    if (!pending || !sameReplyRoute(pending.route, route))
+      throw new Error("Unowned Inspector reply route");
     if ("error" in message.answer) {
       const error = new Error(`Inspector command refused: ${JSON.stringify(message.answer.error)}`);
-      pending?.reject(error);
+      pending.reject(error);
       this.lose(error);
       return;
     }
-    if (!pending) throw new Error("Unowned Inspector reply");
+    pending.reduced?.();
     pending.resolve(message.answer.result);
     this.pending.delete(message.id);
   }
@@ -400,33 +454,135 @@ export class SafariObserver {
     if (method === "Worker.workerCreated") {
       const worker = workerEvent(params);
       if (!ledger.created(worker.id, worker.url)) return;
-      const initialization = this.command("Worker.initialized", { workerId: worker.id });
-      this.initializations.add(initialization);
-      void initialization.then(
-        () => this.initializations.delete(initialization),
-        (error: unknown) => {
-          this.initializations.delete(initialization);
-          this.lose(error);
-        },
+      const enabling = this.binding.console
+        ? this.enableWorkerConsole(worker.id)
+        : Promise.resolve();
+      const initialization = this.command(
+        "Worker.initialized",
+        { workerId: worker.id },
+        false,
+        () => this.workerOrder(worker.id, "initialized"),
+        () => this.workerOrder(worker.id, "initializationOuter"),
       );
+      const startup = Promise.all([enabling, initialization]);
+      this.trackInitialization(startup);
     }
-    if (method === "Worker.workerTerminated")
-      ledger.terminated(terminatedWorker(params), "safari-worker-terminated");
+    if (method === "Worker.dispatchMessageFromWorker" && this.binding.console)
+      this.workerMessage(params);
+    if (method === "Console.messageAdded" && this.binding.console)
+      this.consoleEvent("page", params);
+    if (method === "Worker.workerTerminated") {
+      const id = terminatedWorker(params);
+      ledger.terminated(id, "safari-worker-terminated");
+      const state = this.workerConsole.get(id);
+      if (state) state.terminated = ++this.order;
+      if (
+        state &&
+        (!state.forwarded ||
+          !state.forwardingOuter ||
+          !state.replied ||
+          !state.initialized ||
+          !state.initializationOuter)
+      )
+        throw new Error(`Worker console enable pending at termination: ${JSON.stringify(state)}`);
+    }
     if (method === "Network.requestWillBeSent" || method === "Network.requestServedFromMemoryCache")
       this.request(params, method, sequence);
+  }
+  private workerOrder(id: string, reply: "initialized" | "initializationOuter"): void {
+    const state = this.workerConsole.get(id);
+    if (state) state[reply] = ++this.order;
+  }
+  private trackInitialization(initialization: Promise<unknown>): void {
+    this.initializations.add(initialization);
+    void initialization.then(
+      () => this.initializations.delete(initialization),
+      (error: unknown) => {
+        this.initializations.delete(initialization);
+        this.lose(error);
+      },
+    );
+  }
+  private consoleEvent(context: string, params: unknown): void {
+    const message = consoleMessage(params);
+    if (consoleExpired(message)) throw new Error("Inspector console buffer expired");
+    if (consoleFailure(message, context === "page")) this.ledger?.consoleMessage(context, message);
+  }
+  private workerMessage(params: Record<string, unknown>): void {
+    if (typeof params.workerId !== "string" || typeof params.message !== "string")
+      throw new Error("Invalid Inspector worker console envelope");
+    this.ledger?.workerIdentity(params.workerId);
+    const message = parseMessage(params.message);
+    if (message.kind === "reply")
+      return this.reply(message, { kind: "worker", id: params.workerId });
+    if (message.method === "Console.messageAdded")
+      this.consoleEvent(params.workerId, message.params);
+  }
+  private enableWorkerConsole(id: string): Promise<unknown> {
+    const worker = this.ledger?.workerIdentity(id);
+    if (!worker) throw new Error("Missing console worker identity");
+    const state: WorkerConsole = { worker, enableWritten: ++this.order };
+    this.workerConsole.set(id, state);
+    const replyID = this.nextID++;
+    const pending: Pending = {
+      ...Promise.withResolvers<unknown>(),
+      route: { kind: "worker", id },
+      reduced: () => {
+        state.replied = ++this.order;
+      },
+    };
+    this.pending.set(replyID, pending);
+    const forwarded = this.command(
+      "Worker.sendMessageToWorker",
+      {
+        workerId: id,
+        message: JSON.stringify({ id: replyID, method: "Console.enable", params: {} }),
+      },
+      false,
+      () => {
+        state.forwarded = ++this.order;
+      },
+      () => {
+        state.forwardingOuter = ++this.order;
+      },
+    );
+    return bounded(Promise.all([pending.promise, forwarded]), 3000, "Worker Console.enable").catch(
+      (error: unknown) => {
+        this.lose(error);
+        throw error;
+      },
+    );
+  }
+  private settleConsole(): Promise<void> {
+    if (!this.binding.console || !this.ledger)
+      return Promise.reject(new Error("Console observation not enabled"));
+    // This page reply cuts off the observed stream. It does not drain independent workers.
+    return (this.consoleCutoff ??= this.command("Console.enable", {}, false, () =>
+      this.ledger?.consoleState.freeze(),
+    ).then(() => {}));
   }
   private command(
     method: Command,
     params: Record<string, unknown>,
     cleanup = false,
+    reduced?: () => void,
+    outerReduced?: () => void,
   ): Promise<unknown> {
     return this.binding.consumers.invoke(async () => {
       this.check(cleanup);
       const id = this.nextID++,
         outer = this.nextID++;
-      const pending = Promise.withResolvers<unknown>();
+      const pending: Pending = {
+        ...Promise.withResolvers<unknown>(),
+        route: { kind: "page" },
+        reduced,
+      };
       this.pending.set(id, pending);
-      const forwarded = Promise.withResolvers<unknown>();
+      const forwarded: Pending = {
+        ...Promise.withResolvers<unknown>(),
+        route: { kind: "target" },
+        reduced: outerReduced,
+      };
       this.pending.set(outer, forwarded);
       const data = JSON.stringify({
         id: outer,
@@ -467,6 +623,7 @@ export class SafariObserver {
       if (this.targetRetired) return;
       if (this.enabledNetwork) await this.command("Network.disable", {}, true);
       if (this.enabledWorker) await this.command("Worker.disable", {}, true);
+      if (this.enabledConsole) await this.command("Console.disable", {}, true);
       if (this.enabledPage) await this.command("Page.disable", {}, true);
       if (this.attached && !this.failed) await this.detach();
       if (this.failed) throw this.failed;
