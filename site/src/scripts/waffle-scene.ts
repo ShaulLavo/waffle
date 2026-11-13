@@ -172,9 +172,13 @@ import {
         color: hex, gradientMap: gradMap, emissive: o.e != null ? o.e : 0x000000, emissiveIntensity: o.ei != null ? o.ei : 1,
         transparent: !!o.t, opacity: o.o != null ? o.o : 1, map: o.map || null, side: o.side || FrontSide
       }));
+      // Plain colours never change at runtime, so `bake` may merge them across colours.
+      m.userData.plain = o.e == null && !o.t && !o.map && !o.uniq && !o.side;
       MC[key] = m;
       return m;
     }
+    // One material for every baked plain part; each part's colour moves into its vertices.
+    var plainMat = patch(new MeshToonMaterial({ color: 0xffffff, gradientMap: gradMap, vertexColors: true }));
     function basic(hex, o) {
       o = o || {};
       var m = new MeshBasicMaterial({ color: hex, transparent: o.t !== false, opacity: o.o != null ? o.o : 1, map: o.map || null, depthWrite: o.dw !== false, side: o.side || FrontSide });
@@ -222,6 +226,8 @@ import {
     function at(parent, m, x, y, z, ry) { m.position.set(x || 0, y || 0, z || 0); if (ry) m.rotation.y = ry; parent.add(m); return m; }
     function G() { return new Group(); }
     function dyn(o) { o.userData.dyn = true; return o; }
+    // A moving part that moves as one rigid piece: `bake` merges what is inside it.
+    function solid(o) { o.userData.dyn = true; o.userData.solid = true; return o; }
 
     // Ink shells push a back-face copy out along the normals. Flat-shaded edges (box corners,
     // cylinder rims, gear teeth) have one normal per face, so the copy splits apart and shows
@@ -258,22 +264,25 @@ import {
       return h;
     }
 
-    // merge static meshes of a building by material to save draw calls
+    // Merge the static meshes of a building to save draw calls: plain colours all into one mesh
+    // with vertex colours, other materials by material. Each draw is paid again for its ink shell
+    // and the shadow map, and the per-draw cost is what held phones under frame rate.
     function bake(root) {
       root.updateMatrixWorld(true);
       var inv = new Matrix4().copy(root.matrixWorld).invert();
-      var buckets = {}, victims = [];
+      var buckets = {}, victims = [], solids = [];
       (function walk(o, isDyn) {
-        var d = isDyn || !!o.userData.dyn;
+        if (o !== root && o.userData.solid) { solids.push(o); return; }
+        var d = isDyn || (o !== root && !!o.userData.dyn);
         if (o !== root && o.isMesh && !d && !o.material.map && !o.material.transparent && o.geometry.attributes.normal) {
-          var key = o.material.uuid;
-          (buckets[key] = buckets[key] || { mat: o.material, parts: [] }).parts.push(o);
+          var plain = !!o.material.userData.plain, key = plain ? 'plain' : o.material.uuid;
+          (buckets[key] = buckets[key] || { mat: plain ? plainMat : o.material, plain: plain, parts: [] }).parts.push(o);
           victims.push(o);
         }
         for (var i = 0; i < o.children.length; i++) walk(o.children[i], d);
       })(root, false);
       Object.keys(buckets).forEach(function (k) {
-        var bk = buckets[k], posArr = [], norArr = [], inkArr = [], m4 = new Matrix4(), n3 = new Matrix3();
+        var bk = buckets[k], posArr = [], norArr = [], inkArr = [], colArr = [], m4 = new Matrix4(), n3 = new Matrix3();
         bk.parts.forEach(function (o) {
           var src = o.geometry, idx = src.index, g = idx ? src.toNonIndexed() : src;
           m4.multiplyMatrices(inv, o.matrixWorld); n3.getNormalMatrix(m4);
@@ -286,16 +295,19 @@ import {
             var s3 = (idx ? idx.getX(i) : i) * 3;
             v.set(dirs[s3], dirs[s3 + 1], dirs[s3 + 2]).applyMatrix3(n3).normalize().multiplyScalar(w); inkArr.push(v.x, v.y, v.z);
           }
+          if (bk.plain) { var c = o.material.color; for (var j = 0; j < p.count; j++) colArr.push(c.r, c.g, c.b); }
           if (g !== src) g.dispose();
         });
         var mg = new BufferGeometry();
         mg.setAttribute('position', new Float32BufferAttribute(posArr, 3));
         mg.setAttribute('normal', new Float32BufferAttribute(norArr, 3));
         mg.setAttribute('ink', new Float32BufferAttribute(inkArr, 3));
+        if (bk.plain) mg.setAttribute('color', new Float32BufferAttribute(colArr, 3));
         mg.computeBoundingSphere(); disposables.push(mg);
         root.add(mesh(mg, bk.mat));
       });
       victims.forEach(function (o) { o.parent.remove(o); });
+      solids.forEach(bake);
     }
 
     // ink shell: a back-face copy pushed out along the normals
@@ -768,14 +780,14 @@ import {
       at(g, rb(1.24, 0.36, 0.08, board, 0.04), 0, 0.5, 0.46);
       var sign = signPlane('ARCADE', 1.08, 0.26, '#34275A', '#FFE14D', { scale: 0.7, outline: '#FF4FA0' }); sign.position.set(0, 0.68, 0.505); g.add(sign);
       var bulbA = toon(0xFFF2A8, { e: 0xFFE14D, ei: 0.9, uniq: true }), bulbB = toon(0xFFF2A8, { e: 0xFFE14D, ei: 0.1, uniq: true });
-      for (var i = 0; i < 14; i++) { var b = sph(0.028, i % 2 ? bulbA : bulbB); b.userData.dyn = true; at(g, b, -0.58 + i / 13 * 1.16, 0.86, 0.51); }
-      for (var j = 0; j < 14; j++) { var b2 = sph(0.028, j % 2 ? bulbB : bulbA); b2.userData.dyn = true; at(g, b2, -0.58 + j / 13 * 1.16, 0.53, 0.51); }
+      for (var i = 0; i < 14; i++) { var b = sph(0.028, i % 2 ? bulbA : bulbB); at(g, b, -0.58 + i / 13 * 1.16, 0.86, 0.51); }
+      for (var j = 0; j < 14; j++) { var b2 = sph(0.028, j % 2 ? bulbB : bulbA); at(g, b2, -0.58 + j / 13 * 1.16, 0.53, 0.51); }
       var neon = toon(0x5CF2FF, { e: 0x5CF2FF, ei: 0.7 });
       at(g, rb(0.44, 0.44, 0.04, neon, 0.03), 0, 0.06, 0.44);
       at(g, rb(0.36, 0.38, 0.05, C.dark, 0.02), 0, 0.08, 0.455);
       [-0.5, 0.5].forEach(function (x) { var w = cyl(0.1, 0.1, 0.04, 20, C.trim); w.rotation.x = Math.PI / 2; at(g, w, x, 0.3, 0.44); var w2 = cyl(0.075, 0.075, 0.05, 20, toon(0xFF9AD0, { e: 0xFF7DB5, ei: 0.4 })); w2.rotation.x = Math.PI / 2; at(g, w2, x, 0.3, 0.445); });
       at(g, rb(0.56, 0.14, 0.46, C.dark, 0.05), -0.18, 1.02, -0.28);
-      var stick = dyn(G()); stick.position.set(-0.18, 1.14, -0.28); g.add(stick);
+      var stick = solid(G()); stick.position.set(-0.18, 1.14, -0.28); g.add(stick);
       at(stick, cyl(0.035, 0.035, 0.42, 10, C.metal), 0, 0, 0);
       at(stick, sph(0.14, toon(0xFF4A4A)), 0, 0.46, 0);
       at(g, cyl(0.085, 0.085, 0.07, 18, toon(0x5CF2FF)), 0.32, 1.02, -0.12);
@@ -869,12 +881,12 @@ import {
       at(g, rb(1.12, 0.24, 0.06, C.cream, 0.03), 0, 0.68, 0.67);
       var sign = signPlane('NOW SHOWING', 1.04, 0.2, '#FFF6E0', '#C2362C', { scale: 0.62 }); sign.position.set(0, 0.8, 0.703); g.add(sign);
       var bA = toon(0xFFF2A8, { e: 0xFFE14D, ei: 0.9, uniq: true }), bB = toon(0xFFF2A8, { e: 0xFFE14D, ei: 0.1, uniq: true });
-      for (var i = 0; i < 10; i++) { var b = sph(0.026, i % 2 ? bA : bB); b.userData.dyn = true; at(g, b, -0.6 + i * (1.2 / 9), 0.63, 0.77); }
+      for (var i = 0; i < 10; i++) { var b = sph(0.026, i % 2 ? bA : bB); at(g, b, -0.6 + i * (1.2 / 9), 0.63, 0.77); }
       at(g, rb(0.48, 0.5, 0.05, C.gold, 0.02), 0, 0.08, 0.42);
       at(g, rb(0.4, 0.46, 0.05, C.dark, 0.02), 0, 0.08, 0.436);
       [[0x7FB6FF, -0.48], [0x8EE3C4, 0.48]].forEach(function (q) { at(g, rb(0.26, 0.36, 0.04, C.trim, 0.015), q[1], 0.14, 0.42); at(g, rb(0.2, 0.3, 0.04, toon(q[0]), 0.01), q[1], 0.17, 0.432); });
       at(g, rb(0.12, 0.34, 0.12, C.dark, 0.03), 0, 1.17, -0.32);
-      var reel = dyn(G()); reel.position.set(0, 1.72, -0.28); g.add(reel);
+      var reel = solid(G()); reel.position.set(0, 1.72, -0.28); g.add(reel);
       var disc = cyl(0.42, 0.42, 0.1, 30, toon(0x3A3550)); disc.rotation.x = Math.PI / 2; disc.position.z = -0.05; reel.add(disc);
       for (var h = 0; h < 5; h++) { var a = h / 5 * Math.PI * 2; var ho = cyl(0.09, 0.09, 0.11, 16, C.metal); ho.rotation.x = Math.PI / 2; ho.position.set(Math.cos(a) * 0.23, Math.sin(a) * 0.23, -0.055); reel.add(ho); }
       var hub = cyl(0.06, 0.06, 0.13, 12, C.gold); hub.rotation.x = Math.PI / 2; hub.position.z = -0.065; reel.add(hub);
@@ -997,7 +1009,7 @@ import {
       at(f, rb(0.21, 0.02, 0.22, C.dark, 0.008), 0, 0.36, 0.03);
       [[-0.1, -0.06], [0.1, -0.06], [-0.1, 0.12], [0.1, 0.12]].forEach(function (q) { var w = cyl(0.045, 0.045, 0.04, 14, C.dark); w.rotation.z = Math.PI / 2; at(f, w, q[0] + (q[0] > 0 ? -0.02 : 0.02), 0.045, q[1]); });
       [-0.06, 0.06].forEach(function (x) { at(f, rb(0.02, 0.36, 0.02, C.metal, 0.006), x, 0.03, -0.12); });
-      var forks = dyn(G()); forks.position.set(0, 0.03, 0); f.add(forks);
+      var forks = solid(G()); forks.position.set(0, 0.03, 0); f.add(forks);
       at(forks, rb(0.16, 0.08, 0.015, C.dark, 0.005), 0, 0, -0.135);
       [-0.045, 0.045].forEach(function (x) { at(forks, rb(0.022, 0.012, 0.16, C.metal, 0.004), x, 0, -0.21); });
       at(forks, rb(0.18, 0.03, 0.17, C.wood, 0.008), 0, 0.012, -0.215);
@@ -1091,7 +1103,7 @@ import {
     function mkBerries() {
       var g = G(), bm = toon(0x4656C4), bd = toon(0x26306E), bs = [], hop = 0;
       [[-0.4, 0.24, -0.3], [0.32, 0.24, -0.36], [0.0, 0.24, 0.16], [-0.1, 0.64, -0.14], [0.4, 0.24, 0.3]].forEach(function (q, i) {
-        var b = dyn(G()); b.position.set(q[0], q[1], q[2]); b.userData.y0 = q[1]; bs.push(b);
+        var b = solid(G()); b.position.set(q[0], q[1], q[2]); b.userData.y0 = q[1]; bs.push(b);
         at(b, sph(0.26, bm), 0, 0, 0);
         at(b, cyl(0.08, 0.055, 0.04, 5, bd), 0, 0.235, 0);
         b.rotation.set(hash(i, 1) * 0.6, hash(i, 2) * 3, hash(i, 4) * 0.5);
@@ -1103,7 +1115,7 @@ import {
       var g = G();
       var pts = [[0.01, 0], [0.12, 0.06], [0.28, 0.3], [0.42, 0.66], [0.43, 0.86], [0.34, 1.0], [0.18, 1.07], [0.01, 1.08]].map(function (q) { return new Vector2(q[0], q[1]); });
       var lg = new LatheGeometry(pts, 24); lg.computeVertexNormals(); disposables.push(lg);
-      var berry = dyn(G()); berry.position.set(0, 0.16, -0.05); berry.rotation.set(0.3, 0.4, -0.5); g.add(berry); var spin = 0;
+      var berry = solid(G()); berry.position.set(0, 0.16, -0.05); berry.rotation.set(0.3, 0.4, -0.5); g.add(berry); var spin = 0;
       at(berry, mesh(lg, toon(0xF2405A)), 0, 0, 0);
       var seedM = toon(0xFFE58A);
       for (var i = 0; i < 22; i++) {
