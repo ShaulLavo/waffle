@@ -52,8 +52,12 @@ test("service failure settles every exposed open before a guest observes revocat
   const gpu = guest.imports.runtime_gpu!;
   let interleaves = 0;
   try {
-    expect(gpu.open!(0, 0)).toBe(0);
-    expect(gpu.open!(0, 4)).toBe(0);
+    const open = gpu.open,
+      completions = gpu.completions;
+    if (typeof open !== "function" || typeof completions !== "function")
+      throw new Error("Missing graphics imports");
+    expect(open(0, 0)).toBe(0);
+    expect(open(0, 4)).toBe(0);
     await task();
     expect(worker.onerror).toBeFunction();
     expect(opened).toHaveLength(2);
@@ -70,8 +74,8 @@ test("service failure settles every exposed open before a guest observes revocat
         if (index !== 0 || value !== 1) return result;
         interleaves++;
         // Run the real guest immediately after the page's real revocation store.
-        expect(gpu.completions!(1, 64, 64, 0n, 4)).toBe(-64);
-        expect(gpu.completions!(2, 64, 64, 0n, 4)).toBe(-64);
+        expect(completions(1, 64, 64, 0n, 4)).toBe(-64);
+        expect(completions(2, 64, 64, 0n, 4)).toBe(-64);
         return result;
       },
     });
