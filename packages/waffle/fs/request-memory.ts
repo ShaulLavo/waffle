@@ -379,7 +379,7 @@ export function createRequestArenaData(allocate: RequestArenaAllocator): SharedA
     return allocate(0, FALLBACK_REQUEST_CONNECTION_BYTES);
   }
 }
-/** Trusted host owner. Retained arena backing, including idle arenas, stays charged. */
+/** Trusted host owner. Releasing pool references never refunds backing charges. */
 export class FilesystemRequestPool {
   private readonly arenas: Arena[] = [];
   private readonly receipts: SharedArrayBuffer[] = [];
@@ -409,30 +409,9 @@ export class FilesystemRequestPool {
     headroom: Headroom | null = null,
   ): FilesystemRequestMemory {
     const generation = nextGeneration(this.budget);
-    let arena: Arena | undefined;
-    for (let i = 0; i < this.arenas.length; i++) {
-      const candidate = this.arenas[i]!;
-      if (atomicsLoad(new Int32ArrayConstructor(candidate.revocation), 0) !== 2) continue;
-      if (!get(arenaMemory(candidate, this.budget), C.retired)) continue;
-      // The old client counts itself in while it publishes a request into this arena. A reaped
-      // agent can still be inside that section, mid-copy. Only an observed zero frees the arena:
-      // the count is never reset, and neither a timeout nor a terminate return stands in for
-      // it. Until then the arena stays here, charged, and a later take looks again.
-      if (get(arenaMemory(candidate, this.budget), C.sections)) continue;
-      if (get(arenaMemory(candidate, this.budget), C.retirementError)) {
-        this.strand(candidate);
-        continue;
-      }
-      arena = candidate;
-      break;
-    }
+    let arena = this.sweep();
     if (!arena) arena = this.create(revocation, construction, headroom);
     else {
-      const previous = arenaMemory(arena, this.budget);
-      update(previous, C.closed, () => 2);
-      const abandoned = atomicsExchange(control(previous), C.count, 0n);
-      atomicsAdd(new Int32ArrayConstructor(this.budget), B.pending, -Number(abandoned & MASK));
-      atomicsStore(control(previous), C.bytes, 0n);
       typedArrayFill(new Uint8ArrayConstructor(arena.data), 0);
       arena.control = this.createControl();
     }
@@ -448,6 +427,45 @@ export class FilesystemRequestPool {
       data: arena.data,
       generation,
     });
+  }
+  /** Keep one safe arena for this take; release excess references without refunding backing.
+   * Retirement is published remotely, so a final idle burst waits for the next take to sweep. */
+  private sweep(): Arena | undefined {
+    let reusable: Arena | undefined;
+    let retained = 0;
+    for (let i = 0; i < this.arenas.length; i++) {
+      const candidate = this.arenas[i]!;
+      if (!this.reusable(candidate)) {
+        this.arenas[retained++] = candidate;
+        continue;
+      }
+      this.settle(candidate);
+      if (reusable) continue;
+      reusable = candidate;
+      this.arenas[retained++] = candidate;
+    }
+    this.arenas.length = retained;
+    return reusable;
+  }
+  private reusable(arena: Arena): boolean {
+    if (arena.stranded) return false;
+    if (atomicsLoad(new Int32ArrayConstructor(arena.revocation), 0) !== 2) return false;
+    const memory = arenaMemory(arena, this.budget);
+    if (!get(memory, C.retired)) return false;
+    // A reaped client can still be mid-copy. Neither a timeout nor terminate return replaces
+    // observed zero sections. Keep the count intact and reconsider on a later take.
+    if (get(memory, C.sections)) return false;
+    if (!get(memory, C.retirementError)) return true;
+    this.strand(arena);
+    return false;
+  }
+  private settle(arena: Arena): void {
+    const previous = arenaMemory(arena, this.budget);
+    update(previous, C.closed, () => 2);
+    const abandoned = atomicsExchange(control(previous), C.count, 0n);
+    atomicsAdd(new Int32ArrayConstructor(this.budget), B.pending, -Number(abandoned & MASK));
+    atomicsStore(control(previous), C.bytes, 0n);
+    settlePrivateBytes(previous);
   }
   private strand(arena: Arena): void {
     if (arena.stranded) return;

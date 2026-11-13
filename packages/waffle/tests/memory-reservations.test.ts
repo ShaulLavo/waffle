@@ -137,6 +137,47 @@ test("abort after actual request pool reuse retains the arena charge", () => {
   expect(runtime.snapshot().reservedBytes).toBe(BOUNDED_ARENA_BYTES);
 });
 
+test("request pool release waits for collection receipts and never refunds stranded debt", () => {
+  const registered: { target: WeakRef<object>; id: number }[] = [];
+  let collect: (id: number) => void = () => {};
+  const platform = bounded();
+  const runtime = new SharedMemoryLedger(platform, allocations, (receive) => {
+    collect = receive;
+    return {
+      register: (target, id) => registered.push({ target: new WeakRef(target), id }),
+    };
+  }).openRuntime(platform);
+  const pool = new FilesystemRequestPool(createRequestBudget(), undefined, runtime.arenas);
+  const peers = Array.from({ length: 4 }, () => {
+    const revocation = new SharedArrayBuffer(4);
+    return { revocation, memory: pool.take(revocation) };
+  });
+  for (let index = 0; index < peers.length; index++) {
+    const peer = peers[index]!;
+    retireRequestMemory(peer.memory, index === 3 ? 29 : 0);
+    Atomics.store(new Int32Array(peer.revocation), 0, 2);
+  }
+  const reused = pool.take(new SharedArrayBuffer(4));
+  expect(reused.data).toBe(peers[0]!.memory.data);
+  expect(Reflect.get(pool, "arenas")).toHaveLength(2);
+  expect(runtime.snapshot()).toMatchObject({
+    reservedBytes: 4 * BOUNDED_ARENA_BYTES,
+    debtBytes: BOUNDED_ARENA_BYTES,
+  });
+  expect(registered).toHaveLength(4);
+  // Explicit receipt delivery tests accounting without claiming these test-held aliases were GC'd.
+  collect(registered[1]!.id);
+  collect(registered[2]!.id);
+  expect(runtime.snapshot().reservedBytes).toBe(2 * BOUNDED_ARENA_BYTES);
+  collect(registered[3]!.id);
+  collect(registered[3]!.id);
+  expect(runtime.snapshot()).toMatchObject({
+    reservedBytes: 2 * BOUNDED_ARENA_BYTES,
+    debtBytes: BOUNDED_ARENA_BYTES,
+  });
+  expect(registered[0]!.target.deref()).toBe(reused.data);
+});
+
 test("exact group shapes are distinct and all addressable dirty pages are scrubbed on reuse", () => {
   const runtime = new SharedMemoryLedger(bounded()).openRuntime(bounded());
   const first = runtime.groups.create({ kind: "fixed", pages: pages(4) }, null);
