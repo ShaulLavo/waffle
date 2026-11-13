@@ -144,14 +144,14 @@ class ControlDriver extends PlaywrightDriver {
   }
   private async verifyCleanup(signal: AbortSignal): Promise<void> {
     await super.navigate(this.origin + "/foreign.html", signal);
-    const value = await this.script(
-      `return (async () => { const regs = await navigator.serviceWorker.getRegistrations(); const root = regs.find(r=>r.scope===location.origin+'/'); const owned = regs.find(r=>r.scope===${JSON.stringify(this.scope)}); const ch = new MessageChannel(); const id = new Promise(r=>ch.port1.onmessage=e=>r(e.data)); root.active.postMessage('id',[ch.port2]); const rootIdentity = await id; let foreignIdentity = null; if(owned?.active) { const other = new MessageChannel(); const value = new Promise(resolve=>other.port1.onmessage=e=>resolve(e.data)); owned.active.postMessage('id',[other.port2]); foreignIdentity = await value; } const result = {root:rootIdentity, foreignIdentity, current:owned?.active?.scriptURL ?? null}; for(const r of regs) await r.unregister(); return result; })()`,
-      signal,
-    );
-    assert(record(value) && value.root === this.rootIdentity, "Foreign root active Worker changed");
     const foreign = ["collision-before", "collision-after", "replacement", "in-place"].includes(
       this.mode,
     );
+    const value = await this.script(
+      `return (async () => { const regs = await navigator.serviceWorker.getRegistrations(); const root = regs.find(r=>r.scope===location.origin+'/'); const owned = regs.find(r=>r.scope===${JSON.stringify(this.scope)}); const ch = new MessageChannel(); const id = new Promise(r=>ch.port1.onmessage=e=>r(e.data)); root.active.postMessage('id',[ch.port2]); const rootIdentity = await id; let foreignIdentity = null; if(${foreign} && owned?.active) { const other = new MessageChannel(); const value = new Promise(resolve=>other.port1.onmessage=e=>resolve(e.data)); owned.active.postMessage('id',[other.port2]); foreignIdentity = await value; } const result = {root:rootIdentity, foreignIdentity, current:owned?.active?.scriptURL ?? null}; for(const r of regs) await r.unregister(); return result; })()`,
+      signal,
+    );
+    assert(record(value) && value.root === this.rootIdentity, "Foreign root active Worker changed");
     const unknownOperation = this.mode === "in-flight-loss";
     assert(
       foreign
