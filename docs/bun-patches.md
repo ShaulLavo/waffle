@@ -4,6 +4,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 
 | Source                                                                                                                                      | Class                 | Revision and local change                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/page-runner/continuity-lock-diagnostic.ts`, `continuity-lock-control-page.ts` | Original adapter | Waffle page-only Web Locks diagnostic and local controls. No upstream implementation copied. See [Page continuity lock observation](#page-continuity-lock-observation). |
 | `tests/page-runner/{inspector-plist,inspector-stream,safari-observer,inspector-endpoint,inspector-endpoint-receipt,browser-observation,host-drive}.ts` | Original adapter      | Original owned-page diagnostic codec and protocol-reference adapters. See [Native page observation sources](#native-page-observation-sources).                                                                                                                                                                                                                                                                               |
 | `tests/page-runner/{console-observation,safari-console,playwright-observer}.ts`                                                             | Original adapter      | Original ordinary-page console verdict and browser event adapters. See [Ordinary page console observation](#ordinary-page-console-observation).                                                                                                                                                                                                                                                                              |
 | `core/`, `fs/`, `proc/`, `interrupt/`                                                                                                       | Original adapter      | Browser/WASI runtime services developed in bun-wasm through the frozen extraction revision. The current tree is TypeScript source; `dist/` is generated during `prepare` and is never tracked.                                                                                                                                                                                                                               |
@@ -672,6 +673,27 @@ The relay image publish job requires the hosted Ubuntu runner's existing Buildx
 instead of installing another moving release. GNU FTP, curl.se, codeload, npm
 registry traffic, and GitHub artifact transfers are outside the release endpoint
 change.
+
+## Page continuity lock observation
+
+The page bootstrap captures the existing manager methods before importing the cross-tab fixture.
+The observer records page-owned continuity requests and candidates for their existing release-time
+queries. It makes no request or query of its own and never reads query snapshots. The evaluator's
+existing diagnostic reply carries the bounded scalar records. Query association uses evaluator job
+identity, not a native request identifier; overlapping jobs or multiple candidate requests remain
+ambiguous. It cannot identify a holder or prove physical Worker survival.
+
+The captured methods receive their original receivers and arguments, except for the transparent
+callback wrapper. That wrapper preserves the callback receiver, arguments, return value and thrown
+value. Request and query callers receive the original Promise. Nonthrowing Promise observers add
+microtasks and mark observed rejections handled, so this diagnostic is not scheduling-neutral.
+It does not change the caller's settlement. Arbitrary error text is omitted because it can contain
+workspace tokens; only known error names, the thrown value's type and finite errno survive.
+Records contain no lock name, Lock object, callback, runtime capability or query snapshot.
+
+The Chromium control uses the actual guard and untouched exclusive helper. Injected manager
+failures distinguish null acquisition, synchronous throws, pre-grant rejection and granted lifetime
+or query failure. These controls validate the observer, not the cause of any native Safari failure.
 
 ## Native page observation sources
 

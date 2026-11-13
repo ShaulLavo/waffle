@@ -1,4 +1,5 @@
 import { encodeCrossTabValue, decodeCrossTabValue } from "./cross-tab-value.js";
+import { continuityDiagnosticSnapshot } from "./continuity-lock-diagnostic.js";
 import {
   BoundedTrace,
   collectDiagnostic,
@@ -109,6 +110,7 @@ export function crossTabEvaluator() {
       total: evaluation.total,
       totals: evaluation.totals,
       bridgeTotal: bridge?.total ?? 0,
+      continuityLocks: continuityDiagnosticSnapshot(),
       state: { ...state(), active: activeCount },
       unavailable: unavailable + evaluation.unavailable + (bridge?.unavailable ?? 0),
     };
@@ -121,6 +123,7 @@ export function crossTabEvaluator() {
       total: 0,
       totals: {},
       bridgeTotal: 0,
+      continuityLocks: continuityDiagnosticSnapshot(),
       state: { ...state(), active: activeCount },
       unavailable: ++unavailable,
     }));

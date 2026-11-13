@@ -1,5 +1,6 @@
 import type { DocumentRetirementSource } from "./driver.js";
 import { record } from "./protocol.js";
+import { projectContinuityDiagnostic } from "./continuity-lock-diagnostic.js";
 
 const operations = [
   "authority",
@@ -548,6 +549,7 @@ function pageEvidence(value: unknown) {
     state,
     total: diagnosticOrdinal(value.total) ?? 0,
     bridgeTotal: diagnosticOrdinal(value.bridgeTotal) ?? 0,
+    continuityLocks: projectContinuityDiagnostic(value.continuityLocks),
     clock: "page-monotonic-ms",
     entries,
     truncated: typeof value.truncated === "number" ? Math.max(0, value.truncated) : 0,
@@ -595,8 +597,14 @@ function boundedEvaluations(
   while (JSON.stringify(result).length > 65536) {
     const page = pages.findLast((item) => item.evidence.entries.length > 0);
     if (page) page.evidence.entries.pop();
-    else if (owner.completed.length) owner.completed.shift();
-    else owner.active.pop();
+    else if (pages.some((item) => item.evidence.continuityLocks.records.length > 0)) {
+      const locks = pages.findLast((item) => item.evidence.continuityLocks.records.length > 0)!
+        .evidence.continuityLocks;
+      locks.records.shift();
+      locks.dropped++;
+    } else if (owner.completed.length) owner.completed.shift();
+    else if (owner.active.length) owner.active.pop();
+    else pages.pop();
     result.truncated++;
   }
   return result;
