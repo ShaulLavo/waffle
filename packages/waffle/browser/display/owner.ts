@@ -470,9 +470,10 @@ function boundService(owner: ServiceOwner): owner is ServiceOwner & { worker: Wo
 function revokeExposed(grant: GrantOwner, opens: ReadonlySet<GraphicsOpen>): void {
   if (grant.state === "retired") return;
   grant.state = "revoking";
+  // Select service failure before revocation lets a guest select its generic reason.
+  for (const open of opens) settleOpen(open, -64, 5);
   Atomics.store(grant.revocation, 0, 1);
   Atomics.notify(grant.revocation, 0);
-  for (const open of opens) settleOpen(open, -64, 5);
 }
 async function joinServiceReaders(
   owner: ServiceOwner,
