@@ -483,9 +483,15 @@ test("input observations wake and join on data, cancellation, and lock-only rele
     expect(await bounded(pending)).toMatchObject({ kind: "ok" });
     expect(Atomics.load(flags, 2)).toBe(1);
     expect(Atomics.load(flags, 3)).toBe(0);
-    expect(Atomics.load(input.notification, 0)).not.toBe(sequence);
+    expect(Atomics.load(new BigInt64Array(input.buffer, 16, 1), 0)).toBe(0n);
+    expect(Atomics.load(input.notification, 0)).toBe(sequence);
     expect(input.available()).toBe(0); // Contention release, not new data, woke it.
     expect(await observed.wait()).toMatchObject({ kind: "error", code: "INVALID" });
+    const released = once(worker, "message");
+    Atomics.store(flags, 3, 1);
+    Atomics.notify(flags, 3);
+    expect((await bounded(released))[0]).toMatchObject({ kind: "released", count: -6 });
+    expect(Atomics.load(input.notification, 0)).not.toBe(sequence);
     const data = input.observe();
     const dataWait = data.wait();
     expect(input.push(Uint8Array.of(66))).toBe(1);

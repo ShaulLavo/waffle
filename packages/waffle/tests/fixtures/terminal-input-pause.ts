@@ -22,7 +22,8 @@ export function pauseInputAcquisition(buffer: SharedArrayBuffer, pause: () => vo
 export function pauseInputRelease(buffer: SharedArrayBuffer, pause: () => void): void {
   const notify = Atomics.notify;
   Atomics.notify = (array, index, count) => {
-    const woken = notify(array, index, count);
+    const woken =
+      array instanceof BigInt64Array ? notify(array, index, count) : notify(array, index, count);
     if (array.buffer === buffer && array.byteOffset === 16 && index === 0) pause();
     return woken;
   };
