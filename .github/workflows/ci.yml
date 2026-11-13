@@ -1576,6 +1576,7 @@ jobs:
       - uses: ./.github/actions/setup-tools
         with:
           bun-version: ${{ env.BUN_VERSION }}
+          node-version: "26.12.1"
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.98.1
@@ -1601,11 +1602,6 @@ jobs:
       - run: bun test scripts/program-release.test.ts scripts/program-rebind.test.ts scripts/host-interface.test.ts
       - run: bun run programs:routes
       - run: bun run programs:source
-      - uses: ./.github/actions/setup-tools
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
-        with:
-          bun-version: "1.4.4"
-          node-version: "26.12.1"
       - name: Record exact GNU date source and native compiler identity
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
         id: gnu-date-identity
@@ -1639,6 +1635,11 @@ jobs:
       - run: bun run --cwd packages/python test:unit
       - run: cargo fmt --all -- --check
       - run: bash scripts/with-build-cache.sh cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date
+      - name: Verify the cached WASI root preopen
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: node ../../scripts/program-support-wasi-runner.ts
+          RUSTFLAGS: -C link-arg=--max-memory=268435456 -C link-arg=--demangle
+        run: bash scripts/with-build-cache.sh cargo test --locked --release -p waffle-program-support --features cooperative-wasi --target wasm32-wasip1 --test wasi_root_preopen
 
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

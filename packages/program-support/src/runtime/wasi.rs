@@ -111,6 +111,12 @@ impl WasiAbi {
         Ok(Self { root, inherited })
     }
 
+    /// Borrow the root preopen cached during construction, without querying imports.
+    /// The descriptor is not opened or duplicated; callers must not close it.
+    pub fn root_preopen(&self) -> u32 {
+        self.root
+    }
+
     pub fn handle_interrupts(&self) -> Result<(), i32> {
         register_interrupt_handler(|signal, disposition| unsafe {
             proc_signal(signal, disposition)

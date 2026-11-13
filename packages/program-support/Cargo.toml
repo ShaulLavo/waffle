@@ -15,3 +15,8 @@ stack-observation = []
 
 [dependencies]
 futures.workspace = true
+
+[[test]]
+name = "wasi_root_preopen"
+harness = false
+required-features = ["cooperative-wasi"]
