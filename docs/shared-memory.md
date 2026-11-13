@@ -35,12 +35,12 @@ The application asserts the capacity; Waffle does not measure it. The factory re
 
 `createRuntime` accepts only an object issued by that factory. A literal, a spread copy, `null`, or a default-provenance platform read back from an earlier snapshot is refused with `TypeError` before any backing or Worker exists. Only an omitted or `undefined` option selects the default.
 
-| Policy | Default or explicit unbounded | Explicit bounded |
-| --- | --- | --- |
-| Admission | No limit, unless a native refusal set a cap | Declared budget |
-| Request arena | 134,316,032 bytes, with a 64 MiB retry on `RangeError` | 64 MiB, no retry |
-| Default group | Growable, 65,536 pages | Fixed, 16,384 pages |
-| Worker controls | Unbounded | 64 MiB lifetime quota per Worker |
+| Policy          | Default or explicit unbounded                          | Explicit bounded                 |
+| --------------- | ------------------------------------------------------ | -------------------------------- |
+| Admission       | No limit, unless a native refusal set a cap            | Declared budget                  |
+| Request arena   | 134,316,032 bytes, with a 64 MiB retry on `RangeError` | 64 MiB, no retry                 |
+| Default group   | Growable, 65,536 pages                                 | Fixed, 16,384 pages              |
+| Worker controls | Unbounded                                              | 64 MiB lifetime quota per Worker |
 
 Snapshots report `source: "default"` for omission and `source: "application"` for a declaration. Neither is a measurement.
 
@@ -57,6 +57,10 @@ The interrupt loader and link-plan loader record memory declarations from the by
 ## Pools, physical stops and quotas
 
 Filesystem pools own request arenas. Admission tickets reserve construction headroom but never own a pooled backing. Bounded groups have fixed memory; reuse requires an exact shape and zeroes every guest-addressable byte first. Buffers exposed through `MemoryGroupHandle.buffer()` are never recycled.
+
+Each filesystem connection allocation scans its pool, reuses one safely idle request arena and drops the pool's references to any additional safely idle arenas. Keeping one for immediate reuse avoids allocating another large reservation for sequential connections. Safe idle requires authoritative reap, successful service retirement and zero transport sections. Live, unconfirmed and stranded arenas stay owned. The scan settles abandoned request counts and private bytes, but releasing a reference never refunds backing reservations or debt. Collection receipts remain responsible for accounting.
+
+The scan runs when a connection takes an arena. If the last burst retires afterwards, its arenas remain owned until the next allocation. Owner reap can precede the service's asynchronous retirement, so it cannot establish a final idle bound. Reference release also does not prove immediate garbage collection or native memory reclamation.
 
 Guest-memory charges return only after successful physical Worker termination and cleanup. Signals, logical exit and filesystem quiescence do not return them. Failed physical stops and stranded arenas remain charged debt.
 
