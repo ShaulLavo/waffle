@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "../browser-runner-lifecycle.js";
+import { navigateTestPage } from "../browser-navigation.js";
 
 test.skipIf(process.env.CONTINUITY_LOCK_CONTROLS !== "1")(
   "page continuity observer preserves original guard/helper outcomes in Chromium",
@@ -15,7 +16,7 @@ test.skipIf(process.env.CONTINUITY_LOCK_CONTROLS !== "1")(
       });
       const browser = await lifecycle.launch("chromium");
       const page = await browser.newPage();
-      await page.goto(origin);
+      await navigateTestPage(page, origin);
       await page.waitForFunction("typeof window.__runContinuityControls === 'function'");
       const labels: unknown = await page.evaluate("window.__runContinuityControls()");
       expect(Array.isArray(labels) && labels.length).toBe(12);
