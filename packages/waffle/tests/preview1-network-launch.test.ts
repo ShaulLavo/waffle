@@ -1,3 +1,4 @@
+import { processFilesystem } from "./fixtures/process-filesystem.js";
 import { expect, test } from "bun:test";
 import { Worker as NodeWorker } from "node:worker_threads";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
@@ -7,17 +8,10 @@ import { createRuntimeTerminalCodec } from "../browser/runtime-terminals.js";
 import { RIGHTS_ALL } from "../core/rights.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
-import { FilesystemRequestPool } from "../fs/request-memory.js";
 import { SharedMemoryLedger, declareSharedMemoryPlatform, bytes } from "../memory/reservations.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemService } from "../fs/service.js";
-import {
-  connectFilesystemIdentity,
-  createFilesystemIdentity,
-  revokeFilesystem,
-  reapFilesystem,
-  waitForFilesystemQuiescence,
-} from "../fs/protocol.js";
+import { createFilesystemIdentity } from "../fs/protocol.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessTable } from "../proc/table.js";
@@ -71,7 +65,7 @@ for (const failure of [false, "post", "link", "host-call", "budget"] as const)
       },
     };
     const reservations = launchReservations(failure === "budget");
-    const pools = new WeakMap<SharedArrayBuffer, FilesystemRequestPool>();
+
     const filesystem = new FilesystemService(new MemoryBackend());
     const identities = new ProcessIdentityAllocator();
     const table = new ProcessTable(identities);
@@ -116,21 +110,7 @@ for (const failure of [false, "post", "link", "host-call", "budget"] as const)
       table,
       registry,
       onError: (error) => diagnostics.push(error),
-      filesystem: {
-        connect(identity, headroom) {
-          const pool =
-            pools.get(identity.requestBudget) ??
-            new FilesystemRequestPool(identity.requestBudget, undefined, reservations.arenas);
-          pools.set(identity.requestBudget, pool);
-          const pair = connectFilesystemIdentity(identity, pool, undefined, headroom);
-          ports.push(pair.client.port, pair.server.port);
-          filesystem.connect(pair.server);
-          return pair.client;
-        },
-        revoke: revokeFilesystem,
-        reap: reapFilesystem,
-        quiesce: waitForFilesystemQuiescence,
-      },
+      filesystem: processFilesystem(filesystem, reservations, ports),
       launch: (context) =>
         broker.launchWorker(context, {
           workerUrl: "generic",

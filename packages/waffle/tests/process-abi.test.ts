@@ -1400,3 +1400,131 @@ test("shared poll registration never retains guest-local callbacks and leaves un
   }
   expect(registrations).toBe(0);
 });
+
+test("exec validates the request and span before staging and shares spawn_error(0)", async () => {
+  const { EXEC_COMPLETION_BYTES, publishExecCompletion } = await import("../proc/exec.js");
+  const f = fixture();
+  const completion = new SharedArrayBuffer(EXEC_COMPLETION_BYTES);
+  let staged = 0;
+  const service = Object.assign(f.supervisor, {
+    exec() {
+      staged++;
+      return completion;
+    },
+  });
+  const abi = new ProcessABI({
+    memory: f.memory,
+    descriptors: f.descriptors,
+    fs: f.fs,
+    pid: f.pid,
+    service,
+    signals: f.signals,
+    wake: new Int32Array(new SharedArrayBuffer(4)),
+  });
+  const spec = { executable: "fixture", argv: [], env: {}, cwd: "/", fds: [] };
+  for (const forbidden of [{ job: 0 }, { jobLifetime: null }, { worker: {} }]) {
+    const length = f.put(JSON.stringify({ ...spec, ...forbidden }));
+    expect(abi.imports.exec!(2048, length)).toBe(-28);
+  }
+  expect(abi.imports.exec!(65536, 1)).toBe(-21);
+  expect(abi.imports.exec!(NaN, 0)).toBe(-28);
+  expect(staged).toBe(0);
+  publishExecCompletion(completion, -44, new Error("missing replacement"));
+  const length = f.put(JSON.stringify(spec));
+  expect(abi.imports.exec!(2048, length)).toBe(-44);
+  expect(staged).toBe(1);
+  const diagnosticLength = abi.imports.spawn_error!(0, 4096, 2048);
+  expect(decoder.decode(f.bytes().subarray(4096, 4096 + diagnosticLength))).toContain(
+    "missing replacement",
+  );
+});
+
+test("exec needs the service capability, common wake and revocation registration before staging", () => {
+  const f = fixture();
+  const length = f.put(
+    JSON.stringify({ executable: "fixture", argv: [], env: {}, cwd: "/", fds: [] }),
+  );
+  expect(f.abi.imports.exec!(2048, length)).toBe(-52);
+  let staged = 0;
+  const service = Object.assign(f.supervisor, {
+    exec() {
+      staged++;
+      throw new Error("must not stage");
+    },
+  });
+  const abi = new ProcessABI({
+    memory: f.memory,
+    descriptors: f.descriptors,
+    fs: f.fs,
+    pid: f.pid,
+    service,
+    signals: f.signals,
+  });
+  expect(abi.imports.exec!(2048, length)).toBe(-58);
+  expect(staged).toBe(0);
+});
+
+test("successful exec waits on the common wake and unwinds as execution control flow", async () => {
+  const { EXEC_COMPLETION_BYTES, publishExecCompletion, ProcessReplaced } =
+    await import("../proc/exec.js");
+  const f = fixture();
+  const completion = new SharedArrayBuffer(EXEC_COMPLETION_BYTES);
+  const wake = new Int32Array(new SharedArrayBuffer(4));
+  const service = Object.assign(f.supervisor, {
+    exec() {
+      return completion;
+    },
+  });
+  let waits = 0;
+  const abi = new ProcessABI({
+    memory: f.memory,
+    descriptors: f.descriptors,
+    fs: f.fs,
+    pid: f.pid,
+    service,
+    signals: f.signals,
+    wake,
+    wait(milliseconds, word, expected) {
+      expect(milliseconds).toBe(Infinity);
+      expect(word).toBe(wake);
+      expect(expected).toBe(Atomics.load(wake, 0));
+      waits++;
+      publishExecCompletion(completion, 0);
+      Atomics.add(wake, 0, 1);
+      Atomics.notify(wake, 0);
+    },
+  });
+  const length = f.put(
+    JSON.stringify({ executable: "fixture", argv: [], env: {}, cwd: "/", fds: [] }),
+  );
+  expect(() => abi.imports.exec!(2048, length)).toThrow(ProcessReplaced);
+  expect(waits).toBe(1);
+});
+
+test("fatal cancellation wins over an exec completion published while the import waits", async () => {
+  const { EXEC_COMPLETION_BYTES, publishExecCompletion } = await import("../proc/exec.js");
+  const f = fixture();
+  const completion = new SharedArrayBuffer(EXEC_COMPLETION_BYTES);
+  const service = Object.assign(f.supervisor, {
+    exec() {
+      return completion;
+    },
+  });
+  const abi = new ProcessABI({
+    memory: f.memory,
+    descriptors: f.descriptors,
+    fs: f.fs,
+    pid: f.pid,
+    service,
+    signals: f.signals,
+    wake: new Int32Array(new SharedArrayBuffer(4)),
+    wait() {
+      publishExecCompletion(completion, 0);
+      f.supervisor.kill(f.pid, 9);
+    },
+  });
+  const length = f.put(
+    JSON.stringify({ executable: "fixture", argv: [], env: {}, cwd: "/", fds: [] }),
+  );
+  expect(() => abi.imports.exec!(2048, length)).toThrow(ProcessSignalExit);
+});

@@ -141,6 +141,8 @@ export class WorkerProcessBroker {
   });
   constructor(private readonly options: WorkerProcessBrokerOptions) {}
   adoptRoot(transport: WorkerProcessTransport): void {
+    if (transport.generation !== 1)
+      throw new ProcessError(ProcessErrno.INVAL, "root image generation must be one");
     checkedProcessCwd(transport.cwd);
     const state = workerProcessState(transport);
     if (state.parentPid !== 0) throw new TypeError("root process has a parent");
@@ -469,6 +471,8 @@ export class WorkerProcessBroker {
       )
         throw new ProcessError(ProcessErrno.SRCH, "exec sender has exited");
       const state = workerProcessState(transport);
+      if (transport.generation !== sender.generation + 1)
+        throw new ProcessError(ProcessErrno.INVAL, "exec image generation differs from sender");
       if (state.pid !== sender.pid || state.parentPid === 0 || !this.options.canExec?.(sender))
         throw new ProcessError(ProcessErrno.NOTSUP, "exec requires an owned non-group worker");
       const supervisor = await this.ready();
@@ -489,8 +493,11 @@ export class WorkerProcessBroker {
         },
       });
     } catch (error) {
-      descriptors?.dispose();
-      await this.discardExec(message, error);
+      try {
+        descriptors?.dispose();
+      } finally {
+        await this.discardExec(message, error);
+      }
     }
   }
   private async spawn(
@@ -510,6 +517,8 @@ export class WorkerProcessBroker {
     let reason: ProcessAdmissionEvent["reason"] = "admission-failed";
     try {
       codec = this.codec(transport);
+      if (transport.generation !== 1)
+        throw new ProcessError(ProcessErrno.INVAL, "spawn image generation must be one");
       if (
         request.job <= 0 &&
         (checkedJobLifetime(request.job, request.jobLifetime) !== state.jobLifetime ||
@@ -808,6 +817,7 @@ export class WorkerProcessBroker {
       // only, never descriptor tokens, adapter payloads, or the broker itself.
       const identity: WorkerProcessTransport = {
         kind: "directory",
+        generation: transport.generation,
         directory: transport.directory,
         lifetime: transport.lifetime,
         identity: transport.identity,

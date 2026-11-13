@@ -34,6 +34,7 @@ export default {
         "tests/network-{failure,growth,resource}-control.ts",
         // Bundled and launched in a separate Node --expose-gc process.
         "tests/fixtures/root-return-gc.ts",
+        "tests/fixtures/exec-{browser-worker,node-control}.ts",
         // Spawned in isolation to observe native API background-rejection delivery.
         "tests/fixtures/indexeddb-background-confirmation.ts",
         // Bundled dynamically for the storage lifecycle observer's service Worker.

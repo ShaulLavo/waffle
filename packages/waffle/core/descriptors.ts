@@ -267,4 +267,18 @@ export class DescriptorTable {
     });
     if (errors.length) throw new AggregateError(errors, "descriptor release failed");
   }
+  closeUnlisted(fds: readonly number[]): void {
+    const keep = new MapConstructor<number, true>();
+    for (let index = 0; index < fds.length; index++) mapSet(keep, fds[index]!, true);
+    const errors: unknown[] = [];
+    mapForEach(this.entries, (_entry, fd) => {
+      if (mapHas(keep, fd)) return;
+      try {
+        this.close(fd);
+      } catch (error) {
+        arrayAppend(errors, error);
+      }
+    });
+    if (errors.length) throw new AggregateError(errors, "unlisted descriptor release failed");
+  }
 }

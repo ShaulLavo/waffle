@@ -257,3 +257,24 @@ test("ordinary precompiled modules cannot bypass supervised wait admission", asy
     await fixture.dispose();
   }
 });
+
+test("threaded callers receive ENOTSUP from exec without a replacement request", async () => {
+  const fixture = await guestFixture();
+  try {
+    const module = await compileThreadGuest(
+      guestModule({
+        imports: [{ module: "runtime_proc", name: "exec", params: [0x7f, 0x7f] }],
+        initial: store(64, i32(0).concat(i32(0), call(0))),
+      }),
+    );
+    const guest = fixture.launch(module, { kind: "initial" });
+    await guest.ready;
+    guest.enter();
+    await guest.idle;
+    expect(new Int32Array(fixture.memory.buffer)[16]).toBe(-58);
+    expect(fixture.requests).toEqual([]);
+    expect(fixture.failures).toEqual([]);
+  } finally {
+    await fixture.dispose();
+  }
+});

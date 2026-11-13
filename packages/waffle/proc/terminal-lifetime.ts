@@ -8,12 +8,15 @@ import {
 import { atomicsLoad, atomicsWaitAsync } from "./intrinsics.ts";
 
 type State = ReturnType<typeof directoryState>;
+export const TERMINAL_FINAL_QUIET = -0x80000000;
+const MAX_SECTIONS = 0x3fffffff;
+const FINAL_BOUNDARY = -0x40000000;
 
-/** Open counts are nonnegative; revoked counts are -(active + 1). */
+/** Handoff closure is -(active + 1); final closure is INT_MIN + active. */
 export function enterTerminalSection(state: State): boolean {
   for (;;) {
     const count = controlLoad(state.terminalAdmission);
-    if (count < 0 || count === 0x7fffffff) return false;
+    if (count < 0 || count >= MAX_SECTIONS) return false;
     if (controlCas(state.terminalAdmission, 0, count, count + 1) === count) return true;
   }
 }
@@ -21,9 +24,9 @@ export function enterTerminalSection(state: State): boolean {
 export function leaveTerminalSection(state: State, directory: SharedArrayBuffer): void {
   for (;;) {
     const count = controlLoad(state.terminalAdmission);
-    const next = count < 0 ? count + 1 : count - 1;
+    const next = count < 0 && count >= FINAL_BOUNDARY ? count + 1 : count - 1;
     if (controlCas(state.terminalAdmission, 0, count, next) !== count) continue;
-    if (next === -1) wakeDirectory(directory);
+    if (next === -1 || next === TERMINAL_FINAL_QUIET) wakeDirectory(directory);
     return;
   }
 }
@@ -37,10 +40,13 @@ export interface TerminalProcessLifetime {
   stopped(): void;
 }
 
-function revoke(admission: TaggedCells): void {
+function revoke(admission: TaggedCells, final = false): void {
   for (;;) {
     const count = controlLoad(admission);
-    if (count < 0 || controlCas(admission, 0, count, -count - 1) === count) return;
+    if (count < FINAL_BOUNDARY || (count < 0 && !final)) return;
+    const active = count < 0 ? -count - 1 : count;
+    const next = final ? TERMINAL_FINAL_QUIET + active : -active - 1;
+    if (controlCas(admission, 0, count, next) === count) return;
   }
 }
 
@@ -55,7 +61,9 @@ export function captureTerminalLifetime(
   let final = false;
   let handoffGeneration = 0;
   function complete(): boolean {
-    quiet = controlLoad(state.terminalAdmission) === -1 || controlLoad(state.terminalStopped) !== 0;
+    const count = controlLoad(state.terminalAdmission);
+    quiet =
+      count === -1 || count === TERMINAL_FINAL_QUIET || controlLoad(state.terminalStopped) !== 0;
     return quiet;
   }
   async function join(): Promise<void> {
@@ -68,8 +76,8 @@ export function captureTerminalLifetime(
   }
   function acknowledge(): void {
     if (controlLoad(state.terminalStopped) !== 0) return;
-    revoke(state.terminalAdmission);
-    if (controlLoad(state.terminalAdmission) !== -1) {
+    revoke(state.terminalAdmission, true);
+    if (controlLoad(state.terminalAdmission) !== TERMINAL_FINAL_QUIET) {
       if (!onInterrupted)
         throw new Error("Interrupted terminal sections need a resource death acknowledgement");
       onInterrupted();
@@ -79,9 +87,15 @@ export function captureTerminalLifetime(
   }
   return {
     async handoff(active) {
+      if (final || !active()) return false;
       const generation = ++handoffGeneration;
-      revoke(state.terminalAdmission);
-      if (!complete()) await join();
+      try {
+        revoke(state.terminalAdmission);
+        if (!complete()) await join();
+      } catch (error) {
+        if (final && isCollectedProcess(error)) return false;
+        throw error;
+      }
       if (final || generation !== handoffGeneration || !active()) return false;
       if (controlLoad(state.terminalStopped) !== 0) return false;
       if (controlCas(state.terminalAdmission, 0, -1, 0) !== -1) return false;
@@ -90,9 +104,12 @@ export function captureTerminalLifetime(
     },
     quiesce() {
       final = true;
-      if (quiet) return;
-      revoke(state.terminalAdmission);
-      return complete() ? undefined : join();
+      try {
+        revoke(state.terminalAdmission, true);
+        return complete() ? undefined : join();
+      } catch (error) {
+        if (!quiet || !isCollectedProcess(error)) throw error;
+      }
     },
     stopped() {
       final = true;

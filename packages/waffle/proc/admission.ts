@@ -27,6 +27,7 @@ export interface ProcessAdmissionEvent {
     | "sender-revoked"
     | "broker-disposed"
     | "duplicate-process"
+    | "stale-image"
     | "unknown-parent"
     | "directory-mismatch"
     | "admission-failed"

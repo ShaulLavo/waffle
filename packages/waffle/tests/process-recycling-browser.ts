@@ -1,3 +1,4 @@
+import { runExecIntegration, type ExecIntegrationMode } from "./fixtures/exec-integration.js";
 import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { browserStartupPool } from "./startup-pool-browser.js";
@@ -810,7 +811,25 @@ const quietFailureCases: BrowserCase[] = (["pipe", "terminal"] as const).flatMap
       }),
     ),
 );
+const execCases: BrowserCase[] = (
+  [
+    "replace",
+    "twice",
+    "preopen-remap",
+    "omit-preopen",
+    "capacity-control",
+    "capacity-exec",
+  ] satisfies ExecIntegrationMode[]
+).map((mode) => ({
+  label: `exec: ${mode}`,
+  standalone: true,
+  async run() {
+    const report = await runExecIntegration({ mode, workerUrl: "/exec-worker.js" });
+    console.log("waffle-exec " + JSON.stringify(report));
+  },
+}));
 const cases: BrowserCase[] = quietFailureCases.concat(
+  execCases,
   [false, true].map((shared) => ({
     label: `nested native WASI: memory growth, I/O and context exit (shared=${shared})`,
     standalone: true,

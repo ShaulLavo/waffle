@@ -1,3 +1,4 @@
+import { processFilesystem } from "./fixtures/process-filesystem.js";
 import { groupLinkProgram } from "./fixtures/group-link-program.js";
 import { pieCore } from "./fixtures/memory-group-pie.js";
 import { adoptLinkPlan, prepareLinkPlan, type SharedLinkPlan } from "../link/index.js";
@@ -9,7 +10,6 @@ import {
   pages,
   type RuntimeReservations,
 } from "../memory/reservations.js";
-import { FilesystemRequestPool } from "../fs/request-memory.js";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { nodeWorkerTransfers } from "./fixtures/node-worker-transfers.js";
 import { expect, test } from "bun:test";
@@ -19,13 +19,7 @@ import type { RuntimeWorkerRequest, RuntimeWorkerMessage } from "../browser/work
 import { DescriptorTable } from "../core/descriptors.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemService } from "../fs/service.js";
-import {
-  connectFilesystemIdentity,
-  createFilesystemIdentity,
-  revokeFilesystem,
-  reapFilesystem,
-  waitForFilesystemQuiescence,
-} from "../fs/protocol.js";
+import { createFilesystemIdentity } from "../fs/protocol.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessTable } from "../proc/table.js";
@@ -64,7 +58,7 @@ async function fixture(
   const workers: EmbeddingWorker[] = [];
   const filesystem = new FilesystemService(new MemoryBackend());
   const ports: MessagePort[] = [];
-  const pools = new WeakMap<SharedArrayBuffer, FilesystemRequestPool>();
+
   const errors: unknown[] = [];
   class EmbeddingWorker {
     onmessage: ((event: { data: RuntimeWorkerMessage }) => void) | null = null;
@@ -104,21 +98,7 @@ async function fixture(
     table,
     registry,
     onError: (error) => errors.push(error),
-    filesystem: {
-      connect(identity, headroom) {
-        const pool =
-          pools.get(identity.requestBudget) ??
-          new FilesystemRequestPool(identity.requestBudget, undefined, reservations.arenas);
-        pools.set(identity.requestBudget, pool);
-        const pair = connectFilesystemIdentity(identity, pool, undefined, headroom);
-        ports.push(pair.server.port, pair.client.port);
-        filesystem.connect(pair.server);
-        return pair.client;
-      },
-      revoke: revokeFilesystem,
-      reap: reapFilesystem,
-      quiesce: waitForFilesystemQuiescence,
-    },
+    filesystem: processFilesystem(filesystem, reservations, ports),
     launch: (context) =>
       broker.launchWorker<
         RuntimeWorkerRequest & {

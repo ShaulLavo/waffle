@@ -83,6 +83,7 @@ export interface WorkerDescriptorBinding {
   reference: number;
   rightsBase: bigint;
   rightsInheriting: bigint;
+  preopen?: string;
 }
 /** A token owns one retained process endpoint, not a second reference on deserialization.
  * import() may run in both controller and worker; its release must therefore be idempotent.
@@ -95,6 +96,7 @@ export interface WorkerDescriptorCodec {
 }
 export interface WorkerProcessTransport {
   readonly kind: "directory";
+  readonly generation: number;
   directory: SharedArrayBuffer;
   readonly lifetime: SharedArrayBuffer;
   identity: SharedArrayBuffer;
@@ -197,6 +199,7 @@ function reserveRecord(
       foreground,
       jobLifetime,
     ),
+    generation: 1,
     identity: transport.identity,
     bindings: [],
     resources: [],
@@ -333,6 +336,12 @@ export class WorkerProcessClient {
   }
   installBindings(): void {
     installWorkerBindings(this.options.transport, this.options.descriptors, this.options.codec);
+    if (this.options.transport.generation > 1) {
+      const fds: number[] = [];
+      for (let index = 0; index < this.options.transport.bindings.length; index++)
+        arrayAppend(fds, this.options.transport.bindings[index]!.fd);
+      this.options.descriptors.closeUnlisted(fds);
+    }
   }
   exec(pid: number, request: ExecRequest): SharedArrayBuffer {
     this.admit();
@@ -352,6 +361,7 @@ export class WorkerProcessClient {
     let codec = this.options.codec;
     const staged: WorkerProcessTransport = {
       ...this.options.transport,
+      generation: this.options.transport.generation + 1,
       cwd: snapshot.cwd,
       bindings: [],
       resources: [],
@@ -409,7 +419,7 @@ export class WorkerProcessClient {
       let reference = mapGet(references, source.description);
       if (reference === undefined) {
         reference = transport.resources.length;
-        arrayAppend(transport.resources, codec.export(source, this.pid));
+        arrayAppend(transport.resources, codec.export(source, transport.pid));
         mapSet(references, source.description, reference);
       }
       arrayAppend(transport.bindings, {
@@ -417,6 +427,9 @@ export class WorkerProcessClient {
         reference,
         rightsBase: source.rightsBase,
         rightsInheriting: source.rightsInheriting,
+        ...(transport.generation > 1 && source.preopen !== undefined
+          ? { preopen: source.preopen }
+          : {}),
       });
     }
   }
@@ -566,21 +579,7 @@ export class WorkerProcessClient {
         cwd,
       );
       child.data = transfer?.data;
-      for (let i = 0; i < sources.length; i++) {
-        const source = sources[i]!;
-        let reference = mapGet(references, source.description);
-        if (reference === undefined) {
-          reference = child.resources.length;
-          arrayAppend(child.resources, codec.export(source, pid));
-          mapSet(references, source.description, reference);
-        }
-        arrayAppend(child.bindings, {
-          fd: request.fds[i]!.child,
-          reference,
-          rightsBase: source.rightsBase,
-          rightsInheriting: source.rightsInheriting,
-        });
-      }
+      this.exportBindings(child, request, sources, references, codec);
       // The worker may immediately mutate the original request or close its source fds.
       const snapshot = snapshotSpawnRequest(request, selector, requestedLifetime, cwd);
       this.admit();
@@ -989,6 +988,8 @@ function validateWorkerBindings(transport: WorkerProcessTransport): void {
       throw new ProcessError(ProcessErrno.INVAL, "invalid descriptor binding");
     }
     setAdd(targets, binding.fd);
+    if (binding.preopen !== undefined && typeof binding.preopen !== "string")
+      throw new ProcessError(ProcessErrno.INVAL, "invalid transferred preopen name");
     if (
       !Number.isInteger(binding.reference) ||
       binding.reference < 0 ||
@@ -1059,10 +1060,13 @@ export function installWorkerBindings(
     for (let index = 0; index < transport.bindings.length; index++) {
       const binding = transport.bindings[index]!;
       const source = mapGet(imported, binding.reference)!;
-      descriptors.inherit(binding.fd, {
+      if (binding.preopen !== undefined && source.resource.kind !== "directory")
+        throw new ProcessError(ProcessErrno.INVAL, "preopen binding requires a directory");
+      descriptors.restore(binding.fd, {
         ...source,
         rightsBase: binding.rightsBase,
         rightsInheriting: binding.rightsInheriting,
+        ...(binding.preopen === undefined ? {} : { preopen: binding.preopen }),
       });
       installed.push(binding.fd);
     }

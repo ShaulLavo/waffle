@@ -4,6 +4,7 @@ import { DescriptorTable, OpenDescription } from "../core/descriptors.ts";
 import { MemFS } from "../fs/memory.ts";
 import {
   createWorkerProcessTransport,
+  WorkerProcessClient,
   installWorkerBindings,
   type WorkerDescriptorCodec,
 } from "../proc/worker-client.ts";
@@ -191,4 +192,45 @@ test("moved preopens preserve names, rights and lifetime while inherited files s
     parent.descriptors.dispose();
   }
   expect(retained).toBe(released);
+});
+
+test("exec retains per-binding preopen metadata and rights while pruning the bootstrap preopen", () => {
+  const transport = { ...createWorkerProcessTransport(), generation: 2 };
+  transport.resources.push({});
+  transport.bindings.push(
+    { fd: 3, reference: 0, rightsBase: 7n, rightsInheriting: 3n, preopen: "/" },
+    { fd: 8, reference: 0, rightsBase: 1n, rightsInheriting: 0n },
+  );
+  let defaultsClosed = 0,
+    inheritedClosed = 0;
+  const table = new DescriptorTable();
+  table.openAt(4, { kind: "directory", handle: 4 }, all, all, () => defaultsClosed++, "/");
+  const client = new WorkerProcessClient({
+    transport,
+    descriptors: table,
+    codec: {
+      export() {
+        throw new Error("unused export");
+      },
+      discard() {},
+      import() {
+        return new OpenDescription({ kind: "directory", handle: 9 }, () => inheritedClosed++);
+      },
+    },
+    postMessage() {},
+  });
+  try {
+    client.installBindings();
+    expect(table.get(4)).toBeUndefined();
+    expect(defaultsClosed).toBe(1);
+    expect(table.get(3)?.preopen).toBe("/");
+    expect(table.get(8)?.preopen).toBeUndefined();
+    expect(table.get(3)?.description).toBe(table.get(8)?.description);
+    expect(table.get(3)?.rightsBase).toBe(7n);
+    expect(table.get(8)?.rightsBase).toBe(1n);
+    expect(table.get(table.dup(3))?.preopen).toBeUndefined();
+  } finally {
+    table.dispose();
+  }
+  expect(inheritedClosed).toBe(1);
 });

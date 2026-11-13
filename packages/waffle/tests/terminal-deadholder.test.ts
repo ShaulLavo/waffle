@@ -1,3 +1,4 @@
+import { TERMINAL_FINAL_QUIET } from "../proc/terminal-lifetime.js";
 import { captureNativeReturn } from "../proc/observation.ts";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
@@ -326,7 +327,9 @@ for (const pause of [
       });
       await Promise.resolve();
       expect(quiet).toBe(pause === "before-entry");
-      expect(controlLoad(f.state.terminalAdmission)).toBe(pause === "before-entry" ? -1 : -2);
+      expect(controlLoad(f.state.terminalAdmission)).toBe(
+        pause === "before-entry" ? TERMINAL_FINAL_QUIET : TERMINAL_FINAL_QUIET + 1,
+      );
       if (pause === "session" || pause === "input")
         expect(f.display.snapshot()).toEqual({ kind: "error", code: "AGAIN" });
       if (pause === "after-unlock") expect(f.display.snapshot().kind).toBe("ok");
@@ -336,7 +339,7 @@ for (const pause of [
         count: pause === "before-entry" ? -8 : 1,
       });
       await bounded(joined); // Release, not disposal/termination, must wake the actual waitAsync join.
-      expect(controlLoad(f.state.terminalAdmission)).toBe(-1);
+      expect(controlLoad(f.state.terminalAdmission)).toBe(TERMINAL_FINAL_QUIET);
       await holder.worker.terminate();
       f.lifetime.stopped();
       expect(f.display.snapshot().kind).toBe("ok");
@@ -487,7 +490,7 @@ async function finishInterrupted(
   const unsubscribe = b.supervisor.onJobRetirement(() => retired.resolve());
   try {
     b.supervisor.kill(f.process.pid, 9);
-    expect(controlLoad(f.state.terminalAdmission)).toBe(-2);
+    expect(controlLoad(f.state.terminalAdmission)).toBe(TERMINAL_FINAL_QUIET + 1);
     expect(controlLoad(f.state.terminalStopped)).toBe(0);
     whileFenced();
     holder.release();
@@ -606,7 +609,7 @@ test("failed launch joins a live terminal holder before its controller stops the
     await b.supervisor.start(f.process.pid);
     if (!holder) throw new Error("failed launch did not acquire a native handle");
     expect(stops).toBe(0);
-    expect(controlLoad(f.state.terminalAdmission)).toBe(-2);
+    expect(controlLoad(f.state.terminalAdmission)).toBe(TERMINAL_FINAL_QUIET + 1);
     holder.release();
     expect(await holder.next()).toMatchObject({ phase: "done", count: 1 });
     await bounded(retired.promise);

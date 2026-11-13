@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test, spyOn } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import type { RuntimeWorkerRequest } from "../browser/worker.js";
 import { DescriptorTable } from "../core/descriptors.js";
@@ -7,6 +7,7 @@ import {
   createFilesystemIdentity,
   revokeFilesystem,
 } from "../fs/protocol.js";
+import { enterTerminalSection, leaveTerminalSection } from "../proc/terminal-lifetime.js";
 import { controlLoad } from "../proc/control.js";
 import { readExecCompletion } from "../proc/exec.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
@@ -15,7 +16,12 @@ import { readOutcome } from "../proc/outcome.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { setSignalDisposition, SignalDisposition, signalDisposition } from "../proc/signals.js";
 import { ProcessTable } from "../proc/table.js";
-import { ProcessErrno, type ExecRequest, type ProcessContext } from "../proc/types.js";
+import {
+  ProcessError,
+  ProcessErrno,
+  type ExecRequest,
+  type ProcessContext,
+} from "../proc/types.js";
 import {
   createWorkerProcessTransport,
   WorkerProcessClient,
@@ -48,7 +54,12 @@ async function until(check: () => boolean): Promise<void> {
   }
 }
 async function fixture(
-  options: { stop?: () => void | Promise<void>; launch?: (context: ProcessContext) => void } = {},
+  options: {
+    stop?: () => void | Promise<void>;
+    construct?: () => void;
+    launch?: (context: ProcessContext) => void;
+    hostOnly?: boolean;
+  } = {},
 ) {
   const previous = globalThis.Worker;
   const workers: FakeWorker[] = [];
@@ -63,6 +74,7 @@ async function fixture(
     request!: RuntimeWorkerRequest;
     stops = 0;
     constructor() {
+      options.construct?.();
       workers.push(this);
     }
     postMessage(value: RuntimeWorkerRequest) {
@@ -106,6 +118,7 @@ async function fixture(
     launch(context) {
       contexts.push(context);
       options.launch?.(context);
+      if (options.hostOnly) return { terminate() {} };
       return broker.launchWorker(context, {
         workerUrl: "http://localhost/exec-fixture.ts",
         request: {
@@ -174,7 +187,7 @@ async function fixture(
   await flush(root.pid);
   await supervisor.start(pid);
   supervisor.started(pid);
-  let caller = client(workers[0]!.request.runtimeProcess!);
+  let caller = client(broker.transportFor(pid)!);
   async function stage(spec = request()) {
     const completion = caller.service.exec(pid, spec);
     await flush(pid);
@@ -183,9 +196,12 @@ async function fixture(
   }
   async function replace(spec = request()) {
     const previousCount = workers.length;
+    const retiring = workers.find(
+      (worker) => worker.request.runtimeProcess?.pid === pid && worker.stops === 0,
+    )!;
     expect((await stage(spec)).result).toBe(0);
     caller.fds.dispose();
-    workers[previousCount - 1]!.emit({ type: "replaced" });
+    retiring.emit({ type: "replaced" });
     await until(() => workers.length === previousCount + 1);
     await supervisor.start(pid);
     caller = client(workers[workers.length - 1]!.request.runtimeProcess!);
@@ -201,6 +217,7 @@ async function fixture(
   }
   return {
     broker,
+    reservations,
     supervisor,
     table,
     registry,
@@ -413,6 +430,347 @@ test("exec resets handlers, preserves ignore and applies a pending terminating s
     expect(record.result).toMatchObject({ kind: "signaled", code: 15 });
     expect(f.workers.length).toBe(2);
   } finally {
+    await f.close();
+  }
+});
+
+for (const cancellation of ["kill", "dispose"] as const)
+  test(`${cancellation} during terminal handoff cannot rearm and releases the successor-free native slot`, async () => {
+    const f = await fixture();
+    let disposal: Promise<void> | undefined;
+    const record = f.table.require(f.pid);
+    const transport = f.workers[0]!.request.runtimeProcess!;
+    const state = workerProcessState(transport);
+    const owners = Reflect.get(f.broker, "observationOwners") as Map<number, object>;
+    const owner = owners.get(f.pid)!;
+    let held = enterTerminalSection(state);
+    expect(held).toBe(true);
+    try {
+      expect((await f.stage()).result).toBe(0);
+      f.workers[0]!.emit({ type: "replaced" });
+      await until(() => f.workers[0]!.stops === 1 && controlLoad(state.terminalAdmission) === -2);
+      expect(captureProcessObserver(record.observation).read()).toEqual({ kind: "pending" });
+      expect(Reflect.get(owner, "consumers")).toBe(1);
+      if (cancellation === "kill") f.supervisor.kill(f.pid, 9);
+      else disposal = f.broker.dispose();
+      expect(enterTerminalSection(state)).toBe(false);
+      leaveTerminalSection(state, transport.directory);
+      held = false;
+      await until(() => record.result !== null);
+      await disposal;
+      await record.stopping?.complete;
+      expect(record.result).toMatchObject({ kind: "signaled", code: 9 });
+      expect(f.workers.length).toBe(1);
+      expect(f.workers[0]!.stops).toBe(1);
+      expect(Reflect.get(owner, "consumers")).toBe(0);
+      expect(captureProcessObserver(record.observation).read()).toEqual({ kind: "terminated" });
+      let admitted = false;
+      try {
+        admitted = enterTerminalSection(state);
+      } catch (error) {
+        expect(error).toBeInstanceOf(ProcessError);
+      }
+      expect(admitted).toBe(false);
+    } finally {
+      if (held) leaveTerminalSection(state, transport.directory);
+      await disposal;
+      await f.close();
+    }
+  });
+
+for (const failure of ["admission", "construction"] as const)
+  test(`${failure} failure before successor registration finalizes the continuous native slot`, async () => {
+    let rejectConstruction = false;
+    const f = await fixture({
+      construct() {
+        if (rejectConstruction) throw new Error("successor construction refused");
+      },
+    });
+    const record = f.table.require(f.pid);
+    const owner = (Reflect.get(f.broker, "observationOwners") as Map<number, object>).get(f.pid)!;
+    let admission: ReturnType<typeof spyOn> | undefined;
+    try {
+      expect((await f.stage()).result).toBe(0);
+      rejectConstruction = failure === "construction";
+      if (failure === "admission")
+        admission = spyOn(f.reservations, "admit").mockImplementationOnce(() => {
+          throw new RangeError("successor admission refused");
+        });
+      f.workers[0]!.emit({ type: "replaced" });
+      await until(() => record.result !== null);
+      await record.stopping?.complete;
+      expect(record.result).toMatchObject({ kind: "exited", code: 126 });
+      expect(f.workers.length).toBe(1);
+      expect(f.workers[0]!.stops).toBe(1);
+      expect(Reflect.get(owner, "consumers")).toBe(0);
+      expect(captureProcessObserver(record.observation).read()).toEqual({ kind: "terminated" });
+      expect(
+        f.diagnostics.some((error) => String(error).includes(`successor ${failure} refused`)),
+      ).toBe(true);
+    } finally {
+      admission?.mockRestore();
+      await f.close();
+    }
+  });
+
+test("a child and caller-fatal job remain owned and waitable after replacement", async () => {
+  const f = await fixture();
+  try {
+    const child = f.caller.service.spawn(f.pid, { ...request({ cwd: "/" }), job: -1 });
+    const fatalChild = f.caller.service.spawn(f.pid, {
+      ...request({ cwd: "/" }),
+      job: -1,
+      jobLifetime: "caller-fatal",
+    });
+    await f.flush(f.pid);
+    await f.supervisor.start(child);
+    await f.supervisor.start(fatalChild);
+    const childRecord = f.table.require(child);
+    const fatalRecord = f.table.require(fatalChild);
+    const waiting = f.supervisor.waitForExit(f.pid, child);
+    await f.replace();
+    expect(childRecord.parentPid).toBe(f.pid);
+    expect(f.table.job(fatalRecord.job)?.ownerPid).toBe(f.pid);
+    const childWorker = f.workers.find((worker) => worker.request.runtimeProcess?.pid === child)!;
+    childWorker.emit({ type: "exit", code: 23 });
+    expect(await waiting).toMatchObject({ kind: "exited", code: 23 });
+    expect(f.caller.service.wait(f.pid, child)).toMatchObject({ kind: "exited", code: 23 });
+    f.supervisor.kill(f.pid, 9);
+    await until(() => fatalRecord.result !== null);
+    expect(fatalRecord.result).toMatchObject({ kind: "signaled", code: 9 });
+  } finally {
+    await f.close();
+  }
+});
+
+for (const phase of ["in-flight", "resolving"] as const)
+  test(`fatal cancellation while exec is ${phase} discards staged state once without launch`, async () => {
+    const f = await fixture();
+    const loading = Promise.withResolvers<WebAssembly.Module>();
+    let resolving = false;
+    f.registry.register("slow", {
+      adapter: "fixture",
+      module: () => {
+        resolving = true;
+        return loading.promise;
+      },
+    });
+    const record = f.table.require(f.pid);
+    try {
+      const completion = f.caller.service.exec(
+        f.pid,
+        request({ executable: phase === "resolving" ? "slow" : "fixture" }),
+      );
+      if (phase === "resolving") {
+        await f.flush(f.pid);
+        await until(() => resolving);
+      }
+      f.supervisor.kill(f.pid, 9);
+      if (phase === "in-flight") await f.flush(f.pid);
+      await until(() => readExecCompletion(completion) !== null && record.result !== null);
+      await record.stopping?.complete;
+      expect(readExecCompletion(completion)!.result).toBe(-ProcessErrno.SRCH);
+      expect(record.result).toMatchObject({ kind: "signaled", code: 9 });
+      expect(f.reaped).toHaveLength(1);
+      loading.resolve(module);
+      await Promise.resolve();
+      expect(f.workers).toHaveLength(1);
+      expect(f.workers[0]!.stops).toBe(1);
+    } finally {
+      loading.resolve(module);
+      await f.close();
+    }
+  });
+
+test("an export failure before post closes only exported successor lifetimes", async () => {
+  const f = await fixture();
+  try {
+    const [reader, writer] = f.caller.host.createPipe();
+    const fd = f.caller.fds.open(writer, 0n, 0n);
+    const unsupported = f.caller.fds.open(
+      { kind: "file", handle: 123, offset: 0, append: false },
+      0n,
+      0n,
+    );
+    await f.flush(f.pid);
+    const prepare = f.caller.service.options.prepareExec!;
+    let cancelled = 0,
+      released = 0,
+      posted = 0;
+    f.caller.service.options.prepareExec = (pid) => ({
+      ...prepare(pid),
+      cancel() {
+        cancelled++;
+      },
+      release() {
+        released++;
+      },
+    });
+    f.caller.service.options.postMessage = () => {
+      posted++;
+    };
+    expect(() =>
+      f.caller.service.exec(
+        f.pid,
+        request({
+          fds: [
+            { parent: fd, child: 1 },
+            { parent: unsupported, child: 2 },
+          ],
+        }),
+      ),
+    ).toThrow();
+    expect([cancelled, released, posted]).toEqual([1, 1, 0]);
+    expect(writer.tryWrite([new Uint8Array([7])])).toBe(1);
+    expect(reader.tryRead([new Uint8Array(1)])).toBe(1);
+    expect(readOutcome(f.table.require(f.pid).outcome)).toBeNull();
+    reader.close();
+  } finally {
+    await f.close();
+  }
+});
+
+test("fatal cancellation at successor launch prevents admission and construction", async () => {
+  let cancel: (() => void) | undefined;
+  const f = await fixture({
+    launch(context) {
+      if (context.generation === 2) cancel?.();
+    },
+  });
+  const record = f.table.require(f.pid);
+  try {
+    cancel = () => f.supervisor.kill(f.pid, 9);
+    expect((await f.stage()).result).toBe(0);
+    f.workers[0]!.emit({ type: "replaced" });
+    await until(() => record.result !== null);
+    await record.stopping?.complete;
+    expect(record.result).toMatchObject({ kind: "signaled", code: 9 });
+    expect(f.workers).toHaveLength(1);
+    expect(f.workers[0]!.stops).toBe(1);
+    expect(captureProcessObserver(record.observation).read()).toEqual({ kind: "terminated" });
+  } finally {
+    await f.close();
+  }
+});
+
+test("generation 2 terminal sections are joined by the next handoff and final quiesce", async () => {
+  const f = await fixture();
+  let state: ReturnType<typeof workerProcessState> | undefined;
+  let held = false;
+  let transport: WorkerProcessTransport | undefined;
+  try {
+    await f.replace();
+    transport = f.workers[1]!.request.runtimeProcess!;
+    state = workerProcessState(transport);
+    held = enterTerminalSection(state);
+    expect(held).toBe(true);
+    expect((await f.stage()).result).toBe(0);
+    f.workers[1]!.emit({ type: "replaced" });
+    await until(() => controlLoad(state!.terminalAdmission) === -2);
+    expect(f.workers).toHaveLength(2);
+    expect(f.workers[1]!.stops).toBe(1);
+    leaveTerminalSection(state, transport.directory);
+    held = false;
+    await until(() => f.workers.length === 3);
+    transport = f.workers[2]!.request.runtimeProcess!;
+    state = workerProcessState(transport);
+    held = enterTerminalSection(state);
+    const record = f.table.require(f.pid);
+    f.supervisor.kill(f.pid, 9);
+    expect(f.workers[2]!.stops).toBe(0);
+    leaveTerminalSection(state, transport.directory);
+    held = false;
+    await until(() => record.result !== null);
+    await record.stopping?.complete;
+    expect(f.workers[2]!.stops).toBe(1);
+  } finally {
+    if (held && state && transport) leaveTerminalSection(state, transport.directory);
+    await f.close();
+  }
+});
+
+test("a pre-existing physical receipt cannot certify an unproved successor launcher", async () => {
+  const failure = new Error("unknown successor consumer");
+  const f = await fixture({
+    launch(context) {
+      if (context.generation === 2) throw failure;
+    },
+  });
+  const record = f.table.require(f.pid);
+  const owner = (Reflect.get(f.broker, "observationOwners") as Map<number, object>).get(f.pid)!;
+  try {
+    expect((await f.stage()).result).toBe(0);
+    f.workers[0]!.emit({ type: "replaced" });
+    await until(() => record.result !== null);
+    await expect(record.stopping!.complete).rejects.toBe(failure);
+    expect(record.result).toMatchObject({ kind: "exited", code: 126 });
+    expect(Reflect.get(owner, "consumers")).toBe(1);
+    expect(captureProcessObserver(record.observation).read().kind).toBe("selected");
+    await expect(f.broker.dispose()).rejects.toBeInstanceOf(AggregateError);
+  } finally {
+    await f.close().catch(() => {});
+  }
+});
+
+test("root and non-Worker callers receive ENOTSUP without changing their process", async () => {
+  const f = await fixture({ hostOnly: true });
+  try {
+    expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
+    const completion = f.parent.service.exec(f.root.pid, request());
+    await f.flush(f.root.pid);
+    expect(readExecCompletion(completion)!.result).toBe(-ProcessErrno.NOTSUP);
+    expect(readOutcome(f.table.require(f.pid).outcome)).toBeNull();
+    expect(readOutcome(f.table.require(f.root.pid).outcome)).toBeNull();
+    expect(f.workers).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a failed captured image stop remains charged and is never retried by final cancellation", async () => {
+  const failure = new Error("physical stop refused");
+  const f = await fixture({ stop: () => Promise.reject(failure) });
+  const record = f.table.require(f.pid);
+  const owner = (Reflect.get(f.broker, "observationOwners") as Map<number, object>).get(f.pid)!;
+  const charged = f.reservations.snapshot().reservedBytes;
+  try {
+    expect((await f.stage()).result).toBe(0);
+    f.workers[0]!.emit({ type: "replaced" });
+    await until(() => record.result !== null);
+    await expect(record.stopping!.complete).rejects.toBeInstanceOf(AggregateError);
+    f.supervisor.kill(f.pid, 9);
+    expect(record.result).toMatchObject({ kind: "exited", code: 126 });
+    expect(f.workers).toHaveLength(1);
+    expect(f.workers[0]!.stops).toBe(1);
+    expect(Reflect.get(owner, "consumers")).toBe(1);
+    expect(f.reservations.snapshot().reservedBytes).toBeGreaterThanOrEqual(charged);
+    await expect(f.broker.dispose()).rejects.toBeInstanceOf(AggregateError);
+    expect(f.workers[0]!.stops).toBe(1);
+  } finally {
+    await f.close().catch(() => {});
+  }
+});
+
+test("a group-owned image is rejected before module resolution", async () => {
+  const f = await fixture();
+  const child = (Reflect.get(f.broker, "children") as Map<number, object>).get(f.pid)!;
+  let loaded = false;
+  f.registry.register("unresolved", {
+    adapter: "fixture",
+    module: () => {
+      loaded = true;
+      return module;
+    },
+  });
+  try {
+    Reflect.set(child, "group", {});
+    expect((await f.stage(request({ executable: "unresolved" }))).result).toBe(
+      -ProcessErrno.NOTSUP,
+    );
+    expect(loaded).toBe(false);
+    expect(f.table.require(f.pid).image.generation).toBe(1);
+  } finally {
+    Reflect.deleteProperty(child, "group");
     await f.close();
   }
 });

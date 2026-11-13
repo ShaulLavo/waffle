@@ -442,7 +442,7 @@ export class ProcessABI {
         length < -0x80000000 ||
         length > 0xffffffff
       )
-        return -ProcessErrno.INVAL;
+        throw new ProcessError(ProcessErrno.INVAL, "exec arguments must be i32 values");
       const parsed = this.spawnRequest(ptr, length, true);
       const request: ExecRequest = {
         executable: parsed.executable,
@@ -451,9 +451,14 @@ export class ProcessABI {
         cwd: parsed.cwd,
         fds: parsed.fds,
       };
-      if (!this.options.service.exec) return -NOSYS;
+      if (!this.options.service.exec)
+        throw new ProcessError(NOSYS, "process service has no exec capability");
       const wake = this.options.wake;
-      if (!wake || !this.options.service.registerRevocation) return -ProcessErrno.NOTSUP;
+      if (!wake || !this.options.service.registerRevocation)
+        throw new ProcessError(
+          ProcessErrno.NOTSUP,
+          "exec requires a process wake and revocation registration",
+        );
       const unregister = this.options.service.registerRevocation(this.options.pid, () => {
         atomicsAdd(wake, 0, 1);
         atomicsNotify(wake, 0);

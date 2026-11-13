@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { controlLoad } from "../proc/control.js";
 import {
   captureTerminalLifetime,
+  TERMINAL_FINAL_QUIET,
   enterTerminalSection,
   leaveTerminalSection,
 } from "../proc/terminal-lifetime.js";
@@ -32,7 +33,7 @@ test("handoff rearms without publishing terminal stop and joins each image's sec
   expect(await next).toBe(true);
   expect(enterTerminalSection(state)).toBe(true);
   const final = lifetime.quiesce();
-  expect(controlLoad(state.terminalAdmission)).toBe(-2);
+  expect(controlLoad(state.terminalAdmission)).toBe(TERMINAL_FINAL_QUIET + 1);
   leaveTerminalSection(state, process.directory);
   await final;
   lifetime.stopped();
@@ -64,4 +65,22 @@ test("cancelled replacement leaves terminal admission closed", async () => {
   expect(enterTerminalSection(state)).toBe(false);
   await lifetime.quiesce();
   lifetime.stopped();
+});
+
+test("a separate lifetime capture permanently revokes a pending handoff atomically", async () => {
+  const { process, state, lifetime } = fixture();
+  const finalOwner = captureTerminalLifetime(process);
+  expect(enterTerminalSection(state)).toBe(true);
+  const handoff = lifetime.handoff(() => true);
+  expect(controlLoad(state.terminalAdmission)).toBe(-2);
+  const final = finalOwner.quiesce();
+  expect(controlLoad(state.terminalAdmission)).toBe(TERMINAL_FINAL_QUIET + 1);
+  expect(enterTerminalSection(state)).toBe(false);
+  leaveTerminalSection(state, process.directory);
+  expect(await handoff).toBe(false);
+  await final;
+  expect(controlLoad(state.terminalAdmission)).toBe(TERMINAL_FINAL_QUIET);
+  expect(await lifetime.handoff(() => true)).toBe(false);
+  expect(enterTerminalSection(state)).toBe(false);
+  finalOwner.stopped();
 });

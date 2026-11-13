@@ -65,6 +65,7 @@ export interface ProcessRecord {
   readonly job: number;
   image: ProcessImage;
   replacement?: ProcessReplacement;
+  replacementCleanup?: Promise<void>;
   readonly interrupt: ControlCells;
   readonly requestedSignal: ControlCells;
   readonly signalState: ControlCells;
@@ -90,10 +91,11 @@ export interface ProcessReplacement {
   readonly image: ProcessImage;
   readonly request: Readonly<SpawnRequest>;
   readonly descriptors: DescriptorTable;
-  phase: "resolving" | "committed" | "launching" | "done" | "cancelled";
-  resolved?: ResolvedExecutable;
+  state:
+    | { phase: "resolving" | "launching" | "done" | "cancelled" }
+    | { phase: "committed"; resolved: ResolvedExecutable };
   complete(result: number, error?: unknown): void;
-  install(): void;
+  install(successor: ProcessImage): boolean;
   discard(): Promise<void>;
   cancel(error?: unknown): Promise<void>;
 }

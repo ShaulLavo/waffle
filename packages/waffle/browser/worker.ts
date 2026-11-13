@@ -182,6 +182,51 @@ export type WorkerResult =
   | { code: number; signal?: number }
   | { error: unknown }
   | { replaced: true };
+function workerFinishResult(result: WorkerResult, started: boolean) {
+  const ownCode = "code" in result ? result.code : started ? 1 : 126;
+  const ownSignal = "signal" in result ? result.signal : undefined;
+  const startupFailure = "error" in result && !started;
+  const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure
+    ? startFailure(result.error)
+    : ownSignal === undefined
+      ? { kind: "exited", code: ownCode }
+      : { kind: "signaled", code: ownSignal };
+  const startupDiagnostic = startupFailure ? describeStartError(result.error) : undefined;
+  return { ownCode, ownSignal, startupFailure, ownResult, startupDiagnostic };
+}
+function workerCompletionMessage(
+  result: Exclude<WorkerResult, { replaced: true }>,
+  completed: ProcessExit,
+  state: {
+    legacy: boolean;
+    settled: boolean;
+    runtime: boolean;
+    startupFailure: boolean;
+    startupDiagnostic?: string;
+    sleep: SleepMode;
+    cleanupErrors: string[];
+  },
+): RuntimeWorkerMessage {
+  const code = waitStatus(completed);
+  const signal = completed.kind === "signaled" ? completed.code : undefined;
+  const diagnostics = state.cleanupErrors.length ? { cleanupErrors: state.cleanupErrors } : {};
+  if (
+    "error" in result &&
+    ((!state.legacy && !state.settled && completed.kind !== "signaled") ||
+      (state.runtime && state.startupFailure && completed.kind === "start-failed"))
+  ) {
+    return {
+      type: "error",
+      code,
+      errno: completed.kind === "start-failed" ? completed.error : undefined,
+      message: describeStartError(result.error, false),
+      diagnostic: state.startupDiagnostic ?? describeStartError(result.error),
+      sleep: state.sleep,
+      ...diagnostics,
+    };
+  }
+  return { type: "exit", code, signal, sleep: state.sleep, ...diagnostics };
+}
 export type RuntimeWorkerState = ReturnType<typeof workerProcessState>;
 
 export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
@@ -697,14 +742,10 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     } catch (error) {
       observationFailure = lastObservationFailure ?? ("error" in result ? result.error : error);
     }
-    const ownCode = "code" in result ? result.code : started ? 1 : 126;
-    const ownSignal = "signal" in result ? result.signal : undefined;
-    const startupFailure = "error" in result && !started;
-    const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure
-      ? startFailure(result.error)
-      : ownSignal === undefined
-        ? { kind: "exited", code: ownCode }
-        : { kind: "signaled", code: ownSignal };
+    const { ownCode, ownSignal, startupFailure, ownResult, startupDiagnostic } = workerFinishResult(
+      result,
+      started,
+    );
     // Claim the runtime outcome before draining so a signal delivered during backpressure
     // cannot replace the original execution failure.
     // A parent may act on this exit at once: deliver every byte the guest wrote first.
@@ -716,7 +757,6 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       started &&
       "error" in result &&
       !settled;
-    const startupDiagnostic = startupFailure ? describeStartError(result.error) : undefined;
     let winner =
       replacing || terminated || observationFailure
         ? null
@@ -734,6 +774,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         cleanup();
         return true;
       } catch (error) {
+        if (error instanceof ExecutionUnwind) throw error;
         collect(error);
         return false;
       }
@@ -821,26 +862,18 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         winner = executor.complete!(ownCode, ownSignal);
       });
     const completed = winner ?? claim(ownResult);
-    const code = waitStatus(completed);
-    const signal = completed.kind === "signaled" ? completed.code : undefined;
     if (!executor.complete) attempt(() => runtimeProcess?.completeSelectedOutcome(completed));
-    const diagnostics = cleanupErrors.length ? { cleanupErrors } : {};
-    if (
-      (executor.complete || "code" in result || settled || completed.kind === "signaled") &&
-      !(req.runtimeProcess && startupFailure && completed.kind === "start-failed")
-    ) {
-      postToHost({ type: "exit", code, signal, sleep: sleepMode, ...diagnostics });
-    } else {
-      postToHost({
-        type: "error",
-        code,
-        errno: completed.kind === "start-failed" ? completed.error : undefined,
-        message: describeStartError(result.error, false),
-        diagnostic: startupDiagnostic ?? describeStartError(result.error),
+    postToHost(
+      workerCompletionMessage(result, completed, {
+        legacy: !!executor.complete,
+        settled: !!settled,
+        runtime: !!req.runtimeProcess,
+        startupFailure,
+        startupDiagnostic,
         sleep: sleepMode,
-        ...diagnostics,
-      });
-    }
+        cleanupErrors,
+      }),
+    );
   };
   const terminalResult = (error: unknown): { code: number; signal?: number } | null => {
     if (error instanceof WasiExit) return { code: error.code };

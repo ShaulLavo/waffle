@@ -44,8 +44,6 @@ export function createWorkerPipeCodec(options: WorkerPipeCodecOptions = {}): Wor
         if (options.fallback) return options.fallback.export(descriptor, pid);
         throw new TypeError(`unsupported worker descriptor: ${descriptor.resource.kind}`);
       }
-      // This is the synchronous spawn ownership boundary. Parent closure after export cannot
-      // remove this child's endpoint, including before its worker or supervisor chunk starts.
       const endpoint = options.successor
         ? descriptor.resource.retainSuccessor()
         : descriptor.resource.forProcess(pid);

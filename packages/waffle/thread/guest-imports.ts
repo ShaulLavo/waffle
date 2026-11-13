@@ -323,6 +323,7 @@ function importValue(
   if (entry.module === "wasi_snapshot_preview1" && objectHasOwn(wasi, entry.name))
     return wasi[entry.name]!;
   if (entry.module === "wasi" && entry.name === "thread-spawn") return spawn;
+  if (entry.module === "runtime_proc" && entry.name === "exec") return () => -58;
   if (entry.module === "runtime_proc" && objectHasOwn(options.interrupt, entry.name))
     return options.interrupt[entry.name]!;
   throw new TypeError(`unsupported thread import ${entry.module}.${entry.name}`);
