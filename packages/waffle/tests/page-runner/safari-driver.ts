@@ -351,7 +351,7 @@ export class SafariDriver implements Driver {
       waitForWorkerClose: (worker) => observer.waitForWorkerClose(worker),
       waitForWorkerURLClose: (url) => observer.waitForWorkerURLClose(url),
       beginDocumentClose: (nextURL) => observer.beginDocumentClose(nextURL),
-      documentClosed: () => observer.documentClosed(),
+      documentRetirement: () => observer.documentRetirement(),
       revokeActions: () => observer.revokeActions(),
       revoke: () => observer.revoke(),
       stop: () =>

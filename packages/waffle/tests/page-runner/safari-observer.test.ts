@@ -646,16 +646,28 @@ test("termination requests and wrong owners cannot supply a browser close", asyn
   await accepted.stop();
 });
 
-test("stream loss and missing final close during owned destruction fail, never empty success", async () => {
-  for (const loss of ["stream", "missing"]) {
+test("stream loss fails while exact document retirement keeps Worker receipts unconfirmed", async () => {
+  for (const loss of ["stream", "missing", "listing"]) {
     const f = fixture();
     const ledger = await f.observer.attach();
     const waiting = ledger.waitForWorkerClose(ledger.workers()[0]!);
     ledger.beginDocumentClose();
-    f.envelope({ method: "Target.targetDestroyed", params: { targetId: "page-1" } });
+    if (loss === "listing")
+      f.observer.accept({
+        selector: "_rpc_applicationSentListing:",
+        argument: { WIRApplicationIdentifierKey: "app", WIRListingKey: {} },
+        sequence: 100,
+      });
+    else f.envelope({ method: "Target.targetDestroyed", params: { targetId: "page-1" } });
+    expect((await ledger.documentRetirement()).source).toBe(
+      loss === "listing" ? "safari-listing-removed" : "safari-target-destroyed",
+    );
     if (loss === "stream") f.observer.lose(new Error("stream lost"));
     const results = await Promise.allSettled([ledger.stop(), waiting]);
-    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    expect(results[0]?.status).toBe(loss === "stream" ? "rejected" : "fulfilled");
+    expect(results[1]?.status).toBe("rejected");
+    if (loss !== "stream")
+      expect(results[1]).toMatchObject({ reason: { name: "WorkerCloseUnconfirmed" } });
     expect(f.lifecycle.at(-1)).toBe("close");
     expect(await f.consumers.join(100)).toBe(true);
   }

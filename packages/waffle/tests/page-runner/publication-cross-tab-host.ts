@@ -134,7 +134,7 @@ function nativePage(
       throw new Error("Cross-tab evaluations did not join before peer close");
     try {
       await peer.close();
-      if (ordinal !== undefined) diagnostics?.lifecycle.mark(ordinal, "worker-receipts-joined");
+      if (ordinal !== undefined) diagnostics?.lifecycle.mark(ordinal, "peer-close-joined");
     } finally {
       await remove();
       if (ordinal !== undefined) diagnostics?.lifecycle.end(ordinal, "listener-removal-joined");

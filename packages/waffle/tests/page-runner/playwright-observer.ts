@@ -62,10 +62,10 @@ export function observePlaywrightPage(
       return;
     }
     if (ledger.closing && frame.url() === ledger.closingNavigationURL)
-      return ledger.documentClosed();
+      return ledger.documentClosed("playwright-navigation");
     ledger.lose(new Error("Observed Playwright document generation changed"));
   };
-  const lost = () => ledger.documentClosed();
+  const lost = () => ledger.documentClosed("playwright-page-close");
   const crashed = () => ledger.lose(new Error("Observed Playwright page crashed"));
   const abort = () => ledger.lose(new Error("Observation admission aborted"));
   const consoleMessage = (message: ConsoleMessage) => {

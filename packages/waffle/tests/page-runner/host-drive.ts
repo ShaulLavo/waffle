@@ -1227,22 +1227,34 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
         throw new Error("Exact peer close not confirmed");
       this.collector.completeTransition(transition, state.handle, null, remaining);
       trace.mark(ordinal, "physical-close-confirmed");
-      trace.mark(ordinal, "worker-receipts-pending");
+      if (observation) trace.mark(ordinal, "document-retirement-pending");
     });
-    const completed = closing.then(async () => {
-      if (!observation) {
-        trace.end(ordinal, "completed");
-        return;
-      }
-      await bounded(
-        Promise.all(workers.map((worker) => observation.waitForWorkerClose(worker))),
-        Math.max(0, until - performance.now()),
-        "owned peer browser Worker close",
-      );
-      trace.end(ordinal, "worker-receipts-joined");
-    });
+    const completed = closing.then(() => this.joinRetirement(observation, until, ordinal));
     this.closes.set(state, completed);
     return completed;
+  }
+  private async joinRetirement(
+    observation: DriverObservation | undefined,
+    until: number,
+    ordinal: number,
+  ): Promise<void> {
+    const trace = this.collector.diagnostics.lifecycle;
+    if (!observation) return trace.end(ordinal, "completed");
+    try {
+      const retired = await bounded(
+        observation.documentRetirement(),
+        Math.max(0, until - performance.now()),
+        "owned peer document retirement",
+      );
+      trace.end(ordinal, "document-retired", {
+        retirementSource: retired.source,
+        outstandingWorkers: retired.outstandingWorkers.slice(0, 64),
+        outstandingCount: retired.outstandingCount,
+      });
+    } catch (error) {
+      trace.end(ordinal, "failed");
+      throw error;
+    }
   }
   private async closeRemainingPeers(): Promise<void> {
     const peers = this.collector.documents.filter(

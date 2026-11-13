@@ -343,7 +343,7 @@ export class SafariObserver {
     if (!isDict(page)) {
       if (!this.ledger?.closing) throw new Error("Owned Inspector page disappeared");
       this.targetRetired = true;
-      this.ledger.documentClosed();
+      this.ledger.documentClosed("safari-listing-removed");
       return;
     }
     if (this.detaching && page.WIRConnectionIdentifierKey !== this.connection) {
@@ -372,7 +372,7 @@ export class SafariObserver {
       if (message.params.targetId !== this.target || !this.ledger?.closing)
         throw new Error("Owned Inspector target destroyed");
       this.targetRetired = true;
-      this.ledger.documentClosed();
+      this.ledger.documentClosed("safari-target-destroyed");
       return;
     }
     if (message.method !== "Target.dispatchMessageFromTarget") {
@@ -432,7 +432,7 @@ export class SafariObserver {
       event.url === this.ledger.closingNavigationURL &&
       params.documentURL === event.url
     ) {
-      this.ledger.documentClosed();
+      this.ledger.documentClosed("safari-navigation-request");
       return;
     }
     if (params.documentURL !== this.binding.expectedURL)

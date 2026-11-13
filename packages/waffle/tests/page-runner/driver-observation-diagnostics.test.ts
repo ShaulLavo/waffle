@@ -35,11 +35,20 @@ async function wrapper(engine: "safari" | "playwright", consoleDeclared: boolean
     if (typeof factory !== "function") throw Error("Missing actual owned-wrapper factory");
     const owned: unknown = Reflect.apply(factory, driver, [ledger, binding]);
     if (!record(owned)) throw Error("Invalid owned wrapper");
-    const { diagnosticSnapshot, workerOrdinal, waitForWorkerClose, stop } = owned;
+    const {
+      diagnosticSnapshot,
+      workerOrdinal,
+      waitForWorkerClose,
+      beginDocumentClose,
+      documentRetirement,
+      stop,
+    } = owned;
     if (
       typeof diagnosticSnapshot !== "function" ||
       typeof workerOrdinal !== "function" ||
       typeof waitForWorkerClose !== "function" ||
+      typeof beginDocumentClose !== "function" ||
+      typeof documentRetirement !== "function" ||
       typeof stop !== "function"
     )
       throw Error("Owned wrapper dropped observation methods");
@@ -62,6 +71,10 @@ async function wrapper(engine: "safari" | "playwright", consoleDeclared: boolean
     expect(diagnosticSnapshot()).toMatchObject({
       workers: { unavailable: 0, active: [], completed: [{ facts: { worker: 1 } }] },
     });
+    expect(Object.hasOwn(owned, "documentClosed")).toBe(false);
+    beginDocumentClose();
+    ledger.documentClosed("playwright-page-close");
+    expect(await documentRetirement()).toBe(await ledger.documentRetirement());
     const retirement: unknown = stop();
     expect(stop()).toBe(retirement);
     await retirement;

@@ -1,3 +1,4 @@
+import type { DocumentRetirementSource } from "./driver.js";
 import { record } from "./protocol.js";
 
 const operations = [
@@ -129,8 +130,10 @@ const stages = [
   "state-checked",
   "physical-close-requested",
   "physical-close-confirmed",
-  "worker-receipts-pending",
-  "worker-receipts-joined",
+  "document-retirement-pending",
+  "document-retired",
+  "receipt-unconfirmed",
+  "peer-close-joined",
   "listener-removal-joined",
   "bridge-invoked",
   "response-arrived",
@@ -162,6 +165,9 @@ export type Purpose =
   | "verdict"
   | "other-command";
 export type Facts = {
+  retirementSource?: DocumentRetirementSource;
+  outstandingWorkers?: number[];
+  outstandingCount?: number;
   context?: "body" | "cleanup";
   workers?: number[];
   workerCount?: number;
@@ -294,15 +300,15 @@ export class BoundedTrace {
     if (entry.stages.at(-1)?.stage === stage) entry.stages.pop();
     entry.stages.push({ stage, at: this.now() });
   }
-  end(ordinal: number, stage: Stage): void {
+  end(ordinal: number, stage: Stage, facts: Facts = {}): void {
     try {
-      this.endEntry(ordinal, stage);
+      this.endEntry(ordinal, stage, facts);
     } catch {
       this.unavailable++;
     }
   }
-  private endEntry(ordinal: number, stage: Stage): void {
-    this.mark(ordinal, stage);
+  private endEntry(ordinal: number, stage: Stage, facts: Facts): void {
+    this.mark(ordinal, stage, facts);
     const entry = this.active.get(ordinal);
     if (!entry) return;
     const now = this.now();

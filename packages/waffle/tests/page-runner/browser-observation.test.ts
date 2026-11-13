@@ -37,7 +37,12 @@ test("worker ordinals remain independent of observer lifecycle diagnostic entrie
     ledger.created("two", "https://owned.test/resident-authority.js");
     const ordinal = ledger.workerOrdinal("https://owned.test/resident-authority.js");
     expect(ordinal).toBe(2);
-    expect(ledger.diagnosticSnapshot().workers.active[0]?.facts.worker).toBe(ordinal ?? undefined);
+    expect(
+      ledger
+        .diagnosticSnapshot()
+        .workers.completed.find((entry) => entry.facts.worker === ordinal)
+        ?.stages.at(-1)?.stage,
+    ).toBe("receipt-unconfirmed");
     ledger.terminated("two", "safari-worker-terminated");
   } finally {
     release.resolve();
@@ -320,7 +325,7 @@ test("generation ownership rejects foreign objects and cannot close a same-URL s
     if (event.kind === "closed") closed++;
   });
   old.beginDocumentClose();
-  old.documentClosed();
+  old.documentClosed("playwright-page-close");
   old.terminated("reused-across-generations", "safari-worker-terminated");
   await old.waitForWorkerClose(worker);
   expect(closed).toBe(0);
@@ -362,7 +367,7 @@ for (const reason of [undefined, null, false, 0, ""]) {
   });
 }
 
-test("intentional close keeps admitted callbacks live but missing final close fails", async () => {
+test("intentional close keeps admitted callbacks live and missing receipts stay unconfirmed", async () => {
   const ledger = new BrowserObservation("owned", new HostConsumers(), async () => {});
   const events: string[] = [];
   ledger.onWorker((event) => {
@@ -374,7 +379,7 @@ test("intentional close keeps admitted callbacks live but missing final close fa
   ledger.beginDocumentClose();
   expect(() => ledger.workers()).toThrow("revoked");
   expect(() => ledger.onWorker(() => {})).toThrow("revoked");
-  ledger.documentClosed();
+  ledger.documentClosed("playwright-page-close");
   expect(events).toEqual(["created"]);
   ledger.terminated("one", "safari-worker-terminated");
   await closed;
@@ -384,9 +389,10 @@ test("intentional close keeps admitted callbacks live but missing final close fa
   missing.created("one", "https://owned.test/one.js");
   const waiting = missing.waitForWorkerClose(missing.workers()[0]!);
   missing.beginDocumentClose();
-  missing.documentClosed();
+  missing.documentClosed("playwright-page-close");
   const outcomes = await Promise.allSettled([missing.stop(), waiting]);
-  expect(outcomes.every((result) => result.status === "rejected")).toBe(true);
+  expect(outcomes[0]?.status).toBe("fulfilled");
+  expect(outcomes[1]?.status).toBe("rejected");
 });
 
 test("callback and teardown failures are both retained, including a falsy primary", async () => {

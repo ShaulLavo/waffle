@@ -260,6 +260,15 @@ async function nativeAdapterControl(pageFailure = false): Promise<void> {
       job: 1,
       polls: 1,
     });
+    expect(
+      diagnostics.snapshot().current.lifecycle.completed[0]?.stages.map((entry) => entry.stage),
+    ).toEqual([
+      "stop-requested",
+      "task-joined",
+      "state-checked",
+      "peer-close-joined",
+      "listener-removal-joined",
+    ]);
     if (pageFailure) expect(diagnostics.snapshot().current.unavailable).toBe(4);
   } finally {
     ingestion?.mockRestore();

@@ -6,9 +6,15 @@ import { crossTabAdapter } from "./publication-cross-tab-suite.js";
 import { runPageSuite } from "waffle/testing/page-runner";
 import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
 
-for (const mode of ["complete", "wrong-original-bytes"] as const) {
+const controls = [
+  { engine: "chromium", mode: "complete" },
+  { engine: "chromium", mode: "wrong-original-bytes" },
+  // A bounded desktop WebKit trial, independent of native Safari qualification.
+  { engine: "webkit", mode: "complete" },
+] as const;
+for (const { engine, mode } of controls) {
   test.skipIf(process.env.PUBLICATION_BROWSER_CONTROLS !== "1")(
-    `cross-tab native adapter ${mode} uses the original command and joins owned peers`,
+    `cross-tab ${engine} adapter ${mode} uses the original command and joins owned peers`,
     async () => {
       const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? "/work/tmp", "wct-"));
       const adapter =
@@ -32,11 +38,11 @@ export async function control(operation, value) {
       try {
         const result = await runPageSuite(
           adapter,
-          (scratch) => new PlaywrightDriver("chromium", scratch),
+          (scratch) => new PlaywrightDriver(engine, scratch),
           {
             scratchRoot: root,
             resultPath: process.env.CROSS_TAB_CONTROL_RESULTS
-              ? join(process.env.CROSS_TAB_CONTROL_RESULTS, `${mode}.json`)
+              ? join(process.env.CROSS_TAB_CONTROL_RESULTS, `${engine}-${mode}.json`)
               : join(root, "result.json"),
             port: "ephemeral",
           },

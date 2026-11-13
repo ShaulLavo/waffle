@@ -31,6 +31,21 @@ export interface DriverPressControl {
   /** Await sequentially. The callback starts its send synchronously, without preparation. */
   dispatch<T>(send: () => Promise<T>): Promise<T>;
 }
+export type DocumentRetirementSource =
+  | "safari-listing-removed"
+  | "safari-target-destroyed"
+  | "safari-navigation-request"
+  | "playwright-page-close"
+  | "playwright-navigation";
+/** Exact retirement of one observed document, independent of Worker receipts. */
+export type DocumentRetirement = Readonly<{
+  intent: "close" | "navigation";
+  source: DocumentRetirementSource;
+  at: number;
+  /** First 64 outstanding Worker ordinals. outstandingCount includes any omitted ones. */
+  outstandingWorkers: readonly number[];
+  outstandingCount: number;
+}>;
 export interface DriverObservation {
   readonly failure: Promise<Error>;
   diagnosticSnapshot?(): unknown;
@@ -45,7 +60,8 @@ export interface DriverObservation {
   waitForWorkerClose(worker: HostWorker): Promise<void>;
   waitForWorkerURLClose(url: string): Promise<void>;
   beginDocumentClose(nextURL?: string): void;
-  documentClosed(): void;
+  /** Exact close retirement; rejects on loss or stop before retirement. Settles no Worker wait. */
+  documentRetirement(): Promise<DocumentRetirement>;
   revokeActions(): void;
   revoke(): void;
   stop(): Promise<void>;

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { BrowserObservation } from "./browser-observation.js";
+import { BrowserObservation, WorkerCloseUnconfirmed } from "./browser-observation.js";
 import { Collector } from "./collector.js";
 import { HostConsumers } from "./owned-consumers.js";
 import { serveCollector } from "./suite-host.js";
@@ -87,7 +87,14 @@ test("the real collector close route waits outside driver serialization and auth
   }
 });
 
-for (const end of ["before-query", "after-query", "physical-close", "lost", "retired"] as const)
+for (const end of [
+  "before-query",
+  "after-query",
+  "physical-close",
+  "lost",
+  "retired",
+  "close-retired",
+] as const)
   test(`exact close diagnostic progression survives ${end} without a fabricated receipt`, async () => {
     const f = fixture();
     f.observation.initialized("worker", true);
@@ -102,29 +109,39 @@ for (const end of ["before-query", "after-query", "physical-close", "lost", "ret
         query: 7,
         fixture: "other-worker",
       });
-      if (end === "physical-close") {
+      if (end === "physical-close" || end === "close-retired") {
         f.observation.beginDocumentClose();
-        f.observation.documentClosed();
+        f.observation.documentClosed("safari-target-destroyed");
         let settled = false;
-        void waiting.then(() => {
-          settled = true;
-        });
+        void waiting.then(
+          () => {
+            settled = true;
+          },
+          () => {},
+        );
         await Bun.sleep(0);
         expect(settled).toBe(false);
       }
       if (end === "lost") f.observation.lose(Error("private-observer-error"));
-      else if (end === "retired") await f.observation.stop();
+      else if (end === "retired" || end === "close-retired") await f.observation.stop();
       else if (end !== "before-query")
         f.observation.terminated("worker", "safari-worker-terminated");
-      if (end === "lost" || end === "retired") await expect(waiting).rejects.toThrow();
+      if (end === "lost" || end === "retired" || end === "close-retired")
+        await expect(waiting).rejects.toThrow();
       else await waiting;
+      if (end === "close-retired")
+        await expect(waiting).rejects.toBeInstanceOf(WorkerCloseUnconfirmed);
       const snapshot = f.collector.diagnostics.snapshot().current;
       expect(snapshot.queries.active[0]?.stages.at(-1)?.stage).toBe(
-        end === "lost" || end === "retired" ? "wait-rejected" : "wait-resolved",
+        end === "lost" || end === "retired" || end === "close-retired"
+          ? "wait-rejected"
+          : "wait-resolved",
       );
       const native = f.observation.diagnosticSnapshot().workers;
       const receipt = native.completed.find((item) => item.facts.worker === 1);
-      if (end === "lost" || end === "retired") expect(receipt).toBeUndefined();
+      if (end === "lost") expect(receipt).toBeUndefined();
+      else if (end === "retired" || end === "close-retired")
+        expect(receipt?.stages.at(-1)?.stage).toBe("receipt-unconfirmed");
       else
         expect(receipt?.stages.map((item) => item.stage)).toEqual([
           "native-created",

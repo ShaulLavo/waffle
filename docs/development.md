@@ -251,10 +251,14 @@ immutable Worker URLs, ordered `onWorker` creation and close replay, and exact-o
 lookup, including already-closed Workers. Playwright Firefox can report the original relative
 script URL. The host preserves that metadata rather than rewriting the original URL oracle.
 
-An intentional peer close revokes actions before closing the window, but retains lifecycle
-callbacks until the matching browser events arrive. Safari's `Worker.workerTerminated` and
-Playwright's real Worker `close` event establish browser lifecycle closure. Window disappearance,
-a termination request, or a cleanup result cannot supply that event. Browser close does not prove
+An intentional peer close revokes actions, closes the window and resolves after exact handle
+disappearance and exact document retirement from Safari listing removal or `Target.targetDestroyed`,
+or Playwright page `close`. This matches the original desktop `page.close()` boundary.
+Retirement emits no Worker `closed` event and settles no `waitForWorkerClose`. Each Worker wait
+resolves only from that Worker's `Worker.workerTerminated` or Playwright Worker `close`, including
+after retirement. At observation stop, still-unreported Workers reject with `WorkerCloseUnconfirmed`
+and are recorded as receipt-unconfirmed. Explicit fixture termination retains its strict per-Worker
+requirement. Reload still waits for every replaced-generation Worker. Browser close does not prove
 OS-thread joining, memory reclamation, lock release or database deletion. The original later
 resource checks remain required. Recovery remains a separate command.
 
