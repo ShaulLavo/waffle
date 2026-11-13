@@ -36,6 +36,7 @@ export class FakeDriver implements Driver {
     failure: null,
     pending: 0,
     retired: false,
+    controlFailure: null,
   };
   private retirement: ReturnType<typeof setInterval> | undefined;
   private retirementBusy = false;
@@ -77,6 +78,7 @@ export class FakeDriver implements Driver {
       failure: null,
       pending: 0,
       retired: false,
+      controlFailure: null,
     };
     await this.send({ kind: "hello", token: String(config.token), group: String(config.group) });
     await this.run(config.role, config.request);

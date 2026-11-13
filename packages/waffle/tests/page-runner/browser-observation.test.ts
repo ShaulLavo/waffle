@@ -1,6 +1,55 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { BrowserObservation, requestEvent, workerEvent } from "./browser-observation.js";
 import { HostConsumers } from "./owned-consumers.js";
+
+test("diagnostic clone failure preserves the exact native worker close receipt", async () => {
+  const consumers = new HostConsumers();
+  const ledger = new BrowserObservation("owned", consumers, async () => {});
+  ledger.created("one", "https://owned.test/resident-guest.js");
+  const worker = ledger.workers()[0];
+  if (!worker) throw Error("Missing actual worker");
+  const closed = ledger.waitForWorkerClose(worker);
+  void closed.catch(() => {});
+  const clone = spyOn(globalThis, "structuredClone").mockImplementation(() => {
+    throw Error("DIAGNOSTIC_CLONE_FAILURE");
+  });
+  try {
+    expect(() => ledger.terminated("one", "safari-worker-terminated")).not.toThrow();
+    await closed;
+    expect(ledger.workers()).toEqual([]);
+  } finally {
+    clone.mockRestore();
+    await ledger.stop();
+    await closed.catch(() => {});
+    expect(await consumers.join(100)).toBe(true);
+  }
+  expect(ledger.diagnosticSnapshot().workers.unavailable).toBeGreaterThan(0);
+});
+
+test("worker ordinals remain independent of observer lifecycle diagnostic entries", async () => {
+  const consumers = new HostConsumers();
+  const release = Promise.withResolvers<void>();
+  const ledger = new BrowserObservation("owned", consumers, () => release.promise);
+  ledger.created("one", "https://owned.test/resident-guest.js");
+  ledger.terminated("one", "safari-worker-terminated");
+  const stopped = ledger.stop();
+  try {
+    ledger.created("two", "https://owned.test/resident-authority.js");
+    const ordinal = ledger.workerOrdinal("https://owned.test/resident-authority.js");
+    expect(ordinal).toBe(2);
+    expect(
+      ledger
+        .diagnosticSnapshot()
+        .workers.completed.find((entry) => entry.facts.worker === ordinal)
+        ?.stages.at(-1)?.stage,
+    ).toBe("receipt-unconfirmed");
+    ledger.terminated("two", "safari-worker-terminated");
+  } finally {
+    release.resolve();
+    await stopped;
+    expect(await consumers.join(100)).toBe(true);
+  }
+});
 
 const request = (url = "https://owned.test/python.wasm", sequence = 1, extras = {}) =>
   requestEvent(
@@ -276,7 +325,7 @@ test("generation ownership rejects foreign objects and cannot close a same-URL s
     if (event.kind === "closed") closed++;
   });
   old.beginDocumentClose();
-  old.documentClosed();
+  old.documentClosed("playwright-page-close");
   old.terminated("reused-across-generations", "safari-worker-terminated");
   await old.waitForWorkerClose(worker);
   expect(closed).toBe(0);
@@ -318,7 +367,7 @@ for (const reason of [undefined, null, false, 0, ""]) {
   });
 }
 
-test("intentional close keeps admitted callbacks live but missing final close fails", async () => {
+test("intentional close keeps admitted callbacks live and missing receipts stay unconfirmed", async () => {
   const ledger = new BrowserObservation("owned", new HostConsumers(), async () => {});
   const events: string[] = [];
   ledger.onWorker((event) => {
@@ -330,7 +379,7 @@ test("intentional close keeps admitted callbacks live but missing final close fa
   ledger.beginDocumentClose();
   expect(() => ledger.workers()).toThrow("revoked");
   expect(() => ledger.onWorker(() => {})).toThrow("revoked");
-  ledger.documentClosed();
+  ledger.documentClosed("playwright-page-close");
   expect(events).toEqual(["created"]);
   ledger.terminated("one", "safari-worker-terminated");
   await closed;
@@ -340,9 +389,10 @@ test("intentional close keeps admitted callbacks live but missing final close fa
   missing.created("one", "https://owned.test/one.js");
   const waiting = missing.waitForWorkerClose(missing.workers()[0]!);
   missing.beginDocumentClose();
-  missing.documentClosed();
+  missing.documentClosed("playwright-page-close");
   const outcomes = await Promise.allSettled([missing.stop(), waiting]);
-  expect(outcomes.every((result) => result.status === "rejected")).toBe(true);
+  expect(outcomes[0]?.status).toBe("fulfilled");
+  expect(outcomes[1]?.status).toBe("rejected");
 });
 
 test("callback and teardown failures are both retained, including a falsy primary", async () => {

@@ -4,7 +4,8 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 
 | Source                                                                                                                                      | Class                 | Revision and local change                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/page-runner/{inspector-plist,inspector-stream,safari-observer,inspector-endpoint,inspector-endpoint-receipt,browser-observation}.ts` | Original adapter      | Original owned-page diagnostic codec and protocol-reference adapters. See [Native page observation sources](#native-page-observation-sources).                                                                                                                                                                                                                                                                               |
+| `tests/page-runner/continuity-lock-diagnostic.ts`, `continuity-lock-control-page.ts` | Original adapter | Waffle page-only Web Locks diagnostic and local controls. No upstream implementation copied. See [Page continuity lock observation](#page-continuity-lock-observation). |
+| `tests/page-runner/{inspector-plist,inspector-stream,safari-observer,inspector-endpoint,inspector-endpoint-receipt,browser-observation,host-drive}.ts` | Original adapter      | Original owned-page diagnostic codec and protocol-reference adapters. See [Native page observation sources](#native-page-observation-sources).                                                                                                                                                                                                                                                                               |
 | `tests/page-runner/{console-observation,safari-console,playwright-observer}.ts`                                                             | Original adapter      | Original ordinary-page console verdict and browser event adapters. See [Ordinary page console observation](#ordinary-page-console-observation).                                                                                                                                                                                                                                                                              |
 | `core/`, `fs/`, `proc/`, `interrupt/`                                                                                                       | Original adapter      | Browser/WASI runtime services developed in bun-wasm through the frozen extraction revision. The current tree is TypeScript source; `dist/` is generated during `prepare` and is never tracked.                                                                                                                                                                                                                               |
 | `proc/pipes.ts`                                                                                                                             | Original adapter      | Waffle at `1722b65e81b1b37d3931d9fc1e078ee33d8b4b8d`; counted slot incarnations, append writer reuse and fenced relay-reader recovery. No external upstream implementation copied. See [Pipe slot lifetimes](#pipe-slot-lifetimes).                                                                                                                                                                                          |
@@ -673,6 +674,31 @@ instead of installing another moving release. GNU FTP, curl.se, codeload, npm
 registry traffic, and GitHub artifact transfers are outside the release endpoint
 change.
 
+## Page continuity lock observation
+
+The page bootstrap captures the existing manager methods before importing the cross-tab fixture.
+The observer records page-owned continuity requests and candidates for their existing release-time
+queries. It makes no request or query of its own and never reads query snapshots. The evaluator's
+existing diagnostic reply carries the bounded scalar records. Query association uses evaluator job
+identity, not a native request identifier. Every query association remains ambiguous, even for one
+job and one candidate. A query does not consume a candidate, since another same-job caller may
+have issued it. It cannot identify a holder or prove physical Worker survival.
+
+The captured methods receive their original receivers and arguments, except for the transparent
+callback wrapper. That wrapper preserves the callback receiver, arguments, return value and thrown
+value. Request and query callers receive the original Promise. Nonthrowing Promise observers add
+microtasks and mark observed rejections handled, so this diagnostic is not scheduling-neutral.
+It does not change the caller's settlement. Arbitrary error text is omitted because it can contain
+workspace tokens; only known error names, the thrown value's type and finite errno survive.
+Records contain no lock name, Lock object, callback, runtime capability or query snapshot.
+The page and projector retain the first eight records and recent records within the 32-record and
+8 KiB limits. Aggregate trimming removes records from the largest page first and preserves each
+page's prefix as long as its overall bound permits; dropped counts remain explicit.
+
+The Chromium control uses the actual guard and untouched exclusive helper. Injected manager
+failures distinguish null acquisition, synchronous throws, pre-grant rejection and granted lifetime
+or query failure. These controls validate the observer, not the cause of any native Safari failure.
+
 ## Native page observation sources
 
 `tests/page-runner/inspector-plist.ts` adapts the owner's original bounded binary-plist codec from the November 6, 2026 `bun-inspector-owned-page-dev/wir/plist.ts` diagnostic. Its four-byte framing and binary-plist parsing are retained. Equivalent allocation-free ASCII and surrogate checks replace the original regular expression and ES2024 string helper for the repository lint and ES2023 type target. It is not an Apple or Appium implementation copy.
@@ -682,6 +708,15 @@ change.
 `inspector-stream.ts`, `safari-observer.ts`, `inspector-endpoint.ts`, and `browser-observation.ts` are original adapters. WIR selectors, sender/destination keys and target wrappers follow Appium `appium-remote-debugger` revision `cb98aa8766f71a9baed712ee21e6779d8a812b4e`, `lib/rpc/remote-messages.ts` and `lib/rpc/rpc-message-handler.ts`. Domain events follow WebKit revision `4c54bb31e84b34d1ea49748e55bcdbad1499629a`, `Source/JavaScriptCore/inspector/protocol/Worker.json`, `Network.json`, and `InspectorWorkerAgent.cpp`. These are protocol references, not copied implementations or a claim about installed Safari.
 
 The local transport owns actual writes and both inner and outer Target replies through `HostConsumers`. Missing or refused replies fail command settlement, including startup continuation and shutdown. Boundary-aligned EOF is accepted only during owned socket close; unexpected or truncated EOF remains loss. It reduces events before completing a later received reply. It does not use the old diagnostic controller, pause-on-start, Automation, Inspector application execution, cache mutation, or a second WebDriver session. Worker enable's startup wait is released only by the promptly owned `Worker.initialized` handshake. Native endpoint discovery requires an explicit receipt and existing read-only helper path. The adapter invokes that helper for fresh exact-device metadata, compares the live boot/process/socket binding with the receipt and checks the current socket node. It does not scan private profiles or bundle a helper binary. Exact installed event coverage and ordering against WebDriver completion remain unproved until real execution.
+
+The peer-close boundary in `host-drive.ts` and `browser-observation.ts` is an original adapter.
+It follows playwright-core 1.64.1, resolved by `bun.lock`: server `Page` close awaits page
+closure in `packages/playwright-core/src/server/page.ts`; WebKit `WKPage.closePage` and
+`WKBrowser._onPageProxyDestroyed` calling `WKPage.didClose` in `server/webkit/wkPage.ts`
+and `wkBrowser.ts` involve no all-Worker termination join. The cached `lib/coreBundle.js`
+SHA-256 is `829521b67ed7be90c7d6d6098ff39f2241562d47e4ad7ccab13710924a56001d`.
+These are behavior references. No implementation is copied, and they establish no Safari
+Worker termination or physical thread-death proof.
 
 ## Binaryen runtime helpers
 

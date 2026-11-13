@@ -202,6 +202,7 @@ class ArrivalDriver extends PeerDriverFixture {
   readonly bootstraps = new Map<string, string>();
   readonly arrived = new Set<string>();
   readonly observations: string[] = [];
+  readonly ledgers = new Map<string, BrowserObservation>();
   navigated = Promise.withResolvers<string>();
   late = true;
   pauseAfter = 0;
@@ -216,6 +217,11 @@ class ArrivalDriver extends PeerDriverFixture {
     if (!this.late || this.bootstrapCount++ < this.pauseAfter) await this.arrive(url);
     this.navigated.resolve(url);
   }
+  override async closeWindow(): Promise<void> {
+    const ledger = this.ledgers.get(this.selected);
+    await super.closeWindow();
+    ledger?.documentClosed("playwright-page-close");
+  }
   async arrive(url: string): Promise<void> {
     this.arrived.add(url);
     await loadBootstrap(url);
@@ -228,7 +234,9 @@ class ArrivalDriver extends PeerDriverFixture {
     expect(this.arrived.has(binding.bootstrapURL)).toBe(true);
     expect(await this.url()).toBe(binding.bootstrapURL);
     expect(await this.handle()).toBe(binding.window);
-    return new BrowserObservation(binding.bootstrapURL, binding.consumers, async () => {});
+    const ledger = new BrowserObservation(binding.bootstrapURL, binding.consumers, async () => {});
+    this.ledgers.set(binding.window, ledger);
+    return ledger;
   }
 }
 

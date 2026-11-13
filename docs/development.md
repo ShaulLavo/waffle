@@ -251,12 +251,34 @@ immutable Worker URLs, ordered `onWorker` creation and close replay, and exact-o
 lookup, including already-closed Workers. Playwright Firefox can report the original relative
 script URL. The host preserves that metadata rather than rewriting the original URL oracle.
 
-An intentional peer close revokes actions before closing the window, but retains lifecycle
-callbacks until the matching browser events arrive. Safari's `Worker.workerTerminated` and
-Playwright's real Worker `close` event establish browser lifecycle closure. Window disappearance,
-a termination request, or a cleanup result cannot supply that event. Browser close does not prove
+An intentional peer close revokes actions, closes the window and resolves after exact handle
+disappearance and exact document retirement from Safari listing removal or `Target.targetDestroyed`,
+or Playwright page `close`. This matches the original desktop `page.close()` boundary.
+Retirement emits no Worker `closed` event and settles no `waitForWorkerClose`. Each Worker wait
+resolves only from that Worker's `Worker.workerTerminated` or Playwright Worker `close`, including
+after retirement. At observation stop, still-unreported Workers reject with `WorkerCloseUnconfirmed`
+and are recorded as receipt-unconfirmed. Explicit fixture termination retains its strict per-Worker
+requirement. Reload still waits for every replaced-generation Worker. Browser close does not prove
 OS-thread joining, memory reclamation, lock release or database deletion. The original later
-resource checks remain required. Cross-tab and recovery commands are separate ports.
+resource checks remain required. Recovery remains a separate command.
+
+The complete cross-tab command shares its original host assertions with desktop. It retains
+all 26 ordered labels across persistent-owner, resident, workspace and cleanup controls,
+including every original loop and negative control. It uses the same 180-second command
+budget, supported peer pages and per-document Worker close observation.
+
+```sh
+STORAGE_SCRATCH_ROOT=/absolute/scratch/root IOS_UDID=<exact-simulator-uuid> \
+  bun packages/waffle/tests/publication-cross-tab-browser-runner.ts ios-safari --result /absolute/cross-tab.json
+bun packages/waffle/tests/publication-cross-tab-inventory.ts
+```
+
+The inventory command prints the complete ordered coverage map. The native cross-tab entry
+accepts the complete command only. The existing desktop focused selectors remain available.
+Local adapter and intentional wrong-byte controls run with `PUBLICATION_BROWSER_CONTROLS=1
+bun test packages/waffle/tests/page-runner/publication-cross-tab-browser.test.ts`. The adapter
+keeps concurrent evaluations inside one tracked page task and joins them before closing each
+peer. Its value transport preserves original bigint fields and copied byte arrays.
 
 Local adapter controls run with `PUBLICATION_BROWSER_CONTROLS=1 bun test
 packages/waffle/tests/page-runner/worker-lifecycle-browser.test.ts`. These controls and desktop

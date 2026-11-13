@@ -62,9 +62,17 @@ export class PlaywrightDriver implements Driver {
     const observation = observePlaywrightPage(page, binding);
     this.observations.set(binding.expectedURL, observation);
     this.observedWindows.set(binding.window, binding.expectedURL);
+    return this.ownObservation(observation, binding);
+  }
+  private ownObservation(
+    observation: ReturnType<typeof observePlaywrightPage>,
+    binding: DriverObservationBinding,
+  ): DriverObservation {
     let retirement: Promise<void> | undefined;
     return {
       failure: observation.failure,
+      diagnosticSnapshot: () => observation.diagnosticSnapshot(),
+      workerOrdinal: (worker) => observation.workerOrdinal(worker),
       ...(binding.console
         ? { console: () => observation.console(), settleConsole: () => observation.settleConsole() }
         : {}),
@@ -76,7 +84,7 @@ export class PlaywrightDriver implements Driver {
       waitForWorkerClose: (worker) => observation.waitForWorkerClose(worker),
       waitForWorkerURLClose: (url) => observation.waitForWorkerURLClose(url),
       beginDocumentClose: (nextURL) => observation.beginDocumentClose(nextURL),
-      documentClosed: () => observation.documentClosed(),
+      documentRetirement: () => observation.documentRetirement(),
       revokeActions: () => observation.revokeActions(),
       revoke: () => observation.revoke(),
       stop: () =>

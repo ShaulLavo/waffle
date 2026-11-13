@@ -2,7 +2,7 @@ import type { ServiceWorkerEntry, StorageEntry } from "../storage-allocation.js"
 export type HostVerdict = { status: "pass"; result: unknown } | { status: "fail"; error: string };
 export type HostPeer = HostWorkerObservation & {
   readonly signal: AbortSignal;
-  script(source: string): Promise<unknown>;
+  script(source: string, purpose?: import("./stall-diagnostics.js").Purpose): Promise<unknown>;
   task(source: string): Promise<void>;
   reload(): Promise<HostPeer>;
   close(): Promise<void>;

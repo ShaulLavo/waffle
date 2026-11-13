@@ -328,10 +328,18 @@ export class SafariDriver implements Driver {
       throw new Error(
         `SafariDriver bootstrap ownership changed during Inspector admission: check=identity ${bootstrapIdentityClasses(admittedIdentity, binding)}`,
       );
+    return this.ownObservation(observer, binding);
+  }
+  private ownObservation(
+    observer: Awaited<ReturnType<typeof SafariObserver.open>>,
+    binding: DriverObservationBinding,
+  ): DriverObservation {
     const stop = observer.stop.bind(observer);
     let retirement: Promise<void> | undefined;
     const owned: DriverObservation = {
       failure: observer.failure,
+      diagnosticSnapshot: () => observer.diagnosticSnapshot(),
+      workerOrdinal: (worker) => observer.workerOrdinal(worker),
       ...(binding.console
         ? { console: () => observer.console(), settleConsole: () => observer.settleConsole() }
         : {}),
@@ -343,7 +351,7 @@ export class SafariDriver implements Driver {
       waitForWorkerClose: (worker) => observer.waitForWorkerClose(worker),
       waitForWorkerURLClose: (url) => observer.waitForWorkerURLClose(url),
       beginDocumentClose: (nextURL) => observer.beginDocumentClose(nextURL),
-      documentClosed: () => observer.documentClosed(),
+      documentRetirement: () => observer.documentRetirement(),
       revokeActions: () => observer.revokeActions(),
       revoke: () => observer.revoke(),
       stop: () =>

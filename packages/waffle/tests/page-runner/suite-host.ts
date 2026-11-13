@@ -139,10 +139,16 @@ export function serveCollector(
   return { server, configurations, assetOwner, origin: `http://127.0.0.1:${server.port}` };
 }
 async function workerCloseResponse(request: Request, collector: Collector): Promise<Response> {
+  let receipt: number | undefined;
   try {
-    await collector.workerCloseQuery(await readReportBody(request));
-    return Response.json({ closed: true }, { headers });
+    await collector.workerCloseQuery(await readReportBody(request), (ordinal) => {
+      receipt = ordinal;
+    });
+    const response = Response.json({ closed: true }, { headers });
+    if (receipt !== undefined) collector.diagnostics.queries.end(receipt, "response-created");
+    return response;
   } catch (error) {
+    if (receipt !== undefined) collector.diagnostics.queries.end(receipt, "response-failed");
     return Response.json(
       { error: String(error) },
       { status: error instanceof ObservationClosed ? 410 : 409, headers },
@@ -290,6 +296,7 @@ type FirstCommandFailure = NativeCommandFailure & {
   readonly lastHeartbeatAgeMs: number | null;
 };
 export type SuiteResult = {
+  diagnostics: ReturnType<Collector["diagnostics"]["snapshot"]>;
   firstCommandFailure: FirstCommandFailure | null;
   suite: string;
   run: string;
@@ -471,6 +478,7 @@ export async function runPageSuite<R>(
   const observeFailure = (facts: NativeCommandFailure): void => {
     if (failureObserved) return;
     failureObserved = true;
+    collector.diagnostics.freeze("native-command-failure");
     const hostNow = performance.now();
     const state = collector.active;
     const lastHeartbeatAgeMs = state?.doc ? hostNow - state.heartbeatAt : null;
@@ -564,6 +572,7 @@ export async function runPageSuite<R>(
     ) {
       try {
         await writeResult(`${options.resultPath}.diagnostics.json`, {
+          diagnostics: collector.diagnostics.snapshot(),
           host: hostCases.map((host) => host.failureEvidence()),
           outcomes: collector.outcomes,
           results: collector.results,
@@ -881,6 +890,7 @@ export async function runPageSuite<R>(
   };
   const exit = resultExit(collector, cleanup, options.filter);
   const result: SuiteResult = {
+    diagnostics: collector.diagnostics.snapshot(),
     firstCommandFailure,
     suite: adapter.suite,
     run,
