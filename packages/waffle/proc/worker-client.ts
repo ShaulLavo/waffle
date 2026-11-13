@@ -1062,12 +1062,13 @@ export function installWorkerBindings(
       const source = mapGet(imported, binding.reference)!;
       if (binding.preopen !== undefined && source.resource.kind !== "directory")
         throw new ProcessError(ProcessErrno.INVAL, "preopen binding requires a directory");
-      descriptors.restore(binding.fd, {
+      const target: Descriptor = {
         ...source,
         rightsBase: binding.rightsBase,
         rightsInheriting: binding.rightsInheriting,
-        ...(binding.preopen === undefined ? {} : { preopen: binding.preopen }),
-      });
+      };
+      if (binding.preopen === undefined) descriptors.inherit(binding.fd, target);
+      else descriptors.restore(binding.fd, { ...target, preopen: binding.preopen });
       installed.push(binding.fd);
     }
   } catch (error) {

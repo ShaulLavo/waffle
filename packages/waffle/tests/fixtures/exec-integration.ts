@@ -22,10 +22,13 @@ import {
 } from "../../proc/worker-client.js";
 import { createWorkerPipeCodec } from "../../proc/worker-pipes.js";
 import { groupLinkProgram } from "./group-link-program.js";
-import { execCallerGuest, execTargetGuest } from "./exec-guest.js";
+import { execCallerGuest, execTargetGuest, execFailureGuest } from "./exec-guest.js";
 
 export type ExecIntegrationMode =
   | "replace"
+  | "start-section-failure"
+  | "adapter-setup-failure"
+  | "runtime-trap"
   | "twice"
   | "preopen-remap"
   | "omit-preopen"
@@ -54,6 +57,10 @@ export async function runExecIntegration(options: {
 }) {
   const capacity = options.mode.startsWith("capacity");
   const control = options.mode === "capacity-control";
+  const expectedFailure =
+    options.mode === "start-section-failure" ||
+    options.mode === "adapter-setup-failure" ||
+    options.mode === "runtime-trap";
   const preservePreopen = options.mode !== "omit-preopen";
   const openFile = !capacity && preservePreopen && options.mode !== "preopen-remap";
   const images = options.mode === "twice" ? 3 : 2;
@@ -108,7 +115,10 @@ export async function runExecIntegration(options: {
   const request: ExecRequest = {
     executable: options.mode === "twice" ? "middle" : "target",
     argv: ["next", "a b"],
-    env: { NEW: "value" },
+    env:
+      options.mode === "adapter-setup-failure"
+        ? { NEW: "value", INJECT: "adapter" }
+        : { NEW: "value" },
     cwd: "/next",
     fds: (preservePreopen
       ? [
@@ -140,7 +150,11 @@ export async function runExecIntegration(options: {
   });
   registry.register("target", {
     adapter: "fixture",
-    module: () => group?.module ?? execTargetGuest(pid, request, preservePreopen),
+    module: () =>
+      group?.module ??
+      (options.mode === "start-section-failure" || options.mode === "runtime-trap"
+        ? execFailureGuest(options.mode === "start-section-failure")
+        : execTargetGuest(pid, request, preservePreopen)),
   });
   let output = "";
   const broker = new BrowserProcessBroker({
@@ -219,7 +233,7 @@ export async function runExecIntegration(options: {
     const result = await bounded(supervisor.waitForExit(root.pid, pid));
     await bounded(record.stopping!.complete);
     assert(
-      result.kind === "exited" && result.code === 0,
+      result.kind === "exited" && result.code === (expectedFailure ? 126 : 0),
       `caller failed: ${JSON.stringify(result)}; ${errors.map(String).join("; ")}; ${output}`,
     );
     const failed = exits.find(
@@ -243,8 +257,23 @@ export async function runExecIntegration(options: {
             events.indexOf(`admitting:${pid}:${generation + 1}`),
           "target admission preceded old physical stop",
         );
-      if (!capacity) assert(output === "exec-ok\n", `successor terminal output missing: ${output}`);
-      assert(errors.length === 0, errors.map(String).join("; "));
+      if (!capacity && !expectedFailure)
+        assert(output === "exec-ok\n", `successor terminal output missing: ${output}`);
+      if (expectedFailure) {
+        assert(
+          errors.length === 1,
+          "post-commit failure did not report exactly one host diagnostic",
+        );
+        assert(
+          String(errors[0])
+            .toLowerCase()
+            .includes(
+              options.mode === "adapter-setup-failure" ? "adapter setup refused" : "unreachable",
+            ),
+          `lost replacement diagnostic: ${errors.map(String).join("; ")}`,
+        );
+        assert(output === "", "replacement failure wrote to a guest descriptor");
+      } else assert(errors.length === 0, errors.map(String).join("; "));
     }
     assert(stopped.size === workers.length, "an image Worker remained alive");
     return {
@@ -254,6 +283,7 @@ export async function runExecIntegration(options: {
       images: workers.length,
       output,
       targetAdmissionGuestBytes,
+      hostDiagnostics: expectedFailure ? errors.map(String) : undefined,
       controlFailure: failed?.result,
       events,
       budgetBytes: reservations.snapshot().budgetBytes,

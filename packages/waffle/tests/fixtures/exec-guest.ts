@@ -36,6 +36,7 @@ function program(
   data: readonly [number, Uint8Array][],
   maximumPages: number,
   locals = 0,
+  startSection = false,
 ): WebAssembly.Module {
   const types = Array.from({ length: 5 }, (_, count) =>
     [0x60, count].concat(Array<number>(count).fill(0x7f), [1, 0x7f]),
@@ -59,6 +60,7 @@ function program(
       section(3, [1, 5]),
       section(5, [1, 1, 1].concat(leb(maximumPages))),
       section(7, [2].concat(text("memory"), [2, 0], text("_start"), [0], leb(imports.length))),
+      startSection ? section(8, leb(imports.length)) : [],
       section(10, [1].concat(leb(body.length), body)),
       section(
         11,
@@ -270,4 +272,8 @@ export function execTargetGuest(
     ],
     64,
   );
+}
+
+export function execFailureGuest(startSection: boolean): WebAssembly.Module {
+  return program([], [0], [], 64, 0, startSection);
 }

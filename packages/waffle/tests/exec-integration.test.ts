@@ -8,12 +8,17 @@ import { installExecNodeWorkers } from "./fixtures/exec-node-host.js";
 
 const modes: ExecIntegrationMode[] = [
   "replace",
+  "start-section-failure",
+  "adapter-setup-failure",
+  "runtime-trap",
   "twice",
   "preopen-remap",
   "omit-preopen",
   "capacity-control",
   "capacity-exec",
 ];
+const expectedCode = (mode: ExecIntegrationMode) =>
+  mode.endsWith("-failure") || mode === "runtime-trap" ? 126 : 0;
 for (const mode of modes)
   test(`source consumer exec ${mode} uses real Workers`, async () => {
     const restore = installExecNodeWorkers();
@@ -23,7 +28,7 @@ for (const mode of modes)
         workerUrl: new URL("./fixtures/exec-node-worker.ts", import.meta.url).href,
       });
       console.log(JSON.stringify({ execIntegration: report }));
-      expect(report.result).toMatchObject({ kind: "exited", code: 0 });
+      expect(report.result).toMatchObject({ kind: "exited", code: expectedCode(mode) });
     } finally {
       restore();
     }
@@ -75,7 +80,10 @@ test("prepared Node consumers execute the same replacement and capacity controls
       expect(result.stderr).toBe("");
       expect(result.status).toBe(0);
       console.log(result.stdout.trim());
-      expect(JSON.parse(result.stdout).result).toMatchObject({ kind: "exited", code: 0 });
+      expect(JSON.parse(result.stdout).result).toMatchObject({
+        kind: "exited",
+        code: expectedCode(mode),
+      });
     }
   } finally {
     await rm(scratch, { recursive: true, force: true });

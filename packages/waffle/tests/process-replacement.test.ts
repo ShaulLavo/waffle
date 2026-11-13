@@ -14,7 +14,12 @@ import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { captureProcessObserver } from "../proc/observation.js";
 import { readOutcome } from "../proc/outcome.js";
 import { ExecutableRegistry } from "../proc/registry.js";
-import { setSignalDisposition, SignalDisposition, signalDisposition } from "../proc/signals.js";
+import {
+  setSignalDisposition,
+  SignalDisposition,
+  signalDisposition,
+  requestSignal,
+} from "../proc/signals.js";
 import { ProcessTable } from "../proc/table.js";
 import {
   ProcessError,
@@ -771,6 +776,31 @@ test("a group-owned image is rejected before module resolution", async () => {
     expect(f.table.require(f.pid).image.generation).toBe(1);
   } finally {
     Reflect.deleteProperty(child, "group");
+    await f.close();
+  }
+});
+
+test("a fatal shared outcome during image stop settles without a signal notification or pump", async () => {
+  const stopping = deferred();
+  const f = await fixture({ stop: () => stopping.promise });
+  const record = f.table.require(f.pid);
+  try {
+    expect((await f.stage()).result).toBe(0);
+    const timer = Reflect.get(f.broker, "timer") as ReturnType<typeof setTimeout> | null;
+    if (timer) clearTimeout(timer);
+    Reflect.set(f.broker, "timer", null);
+    f.workers[0]!.emit({ type: "replaced" });
+    await until(() => f.workers[0]!.stops === 1);
+    requestSignal(record, 9);
+    stopping.resolve();
+    await until(() => record.result !== null);
+    await record.stopping?.complete;
+    expect(record.result).toMatchObject({ kind: "signaled", code: 9 });
+    expect(f.workers).toHaveLength(1);
+    expect(f.workers[0]!.stops).toBe(1);
+    expect(captureProcessObserver(record.observation).read()).toEqual({ kind: "terminated" });
+  } finally {
+    stopping.resolve();
     await f.close();
   }
 });

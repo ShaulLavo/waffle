@@ -4,6 +4,9 @@ import { installExecNodeWorkers } from "./exec-node-host.js";
 const mode = process.argv[2];
 if (
   mode !== "replace" &&
+  mode !== "start-section-failure" &&
+  mode !== "adapter-setup-failure" &&
+  mode !== "runtime-trap" &&
   mode !== "twice" &&
   mode !== "preopen-remap" &&
   mode !== "omit-preopen" &&

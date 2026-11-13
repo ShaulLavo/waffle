@@ -182,17 +182,19 @@ export type WorkerResult =
   | { code: number; signal?: number }
   | { error: unknown }
   | { replaced: true };
-function workerFinishResult(result: WorkerResult, started: boolean) {
-  const ownCode = "code" in result ? result.code : started ? 1 : 126;
+function workerFinishResult(result: WorkerResult, started: boolean, generation = 1) {
+  const ownCode = "code" in result ? result.code : started && generation === 1 ? 1 : 126;
+  const replacementFailure = generation > 1 && "error" in result;
   const ownSignal = "signal" in result ? result.signal : undefined;
   const startupFailure = "error" in result && !started;
-  const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure
-    ? startFailure(result.error)
-    : ownSignal === undefined
-      ? { kind: "exited", code: ownCode }
-      : { kind: "signaled", code: ownSignal };
+  const ownResult: Pick<ProcessExit, "kind" | "code"> =
+    startupFailure && !replacementFailure
+      ? startFailure(result.error)
+      : ownSignal === undefined
+        ? { kind: "exited", code: ownCode }
+        : { kind: "signaled", code: ownSignal };
   const startupDiagnostic = startupFailure ? describeStartError(result.error) : undefined;
-  return { ownCode, ownSignal, startupFailure, ownResult, startupDiagnostic };
+  return { ownCode, ownSignal, startupFailure, ownResult, startupDiagnostic, replacementFailure };
 }
 function workerCompletionMessage(
   result: Exclude<WorkerResult, { replaced: true }>,
@@ -202,6 +204,7 @@ function workerCompletionMessage(
     settled: boolean;
     runtime: boolean;
     startupFailure: boolean;
+    replacementFailure: boolean;
     startupDiagnostic?: string;
     sleep: SleepMode;
     cleanupErrors: string[];
@@ -212,7 +215,8 @@ function workerCompletionMessage(
   const diagnostics = state.cleanupErrors.length ? { cleanupErrors: state.cleanupErrors } : {};
   if (
     "error" in result &&
-    ((!state.legacy && !state.settled && completed.kind !== "signaled") ||
+    (state.replacementFailure ||
+      (!state.legacy && !state.settled && completed.kind !== "signaled") ||
       (state.runtime && state.startupFailure && completed.kind === "start-failed"))
   ) {
     return {
@@ -742,15 +746,14 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     } catch (error) {
       observationFailure = lastObservationFailure ?? ("error" in result ? result.error : error);
     }
-    const { ownCode, ownSignal, startupFailure, ownResult, startupDiagnostic } = workerFinishResult(
-      result,
-      started,
-    );
+    const { ownCode, ownSignal, startupFailure, ownResult, startupDiagnostic, replacementFailure } =
+      workerFinishResult(result, started, req.runtimeProcess?.generation);
     // Claim the runtime outcome before draining so a signal delivered during backpressure
     // cannot replace the original execution failure.
     // A parent may act on this exit at once: deliver every byte the guest wrote first.
     if (!terminated && !settled) hostOutput?.flush(() => revoked() || outcomeSettled());
     const runtimeDiagnostic =
+      !replacementFailure &&
       !observationFailure &&
       !terminated &&
       !executor.complete &&
@@ -760,7 +763,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     let winner =
       replacing || terminated || observationFailure
         ? null
-        : runtimeDiagnostic || !executor.complete || startupFailure
+        : replacementFailure || runtimeDiagnostic || !executor.complete || startupFailure
           ? claim(ownResult, startupDiagnostic)
           : settled;
     const cleanupErrors: string[] = [];
@@ -797,6 +800,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     // Legacy transports must buffer diagnostics before publishing logical completion.
     if (
       !terminated &&
+      !replacementFailure &&
       executor.complete &&
       "error" in result &&
       (startupFailure ? !req.runtimeProcess && winner?.kind === "start-failed" : !settled)
@@ -869,6 +873,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         settled: !!settled,
         runtime: !!req.runtimeProcess,
         startupFailure,
+        replacementFailure,
         startupDiagnostic,
         sleep: sleepMode,
         cleanupErrors,

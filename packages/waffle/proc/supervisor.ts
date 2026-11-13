@@ -792,7 +792,7 @@ export class ProcessSupervisor {
   private failImage(record: ProcessRecord, image: ProcessImage, error: unknown): void {
     if (!this.imageActive(record, image) || record.revoked) return;
     const selected = readOutcome(record.outcome);
-    if (selected) {
+    if (selected?.kind === "signaled") {
       this.finish(record.pid, selected);
       return;
     }
@@ -891,7 +891,13 @@ export class ProcessSupervisor {
       replacement.complete(0);
     } catch (error) {
       await replacement.cancel(error);
+      this.adoptReplacementOutcome(record);
     }
+  }
+  private adoptReplacementOutcome(record: ProcessRecord): void {
+    if (record.revoked || this.table.get(record.pid) !== record) return;
+    const selected = readOutcome(record.outcome);
+    if (selected) this.finish(record.pid, selected);
   }
   async acknowledgeReplacement(pid: number, generation: number): Promise<void> {
     const record = this.table.get(pid);
@@ -907,7 +913,10 @@ export class ProcessSupervisor {
     const resolved = replacement.state.resolved;
     try {
       await this.stopReplacementImage(record, replacement);
-      if (!this.replacementActive(record, replacement)) return;
+      if (!this.replacementActive(record, replacement)) {
+        this.adoptReplacementOutcome(record);
+        return;
+      }
       const successor = createProcessImage(
         image.generation + 1,
         replacement.request.cwd,

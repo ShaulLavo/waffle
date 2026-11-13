@@ -10,7 +10,17 @@ export function runExecWorker(
   request: RuntimeWorkerRequest & { linkPlan?: SharedLinkPlan },
   host?: RuntimeWorkerHost,
 ) {
-  if (!request.linkPlan) return bootstrap(request, preview1Executor, host);
+  if (!request.linkPlan)
+    return bootstrap(
+      request,
+      {
+        ...preview1Executor,
+        instantiated() {
+          if (request.env.INJECT === "adapter") throw new Error("adapter setup refused");
+        },
+      },
+      host,
+    );
   return bootstrap(
     { ...request, linkPlan: request.linkPlan },
     {

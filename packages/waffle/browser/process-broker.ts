@@ -1046,6 +1046,7 @@ export class BrowserProcessBroker {
       if (controller && this.capturedControllerStops.has(pid))
         this.retainedRootStops.set(pid, controller);
       this.controllers.delete(pid);
+      this.capturedControllerRevocations.delete(pid);
       this.quiescedControllers.delete(pid);
       this.revokedControllers.delete(pid);
       this.roots.delete(pid);
@@ -1862,13 +1863,13 @@ export class BrowserProcessBroker {
       },
     };
     try {
-      if (readOutcome(context.outcome))
-        throw new ProcessError(ProcessErrno.SRCH, "process exited before worker admission");
       if (options.memoryGroup)
         requireGroupPlan(
           options.request.module,
           "linkPlan" in options.request ? options.request.linkPlan : undefined,
         );
+      if (readOutcome(context.outcome))
+        throw new ProcessError(ProcessErrno.SRCH, "process exited before worker admission");
       const threaded = threadModuleDeclaration(options.request.module);
       if (threaded && graphics) throw new Error("Threaded guests do not accept graphics grants");
       if (threaded) return this.launchThreadWorker(context, options, threaded);

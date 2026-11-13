@@ -814,6 +814,9 @@ const quietFailureCases: BrowserCase[] = (["pipe", "terminal"] as const).flatMap
 const execCases: BrowserCase[] = (
   [
     "replace",
+    "start-section-failure",
+    "adapter-setup-failure",
+    "runtime-trap",
     "twice",
     "preopen-remap",
     "omit-preopen",
