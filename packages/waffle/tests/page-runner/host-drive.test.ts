@@ -40,6 +40,8 @@ class HostDriver extends FakeDriver {
   dispatchGate: Promise<void> | undefined;
   completionBeforeResponse = false;
   readonly allocations: string[] = [];
+  readonly allocationCompleted = Promise.withResolvers<void>();
+  allocationResponse: Promise<void> | undefined;
   taskGate: Promise<void> | undefined;
   taskCompletion: Promise<void> | undefined;
   readonly taskEntered = Promise.withResolvers<void>();
@@ -97,9 +99,10 @@ class HostDriver extends FakeDriver {
           this.allocations.push(name);
           this.dispatchGate = this.send({ kind: "allocation", entry: { kind: "indexeddb", name } })
             .then(() => this.send({ kind: "task-end", caseId: "host", operation, status: "pass" }))
-            .then(async () => {
+            .then(() => {
               this.completionBeforeResponse = true;
-              await Bun.sleep(10);
+              this.allocationCompleted.resolve();
+              return this.allocationResponse;
             });
         },
         task: (operation: string) => {
@@ -835,31 +838,55 @@ for (const policy of [undefined, ownedDatabase("other")]) {
       expect(d.effects).toEqual([]);
     }));
 }
-test("allocation may settle before its dispatch response but cannot return early", () =>
-  fixture(async (root) => {
-    const d = new HostDriver(),
-      response = Promise.withResolvers<void>();
-    const script = d.script.bind(d);
-    let returned = false;
-    d.script = async (source) => {
-      const answer = await script(source);
-      if (!source.includes("h.allocateDatabase(")) return answer;
-      expect(d.completionBeforeResponse).toBe(true);
-      expect(returned).toBe(false);
-      response.resolve();
-      return answer;
-    };
-    const a = adapter(async (host) => {
-      await host.allocateDatabase("host-storage");
-      returned = true;
-      return true;
+async function allocationDispatchOrder(root: string, atDeadline: boolean): Promise<void> {
+  const now = spyOn(performance, "now").mockReturnValue(100);
+  const d = new HostDriver(),
+    response = Promise.withResolvers<void>();
+  d.allocationResponse = response.promise;
+  let returned = false;
+  const a = adapter(async (host) => {
+    await host.allocateDatabase("host-storage");
+    returned = true;
+    return true;
+  });
+  a.policy = { ...a.policy, allocation: ownedDatabase("host-storage") };
+  const running = runPageSuite(a, () => d, options(root));
+  try {
+    await Promise.race([
+      d.allocationCompleted.promise,
+      running.then((result) => {
+        throw new Error(`Allocation never completed: ${JSON.stringify(result)}`);
+      }),
+    ]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(d.completionBeforeResponse).toBe(true);
+    expect(returned).toBe(false);
+    now.mockReturnValue(100 + budgets.case - (atDeadline ? 0 : 1));
+    response.resolve();
+    const result = await running;
+    expect(result.exit, JSON.stringify(result)).toBe(atDeadline ? 1 : 0);
+    expect(returned).toBe(!atDeadline);
+    expect(result.results.host).toEqual({
+      body: atDeadline
+        ? { status: "fail", error: "Error: Host setup/body timed out" }
+        : { status: "pass", result: true },
+      teardown: { status: "pass" },
     });
-    a.policy = { ...a.policy, allocation: ownedDatabase("host-storage") };
-    const result = await runPageSuite(a, () => d, options(root));
-    await response.promise;
-    expect(result.exit).toBe(0);
-    expect(returned).toBe(true);
-  }));
+    expect(result.failures).toEqual([]);
+    expect(result.ledger).toEqual([{ kind: "indexeddb", name: `host-storage-${result.run}` }]);
+    expect(result.runComplete).toBe(true);
+    expect(result.cleanup.scratch.status).toBe("confirmed");
+    expect(d.stopCalls).toBe(1);
+  } finally {
+    response.resolve();
+    await running;
+    now.mockRestore();
+  }
+}
+for (const atDeadline of [false, true]) {
+  test(`allocation may settle before its dispatch response but cannot return early, response ${atDeadline ? "at" : "before"} deadline`, () =>
+    fixture((root) => allocationDispatchOrder(root, atDeadline)));
+}
 test("uncertain dispatch after accepted allocation and task completion never returns its name", () =>
   fixture(async (root) => {
     const d = new HostDriver(),
