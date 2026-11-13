@@ -38,7 +38,8 @@ test("service failure settles every exposed open before a guest observes revocat
   const opened: GraphicsOpen[] = [];
   const port = grant.connection.port;
   const post = port.postMessage.bind(port);
-  port.postMessage = (message: GraphicsOpen) => {
+  port.postMessage = (message: GraphicsOpen | { type: "close"; id: number }) => {
+    if (message.type !== "open") return post(message);
     opened.push(message);
     post(message);
     store(new Int32Array(message.control), 0, 1);
