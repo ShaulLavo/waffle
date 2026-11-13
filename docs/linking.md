@@ -44,13 +44,13 @@ startup cancellation. Memory binds before any allocation or side constructor.
 The existing `instantiated` hook completes before constructors. Entry keeps
 its existing final activity check and atomic launch commitment.
 
-| Step | Ordered work |
-| --- | --- |
-| `instantiateLinkPlan` | Instantiate core, bind memory, run core `initializeMemory`. Libraries stay empty. |
-| Host `instantiated` hook | Read initialized, relocated core data and install host state. |
-| `group.initialize()` | Core constructors, then each library's reservation, instantiation, memory stages and constructor stages. Publish libraries only after all succeed. |
-| Caller entry | Run `_start` through the ordinary WASI launch path. |
-| `group.dispose()` | Clear every reserved table range, even after a failed initialization. |
+| Step                     | Ordered work                                                                                                                                       |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `instantiateLinkPlan`    | Instantiate core, bind memory, run core `initializeMemory`. Libraries stay empty.                                                                  |
+| Host `instantiated` hook | Read initialized, relocated core data and install host state.                                                                                      |
+| `group.initialize()`     | Core constructors, then each library's reservation, instantiation, memory stages and constructor stages. Publish libraries only after all succeed. |
+| Caller entry             | Run `_start` through the ordinary WASI launch path.                                                                                                |
+| `group.dispose()`        | Clear every reserved table range, even after a failed initialization.                                                                              |
 
 Both ordered stage lists are required. Use `initializeMemory: []` for an active
 split core that needs no memory stages. A carved member binding is single-use,
@@ -70,6 +70,28 @@ returns. Compiled-module reflection and relay generation follow compilation. Eac
 explicit preparation compiles independently; retain one preparation promise to share a
 plan. No source bytes or global compiled-module cache remain. Every process gets fresh
 instances, memory, tables, globals, GOT cells and initialization state.
+
+Use `plan.memberModule(id)` to inspect the exact compiled core or library named by
+its `LinkMemberSource.id`. It returns the same `WebAssembly.Module` object on every
+call, and the core result is `plan.entryModule`. The lookup is synchronous and does
+not compile, instantiate, allocate guest memory or run initialization. An unknown
+id throws an executable-format error. The method also works on an adopted plan,
+returning the receiving plan's module objects.
+
+Adapters can apply their own export or import checks after Waffle's preparation
+and before publishing or instantiating the plan:
+
+```ts
+const engineModule = plan.memberModule("engine");
+const exports = WebAssembly.Module.exports(engineModule);
+if (!exports.some((entry) => entry.kind === "function" && entry.name === "run")) {
+  throw new Error("Engine requires a run function");
+}
+```
+
+Waffle still performs every generic link check during preparation. The accessor
+exposes only the module, not source bytes, mutable plan metadata or relay modules.
+Keep `plan.shared` opaque and use `adoptLinkPlan` at the receiving end.
 
 For direct embedding, `instantiateLinkPlan(plan, {wasi, checkActive, bindMemory})`
 returns an owned group. Call `initialize()` before entry and `dispose()` from

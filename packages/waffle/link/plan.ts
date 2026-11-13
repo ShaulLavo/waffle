@@ -76,6 +76,15 @@ export class PreparedLinkPlan {
     readonly entryModule: WebAssembly.Module,
     readonly shared: SharedLinkPlan,
   ) {}
+  /** Return the exact compiled core or library by source id, without executing it. */
+  memberModule(id: string): WebAssembly.Module {
+    const data = plans.get(this);
+    if (!data) invalid("plan", "expected a local prepared plan, not a clone or manifest");
+    if (data.core.id === id) return data.core.module;
+    const member = data.libraries.find((entry) => entry.id === id);
+    if (!member) invalid(id, "unknown member id");
+    return member.module;
+  }
   static async prepare(source: LinkPlanSource): Promise<PreparedLinkPlan> {
     const owned = snapshotPlan(source);
     const members = [owned.core].concat(owned.libraries);
