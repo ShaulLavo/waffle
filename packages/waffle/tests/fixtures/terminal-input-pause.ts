@@ -18,3 +18,12 @@ export function pauseInputAcquisition(buffer: SharedArrayBuffer, pause: () => vo
     return previous;
   }) as typeof Atomics.compareExchange;
 }
+
+export function pauseInputRelease(buffer: SharedArrayBuffer, pause: () => void): void {
+  const notify = Atomics.notify;
+  Atomics.notify = (array, index, count) => {
+    const woken = notify(array, index, count);
+    if (array.buffer === buffer && array.byteOffset === 16 && index === 0) pause();
+    return woken;
+  };
+}
