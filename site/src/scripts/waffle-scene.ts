@@ -275,8 +275,8 @@ import {
         if (o !== root && o.userData.solid) { solids.push(o); return; }
         var d = isDyn || (o !== root && !!o.userData.dyn);
         if (o !== root && o.isMesh && !d && !o.material.map && !o.material.transparent && o.geometry.attributes.normal) {
-          var plain = !!o.material.userData.plain, key = plain ? 'plain' : o.material.uuid;
-          (buckets[key] = buckets[key] || { mat: plain ? plainMat : o.material, plain: plain, parts: [] }).parts.push(o);
+          var plain = !!o.material.userData.plain, key = (plain ? 'plain' : o.material.uuid) + (o.castShadow ? '' : '-nocast');
+          (buckets[key] = buckets[key] || { mat: plain ? plainMat : o.material, plain: plain, cast: o.castShadow, parts: [] }).parts.push(o);
           victims.push(o);
         }
         for (var i = 0; i < o.children.length; i++) walk(o.children[i], d);
@@ -304,7 +304,7 @@ import {
         mg.setAttribute('ink', new Float32BufferAttribute(inkArr, 3));
         if (bk.plain) mg.setAttribute('color', new Float32BufferAttribute(colArr, 3));
         mg.computeBoundingSphere(); disposables.push(mg);
-        root.add(mesh(mg, bk.mat));
+        var merged = mesh(mg, bk.mat); merged.castShadow = bk.cast; root.add(merged);
       });
       victims.forEach(function (o) { o.parent.remove(o); });
       solids.forEach(bake);
