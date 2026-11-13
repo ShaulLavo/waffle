@@ -19,10 +19,12 @@ test("handoff rearms without publishing terminal stop and joins each image's sec
   expect(controlLoad(state.terminalStopped)).toBe(0);
   expect(enterTerminalSection(state)).toBe(true);
   let joined = false;
-  const next = lifetime.handoff(() => true).then((value) => {
-    joined = true;
-    return value;
-  });
+  const next = lifetime
+    .handoff(() => true)
+    .then((value) => {
+      joined = true;
+      return value;
+    });
   await Promise.resolve();
   expect(joined).toBe(false);
   expect(enterTerminalSection(state)).toBe(false);

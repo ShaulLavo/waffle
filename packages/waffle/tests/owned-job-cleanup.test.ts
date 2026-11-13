@@ -173,7 +173,7 @@ test("CLEANUP wait preserves pending handled signals and validates output before
   const abi = new ProcessABI({
     memory,
     fs: new MemFS(),
-    descriptors: signals.descriptors,
+    descriptors: signals.image.descriptors,
     service: s,
     pid: root,
     signals,
@@ -424,7 +424,7 @@ test("CLEANUP waits on a notification despite handled TERM, but fatal outcome un
   const abi = new ProcessABI({
     memory,
     fs: new MemFS(),
-    descriptors: signals.descriptors,
+    descriptors: signals.image.descriptors,
     service: s,
     pid: root,
     signals,
@@ -452,7 +452,7 @@ test("CLEANUP rejects unsupported notification routes, foreign jobs and repeated
   const options = {
     memory,
     fs: new MemFS(),
-    descriptors: signals.descriptors,
+    descriptors: signals.image.descriptors,
     service: s,
     pid: root,
     signals,

@@ -1,4 +1,5 @@
 import { captureNativeReturn } from "./observation.js";
+import { EXEC_COMPLETION_BYTES } from "./exec.js";
 import type { PipePublicationRegistryHandle } from "./pipes.js";
 import { allocateSharedControl } from "../memory/control.ts";
 import {
@@ -69,6 +70,7 @@ import {
   snapshotSpawnWorker,
   type ProcessExit,
   type SpawnRequest,
+  type ExecRequest,
 } from "./types.js";
 
 export { MAX_ACCESS_REQUESTS } from "./access.js";
@@ -135,6 +137,13 @@ export function workerProcessPipeRegistry(
 }
 
 export type WorkerProcessMessage =
+  | {
+      type: "runtime-proc";
+      operation: "exec";
+      transport: WorkerProcessTransport;
+      request: ExecRequest;
+      completion: SharedArrayBuffer;
+    }
   | {
       type: "runtime-proc";
       operation: "spawn";
@@ -264,6 +273,8 @@ export interface WorkerProcessClientOptions {
   postMessage(message: WorkerProcessMessage): void;
   codec: WorkerDescriptorCodec;
   prepareSpawn?(pid: number): WorkerSpawnTransfer;
+  prepareExec?(pid: number): WorkerSpawnTransfer;
+  registerRevocation?(hook: () => void): () => void;
   /** Synchronously freeze shared endpoint cursors after default signal death is selected.
    * A shared pipe publication registry supplies this hook without entering the guest worker.
    */
@@ -294,6 +305,7 @@ export class WorkerProcessClient {
   readonly job: number;
   readonly signals: SignalTransport;
   readonly wake: Int32Array;
+  readonly registerRevocation?: (pid: number, hook: () => void) => () => void;
   private readonly identities: ProcessIdentityAllocator;
   private readonly initialCwd: string;
   private accesses?: Map<number, Int32Array>;
@@ -306,6 +318,11 @@ export class WorkerProcessClient {
     this.wake = state.wake;
     this.identities = new ProcessIdentityAllocator(options.transport.identity);
     this.initialCwd = checkedProcessCwd(options.transport.cwd);
+    if (options.registerRevocation)
+      this.registerRevocation = (pid, hook) => {
+        if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid process");
+        return options.registerRevocation!(hook);
+      };
   }
   cwd(pid: number): string {
     this.admit();
@@ -316,6 +333,92 @@ export class WorkerProcessClient {
   }
   installBindings(): void {
     installWorkerBindings(this.options.transport, this.options.descriptors, this.options.codec);
+  }
+  exec(pid: number, request: ExecRequest): SharedArrayBuffer {
+    this.admit();
+    if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid process");
+    if (!this.options.prepareExec || !this.options.registerRevocation)
+      throw new ProcessError(ProcessErrno.NOTSUP, "process does not support exec staging");
+    const snapshot = snapshotSpawnRequest(
+      { ...request, job: this.job },
+      this.job,
+      undefined,
+      checkedProcessCwd(request.cwd),
+    );
+    const sources = this.spawnSources(snapshot);
+    const completion = allocateSharedControl(EXEC_COMPLETION_BYTES);
+    const references = new MapConstructor<OpenDescription, number>();
+    let transfer: WorkerSpawnTransfer | undefined;
+    let codec = this.options.codec;
+    const staged: WorkerProcessTransport = {
+      ...this.options.transport,
+      cwd: snapshot.cwd,
+      bindings: [],
+      resources: [],
+    };
+    try {
+      transfer = this.options.prepareExec(pid);
+      codec = transfer.codec ?? codec;
+      staged.data = transfer.data;
+      this.exportBindings(staged, snapshot, sources, references, codec);
+      this.admit();
+      this.options.postMessage({
+        type: "runtime-proc",
+        operation: "exec",
+        transport: staged,
+        request: {
+          executable: snapshot.executable,
+          argv: snapshot.argv,
+          env: snapshot.env,
+          cwd: snapshot.cwd,
+          fds: snapshot.fds,
+        },
+        completion,
+      });
+    } catch (error) {
+      for (let index = 0; index < staged.resources.length; index++)
+        this.discardSpawnResource(codec, staged.resources[index]);
+      try {
+        transfer?.cancel?.();
+      } finally {
+        transfer?.release?.();
+      }
+      throw error;
+    }
+    try {
+      transfer?.commit?.();
+    } catch (error) {
+      this.report(error);
+    }
+    try {
+      transfer?.release?.();
+    } catch (error) {
+      this.report(error);
+    }
+    return completion;
+  }
+  private exportBindings(
+    transport: WorkerProcessTransport,
+    request: SpawnRequest,
+    sources: readonly Descriptor[],
+    references: Map<OpenDescription, number>,
+    codec: WorkerDescriptorCodec,
+  ): void {
+    for (let index = 0; index < sources.length; index++) {
+      const source = sources[index]!;
+      let reference = mapGet(references, source.description);
+      if (reference === undefined) {
+        reference = transport.resources.length;
+        arrayAppend(transport.resources, codec.export(source, this.pid));
+        mapSet(references, source.description, reference);
+      }
+      arrayAppend(transport.bindings, {
+        fd: request.fds[index]!.child,
+        reference,
+        rightsBase: source.rightsBase,
+        rightsInheriting: source.rightsInheriting,
+      });
+    }
   }
   private admit(): void {
     if (readOutcome(this.signals.outcome)) {

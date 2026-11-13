@@ -11,7 +11,12 @@ import {
   typedArrayBuffer,
   typedArrayLength,
 } from "./intrinsics.ts";
-import { ExecutableFormatError, spawnError, startFailure } from "./start-failure.js";
+import {
+  ExecutableFormatError,
+  spawnError,
+  startFailure,
+  startFailureErrno,
+} from "./start-failure.js";
 import { describeStartError } from "./start-diagnostic.ts";
 import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access.js";
 import { TaggedCells, type ControlCells, controlLoad } from "./control.js";
@@ -19,6 +24,7 @@ import {
   checkedSignalNumber,
   defaultSignalTerminates,
   createSignalState,
+  resetImageSignals,
   requestSignal,
 } from "./signals.js";
 import {
@@ -28,7 +34,14 @@ import {
   type Descriptor,
 } from "../core/descriptors.js";
 import { ExecutableRegistry, type ResolvedExecutable } from "./registry.js";
-import { ProcessTable, type ProcessJob, type ProcessRecord, type ProcessImage, createProcessImage } from "./table.js";
+import {
+  ProcessTable,
+  type ProcessJob,
+  type ProcessRecord,
+  type ProcessImage,
+  type ProcessReplacement,
+  createProcessImage,
+} from "./table.js";
 import {
   OutcomeCell,
   claimOutcome,
@@ -53,6 +66,7 @@ import {
   type ProcessExit,
   type ProcessHandle,
   type SpawnRequest,
+  type ExecRequest,
   type SpawnReservation,
   type SharedJobIdentity,
 } from "./types.js";
@@ -102,6 +116,8 @@ export interface SupervisorOptions {
   quiesce?(pid: number): void | Promise<void>;
   /** Join physical adapter ownership not represented by a successfully returned launch handle. */
   retire?(pid: number): void | Promise<void>;
+  stopImage?(pid: number, generation: number, active: () => boolean): Promise<void>;
+  replacementFailed?(pid: number, error: unknown): void;
   /** Cleanup failures are diagnostics, never a reason to leave peers blocked or skip teardown. */
   onError?(error: unknown): void;
 }
@@ -701,6 +717,17 @@ export class ProcessSupervisor {
         this.finish(record.pid, settled);
         return;
       }
+      await this.launchResolved(record, image, executable);
+    } catch (error) {
+      if (this.imageActive(record, image)) this.imageFailure(record, image, error);
+    }
+  }
+  private async launchResolved(
+    record: ProcessRecord,
+    image: ProcessImage,
+    executable: ResolvedExecutable,
+  ): Promise<void> {
+    try {
       const context: ProcessLifecycle = {
         generation: image.generation,
         pid: record.pid,
@@ -717,10 +744,16 @@ export class ProcessSupervisor {
         outcome: record.outcome,
         observation: record.observation,
         started: () => this.imageActive(record, image) && this.started(record.pid),
-        exit: (code) => { if (this.imageActive(record, image)) this.exit(record.pid, code); },
-        fail: () => { if (this.imageActive(record, image)) this.finish(record.pid, { kind: "exited", code: 126 }, undefined, true); },
-        startFailed: (error) => { if (this.imageActive(record, image)) this.failStart(record.pid, error); },
-        defaultSignal: (signal) => { if (this.imageActive(record, image)) this.defaultSignal(record.pid, signal); },
+        exit: (code) => {
+          if (this.imageActive(record, image)) this.exit(record.pid, code);
+        },
+        fail: (error) => this.failImage(record, image, error),
+        startFailed: (error) => {
+          if (this.imageActive(record, image)) this.imageFailure(record, image, error);
+        },
+        defaultSignal: (signal) => {
+          if (this.imageActive(record, image)) this.defaultSignal(record.pid, signal);
+        },
         registerRevocation: (hook) => this.registerImageRevocation(record, image, hook),
       };
       let acquired!: () => void;
@@ -738,21 +771,183 @@ export class ProcessSupervisor {
     } catch (error) {
       if (image.nativeAcquisition.kind === "invoked" && !image.handle)
         image.nativeAcquisition = { kind: "failed", error };
-      this.failStart(record.pid, error);
+      if (this.imageActive(record, image)) this.imageFailure(record, image, error);
     }
   }
+  private imageFailure(record: ProcessRecord, image: ProcessImage, error: unknown): void {
+    if (image.generation === 1 && image.phase === "current") this.failStart(record.pid, error);
+    else this.failImage(record, image, error);
+  }
+  private failImage(record: ProcessRecord, image: ProcessImage, error: unknown): void {
+    if (!this.imageActive(record, image)) return;
+    if (image.generation > 1 || image.phase === "retiring")
+      this.options.replacementFailed?.(record.pid, error);
+    this.finish(record.pid, { kind: "exited", code: 126 }, undefined, true);
+  }
+  beginReplacement(
+    pid: number,
+    staged: {
+      request: ExecRequest;
+      descriptors: DescriptorTable;
+      complete(result: number, error?: unknown): void;
+      install(): void;
+      discard(): void | Promise<void>;
+    },
+  ): ProcessReplacement {
+    const record = this.accessOwner(pid);
+    if (!this.options.stopImage || record.image.phase !== "current" || record.replacement)
+      throw new ProcessError(ProcessErrno.NOTSUP, "process image cannot be replaced");
+    const image = record.image;
+    let discarded: Promise<void> | undefined;
+    let transferred = false;
+    const replacement: ProcessReplacement = {
+      image,
+      request: snapshot({ ...staged.request, job: record.job }, { job: record.job }),
+      descriptors: staged.descriptors,
+      phase: "resolving",
+      complete: staged.complete,
+      install: () => {
+        staged.install();
+        transferred = true;
+      },
+      discard: () => {
+        if (transferred) return Promise.resolve();
+        return (discarded ??= Promise.resolve().then(async () => {
+          this.disposeDescriptors(staged.descriptors);
+          await staged.discard();
+        }));
+      },
+      cancel: async (error = new ProcessError(ProcessErrno.SRCH, "replacement cancelled")) => {
+        if (replacement.phase === "done") return;
+        replacement.phase = "cancelled";
+        await replacement.discard();
+        staged.complete(
+          -(error instanceof ProcessError
+            ? error.errno
+            : startFailureErrno(startFailure(error).error)),
+          error,
+        );
+        if (record.replacement === replacement) record.replacement = undefined;
+      },
+    };
+    record.replacement = replacement;
+    void this.resolveReplacement(record, replacement);
+    return replacement;
+  }
+  private replacementActive(record: ProcessRecord, replacement: ProcessReplacement): boolean {
+    return (
+      !this.disposed &&
+      this.imageActive(record, replacement.image) &&
+      !record.revoked &&
+      !readOutcome(record.outcome) &&
+      record.replacement === replacement &&
+      replacement.phase !== "cancelled"
+    );
+  }
+  private async resolveReplacement(
+    record: ProcessRecord,
+    replacement: ProcessReplacement,
+  ): Promise<void> {
+    const active = () => {
+      if (!this.replacementActive(record, replacement))
+        throw new ProcessError(ProcessErrno.SRCH, "process exited during replacement");
+    };
+    try {
+      active();
+      replacement.resolved = await this.options.registry.resolve(
+        replacement.request.executable,
+        replacement.request.cwd,
+        active,
+        replacement.request.argv,
+      );
+      active();
+      const signal = resetImageSignals(record.signalState, record.interrupt);
+      if (signal) this.defaultSignal(record.pid, signal);
+      active();
+      replacement.image.phase = "retiring";
+      replacement.phase = "committed";
+      replacement.complete(0);
+    } catch (error) {
+      await replacement.cancel(error);
+    }
+  }
+  async acknowledgeReplacement(pid: number, generation: number): Promise<void> {
+    const record = this.table.get(pid);
+    const replacement = record?.replacement;
+    if (
+      !record ||
+      !replacement ||
+      replacement.phase !== "committed" ||
+      replacement.image.generation !== generation
+    )
+      return;
+    const image = replacement.image;
+    try {
+      await this.stopReplacementImage(record, replacement);
+      if (!this.replacementActive(record, replacement)) return;
+      const resolved = replacement.resolved;
+      if (!resolved) throw new Error("committed replacement has no executable");
+      replacement.phase = "launching";
+      replacement.install();
+      const successor = createProcessImage(
+        image.generation + 1,
+        replacement.request.cwd,
+        replacement.descriptors,
+        replacement.request,
+      );
+      image.phase = "retired";
+      record.image = successor;
+      replacement.phase = "done";
+      record.replacement = undefined;
+      successor.starting = this.launchResolved(record, successor, resolved);
+      await successor.starting;
+    } catch (error) {
+      await replacement.cancel(error);
+      this.options.replacementFailed?.(pid, error);
+      this.finish(pid, { kind: "exited", code: 126 }, undefined, true);
+    }
+  }
+  private stopReplacementImage(
+    record: ProcessRecord,
+    replacement: ProcessReplacement,
+  ): Promise<void> {
+    const image = replacement.image;
+    if (image.stopping) return image.stopping;
+    const stop = async () => {
+      this.revokeImage(image);
+      this.disposeDescriptors(image.descriptors);
+      await this.options.stopImage!(record.pid, image.generation, () =>
+        this.replacementActive(record, replacement),
+      );
+      image.handle = undefined;
+    };
+    image.stopping = (image.acquiring ? image.acquiring.then(stop) : stop()).catch((error) => {
+      image.phase = "failed";
+      throw error;
+    });
+    return image.stopping;
+  }
   private imageActive(record: ProcessRecord, image: ProcessImage): boolean {
-    return this.table.get(record.pid) === record && record.image === image &&
-      (image.phase === "current" || image.phase === "retiring");
+    return (
+      this.table.get(record.pid) === record &&
+      record.image === image &&
+      (image.phase === "current" || image.phase === "retiring")
+    );
   }
   registerCurrentImageRevocation(pid: number, hook: () => void): () => void {
     const record = this.table.require(pid);
     return this.registerImageRevocation(record, record.image, hook);
   }
-  private registerImageRevocation(record: ProcessRecord, image: ProcessImage, hook: () => void): () => void {
+  private registerImageRevocation(
+    record: ProcessRecord,
+    image: ProcessImage,
+    hook: () => void,
+  ): () => void {
     if (!this.imageActive(record, image) || record.revoked) this.safely(hook);
     else image.revocations.add(hook);
-    return () => { image.revocations.delete(hook); };
+    return () => {
+      image.revocations.delete(hook);
+    };
   }
   private revokeImage(image: ProcessImage): void {
     const hooks = Array.from(image.revocations);
@@ -1157,6 +1352,7 @@ export class ProcessSupervisor {
     const pid = record.pid;
     if (winner.kind === "signaled" && winner.code === Signal.SIGKILL) this.publishKill(record);
     record.revoked = true;
+    if (record.replacement) void record.replacement.cancel().catch((error) => this.report(error));
     let owned: Promise<void> | undefined;
     let fenceFailed = false;
     try {
@@ -1266,7 +1462,8 @@ export class ProcessSupervisor {
     void retired.then(
       () => {
         record.stopping!.consumer = undefined;
-        record.retirement = record.image.request === null ? { kind: "external" } : { kind: "complete" };
+        record.retirement =
+          record.image.request === null ? { kind: "external" } : { kind: "complete" };
         this.notifyRetirement(record.job);
       },
       (error) => {
@@ -1311,7 +1508,7 @@ export class ProcessSupervisor {
         completion.handleFailed(error);
         throw error;
       };
-      const pending = consumer?.terminate();
+      const pending = record.image.stopping ?? consumer?.terminate();
       if (pending) {
         void pending.then(afterHandle, handleFailed).catch(completion.failed);
       } else {

@@ -28,6 +28,7 @@ import {
   type RuntimeProcessIdentity,
 } from "./process-context.js";
 import { ExecutionUnwind } from "../core/unwind.js";
+import { ProcessReplaced } from "../proc/exec.js";
 import { directoryState, isCollectedProcess } from "../proc/directory.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import {
@@ -94,6 +95,8 @@ import {
   typedArraySet,
   typedArraySubarray,
   wasmMemoryBuffer,
+  listenAbort,
+  unlistenAbort,
 } from "../proc/intrinsics.ts";
 
 import type { MemoryGroupMemberRequest } from "../group/protocol.js";
@@ -130,6 +133,7 @@ export interface RuntimeWorkerRequest {
 export type SleepMode = "atomics" | "busy-wait";
 export type RuntimeWorkerMessage =
   | WorkerProcessMessage
+  | { type: "replaced"; cleanupErrors?: string[] }
   | { type: "shared-control-allocation"; buffer: SharedArrayBuffer }
   | { type: "phase"; name: string; duration: number }
   | { type: "stdout" | "stderr"; data: Uint8Array }
@@ -174,7 +178,10 @@ interface WorkerTerminalEvent {
   reason?: unknown;
   preventDefault(): void;
 }
-export type WorkerResult = { code: number; signal?: number } | { error: unknown };
+export type WorkerResult =
+  | { code: number; signal?: number }
+  | { error: unknown }
+  | { replaced: true };
 export type RuntimeWorkerState = ReturnType<typeof workerProcessState>;
 
 export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
@@ -679,6 +686,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     return localOutcome;
   };
   const finishOwned = async (result: WorkerResult): Promise<void> => {
+    const replacing = "replaced" in result;
     let settled = localOutcome;
     let observationFailure =
       observer && isProcessExecutionTerminated(lastObservationFailure, observer)
@@ -710,7 +718,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       !settled;
     const startupDiagnostic = startupFailure ? describeStartError(result.error) : undefined;
     let winner =
-      terminated || observationFailure
+      replacing || terminated || observationFailure
         ? null
         : runtimeDiagnostic || !executor.complete || startupFailure
           ? claim(ownResult, startupDiagnostic)
@@ -793,15 +801,19 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     if (!descriptorsReleased || !filesystemReleased) {
       // A failed local release cannot certify quiescence. Leave completion unpublished so
       // the page must fence this process before termination or releasing inherited refs.
-      winner ??= claim(ownResult);
+      if (!replacing) winner ??= claim(ownResult);
       postToHost({
         type: "cleanup-error",
-        code: waitStatus(winner),
-        signal: winner.kind === "signaled" ? winner.code : undefined,
+        code: winner ? waitStatus(winner) : 126,
+        signal: winner?.kind === "signaled" ? winner.code : undefined,
         message: cleanupErrors.join("\n"),
         cleanupErrors,
         sleep: sleepMode,
       });
+      return;
+    }
+    if (replacing) {
+      postToHost({ type: "replaced", ...(cleanupErrors.length ? { cleanupErrors } : {}) });
       return;
     }
     if (executor.complete)
@@ -840,7 +852,9 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     return signal === undefined ? null : { code: 128 + signal, signal };
   };
   const finishError = (error: unknown): void => {
-    if (observer && isProcessExecutionTerminated(error, observer)) {
+    if (error instanceof ProcessReplaced) {
+      finish({ replaced: true });
+    } else if (observer && isProcessExecutionTerminated(error, observer)) {
       terminated = true;
       finish({ code: 0 });
     } else if (observer && observedProcessExit(error, observer)) {
@@ -1165,6 +1179,40 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
           return pipes.createPipe();
         },
         revokeProcess: (pid) => pipes.revokeProcess(pid),
+        registerRevocation: (hook) => {
+          listenAbort(cancellation.signal, hook);
+          return () => unlistenAbort(cancellation.signal, hook);
+        },
+        prepareExec: () => {
+          checkActive();
+          const end = fs.beginTransfer();
+          let filesystem: ReturnType<typeof createProcessFilesystemIdentity> | undefined;
+          const cancel = () => {
+            if (!filesystem) return;
+            revokeFilesystem(filesystem);
+            reapFilesystem(filesystem);
+          };
+          try {
+            const data = executor.spawnData?.();
+            checkActive();
+            filesystem = createProcessFilesystemIdentity(fs.connection);
+            return {
+              cancel,
+              release: end,
+              data: { ...data, filesystem, pipeRegistry: pipes.registry.handle() },
+              codec: createRuntimeTerminalCodec({
+                fallback: pipes.codec(createFilesystemDescriptorCodec(fs, filesystem), true),
+              }),
+            };
+          } catch (error) {
+            try {
+              cancel();
+            } finally {
+              end();
+            }
+            throw error;
+          }
+        },
         prepareSpawn: (pid) => {
           checkActive();
           const end = fs.beginTransfer();

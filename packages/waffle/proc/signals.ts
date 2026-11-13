@@ -90,6 +90,21 @@ export function setSignalDisposition(
     }
   }
 }
+
+/** Exec keeps ignored signals and restores handled signals to their default action. */
+export function resetImageSignals(state: ControlCells, interrupt: ControlCells): number {
+  let terminating = 0;
+  for (let signal = 1; signal <= 64; signal++) {
+    if (signalDispositionUnchecked(state, signal) !== SignalDisposition.HANDLE) continue;
+    if (setSignalDisposition(state, signal, SignalDisposition.DEFAULT, interrupt))
+      terminating ||= signal;
+  }
+  return terminating;
+}
+
+function signalDispositionUnchecked(state: ControlCells, signal: number): number {
+  return controlLoad(state, signal) & DISPOSITION_MASK;
+}
 /** Classification and pending publication share one CAS, so registration cannot race delivery. */
 export function publishSignal(
   state: ControlCells,

@@ -24,6 +24,7 @@ import {
   setAdd,
 } from "./intrinsics.ts";
 import { ExecutionUnwind } from "../core/unwind.js";
+import { ProcessReplaced, readExecCompletion } from "./exec.js";
 import { type ControlCells, controlLoad, controlWait } from "./control.js";
 import {
   MAX_DESCRIPTOR,
@@ -58,6 +59,7 @@ import {
   checkedProcessCwd,
   type ProcessExit,
   type SpawnRequest,
+  type ExecRequest,
 } from "./types.js";
 
 /** Synchronous control plane. Implementations reserve/retain before returning from spawn;
@@ -67,6 +69,7 @@ export interface ProcessService {
   readonly wake?: Int32Array;
   cwd(pid: number): string;
   spawn(parentPid: number, request: SpawnRequest): number;
+  exec?(pid: number, request: ExecRequest): SharedArrayBuffer;
   /** Consume one safely exited child; null means it is still pending. */
   wait(parentPid: number, pid: number): ProcessExit | null;
   /** Observe child readiness without consuming its status or capacity. */
@@ -234,6 +237,7 @@ export class ProcessABI {
         }),
       spawn_error: (pid, ptr, capacity) =>
         this.result(() => this.spawnDiagnostic(pid!, ptr!, capacity!)),
+      exec: (ptr, length) => this.result(() => this.exec(ptr!, length!)),
       job_of: (pid) => this.result(() => options.service.jobOf(pid === 0 ? options.pid : pid!)),
       pipe: (ptr) => this.result(() => this.pipe(ptr!)),
       dup: (fd) => options.descriptors.dup(fd! >>> 0),
@@ -383,7 +387,7 @@ export class ProcessABI {
       this.options.service.accessStart?.(this.options.pid, path, cwd, this.options.wake) ?? -NOSYS
     );
   }
-  private spawnRequest(ptr: number, length: number): SpawnRequest {
+  private spawnRequest(ptr: number, length: number, replacing = false): SpawnRequest {
     // Guest memory may be resizable; TextDecoder's WebIDL input requires a fixed buffer.
     const bytes = new Uint8ArrayConstructor(this.span(ptr, length));
     let request: unknown;
@@ -391,6 +395,11 @@ export class ProcessABI {
       request = JSON.parse(decode.decode(bytes));
     } catch {
       throw new ProcessError(ProcessErrno.INVAL, "invalid spawn JSON");
+    }
+    if (replacing && request && typeof request === "object") {
+      if ("job" in request || "jobLifetime" in request || "worker" in request)
+        throw new ProcessError(ProcessErrno.INVAL, "exec cannot select a job or worker");
+      request = { ...request, job: 0 };
     }
     const object = request as Partial<SpawnRequest> | null;
     const fd = (value: unknown): value is number =>
@@ -421,6 +430,61 @@ export class ProcessABI {
     checkedJobLifetime(object.job!, object.jobLifetime);
     checkedProcessCwd(object.cwd);
     return object as SpawnRequest;
+  }
+  private exec(ptr: number, length: number): number {
+    this.spawnFailure = "";
+    try {
+      if (
+        !Number.isInteger(ptr) ||
+        !Number.isInteger(length) ||
+        ptr < -0x80000000 ||
+        ptr > 0xffffffff ||
+        length < -0x80000000 ||
+        length > 0xffffffff
+      )
+        return -ProcessErrno.INVAL;
+      const parsed = this.spawnRequest(ptr, length, true);
+      const request: ExecRequest = {
+        executable: parsed.executable,
+        argv: parsed.argv,
+        env: parsed.env,
+        cwd: parsed.cwd,
+        fds: parsed.fds,
+      };
+      if (!this.options.service.exec) return -NOSYS;
+      const wake = this.options.wake;
+      if (!wake || !this.options.service.registerRevocation) return -ProcessErrno.NOTSUP;
+      const unregister = this.options.service.registerRevocation(this.options.pid, () => {
+        atomicsAdd(wake, 0, 1);
+        atomicsNotify(wake, 0);
+      });
+      try {
+        const completion = this.options.service.exec(this.options.pid, request);
+        return this.waitExec(completion, wake);
+      } finally {
+        unregister();
+      }
+    } catch (error) {
+      if (error instanceof ExecutionUnwind) throw error;
+      this.spawnFailure = describeStartError(error);
+      throw spawnError(error);
+    }
+  }
+  private waitExec(completion: SharedArrayBuffer, wake: Int32Array): number {
+    for (;;) {
+      const sequence = controlLoad(wake, 0);
+      this.checkFatal();
+      const result = readExecCompletion(completion);
+      if (result) {
+        this.spawnFailure = result.diagnostic;
+        if (result.result === 0) throw new ProcessReplaced("process image replaced");
+        return result.result;
+      }
+      assertTerminalWaitAllowed();
+      if (this.options.wait) this.options.wait(Infinity, wake, sequence);
+      else controlWait(wake, 0, sequence);
+      this.checkFatal();
+    }
   }
   private pipe(ptr: number): number {
     // Validate before retaining endpoints or mutating the descriptor namespace.

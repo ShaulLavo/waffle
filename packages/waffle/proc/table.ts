@@ -1,4 +1,5 @@
 import type { ProcessObservationTransfer } from "./observation.js";
+import type { ResolvedExecutable } from "./registry.js";
 import {
   isInstance,
   sharedArrayBufferByteLength,
@@ -45,7 +46,11 @@ export function createProcessImage(
   revocations = new Set<() => void>(),
 ): ProcessImage {
   return {
-    generation, cwd, descriptors, request, revocations,
+    generation,
+    cwd,
+    descriptors,
+    request,
+    revocations,
     phase: "current",
     nativeAcquisition: { kind: "not-invoked" },
   };
@@ -59,6 +64,7 @@ export interface ProcessRecord {
   rootPid?: number;
   readonly job: number;
   image: ProcessImage;
+  replacement?: ProcessReplacement;
   readonly interrupt: ControlCells;
   readonly requestedSignal: ControlCells;
   readonly signalState: ControlCells;
@@ -79,6 +85,17 @@ export interface ProcessRecord {
   retirement?: { kind: "complete" } | { kind: "external" } | { kind: "failed"; error: unknown };
   revocations: Set<() => void>;
   waiters: Set<(result: ProcessExit) => void>;
+}
+export interface ProcessReplacement {
+  readonly image: ProcessImage;
+  readonly request: Readonly<SpawnRequest>;
+  readonly descriptors: DescriptorTable;
+  phase: "resolving" | "committed" | "launching" | "done" | "cancelled";
+  resolved?: ResolvedExecutable;
+  complete(result: number, error?: unknown): void;
+  install(): void;
+  discard(): Promise<void>;
+  cancel(error?: unknown): Promise<void>;
 }
 export interface ProcessJob {
   readonly id: number;

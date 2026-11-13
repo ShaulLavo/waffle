@@ -93,7 +93,13 @@ export interface RuntimeConsumer {
 export type RuntimeFilesystem = Omit<SharedFilesystem, "client" | "dispose" | "attachSocketScope">;
 export type RuntimeSupervisor = Omit<
   ProcessSupervisor,
-  "dispose" | "registerOwnedJobCleanup" | "onJobRetirement" | "jobRetired" | "retireFencedProcesses"
+  | "dispose"
+  | "registerOwnedJobCleanup"
+  | "onJobRetirement"
+  | "jobRetired"
+  | "retireFencedProcesses"
+  | "beginReplacement"
+  | "acknowledgeReplacement"
 >;
 export type ProcessService = Omit<
   BrowserProcessBroker,

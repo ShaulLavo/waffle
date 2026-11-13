@@ -26,6 +26,8 @@ export function isWorkerPipeDescriptorToken(token: unknown): token is WorkerPipe
   return typeof token === "object" && token !== null && "kind" in token && token.kind === "pipe";
 }
 export interface WorkerPipeCodecOptions extends Pick<PipeOptions, "allocateShared"> {
+  /** Exec retains an independent lifetime while keeping the existing process lane. */
+  successor?: boolean;
   /** Filesystem and terminal resources remain owned by their own transfer adapters. */
   fallback?: WorkerDescriptorCodec;
   /** Controller imports register the shared pipe with their one responsive relay owner. */
@@ -44,7 +46,9 @@ export function createWorkerPipeCodec(options: WorkerPipeCodecOptions = {}): Wor
       }
       // This is the synchronous spawn ownership boundary. Parent closure after export cannot
       // remove this child's endpoint, including before its worker or supervisor chunk starts.
-      const endpoint = descriptor.resource.forProcess(pid);
+      const endpoint = options.successor
+        ? descriptor.resource.retainSuccessor()
+        : descriptor.resource.forProcess(pid);
       return { kind: "pipe", endpoint: endpoint.handle() } satisfies WorkerPipeDescriptorToken;
     },
     import(token, pid): OpenDescription {
@@ -102,8 +106,13 @@ export class WorkerPipeHost {
   }
   codec(
     fallback: WorkerDescriptorCodec | undefined = this.options.fallback,
+    successor = false,
   ): WorkerDescriptorCodec {
-    return createWorkerPipeCodec({ fallback, allocateShared: this.options.allocateShared });
+    return createWorkerPipeCodec({
+      fallback,
+      successor,
+      allocateShared: this.options.allocateShared,
+    });
   }
   createPipe(): readonly [PipeEndpoint, PipeEndpoint] {
     const controller = new PipeController({
