@@ -169,7 +169,7 @@ async function observations(
   await assertStreaming(session, fixture.stream, true);
   assert.deepEqual(session.descriptors.inheritable(), [0, 1, 2]);
   const supervisor = await (await session.runtime.processes()).ready();
-  assert.ok(Array.from(supervisor.table.values()).every((record) => record.request === null));
+  assert.ok(Array.from(supervisor.table.values()).every((record) => record.image.request === null));
 }
 
 async function assertRemoved(runtime: Runtime, name: string) {

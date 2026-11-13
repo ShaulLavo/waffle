@@ -184,7 +184,7 @@ async function proveGap(session: FamilyAcceptanceSession) {
     await cancellation(session);
     const supervisor = await (await session.runtime.processes()).ready();
     assert.ok(
-      Array.from(supervisor.table.values()).every((record) => record.request === null),
+      Array.from(supervisor.table.values()).every((record) => record.image.request === null),
       "child processes survived",
     );
     assert.equal(
