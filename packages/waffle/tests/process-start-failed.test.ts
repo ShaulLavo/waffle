@@ -63,7 +63,7 @@ for (const [error, code, wasi] of failures) {
     const memory = new WebAssembly.Memory({ initial: 1 });
     const abi = new ProcessABI({
       memory,
-      descriptors: supervisor.get(shell)!.descriptors,
+      descriptors: supervisor.get(shell)!.image.descriptors,
       fs: backend.fs,
       pid: shell,
       service: supervisor,
@@ -126,7 +126,7 @@ for (const status of [126, 127])
       const memory = new WebAssembly.Memory({ initial: 1 });
       const abi = new ProcessABI({
         memory,
-        descriptors: supervisor.get(shell)!.descriptors,
+        descriptors: supervisor.get(shell)!.image.descriptors,
         fs: new MemoryBackend().fs,
         pid: shell,
         service: supervisor,
@@ -185,7 +185,7 @@ test("typed startup failure becomes observable only after descriptor release and
   });
   supervisor
     .get(pid)!
-    .descriptors.open({ kind: "directory", handle: 1 }, 0n, 0n, () => events.push("release"));
+    .image.descriptors.open({ kind: "directory", handle: 1 }, 0n, 0n, () => events.push("release"));
   try {
     await supervisor.start(pid);
     expect(readOutcome(supervisor.get(pid)!.outcome)).toMatchObject({
@@ -263,7 +263,7 @@ test("signals use a tagged signal number rather than a shell status in both wait
     memory = new WebAssembly.Memory({ initial: 1 });
   const abi = new ProcessABI({
     memory,
-    descriptors: supervisor.get(shell)!.descriptors,
+    descriptors: supervisor.get(shell)!.image.descriptors,
     fs: new MemoryBackend().fs,
     pid: shell,
     service: supervisor,

@@ -291,7 +291,7 @@ test("duplicate and explicitly rejected registered messages do not close the adm
   f.broker.rejectRuntimeMessage(child.message, parentPid);
   expect(f.events.at(-1)).toMatchObject({ stage: "dropped", reason: "already-registered" });
   expect(Atomics.load(child.lifetime, 0)).toBe(0);
-  const writer = supervisor.get(child.pid)!.descriptors.get(1)!.resource as PipeEndpoint;
+  const writer = supervisor.get(child.pid)!.image.descriptors.get(1)!.resource as PipeEndpoint;
   expect(writer.tryWrite([new Uint8Array([68])])).toBe(1);
   const bytes = new Uint8Array(1);
   expect(f.reader.tryRead([bytes])).toBe(1);

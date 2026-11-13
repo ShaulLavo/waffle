@@ -72,7 +72,7 @@ test("supervisor forProcess inheritance preserves NONBLOCK and independent right
       pid,
       fixtureSpawnRequest({ fds: [{ parent: 0, child: 7 }] }),
     );
-    child.wasi.descriptors.inherit(7, supervisor.get(childPid)!.descriptors.get(7)!);
+    child.wasi.descriptors.inherit(7, supervisor.get(childPid)!.image.descriptors.get(7)!);
     expect(child.flags(7)).toBe(4);
     expect(child.io("fd_read", 7)).toBe(6);
     const rights = parent.wasi.descriptors.get(0)!.rightsBase;

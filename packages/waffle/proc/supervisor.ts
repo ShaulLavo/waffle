@@ -28,7 +28,7 @@ import {
   type Descriptor,
 } from "../core/descriptors.js";
 import { ExecutableRegistry, type ResolvedExecutable } from "./registry.js";
-import { ProcessTable, type ProcessJob, type ProcessRecord } from "./table.js";
+import { ProcessTable, type ProcessJob, type ProcessRecord, type ProcessImage, createProcessImage } from "./table.js";
 import {
   OutcomeCell,
   claimOutcome,
@@ -230,7 +230,7 @@ export class ProcessSupervisor {
     if (!consumers) return true;
     let complete = true;
     for (const record of consumers) {
-      if (record.request === null)
+      if (record.image.request === null)
         throw new ProcessError(
           ProcessErrno.NOTSUP,
           "external root has no supervised physical-stop handle",
@@ -242,7 +242,7 @@ export class ProcessSupervisor {
     return complete;
   }
   cwd(pid: number): string {
-    return this.accessOwner(pid).cwd;
+    return this.accessOwner(pid).image.cwd;
   }
   private accessOwner(pid: number): ProcessRecord {
     const record = this.table.get(pid);
@@ -475,15 +475,12 @@ export class ProcessSupervisor {
         pid,
         parentPid: 0,
         job: job.id,
-        cwd,
-        descriptors: options.descriptors ?? new DescriptorTable(),
+        image: createProcessImage(1, cwd, options.descriptors ?? new DescriptorTable(), null),
         interrupt,
         requestedSignal,
         signalState,
         outcome,
         observation,
-        nativeAcquisition: { kind: "not-invoked" },
-        request: null,
         state: "running",
         result: null,
         jobSafe: false,
@@ -546,7 +543,7 @@ export class ProcessSupervisor {
       (parent!.result || parent!.signal === Signal.SIGKILL || readOutcome(parent!.outcome))
     )
       throw new ProcessError(ProcessErrno.SRCH, "parent process has exited or is being killed");
-    const parentDescriptors = retainedDescriptors ?? parent!.descriptors;
+    const parentDescriptors = retainedDescriptors ?? parent!.image.descriptors;
     if (!Number.isInteger(selector) || selector < -1)
       throw new ProcessError(ProcessErrno.INVAL, "invalid job selection");
     const bindings = new Set<number>();
@@ -627,24 +624,21 @@ export class ProcessSupervisor {
           pid,
           parentPid,
           job,
-          cwd: request.cwd,
-          descriptors,
+          image: createProcessImage(1, request.cwd, descriptors, request, revocations),
           controlParent: reservation.controlParent,
           rootPid: reservation.rootPid,
           interrupt,
           requestedSignal,
           signalState,
           outcome,
-          request,
           state: "reserved",
           result: null,
           jobSafe: false,
           signal: 0,
           observation,
-          nativeAcquisition: { kind: "not-invoked" },
           nativeReturn: reservation.nativeReturn ?? captureNativeReturn(observation),
           revoked: false,
-          revocations,
+          revocations: new Set(),
           waiters: new Set(),
         },
         admitted,
@@ -677,8 +671,8 @@ export class ProcessSupervisor {
   /** Idempotent: direct spawn and the asynchronous activation stub may both request start. */
   start(pid: number): Promise<void> {
     const record = this.table.get(pid);
-    if (!record || record.request === null) return Promise.resolve();
-    if (record.starting) return record.starting;
+    if (!record || record.image.request === null) return Promise.resolve();
+    if (record.image.starting) return record.image.starting;
     if (record.result || record.revoked) return Promise.resolve();
     const settled = readOutcome(record.outcome);
     if (settled) {
@@ -686,19 +680,20 @@ export class ProcessSupervisor {
       return Promise.resolve();
     }
     record.state = "starting";
-    record.starting = this.launch(record);
-    return record.starting;
+    record.image.starting = this.launch(record);
+    return record.image.starting;
   }
   private async launch(record: ProcessRecord): Promise<void> {
+    const image = record.image;
     try {
       const executable = await this.options.registry.resolve(
-        record.request!.executable,
-        record.request!.cwd,
+        image.request!.executable,
+        image.request!.cwd,
         () => {
           if (record.result || record.revoked || readOutcome(record.outcome))
             throw new Error("process exited before executable admission completed");
         },
-        record.request!.argv,
+        image.request!.argv,
       );
       if (record.result || record.revoked) return;
       const settled = readOutcome(record.outcome);
@@ -707,43 +702,62 @@ export class ProcessSupervisor {
         return;
       }
       const context: ProcessLifecycle = {
+        generation: image.generation,
         pid: record.pid,
         parentPid: record.parentPid,
         job: record.job,
         request:
           executable.argv === undefined
-            ? record.request!
-            : { ...record.request!, argv: executable.argv.slice() },
-        descriptors: record.descriptors,
+            ? image.request!
+            : { ...image.request!, argv: executable.argv.slice() },
+        descriptors: image.descriptors,
         interrupt: record.interrupt,
         requestedSignal: record.requestedSignal,
         signalState: record.signalState,
         outcome: record.outcome,
         observation: record.observation,
-        started: () => this.started(record.pid),
-        exit: (code) => this.exit(record.pid, code),
-        fail: () => this.finish(record.pid, { kind: "exited", code: 126 }, undefined, true),
-        startFailed: (error) => this.failStart(record.pid, error),
-        defaultSignal: (signal) => this.defaultSignal(record.pid, signal),
-        registerRevocation: (hook) => this.registerRevocation(record.pid, hook),
+        started: () => this.imageActive(record, image) && this.started(record.pid),
+        exit: (code) => { if (this.imageActive(record, image)) this.exit(record.pid, code); },
+        fail: () => { if (this.imageActive(record, image)) this.finish(record.pid, { kind: "exited", code: 126 }, undefined, true); },
+        startFailed: (error) => { if (this.imageActive(record, image)) this.failStart(record.pid, error); },
+        defaultSignal: (signal) => { if (this.imageActive(record, image)) this.defaultSignal(record.pid, signal); },
+        registerRevocation: (hook) => this.registerImageRevocation(record, image, hook),
       };
       let acquired!: () => void;
-      record.acquiring = new Promise<void>((resolve) => {
+      image.acquiring = new Promise<void>((resolve) => {
         acquired = resolve;
       });
       try {
-        record.handle = await this.launchExecutable(context, executable);
+        image.handle = await this.launchExecutable(context, executable);
       } finally {
-        record.acquiring = undefined;
+        image.acquiring = undefined;
         acquired();
       }
       if (record.result) this.stopHandle(record);
       else if (!record.revoked) record.state = "running";
     } catch (error) {
-      if (record.nativeAcquisition.kind === "invoked" && !record.handle)
-        record.nativeAcquisition = { kind: "failed", error };
+      if (image.nativeAcquisition.kind === "invoked" && !image.handle)
+        image.nativeAcquisition = { kind: "failed", error };
       this.failStart(record.pid, error);
     }
+  }
+  private imageActive(record: ProcessRecord, image: ProcessImage): boolean {
+    return this.table.get(record.pid) === record && record.image === image &&
+      (image.phase === "current" || image.phase === "retiring");
+  }
+  registerCurrentImageRevocation(pid: number, hook: () => void): () => void {
+    const record = this.table.require(pid);
+    return this.registerImageRevocation(record, record.image, hook);
+  }
+  private registerImageRevocation(record: ProcessRecord, image: ProcessImage, hook: () => void): () => void {
+    if (!this.imageActive(record, image) || record.revoked) this.safely(hook);
+    else image.revocations.add(hook);
+    return () => { image.revocations.delete(hook); };
+  }
+  private revokeImage(image: ProcessImage): void {
+    const hooks = Array.from(image.revocations);
+    image.revocations.clear();
+    for (const hook of hooks) this.safely(hook);
   }
   private launchExecutable(
     context: ProcessLifecycle,
@@ -752,10 +766,10 @@ export class ProcessSupervisor {
     if (executable.kind === "command") {
       if (!this.options.launchCommand)
         throw new ExecutableFormatError("Host commands are unavailable in this supervisor");
-      this.table.require(context.pid).nativeAcquisition = { kind: "invoked" };
+      this.table.require(context.pid).image.nativeAcquisition = { kind: "invoked" };
       return this.options.launchCommand({ ...context, command: executable });
     }
-    this.table.require(context.pid).nativeAcquisition = { kind: "invoked" };
+    this.table.require(context.pid).image.nativeAcquisition = { kind: "invoked" };
     return this.options.launch({
       ...context,
       module: executable.module,
@@ -1154,7 +1168,8 @@ export class ProcessSupervisor {
     const hooks = Array.from(record.revocations);
     record.revocations.clear();
     for (const hook of hooks) this.safely(hook);
-    this.disposeDescriptors(record.descriptors);
+    this.revokeImage(record.image);
+    this.disposeDescriptors(record.image.descriptors);
     // Invoke the fence while broker child/identity records are still present. Every observer
     // must wait for admitted filesystem and adapter work (for example a terminal section),
     // independently of the physical worker's potentially delayed termination.
@@ -1246,12 +1261,12 @@ export class ProcessSupervisor {
     record.stopping = { handle: handleStop, complete: retired };
     const stop = () =>
       this.invokePhysicalStop(record, { handleDone, handleFailed, complete, failed });
-    if (record.acquiring) void record.acquiring.then(stop, failed);
+    if (record.image.acquiring) void record.image.acquiring.then(stop, failed);
     else stop();
     void retired.then(
       () => {
         record.stopping!.consumer = undefined;
-        record.retirement = record.request === null ? { kind: "external" } : { kind: "complete" };
+        record.retirement = record.image.request === null ? { kind: "external" } : { kind: "complete" };
         this.notifyRetirement(record.job);
       },
       (error) => {
@@ -1272,15 +1287,15 @@ export class ProcessSupervisor {
     },
   ): void {
     try {
-      const consumer = record.handle;
+      const consumer = record.image.handle;
       record.stopping!.consumer = consumer;
-      record.handle = undefined;
+      record.image.handle = undefined;
       const completeNative = () => {
-        if (!consumer && record.nativeAcquisition.kind === "failed" && !this.options.retire)
-          throw record.nativeAcquisition.error;
+        if (!consumer && record.image.nativeAcquisition.kind === "failed" && !this.options.retire)
+          throw record.image.nativeAcquisition.error;
         if (
           consumer ||
-          (record.nativeAcquisition.kind === "not-invoked" &&
+          (record.image.nativeAcquisition.kind === "not-invoked" &&
             record.observation.kind === "directory")
         )
           record.nativeReturn?.();

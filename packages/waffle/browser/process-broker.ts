@@ -781,7 +781,7 @@ export class BrowserProcessBroker {
         for (const row of this.options.table.values()) {
           if (
             row.rootPid !== rootPid ||
-            !row.request ||
+            !row.image.request ||
             row.revoked ||
             row.state === "exited" ||
             readOutcome(row.outcome)
@@ -790,8 +790,8 @@ export class BrowserProcessBroker {
           rows.push({
             pid: row.pid,
             parentPid: row.parentPid,
-            executable: row.request.executable,
-            argv: row.request.argv.slice(),
+            executable: row.image.request.executable,
+            argv: row.image.request.argv.slice(),
             state: row.state,
           });
         }
@@ -1146,7 +1146,7 @@ export class BrowserProcessBroker {
     supervisor.registerRevocation(state.pid, () => this.revokeRuntimeProcess(state.pid));
     installWorkerBindings(
       transport,
-      supervisor.get(state.pid)!.descriptors,
+      supervisor.get(state.pid)!.image.descriptors,
       this.descriptorCodec(transport),
     );
     const result = readOutcome(state.signals.outcome);
@@ -2208,7 +2208,7 @@ export class BrowserProcessBroker {
     const controller = this.controllers.get(pid);
     if (controller?.startFailed) return controller.startFailed(error, active);
     if (runtimeChild) return;
-    const stderr = this.children.get(pid)?.startupStderr ?? record?.descriptors.get(2)?.resource;
+    const stderr = this.children.get(pid)?.startupStderr ?? record?.image.descriptors.get(2)?.resource;
     if (stderr?.kind !== "pipe" && stderr?.kind !== "terminal") return;
     const bytes = new TextEncoder().encode(`runtime: process start failed: ${String(error)}\n`);
     const write = stderr.tryWrite;

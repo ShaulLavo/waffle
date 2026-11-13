@@ -490,7 +490,7 @@ export class WorkerProcessBroker {
       admitted = true;
       this.options.onAdmitted?.(transport);
       this.trace(transport, "reserved");
-      const descriptors = supervisor.get(state.pid)!.descriptors;
+      const descriptors = supervisor.get(state.pid)!.image.descriptors;
       reason = "binding-failed";
       installWorkerBindings(transport, descriptors, codec);
       this.trace(transport, "bound");
@@ -500,7 +500,7 @@ export class WorkerProcessBroker {
         if (resources.has(resource)) continue;
         resources.add(resource);
         if ((resource.kind === "pipe" || resource.kind === "terminal") && resource.revoke)
-          supervisor.registerRevocation(state.pid, () => resource.revoke!());
+          supervisor.registerCurrentImageRevocation(state.pid, () => resource.revoke!());
       }
       // A kill may have won before lazy admission, including after the sender already exited.
       // start() adopts the shared decision and never launches an already-dead worker.

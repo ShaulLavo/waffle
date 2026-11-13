@@ -233,7 +233,7 @@ test("failed direct root activation retains its consumer fence and stop capabili
   class PartialSupervisor extends proc.ProcessSupervisor {
     override createRoot(options: RootProcessOptions): never {
       const pid = super.createRoot(options);
-      this.get(pid)!.descriptors.open(
+      this.get(pid)!.image.descriptors.open(
         {
           kind: "terminal",
           read: () => 0,
@@ -1583,7 +1583,7 @@ for (const diagnostic of ["inherited", "controller"] as const)
         0n,
         0n,
       );
-      supervisor.get(pid)!.descriptors.inherit(2, source.get(fd)!);
+      supervisor.get(pid)!.image.descriptors.inherit(2, source.get(fd)!);
       source.close(fd);
       if (diagnostic === "controller") {
         const controller = {
@@ -1640,7 +1640,7 @@ test("broker disposal does not await a controller startup diagnostic that never 
   });
   try {
     const { supervisor, pid } = await reserveFixtureChild(broker, "fixture");
-    supervisor.get(pid)!.descriptors.open(
+    supervisor.get(pid)!.image.descriptors.open(
       {
         kind: "terminal",
         read: () => 0,
@@ -2896,7 +2896,7 @@ test("startup diagnostics reject write-only stderr without calling its blocking 
   });
   try {
     const { root, supervisor, pid } = await reserveFixtureChild(broker, "fixture");
-    supervisor.get(pid)!.descriptors.openAt(
+    supervisor.get(pid)!.image.descriptors.openAt(
       2,
       {
         kind: "terminal",

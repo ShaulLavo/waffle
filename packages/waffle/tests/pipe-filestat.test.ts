@@ -88,7 +88,7 @@ test("pipe metadata rights and filestat survive local supervisor inheritance wit
     new Uint8Array(guest.memory.buffer).set(request, 1024);
     const child = guest.spawn(1024, request.length);
     expect(child).toBeGreaterThan(0);
-    const bindings = supervisor.get(child)!.descriptors;
+    const bindings = supervisor.get(child)!.image.descriptors;
     for (const [target, source] of [
       [17, read],
       [18, write],

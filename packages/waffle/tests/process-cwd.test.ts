@@ -43,7 +43,7 @@ function fixture(cwd = "/tmp/spec") {
     return new ProcessABI({
       memory: getMemory,
       fs: new MemFS(),
-      descriptors: supervisor.get(caller)!.descriptors,
+      descriptors: supervisor.get(caller)!.image.descriptors,
       service: supervisor,
       pid: caller,
       signals: supervisor.get(caller)!,

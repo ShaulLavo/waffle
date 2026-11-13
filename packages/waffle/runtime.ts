@@ -299,6 +299,7 @@ const supervisorCapabilities = {
   onChildExit: "method",
   onProcessQuiescent: "method",
   registerRevocation: "method",
+  registerCurrentImageRevocation: "method",
 } satisfies Record<keyof RuntimeSupervisor, CapabilityKind>;
 
 /** Fresh capabilities, never an owner-backed Proxy. Even descriptors and prototype inspection

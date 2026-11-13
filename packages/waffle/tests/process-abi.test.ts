@@ -136,7 +136,7 @@ test("getpid returns each caller's own runtime identity, not its parent or job",
   const record = f.supervisor.get(child)!;
   const childABI = new ProcessABI({
     memory: f.memory,
-    descriptors: record.descriptors,
+    descriptors: record.image.descriptors,
     fs: f.fs,
     pid: child,
     service: f.supervisor,
@@ -185,10 +185,10 @@ test("spawn snapshots JSON and retains arbitrary fd bindings before returning", 
   f.bytes().fill(0, 2048);
   f.descriptors.close(read);
   f.descriptors.close(write);
-  const childTable = f.supervisor.get(child)!.descriptors;
+  const childTable = f.supervisor.get(child)!.image.descriptors;
   expect(childTable.get(0)!.resource.kind).toBe("pipe");
   expect(childTable.get(19)!.resource.kind).toBe("pipe");
-  expect(f.supervisor.get(child)!.request!.argv).toEqual(["fixture", "a b"]);
+  expect(f.supervisor.get(child)!.image.request!.argv).toEqual(["fixture", "a b"]);
   expect(f.abi.imports.job_of!(child)).toBe(f.supervisor.jobOf(child));
   expect(f.abi.imports.wait!(child, 64)).toBe(-6);
   expect(f.waits()).toBe(0);
@@ -226,8 +226,8 @@ test("spawn decodes resizable guest memory through a fixed WebIDL buffer", () =>
     };
     const child = f.abi.imports.spawn!(2048, f.put(JSON.stringify(request)));
     expect(child).toBeGreaterThan(0);
-    expect(f.supervisor.get(child)!.request!.argv).toEqual(request.argv);
-    expect(f.supervisor.get(child)!.request!.env).toEqual(request.env);
+    expect(f.supervisor.get(child)!.image.request!.argv).toEqual(request.argv);
+    expect(f.supervisor.get(child)!.image.request!.env).toEqual(request.env);
     f.memory.grow(1);
     expect(f.spawn()).toBeGreaterThan(0);
     expect(f.abi.imports.spawn!(2048, f.put("not json"))).toBe(-28);
@@ -663,7 +663,7 @@ test("guest kill authority rejects siblings and foreign jobs while allowing desc
   const record = f.supervisor.get(first)!;
   const child = new ProcessABI({
     memory: f.memory,
-    descriptors: record.descriptors,
+    descriptors: record.image.descriptors,
     fs: f.fs,
     pid: first,
     service: f.supervisor,

@@ -43,14 +43,14 @@ for (const failure of ["missing", "compile", "launch"] as const)
         const record = supervisor.get(pid)!;
         expect(record.revoked).toBe(false);
         expect(readOutcome(record.outcome)).toMatchObject({ kind: "start-failed", status: null });
-        const stderr = record.descriptors.get(2)!.resource;
+        const stderr = record.image.descriptors.get(2)!.resource;
         if (stderr.kind !== "terminal") throw new Error("inherited stderr missing");
         stderr.write([new TextEncoder().encode(String(value))]);
         events.push("diagnostic");
       },
     });
     const root = supervisor.createRoot();
-    const descriptors = supervisor.get(root)!.descriptors;
+    const descriptors = supervisor.get(root)!.image.descriptors;
     const fd = descriptors.open(
       {
         kind: "terminal",
@@ -192,7 +192,7 @@ test("a worker-selected startup error waits for acknowledgement and an asynchron
   });
   const root = supervisor.createRoot(),
     child = supervisor.reserveSpawn(root, request);
-  supervisor.get(child)!.descriptors.open(
+  supervisor.get(child)!.image.descriptors.open(
     {
       kind: "terminal",
       read: () => 0,
@@ -258,7 +258,7 @@ for (const settlement of ["never", "resolve", "reject"] as const)
     const root = supervisor.createRoot(),
       child = supervisor.reserveSpawn(root, request);
     const record = supervisor.get(child)!;
-    record.descriptors.open(
+    record.image.descriptors.open(
       {
         kind: "terminal",
         read: () => 0,

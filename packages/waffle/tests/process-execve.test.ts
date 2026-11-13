@@ -213,7 +213,7 @@ test("spawn follows a symlink to the canonical registered executable", async () 
     const link = state.fs.resolveAbsolute("/bin/test-link");
     if (typeof link === "number") throw new Error("missing symlink path");
     expect(state.fs.symlink(link, "test-guest")).toBe(0);
-    const descriptors = state.supervisor.get(state.root)?.descriptors;
+    const descriptors = state.supervisor.get(state.root)?.image.descriptors;
     if (!descriptors) throw new Error("missing root descriptors");
     const parent = descriptors.open({ kind: "directory", handle: 1 }, 0n, 0n);
     const pid = state.supervisor.reserveSpawn(state.root, {
@@ -559,14 +559,14 @@ test("cancellation during filesystem admission releases descriptors and never la
     const root = supervisor.createRoot();
     const fd = supervisor
       .get(root)!
-      .descriptors.open({ kind: "directory", handle: 1 }, 0n, 0n, () => {
+      .image.descriptors.open({ kind: "directory", handle: 1 }, 0n, 0n, () => {
         closed++;
       });
     const pid = supervisor.reserveSpawn(root, {
       ...request("/bin/test-guest"),
       fds: [{ parent: fd, child: 4 }],
     });
-    supervisor.get(root)!.descriptors.close(fd);
+    supervisor.get(root)!.image.descriptors.close(fd);
     const starting = supervisor.start(pid);
     supervisor.kill(pid, Signal.SIGKILL);
     expect(await supervisor.waitForExit(root, pid)).toEqual({

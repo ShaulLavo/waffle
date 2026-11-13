@@ -39,7 +39,7 @@ function fixture(
   const memory = new WebAssembly.Memory({ initial: 1 });
   const abi = new ProcessABI({
     memory,
-    descriptors: record.descriptors,
+    descriptors: record.image.descriptors,
     fs: new MemFS(),
     pid,
     service: supervisor,

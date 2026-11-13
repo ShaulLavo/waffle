@@ -20,6 +20,37 @@ import {
   type JobLifetime,
 } from "./types.js";
 
+export interface ProcessImage {
+  readonly generation: number;
+  readonly cwd: string;
+  readonly descriptors: DescriptorTable;
+  readonly request: Readonly<SpawnRequest> | null;
+  nativeAcquisition:
+    | { kind: "not-invoked" }
+    | { kind: "invoked" }
+    | { kind: "failed"; error: unknown };
+  handle?: ProcessHandle;
+  starting?: Promise<void>;
+  acquiring?: Promise<void>;
+  stopping?: Promise<void>;
+  phase: "current" | "retiring" | "retired" | "failed";
+  readonly revocations: Set<() => void>;
+}
+
+export function createProcessImage(
+  generation: number,
+  cwd: string,
+  descriptors: DescriptorTable,
+  request: Readonly<SpawnRequest> | null,
+  revocations = new Set<() => void>(),
+): ProcessImage {
+  return {
+    generation, cwd, descriptors, request, revocations,
+    phase: "current",
+    nativeAcquisition: { kind: "not-invoked" },
+  };
+}
+
 export interface ProcessRecord {
   readonly observation: ProcessObservationTransfer;
   readonly pid: number;
@@ -27,18 +58,12 @@ export interface ProcessRecord {
   controlParent?: number;
   rootPid?: number;
   readonly job: number;
-  readonly cwd: string;
-  readonly descriptors: DescriptorTable;
+  image: ProcessImage;
   readonly interrupt: ControlCells;
   readonly requestedSignal: ControlCells;
   readonly signalState: ControlCells;
   readonly outcome: OutcomeWord;
-  readonly request: Readonly<SpawnRequest> | null;
   nativeReturn?: () => void;
-  nativeAcquisition:
-    | { kind: "not-invoked" }
-    | { kind: "invoked" }
-    | { kind: "failed"; error: unknown };
   state: "reserved" | "starting" | "running" | "exited";
   result: ProcessExit | null;
   /** Job completion additionally waits for filesystem admission fences. */
@@ -46,9 +71,6 @@ export interface ProcessRecord {
   /** Host-owned signal record; unlike shared words, a dying guest cannot overwrite it. */
   signal: number;
   revoked: boolean;
-  handle?: ProcessHandle;
-  starting?: Promise<void>;
-  acquiring?: Promise<void>;
   stopping?: {
     readonly handle: Promise<void>;
     readonly complete: Promise<void>;

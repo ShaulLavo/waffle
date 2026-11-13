@@ -39,7 +39,7 @@ function fixture() {
     memory,
     pid: root,
     service: supervisor,
-    descriptors: supervisor.get(root)!.descriptors,
+    descriptors: supervisor.get(root)!.image.descriptors,
     signals: supervisor.get(root)!,
     fs: new MemFS(),
   });
@@ -301,7 +301,7 @@ test("diagnostic state belongs to each caller even when they share one superviso
     memory,
     pid: root,
     service: f.supervisor,
-    descriptors: f.supervisor.get(root)!.descriptors,
+    descriptors: f.supervisor.get(root)!.image.descriptors,
     signals: f.supervisor.get(root)!,
     fs: new MemFS(),
   });

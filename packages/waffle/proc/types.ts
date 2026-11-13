@@ -116,6 +116,7 @@ export interface ProcessHandle {
   terminate(): void | Promise<void>;
 }
 export interface ProcessLifecycle {
+  readonly generation: number;
   readonly observation: ProcessObservationTransfer;
   readonly pid: number;
   readonly parentPid: number;
