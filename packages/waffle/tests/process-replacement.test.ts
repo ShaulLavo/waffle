@@ -282,6 +282,49 @@ test("two execs keep PID, parent, waiters, observation and terminal lifetime unt
   }
 });
 
+for (const completion of ["revocation", "controller-stop", "physical-stop"] as const)
+  test(`${completion} completion cannot finish a retiring image`, async () => {
+    const lateStarted: boolean[] = [];
+    const f = await fixture({
+      stop: completion === "physical-stop" ? completeOldImage : undefined,
+    });
+    const oldContext = f.contexts[0]!;
+    function completeOldImage() {
+      lateStarted.push(oldContext.started());
+      oldContext.exit(33);
+    }
+    const record = f.table.require(f.pid);
+    const observer = captureProcessObserver(record.observation);
+    let waited = false;
+    const waiting = f.supervisor.waitForExit(f.root.pid, f.pid).then((result) => {
+      waited = true;
+      return result;
+    });
+    try {
+      if (completion === "revocation") oldContext.registerRevocation?.(completeOldImage);
+      if (completion === "controller-stop")
+        f.broker.registerController(f.pid, { stop: completeOldImage });
+      expect((await f.stage()).result).toBe(0);
+      f.workers[0]!.emit({ type: "replaced" });
+      await until(() => record.result !== null || f.workers.length === 2);
+      expect(record.result).toBeNull();
+      expect(f.workers).toHaveLength(2);
+      expect(lateStarted).toEqual([false]);
+      expect(waited).toBe(false);
+      expect(observer.read()).toEqual({ kind: "pending" });
+      expect(
+        controlLoad(workerProcessState(f.workers[1]!.request.runtimeProcess!).terminalStopped),
+      ).toBe(0);
+      f.workers[1]!.emit({ type: "exit", code: 7 });
+      expect(await waiting).toMatchObject({ kind: "exited", code: 7 });
+      await record.stopping?.complete;
+      expect(observer.read()).toEqual({ kind: "terminated" });
+      expect(f.workers.map((worker) => worker.stops)).toEqual([1, 1]);
+    } finally {
+      await f.close();
+    }
+  });
+
 test("lookup failure discards staged aliases and keeps caller pipes usable", async () => {
   const f = await fixture();
   try {

@@ -771,9 +771,11 @@ export class ProcessSupervisor {
       signalState: record.signalState,
       outcome: record.outcome,
       observation: record.observation,
-      started: () => this.imageActive(record, image) && this.started(record.pid),
+      started: () =>
+        image.phase === "current" && this.imageActive(record, image) && this.started(record.pid),
       exit: (code) => {
-        if (this.imageActive(record, image)) this.exit(record.pid, code);
+        if (image.phase === "current" && this.imageActive(record, image))
+          this.exit(record.pid, code);
       },
       fail: (error) => this.failImage(record, image, error),
       startFailed: (error) => {

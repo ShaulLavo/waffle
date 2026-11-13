@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -35,7 +36,9 @@ for (const mode of modes)
   }, 20000);
 
 test("prepared Node consumers execute the same replacement and capacity controls", async () => {
-  const scratch = await mkdtemp("/work/tmp/waffle-exec-node-");
+  const scratch = await mkdtemp(
+    join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-exec-node-"),
+  );
   const root = resolve(import.meta.dir, "..");
   try {
     const build = await Bun.build({
