@@ -1,6 +1,6 @@
 import type { DocumentRetirementSource } from "./driver.js";
 import { record } from "./protocol.js";
-import { projectContinuityDiagnostic } from "./continuity-lock-diagnostic.js";
+import { dropContinuityRecord, projectContinuityDiagnostic } from "./continuity-lock-diagnostic.js";
 
 const operations = [
   "authority",
@@ -598,10 +598,10 @@ function boundedEvaluations(
     const page = pages.findLast((item) => item.evidence.entries.length > 0);
     if (page) page.evidence.entries.pop();
     else if (pages.some((item) => item.evidence.continuityLocks.records.length > 0)) {
-      const locks = pages.findLast((item) => item.evidence.continuityLocks.records.length > 0)!
-        .evidence.continuityLocks;
-      locks.records.shift();
-      locks.dropped++;
+      const locks = pages
+        .map((item) => item.evidence.continuityLocks)
+        .reduce((largest, next) => (next.records.length > largest.records.length ? next : largest));
+      dropContinuityRecord(locks);
     } else if (owner.completed.length) owner.completed.shift();
     else if (owner.active.length) owner.active.pop();
     else pages.pop();

@@ -129,23 +129,23 @@ async function helperControls(): Promise<string[]> {
 async function guardFailures(): Promise<void> {
   for (const mode of ["sync", "reject", "lifetime", "query", "query-throw"] as const) {
     for (const primary of [undefined, null, false, 0, "", new TypeError("x")]) {
-      const fixture = fake(mode, primary);
-      replaceManager(fixture.manager);
-      observeContinuityLocks(fixture.manager, owner);
-      const acquisition = acquirePublicationGuard(
-        "private-workspace-token",
-        "exclusive",
-        new AbortController().signal,
-        true,
-      );
-      if (mode === "sync" || mode === "reject") {
-        await failureOf(acquisition, primary);
-        continue;
-      }
-      const guard = await acquisition;
-      await failureOf(guard.release(), primary);
+      await guardFailure(mode, primary);
     }
   }
+}
+async function guardFailure(mode: Mode, primary: unknown): Promise<void> {
+  const fixture = fake(mode, primary);
+  replaceManager(fixture.manager);
+  observeContinuityLocks(fixture.manager, owner);
+  const acquisition = acquirePublicationGuard(
+    "private-workspace-token",
+    "exclusive",
+    new AbortController().signal,
+    true,
+  );
+  if (mode === "sync" || mode === "reject") return failureOf(acquisition, primary);
+  const guard = await acquisition;
+  await failureOf(guard.release(), primary);
 }
 async function identityControls(): Promise<void> {
   const fixture = fake("success");

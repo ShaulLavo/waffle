@@ -680,8 +680,9 @@ The page bootstrap captures the existing manager methods before importing the cr
 The observer records page-owned continuity requests and candidates for their existing release-time
 queries. It makes no request or query of its own and never reads query snapshots. The evaluator's
 existing diagnostic reply carries the bounded scalar records. Query association uses evaluator job
-identity, not a native request identifier; overlapping jobs or multiple candidate requests remain
-ambiguous. It cannot identify a holder or prove physical Worker survival.
+identity, not a native request identifier. Every query association remains ambiguous, even for one
+job and one candidate. A query does not consume a candidate, since another same-job caller may
+have issued it. It cannot identify a holder or prove physical Worker survival.
 
 The captured methods receive their original receivers and arguments, except for the transparent
 callback wrapper. That wrapper preserves the callback receiver, arguments, return value and thrown
@@ -690,6 +691,9 @@ microtasks and mark observed rejections handled, so this diagnostic is not sched
 It does not change the caller's settlement. Arbitrary error text is omitted because it can contain
 workspace tokens; only known error names, the thrown value's type and finite errno survive.
 Records contain no lock name, Lock object, callback, runtime capability or query snapshot.
+The page and projector retain the first eight records and recent records within the 32-record and
+8 KiB limits. Aggregate trimming removes records from the largest page first and preserves each
+page's prefix as long as its overall bound permits; dropped counts remain explicit.
 
 The Chromium control uses the actual guard and untouched exclusive helper. Injected manager
 failures distinguish null acquisition, synchronous throws, pre-grant rejection and granted lifetime

@@ -34,6 +34,13 @@ const encode = encoder.encode.bind(encoder);
 const stringify = JSON.stringify;
 const apply = Reflect.apply;
 const then = Promise.prototype.then;
+const retainedPrefix = 8;
+
+export function dropContinuityRecord(diagnostic: ContinuityLockDiagnostic): void {
+  if (!diagnostic.records.length) return;
+  diagnostic.records.splice(Math.min(retainedPrefix, diagnostic.records.length - 1), 1);
+  diagnostic.dropped++;
+}
 
 function emptyContinuityDiagnostic(unavailable = 1): ContinuityLockDiagnostic {
   return { kind: "page-continuity-locks", records: [], dropped: 0, unavailable, ambiguous: 0 };
@@ -68,13 +75,11 @@ export function observeContinuityLocks(
     if (event.correlation.ambiguous) state.ambiguous++;
     state.records.push(event);
     if (state.records.length > 32) {
-      state.records.shift();
-      state.dropped++;
+      dropContinuityRecord(state);
     }
     try {
       while (state.records.length > 32 || encode(stringify(state)).byteLength > 8192) {
-        state.records.shift();
-        state.dropped++;
+        dropContinuityRecord(state);
       }
     } catch {
       state.records.pop();
@@ -186,29 +191,27 @@ export function observeContinuityLocks(
   }
   function query(target: LockManager["query"], receiver: unknown, args: unknown[]): unknown {
     const ids: number[] = [];
-    let ambiguous = false;
     bestEffort(() => {
       const current = correlation();
       for (const [id, owner] of awaitingQuery) {
         if (!owner.jobs.some((job) => current.jobs.includes(job))) continue;
         ids.push(id);
-        ambiguous ||= owner.ambiguous;
       }
-      for (const id of ids) awaitingQuery.delete(id);
     });
     if (!ids.length) return apply(target, receiver, args);
-    emit(ids, "query-invoked", ambiguous);
+    // Shared jobs identify candidates, never the caller of this query.
+    emit(ids, "query-invoked", true);
     let result: unknown;
     try {
       result = apply(target, receiver, args);
     } catch (error) {
-      failure(ids, "query-threw", error, ambiguous);
+      failure(ids, "query-threw", error, true);
       throw error;
     }
     observe(
       result,
-      () => emit(ids, "query-fulfilled", ambiguous),
-      (error) => failure(ids, "query-rejected", error, ambiguous),
+      () => emit(ids, "query-fulfilled", true),
+      (error) => failure(ids, "query-rejected", error, true),
     );
     return result;
   }
@@ -304,14 +307,14 @@ function count(value: unknown): number {
     throw new Error("Invalid diagnostic count");
   return value;
 }
-function projectCorrelation(value: unknown): Correlation {
+function projectCorrelation(value: unknown, candidate: boolean): Correlation {
   if (!record(value) || !Array.isArray(value.jobs)) throw new Error("Invalid correlation");
   const jobs = value.jobs.slice(0, 8).map(count);
   const total = value.count === null ? null : count(value.count);
   return {
     jobs,
     count: total,
-    ambiguous: value.ambiguous !== false || total !== 1 || jobs.length !== 1,
+    ambiguous: candidate || value.ambiguous !== false || total !== 1 || jobs.length !== 1,
   };
 }
 function projectEvent(value: unknown): Event {
@@ -319,7 +322,10 @@ function projectEvent(value: unknown): Event {
   const base = {
     ordinal: count(value.ordinal),
     requests: value.requests.slice(0, 32).map(count),
-    correlation: projectCorrelation(value.correlation),
+    correlation: projectCorrelation(
+      value.correlation,
+      typeof value.phase === "string" && value.phase.startsWith("query-"),
+    ),
   };
   const phase = phases.find((phase) => phase === value.phase);
   if (phase) return { ...base, phase };
@@ -346,14 +352,20 @@ export function projectContinuityDiagnostic(value: unknown): ContinuityLockDiagn
       return emptyContinuityDiagnostic();
     const result: ContinuityLockDiagnostic = {
       kind: "page-continuity-locks",
-      records: value.records.slice(-32).map(projectEvent),
+      records: value.records
+        .slice(0, retainedPrefix)
+        .concat(
+          value.records.slice(
+            Math.max(retainedPrefix, value.records.length - (32 - retainedPrefix)),
+          ),
+        )
+        .map(projectEvent),
       dropped: count(value.dropped) + Math.max(0, value.records.length - 32),
       unavailable: count(value.unavailable),
       ambiguous: count(value.ambiguous),
     };
     while (encode(stringify(result)).byteLength > 8192) {
-      result.records.shift();
-      result.dropped++;
+      dropContinuityRecord(result);
     }
     return result;
   } catch {
