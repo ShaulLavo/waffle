@@ -471,6 +471,7 @@ export class ProcessABI {
       }
     } catch (error) {
       if (error instanceof ExecutionUnwind) throw error;
+      this.checkFatal();
       this.spawnFailure = describeStartError(error);
       throw spawnError(error);
     }

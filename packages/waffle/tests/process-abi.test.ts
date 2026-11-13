@@ -1528,3 +1528,26 @@ test("fatal cancellation wins over an exec completion published while the import
   );
   expect(() => abi.imports.exec!(2048, length)).toThrow(ProcessSignalExit);
 });
+
+test("fatal cancellation during exec staging unwinds instead of returning its staging errno", () => {
+  const f = fixture();
+  const service = Object.assign(f.supervisor, {
+    exec(): SharedArrayBuffer {
+      f.supervisor.kill(f.pid, 9);
+      throw new Error("staging cancelled");
+    },
+  });
+  const abi = new ProcessABI({
+    memory: f.memory,
+    descriptors: f.descriptors,
+    fs: f.fs,
+    pid: f.pid,
+    service,
+    signals: f.signals,
+    wake: new Int32Array(new SharedArrayBuffer(4)),
+  });
+  const length = f.put(
+    JSON.stringify({ executable: "fixture", argv: [], env: {}, cwd: "/", fds: [] }),
+  );
+  expect(() => abi.imports.exec!(2048, length)).toThrow(ProcessSignalExit);
+});
