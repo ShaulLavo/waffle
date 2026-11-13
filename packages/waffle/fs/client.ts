@@ -2076,7 +2076,14 @@ export class FilesystemClient implements FileSystem {
     }
   }
   readlink(handle: FileHandle): string {
-    return this.call("readlink", [handle]);
+    this.retain(handle);
+    try {
+      const direct = this.resident ? undefined : this.shared.stat(handle, this.revoked);
+      if (direct && direct.kind !== "symlink") throw new FilesystemError(28);
+      return this.call("readlink", [handle]);
+    } finally {
+      this.release(handle);
+    }
   }
   bindSocket(
     parent: FileHandle,
