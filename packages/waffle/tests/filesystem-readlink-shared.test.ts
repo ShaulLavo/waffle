@@ -240,6 +240,8 @@ test("shared readlink saves RPCs while preserving service outcomes and target by
   f.client.retain(file);
   f.client.retain(dir);
   f.client.retain(link);
+  // Resolve replies hold grants until the service processes their release messages.
+  await f.client.asyncCall("listFiles", ["/"]);
   const before = Array.from(new Int32Array(f.client.connection.capabilities));
   for (let index = 0; index < 10; index++) {
     expectErrno(() => f.client.readlink(file), 28);
@@ -253,6 +255,7 @@ test("shared readlink saves RPCs while preserving service outcomes and target by
   expectErrno(() => f.client.readlink(dir), 28);
   expect(f.client.readlink(link)).toBe(target);
   expect(Atomics.load(f.calls, 0)).toBe(4);
+  await f.client.asyncCall("listFiles", ["/"]);
   expect(Array.from(new Int32Array(f.client.connection.capabilities))).toEqual(before);
 });
 
