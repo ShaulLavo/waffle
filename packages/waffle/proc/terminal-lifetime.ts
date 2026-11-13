@@ -29,6 +29,8 @@ export function leaveTerminalSection(state: State, directory: SharedArrayBuffer)
 }
 
 export interface TerminalProcessLifetime {
+  /** Join this image and rearm only while its committed replacement remains live. */
+  handoff(active: () => boolean): Promise<boolean>;
   /** Revoke new sections and join admitted work before stopping the native consumer. */
   quiesce(): void | Promise<void>;
   /** Trusted host only: the exact captured native consumer has successfully stopped. */
@@ -50,6 +52,8 @@ export function captureTerminalLifetime(
 ): TerminalProcessLifetime {
   const state = directoryState(process);
   let quiet = false;
+  let final = false;
+  let handoffGeneration = 0;
   function complete(): boolean {
     quiet = controlLoad(state.terminalAdmission) === -1 || controlLoad(state.terminalStopped) !== 0;
     return quiet;
@@ -74,12 +78,24 @@ export function captureTerminalLifetime(
     wakeDirectory(process.directory);
   }
   return {
+    async handoff(active) {
+      const generation = ++handoffGeneration;
+      revoke(state.terminalAdmission);
+      if (!complete()) await join();
+      if (final || generation !== handoffGeneration || !active()) return false;
+      if (controlLoad(state.terminalStopped) !== 0) return false;
+      if (controlCas(state.terminalAdmission, 0, -1, 0) !== -1) return false;
+      quiet = false;
+      return true;
+    },
     quiesce() {
+      final = true;
       if (quiet) return;
       revoke(state.terminalAdmission);
       return complete() ? undefined : join();
     },
     stopped() {
+      final = true;
       try {
         acknowledge();
       } catch (error) {
