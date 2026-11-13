@@ -1,5 +1,5 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { pauseInputAcquisition } from "./terminal-input-pause.js";
+import { pauseInputAcquisition, pauseInputRelease } from "./terminal-input-pause.js";
 import type { TerminalContext, TerminalTurn } from "../../browser/runtime-terminals.js";
 import type { WorkerProcessTransport, WorkerProcessMessage } from "../../proc/worker-client.js";
 import type { FilesystemIdentity } from "../../fs/protocol.js";
@@ -13,6 +13,7 @@ export interface TerminalControlWorkerData {
   count?: number;
   childFilesystem?: FilesystemIdentity;
   inputPause?: boolean;
+  inputReleasePause?: boolean;
   readOnlyPause?: boolean;
 }
 const data: TerminalControlWorkerData = workerData;
@@ -30,6 +31,12 @@ function pause() {
 }
 // Controlled test seam: preserve the real input CAS and pause only after it acquired.
 if (data.inputPause) pauseInputAcquisition(data.input, pause);
+if (data.inputReleasePause)
+  pauseInputRelease(data.input, () => {
+    Atomics.store(flags, 2, 1);
+    port.postMessage({ kind: "unlocked", pid: data.process.pid });
+    Atomics.wait(flags, 3, 0);
+  });
 const { attachTerminal, createTerminalInputPolicy } =
   await import("../../browser/runtime-terminals.js");
 const { WorkerProcessClient } = await import("../../proc/worker-client.js");

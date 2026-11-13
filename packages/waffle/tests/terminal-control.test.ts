@@ -447,16 +447,21 @@ test("input observations wake and join on data, cancellation, and lock-only rele
       input: input.buffer,
       flags: flags.buffer,
       inputPause: true,
+      inputReleasePause: true,
     } satisfies TerminalControlWorkerData,
   });
   const errors: unknown[] = [];
   worker.on("error", (error) => errors.push(error));
+  const held = once(worker, "message");
+  const cancel = new AbortController();
+  let pending: Promise<TerminalResult<void>> | undefined;
   try {
     const deadline = Date.now() + 3000;
     while (Atomics.load(flags, 0) === 0) {
       if (Date.now() > deadline) throw Error("input holder did not acquire");
       await new Promise((resolve) => setTimeout(resolve, 2));
     }
+    expect((await held)[0]).toMatchObject({ kind: "held" });
     const sequence = Atomics.load(input.notification, 0);
     const observed = input.observe();
     const blocked = await a.authority.control(() => ({
@@ -465,18 +470,28 @@ test("input observations wake and join on data, cancellation, and lock-only rele
     }));
     expect(blocked).toMatchObject({ kind: "ok", value: -6 });
     let woke = false;
-    const pending = observed.wait().then((result) => {
+    pending = observed.wait({ signal: cancel.signal }).then((result) => {
       woke = true;
       return result;
     });
     await Promise.resolve();
     expect(woke).toBe(false);
+    const unlocked = once(worker, "message");
     Atomics.store(flags, 1, 1);
     Atomics.notify(flags, 1);
-    expect(await pending).toMatchObject({ kind: "ok" });
-    expect(Atomics.load(input.notification, 0)).not.toBe(sequence);
+    expect((await bounded(unlocked))[0]).toMatchObject({ kind: "unlocked" });
+    expect(await bounded(pending)).toMatchObject({ kind: "ok" });
+    expect(Atomics.load(flags, 2)).toBe(1);
+    expect(Atomics.load(flags, 3)).toBe(0);
+    expect(Atomics.load(new BigInt64Array(input.buffer, 16, 1), 0)).toBe(0n);
+    expect(Atomics.load(input.notification, 0)).toBe(sequence);
     expect(input.available()).toBe(0); // Contention release, not new data, woke it.
     expect(await observed.wait()).toMatchObject({ kind: "error", code: "INVALID" });
+    const released = once(worker, "message");
+    Atomics.store(flags, 3, 1);
+    Atomics.notify(flags, 3);
+    expect((await bounded(released))[0]).toMatchObject({ kind: "released", count: -6 });
+    expect(Atomics.load(input.notification, 0)).not.toBe(sequence);
     const data = input.observe();
     const dataWait = data.wait();
     expect(input.push(Uint8Array.of(66))).toBe(1);
@@ -492,7 +507,6 @@ test("input observations wake and join on data, cancellation, and lock-only rele
     ).toBe("ok");
     expect(bytes[0]).toBe(66);
     expect(input.available()).toBe(0);
-    const cancel = new AbortController();
     const cancelled = input.observe().wait({ signal: cancel.signal });
     cancel.abort();
     expect(await cancelled).toMatchObject({ kind: "error", code: "CANCELED" });
@@ -500,6 +514,10 @@ test("input observations wake and join on data, cancellation, and lock-only rele
   } finally {
     Atomics.store(flags, 1, 1);
     Atomics.notify(flags, 1);
+    Atomics.store(flags, 3, 1);
+    Atomics.notify(flags, 3);
+    cancel.abort();
+    if (pending) await pending;
     await lifetime.quiesce();
     await worker.terminate();
     lifetime.stopped();
