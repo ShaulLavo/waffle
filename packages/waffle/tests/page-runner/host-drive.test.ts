@@ -879,8 +879,7 @@ async function allocationDispatchOrder(root: string, atDeadline: boolean): Promi
     expect(d.stopCalls).toBe(1);
   } finally {
     response.resolve();
-    await running;
-    now.mockRestore();
+    await running.finally(() => now.mockRestore());
   }
 }
 for (const atDeadline of [false, true]) {

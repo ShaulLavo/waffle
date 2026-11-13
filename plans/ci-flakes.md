@@ -40,8 +40,10 @@ retaining the original 80 ms case budget and 35 ms cleanup timeout. Assertions r
 case body, teardown, ledger, run completion and cleanup. The full suite result accompanies
 any exit mismatch. Runtime code is unchanged.
 
-Focused validation and PR are recorded below when complete. Probe patch and exact logs
-are retained outside the repository at
+Fix: [PR 505](https://github.com/ShaulLavo/waffle/pull/505). Both boundary cases passed
+25 repetitions each, and all 159 host-drive tests passed. Package preparation, quality and
+size checks passed. The full package-suite result is recorded in the PR.
+Probe patch and exact logs are retained outside the repository at
 `/work/reports/waffle-ci-flakes/allocation-20261113/`.
 
 ## GPU terminal reason selection
