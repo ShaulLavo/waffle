@@ -101,7 +101,7 @@ for (const rejection of ["external", "unknown-sender"] as const)
     await broker.runtimeMessage(message, client.pid);
     const supervisor = await broker.ready();
     await supervisor.start(pid);
-    const writer = supervisor.get(pid)!.descriptors.get(1)!.resource as PipeEndpoint;
+    const writer = supervisor.get(pid)!.image.descriptors.get(1)!.resource as PipeEndpoint;
     const lifetime = new Int32Array(
       (message.transport.resources[0] as { endpoint: { lifetime: SharedArrayBuffer } }).endpoint
         .lifetime,

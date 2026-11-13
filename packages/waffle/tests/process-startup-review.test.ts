@@ -55,6 +55,7 @@ function guest(shape: Shape): WebAssembly.Module {
 async function fixture(
   module: WebAssembly.Module,
   failure?: { at: "connect" | "construct" | "post"; error: unknown },
+  stopping?: Promise<void>,
 ) {
   const previousWorker = globalThis.Worker;
   const ports: MessagePort[] = [],
@@ -73,7 +74,9 @@ async function fixture(
       if (failure?.at === "post") throw failure.error;
       this.request = request;
     }
-    terminate() {}
+    terminate() {
+      return stopping;
+    }
     emit(message: RuntimeWorkerMessage) {
       this.onmessage?.({ data: message });
     }
@@ -468,7 +471,8 @@ test("allocation failure during Wasm instantiation stays typed ENOMEM", async ()
 });
 
 test("late worker error collection between message reads cannot escape its handler", async () => {
-  const f = await fixture(guest("valid"));
+  const stopping = Promise.withResolvers<void>();
+  const f = await fixture(guest("valid"), undefined, stopping.promise);
   try {
     f.supervisor.kill(f.pid, 9);
     await f.supervisor.waitForExit(f.parent.pid, f.pid);
@@ -496,6 +500,7 @@ test("late worker error collection between message reads cannot escape its handl
     }
     expect(collected).toBe(true);
   } finally {
+    stopping.resolve();
     await f.dispose();
   }
 });

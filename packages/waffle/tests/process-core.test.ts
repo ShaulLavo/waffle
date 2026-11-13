@@ -91,7 +91,7 @@ for (const recovery of ["retry", "dispose"] as const)
       await supervisor.start(pid);
       supervisor
         .get(pid)!
-        .descriptors.open({ kind: "directory", handle: 42 }, 7n, 3n, () => closed++);
+        .image.descriptors.open({ kind: "directory", handle: 42 }, 7n, 3n, () => closed++);
       supervisor.registerRevocation(pid, () => revoked++);
       expect(() => supervisor.exit(pid, 23)).toThrow("completion gate failed");
       expect(supervisor.get(pid)!.result).toBeNull();
@@ -139,7 +139,7 @@ test("registry shares concurrent compilation by loader, not executable name or a
 test("first-spawn returns and retains arbitrary descriptor references before activation", async () => {
   const { supervisor, root, contexts } = fixture();
   let closed = 0;
-  const descriptors = supervisor.get(root)!.descriptors;
+  const descriptors = supervisor.get(root)!.image.descriptors;
   const fd = descriptors.open({ kind: "directory", handle: 42 }, 7n, 3n, () => closed++);
   const activation = deferred<ProcessSupervisor>();
   let activations = 0;
@@ -265,7 +265,7 @@ for (const [error, code] of [
 
 test("spawn snapshots request data and atomically rejects bad descriptor bindings", async () => {
   const { supervisor, root, contexts } = fixture();
-  const descriptors = supervisor.get(root)!.descriptors;
+  const descriptors = supervisor.get(root)!.image.descriptors;
   const fd = descriptors.open({ kind: "directory", handle: 1 }, 7n, 3n);
   const description = descriptors.get(fd)!.description;
   expect(() =>
@@ -305,7 +305,7 @@ test("spawn snapshots request data and atomically rejects bad descriptor binding
 
 test("supervisor validates both fd bindings within the signed WASM success range before retaining", () => {
   const { supervisor, root } = fixture();
-  const descriptors = supervisor.get(root)!.descriptors;
+  const descriptors = supervisor.get(root)!.image.descriptors;
   const fd = descriptors.open({ kind: "directory", handle: 1 }, 7n, 3n);
   const source = descriptors.get(fd)!;
   try {
@@ -329,7 +329,7 @@ test("supervisor validates both fd bindings within the signed WASM success range
       root,
       request({ fds: [{ child: 0x7fffffff, parent: 0x7fffffff }] }),
     );
-    const child = supervisor.get(pid)!.descriptors;
+    const child = supervisor.get(pid)!.image.descriptors;
     expect(child.get(0x7fffffff)!.description).toBe(source.description);
     const duplicate = child.dup(0x7fffffff);
     expect(duplicate).toBeGreaterThanOrEqual(0);
@@ -563,7 +563,7 @@ test("reaping an ancestor preserves descendant job discovery and released pids c
 
 test("descriptor cleanup exceptions still drain all references and dispose cancels pending starts", async () => {
   const { supervisor, root } = fixture();
-  const descriptors = supervisor.get(root)!.descriptors;
+  const descriptors = supervisor.get(root)!.image.descriptors;
   let releases = 0;
   const a = descriptors.open({ kind: "directory", handle: 1 }, 1n, 1n, () => {
     releases++;
@@ -1306,7 +1306,7 @@ test("spawn forks process-owned streams once and revokes before releasing inheri
     },
     close: () => events.push("close parent"),
   };
-  const descriptors = supervisor.get(root)!.descriptors;
+  const descriptors = supervisor.get(root)!.image.descriptors;
   const fd = descriptors.open(parent, 7n, 3n);
   const duplicate = descriptors.dup(fd);
   const pid = supervisor.reserveSpawn(
@@ -1319,7 +1319,7 @@ test("spawn forks process-owned streams once and revokes before releasing inheri
     }),
   );
   expect(events).toEqual([`fork ${pid}`]);
-  const child = supervisor.get(pid)!.descriptors;
+  const child = supervisor.get(pid)!.image.descriptors;
   expect(child.get(1)!.resource).toBe(resources.get(pid)!);
   expect(child.get(1)!.description).toBe(child.get(2)!.description);
   descriptors.close(fd);
@@ -1358,7 +1358,7 @@ test("child exit stays hidden from wait until every revocation hook and fd relea
     visible.push(supervisor.wait(root, pid));
     supervisor.exit(pid, 99); // Reentrant cleanup cannot replace the chosen winner.
   });
-  supervisor.get(pid)!.descriptors.open(
+  supervisor.get(pid)!.image.descriptors.open(
     {
       kind: "terminal",
       read: () => 0,
@@ -1395,7 +1395,7 @@ test.each([false, true])(
           }
         : {}),
     };
-    const parent = supervisor.get(root)!.descriptors;
+    const parent = supervisor.get(root)!.image.descriptors;
     const fd = parent.open(stream, 7n, 3n),
       dup = parent.dup(fd);
     parent.get(dup)!.rightsBase = 1n;
@@ -1409,7 +1409,7 @@ test.each([false, true])(
         ],
       }),
     );
-    const child = supervisor.get(pid)!.descriptors;
+    const child = supervisor.get(pid)!.image.descriptors;
     expect(child.get(1)!.description).toBe(child.get(2)!.description);
     expect([child.get(1)!.rightsBase, child.get(1)!.rightsInheriting]).toEqual([7n, 3n]);
     expect([child.get(2)!.rightsBase, child.get(2)!.rightsInheriting]).toEqual([1n, 0n]);
@@ -1419,7 +1419,7 @@ test.each([false, true])(
 
 test("failed endpoint inheritance removes only the reservation's new empty job", () => {
   const { supervisor, root } = fixture();
-  const descriptors = supervisor.get(root)!.descriptors;
+  const descriptors = supervisor.get(root)!.image.descriptors;
   let released = 0;
   const ready = descriptors.open(
     {

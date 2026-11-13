@@ -200,6 +200,62 @@ so a completion racing `poll` cannot be lost. `ProcessABI` forwards its supplied
 word to the in-process query service; worker clients use their process directory's wake word.
 Cancellation and process death do not publish a late completion.
 
+## Process image replacement
+
+`runtime_proc.exec(ptr: i32, len: i32) -> i32` replaces the calling process's
+executable. The UTF-8 JSON request is `{ executable, argv, env, cwd, fds }`, with
+the same executable lookup, shebang handling, argument rewrite, environment policy,
+and `{ parent, child }` descriptor bindings as spawn. The environment and descriptor
+list are complete. Supplying `job`, `jobLifetime`, or `worker` returns `-EINVAL`.
+
+Success unwinds the old image and never returns to it. The PID, parent, job,
+children, waiters, cancellation authority, signal cells, and outcome remain owned
+by the same process. The old Worker and its memory admission ticket stop before
+the replacement's memory is admitted. The parent's wait and job cleanup observe
+only the final image's result. Replacement does not publish process native return
+or terminal stop between images.
+
+Validation, descriptor staging, executable lookup, and module loading or compilation
+failures return negative WASI errno before commit. The caller remains usable, and
+`spawn_error(0, ...)` contains the diagnostic for that attempt. Invalid guest spans
+return `-EFAULT`. Unsupported socket bindings, roots, group members, threaded images,
+and executors without an owned Worker return `-ENOTSUP`. A service without exec
+returns `-ENOSYS`; a missing common wake or revocation registration returns
+`-ENOTSUP`. Each attempt clears the previous diagnostic.
+
+Reservation, Worker construction, adapter setup, instantiation, and other failures
+after commit end the process with ordinary exit status 126 and a host diagnostic.
+A previously selected fatal signal keeps its outcome. Handled signal dispositions
+reset to default, ignored dispositions stay ignored, and a pending terminating
+signal prevents replacement launch. Handled signals are not consumed while the
+import waits.
+
+### Descriptors and preopens across exec
+
+Aliases retain one shared open description, file offset, and descriptor flags.
+Pipes retain an independent same-PID lifetime for the successor, so rollback cannot
+close the caller and successful replacement introduces no EOF gap. Every unlisted
+descriptor closes. The successor also removes unlisted bootstrap stdio and preopens;
+it does not recreate filesystem authority that the request omitted.
+
+An explicitly listed preopen retains the source binding's name, rights, and live
+filesystem capability. Preopen metadata belongs to each binding: listing a preopen
+and its ordinary duplicate preserves discovery metadata only on the preopen binding.
+This preservation is specific to exec; ordinary spawn keeps its existing behavior.
+
+`inherited_fd` excludes preopens. A shell must discover or cache its live root
+preopen separately and include it explicitly in the exec request. Use its original
+live descriptor as `parent`. Choose the lowest free `child` descriptor at or above
+3 among the final non-preopen bindings, so a hole cannot stop libc's preopen scan.
+Waffle transfers the original name and reduced rights automatically; a JSON request
+cannot supply or widen that metadata. Do not substitute a newly opened root.
+
+For the default single-root bootstrap, the root is initially within fd 3 through
+`3 + original inherited binding count`, including an occupied fd 3. A caller can
+cache it with `fd_prestat_get` and `fd_prestat_dir_name` before its own opens and
+closes create holes. The successor's `fd_prestat_get` and ordinary `path_open`
+then use the explicitly retained capability. Omitting it leaves no root preopen.
+
 ## Transport contracts
 
 Filesystem and process transports use shared-memory completion and readiness words plus message-port control. Descriptor bindings retain independent capability pins while duplicate bindings may share an open-file cursor. Termination selects one atomic outcome; cleanup acknowledgement and filesystem quiescence are separate facts.

@@ -1,3 +1,5 @@
+import { PipeController } from "../proc/pipes.js";
+import { createWorkerPipeCodec } from "../proc/worker-pipes.js";
 import { expect, test } from "bun:test";
 import {
   DescriptorTable,
@@ -463,5 +465,32 @@ test("resolver causal control distinguishes active empty input from the default 
     expect(live.readiness()).toEqual({ readable: false, writable: true, hangup: false });
   } finally {
     state.table.dispose();
+  }
+});
+
+test("exec sees pipe-backed terminal provenance before successor pipe retention and failed exec keeps it live", () => {
+  const pipe = new PipeController({ capacity: 16, relay: "manual" });
+  const reader = pipe.retain(1, "read");
+  const writer = pipe.retain(2, "write");
+  const table = new DescriptorTable();
+  const codec = createRuntimeTerminalCodec({
+    fallback: createWorkerPipeCodec({ successor: true }),
+    resolveTerminal: () => writer,
+  });
+  try {
+    const description = codec.import({ kind: "web-terminal", target: 1 }, 2);
+    const fd = table.add(description, { rightsBase: 0n, rightsInheriting: 0n });
+    const token = codec.export(table.get(fd)!, 2);
+    expect(token).toEqual({ kind: "web-terminal", target: 1 });
+    codec.discard(token);
+    expect(writer.tryWrite([text("continues")])).toBe(9);
+    const bytes = new Uint8Array(9);
+    expect(reader.tryRead([bytes])).toBe(9);
+    expect(new TextDecoder().decode(bytes)).toBe("continues");
+    expect(reader.tryRead([bytes])).toBe(-6);
+  } finally {
+    table.dispose();
+    reader.close();
+    pipe.dispose();
   }
 });

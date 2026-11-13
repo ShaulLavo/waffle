@@ -63,7 +63,7 @@ function fixture(
     return new ProcessABI({
       memory,
       wake,
-      descriptors: supervisor.get(root)!.descriptors,
+      descriptors: supervisor.get(root)!.image.descriptors,
       fs: new MemFS(),
       pid: root,
       signals: supervisor.get(root)!,
@@ -501,7 +501,7 @@ for (const adapter of ["worker", "supervisor"] as const)
         expect(raced).toBe(true);
       } finally {
         // This fixture adopts shared state directly, so it owns the broker's reap notification.
-        supervisor.get(pid)?.descriptors.dispose();
+        supervisor.get(pid)?.image.descriptors.dispose();
         table.remove(pid);
         supervisor.dispose();
         descriptors.dispose();

@@ -1,4 +1,5 @@
 import { captureNativeReturn } from "./observation.js";
+import { EXEC_COMPLETION_BYTES, publishExecCompletion } from "./exec.js";
 import { allocateSharedControl } from "../memory/control.ts";
 import {
   Int32ArrayConstructor,
@@ -6,9 +7,11 @@ import {
   atomicsLoad,
   atomicsNotify,
   atomicsWaitAsync,
+  isSharedArrayBuffer,
+  sharedArrayBufferByteLength,
 } from "./intrinsics.ts";
 import { WorkerExecutableAccess, rejectWorkerAccess } from "./worker-access.js";
-import { startFailure } from "./start-failure.js";
+import { startFailure, spawnError } from "./start-failure.js";
 import { describeStartError } from "./start-diagnostic.ts";
 import {
   collectDirectoryProcess,
@@ -59,6 +62,8 @@ export interface WorkerProcessBrokerOptions {
   /** Captures the exact lifetime once the supervisor owns its process record. */
   nativeReturn?(transport: WorkerProcessTransport): () => void;
   onAdmitted?(transport: WorkerProcessTransport): void;
+  canExec?(transport: WorkerProcessTransport): boolean;
+  discardExec?(transport: WorkerProcessTransport): void | Promise<void>;
 }
 
 /** Page-side admission over an existing supervisor. The worker has already retained every
@@ -136,6 +141,8 @@ export class WorkerProcessBroker {
   });
   constructor(private readonly options: WorkerProcessBrokerOptions) {}
   adoptRoot(transport: WorkerProcessTransport): void {
+    if (transport.generation !== 1)
+      throw new ProcessError(ProcessErrno.INVAL, "root image generation must be one");
     checkedProcessCwd(transport.cwd);
     const state = workerProcessState(transport);
     if (state.parentPid !== 0) throw new TypeError("root process has a parent");
@@ -317,6 +324,11 @@ export class WorkerProcessBroker {
     }));
   }
   handle(message: WorkerProcessMessage, senderPid?: number): Promise<void> {
+    if (message.operation === "exec") {
+      const pending = this.admission.then(() => this.exec(message, senderPid));
+      this.admission = pending.catch((error) => this.report(error));
+      return pending;
+    }
     if (message.operation === "access" || message.operation === "access-cancel") {
       const sender = this.get(senderPid ?? message.transport.pid);
       let authenticated = false;
@@ -409,6 +421,85 @@ export class WorkerProcessBroker {
       }
     });
   }
+  rejectExec(
+    message: Extract<WorkerProcessMessage, { operation: "exec" }>,
+    error: unknown,
+  ): Promise<void> {
+    const pending = this.admission.then(() => this.discardExec(message, error));
+    this.admission = pending.catch((error) => this.report(error));
+    return pending;
+  }
+  private completeExec(
+    message: Extract<WorkerProcessMessage, { operation: "exec" }>,
+    result: number,
+    error?: unknown,
+  ): void {
+    if (
+      !isSharedArrayBuffer(message.completion) ||
+      sharedArrayBufferByteLength(message.completion) !== EXEC_COMPLETION_BYTES
+    )
+      return;
+    publishExecCompletion(message.completion, result, error);
+    wakeWorkerProcess(message.transport);
+  }
+  private async discardExec(
+    message: Extract<WorkerProcessMessage, { operation: "exec" }>,
+    error: unknown,
+  ): Promise<void> {
+    try {
+      this.discardResources(message.transport);
+      await this.options.discardExec?.(message.transport);
+    } finally {
+      this.completeExec(message, -spawnError(error).errno, error);
+    }
+  }
+  private async exec(
+    message: Extract<WorkerProcessMessage, { operation: "exec" }>,
+    senderPid?: number,
+  ): Promise<void> {
+    const transport = message.transport;
+    let descriptors: DescriptorTable | undefined;
+    let codec: WorkerDescriptorCodec | undefined;
+    try {
+      const sender = this.get(senderPid ?? transport.pid);
+      if (
+        this.disposed ||
+        !sender ||
+        sender.pid !== transport.pid ||
+        workerProcessDirectoryId(sender) !== workerProcessDirectoryId(transport) ||
+        readOutcome(workerProcessState(sender).signals.outcome)
+      )
+        throw new ProcessError(ProcessErrno.SRCH, "exec sender has exited");
+      const state = workerProcessState(transport);
+      if (transport.generation !== sender.generation + 1)
+        throw new ProcessError(ProcessErrno.INVAL, "exec image generation differs from sender");
+      if (state.pid !== sender.pid || state.parentPid === 0 || !this.options.canExec?.(sender))
+        throw new ProcessError(ProcessErrno.NOTSUP, "exec requires an owned non-group worker");
+      const supervisor = await this.ready();
+      codec = this.codec(transport);
+      descriptors = new DescriptorTable();
+      installWorkerBindings(transport, descriptors, codec);
+      supervisor.beginReplacement(transport.pid, {
+        request: message.request,
+        descriptors,
+        complete: (result, error) => this.completeExec(message, result, error),
+        install: () => {
+          this.accesses.revoke(transport.pid, workerProcessDirectoryId(transport));
+          this.transports.set(transport.pid, transport);
+        },
+        discard: () => {
+          this.discardResources(transport, codec);
+          return this.options.discardExec?.(transport);
+        },
+      });
+    } catch (error) {
+      try {
+        descriptors?.dispose();
+      } finally {
+        await this.discardExec(message, error);
+      }
+    }
+  }
   private async spawn(
     transport: WorkerProcessTransport,
     request: import("./types.js").SpawnRequest,
@@ -426,6 +517,8 @@ export class WorkerProcessBroker {
     let reason: ProcessAdmissionEvent["reason"] = "admission-failed";
     try {
       codec = this.codec(transport);
+      if (transport.generation !== 1)
+        throw new ProcessError(ProcessErrno.INVAL, "spawn image generation must be one");
       if (
         request.job <= 0 &&
         (checkedJobLifetime(request.job, request.jobLifetime) !== state.jobLifetime ||
@@ -490,7 +583,7 @@ export class WorkerProcessBroker {
       admitted = true;
       this.options.onAdmitted?.(transport);
       this.trace(transport, "reserved");
-      const descriptors = supervisor.get(state.pid)!.descriptors;
+      const descriptors = supervisor.get(state.pid)!.image.descriptors;
       reason = "binding-failed";
       installWorkerBindings(transport, descriptors, codec);
       this.trace(transport, "bound");
@@ -499,8 +592,12 @@ export class WorkerProcessBroker {
         const resource = descriptors.get(binding.fd)!.resource;
         if (resources.has(resource)) continue;
         resources.add(resource);
-        if ((resource.kind === "pipe" || resource.kind === "terminal") && resource.revoke)
-          supervisor.registerRevocation(state.pid, () => resource.revoke!());
+        if (
+          !this.options.canExec &&
+          (resource.kind === "pipe" || resource.kind === "terminal") &&
+          resource.revoke
+        )
+          supervisor.registerCurrentImageRevocation(state.pid, () => resource.revoke!());
       }
       // A kill may have won before lazy admission, including after the sender already exited.
       // start() adopts the shared decision and never launches an already-dead worker.
@@ -720,6 +817,7 @@ export class WorkerProcessBroker {
       // only, never descriptor tokens, adapter payloads, or the broker itself.
       const identity: WorkerProcessTransport = {
         kind: "directory",
+        generation: transport.generation,
         directory: transport.directory,
         lifetime: transport.lifetime,
         identity: transport.identity,

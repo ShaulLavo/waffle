@@ -116,14 +116,14 @@ test("owner completion waits for sparse inherited FD release, filesystem fence a
     stop.resolve();
   });
   const owner = s.reserveSpawn(root, spec());
-  const fd = s.get(owner)!.descriptors.open({ kind: "directory", handle: 1 }, 0n, 0n, () => {
+  const fd = s.get(owner)!.image.descriptors.open({ kind: "directory", handle: 1 }, 0n, 0n, () => {
     released = true;
   });
   child = s.reserveSpawn(owner, { ...spec(true), fds: [{ parent: fd, child: 1000000 }] });
   await s.start(child);
   s.kill(owner, 9);
   expect(s.get(owner)?.result).toBeNull();
-  expect(s.get(owner)?.descriptors.get(fd)).toBeUndefined();
+  expect(s.get(owner)?.image.descriptors.get(fd)).toBeUndefined();
   await turn();
   expect(released).toBe(true);
   expect(stopped).toBe(false);
@@ -173,7 +173,7 @@ test("CLEANUP wait preserves pending handled signals and validates output before
   const abi = new ProcessABI({
     memory,
     fs: new MemFS(),
-    descriptors: signals.descriptors,
+    descriptors: signals.image.descriptors,
     service: s,
     pid: root,
     signals,
@@ -374,7 +374,7 @@ test("guest JSON cannot supply another process as lifetime owner", () => {
   new Uint8Array(memory.buffer).set(bytes);
   const abi = new ProcessABI({
     memory,
-    descriptors: s.get(root)!.descriptors,
+    descriptors: s.get(root)!.image.descriptors,
     fs: new MemFS(),
     service: s,
     pid: root,
@@ -424,7 +424,7 @@ test("CLEANUP waits on a notification despite handled TERM, but fatal outcome un
   const abi = new ProcessABI({
     memory,
     fs: new MemFS(),
-    descriptors: signals.descriptors,
+    descriptors: signals.image.descriptors,
     service: s,
     pid: root,
     signals,
@@ -452,7 +452,7 @@ test("CLEANUP rejects unsupported notification routes, foreign jobs and repeated
   const options = {
     memory,
     fs: new MemFS(),
-    descriptors: signals.descriptors,
+    descriptors: signals.image.descriptors,
     service: s,
     pid: root,
     signals,
@@ -494,7 +494,7 @@ test("CLEANUP reacquires growing guest memory before consuming the job", async (
       return memory;
     },
     fs: new MemFS(),
-    descriptors: s.get(root)!.descriptors,
+    descriptors: s.get(root)!.image.descriptors,
     service: s,
     pid: root,
     signals: s.get(root)!,
@@ -551,7 +551,7 @@ test("a failed filesystem fence reports an error but never confirms or physicall
   const abi = new ProcessABI({
     memory: new WebAssembly.Memory({ initial: 1 }),
     fs: new MemFS(),
-    descriptors: s.get(root)!.descriptors,
+    descriptors: s.get(root)!.image.descriptors,
     service: s,
     pid: root,
     signals: s.get(root)!,
@@ -676,7 +676,7 @@ test("shared owned cleanup releases a real sparse filesystem token only through 
   if (!isFilesystemDescriptorToken(token)) throw new Error("expected filesystem token");
   f.root.options.descriptors.close(fd);
   await f.admit();
-  expect(f.s.get(child)?.descriptors.get(1000000)?.resource.kind).toBe("file");
+  expect(f.s.get(child)?.image.descriptors.get(1000000)?.resource.kind).toBe("file");
   section.enter();
   cleanups.push(() => section.exit());
   f.root.kill(f.root.pid, 9);

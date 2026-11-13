@@ -25,7 +25,7 @@ import {
   reapFilesystem,
 } from "../fs/protocol.js";
 
-const owner = { directory: "ledger-test-directory", pid: 1 };
+const owner = { directory: "ledger-test-directory", pid: 1, generation: 1 };
 const thread = { ...owner, tid: 1 };
 const exit = { kind: "exited", code: 0, status: 0 } as const;
 const heapBytes = 512 * PAGE_BYTES;

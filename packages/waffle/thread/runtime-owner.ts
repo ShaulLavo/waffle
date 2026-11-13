@@ -167,7 +167,11 @@ export class RuntimeThreadOwner {
     try {
       if (this.capacity.processes >= 2) throw new Error("thread process capacity exhausted");
       return this.options.reservations.sharedGuests.create({
-        owner: { directory: this.directory, pid: this.options.context.pid },
+        owner: {
+          directory: this.directory,
+          pid: this.options.context.pid,
+          generation: this.options.context.generation,
+        },
         ...this.options.declaration,
       });
     } catch (error) {
@@ -222,7 +226,11 @@ export class RuntimeThreadOwner {
       guest: {
         kind: "shared-alias",
         alias,
-        owner: { directory: this.directory, pid: this.options.context.pid },
+        owner: {
+          directory: this.directory,
+          pid: this.options.context.pid,
+          generation: this.options.context.generation,
+        },
       },
       group: "none",
       connection,
@@ -263,7 +271,10 @@ export class RuntimeThreadOwner {
   }
   private async dispatch(call: CallKey, request: ThreadRequest): Promise<ThreadResult> {
     if (this.phase !== "open") return { kind: "error", errno: 11 };
-    const continuation = this.backing.continuation(call);
+    const continuation = this.backing.continuation({
+      thread: { ...call.thread, generation: this.options.context.generation },
+      sequence: call.sequence,
+    });
     try {
       if (request.kind === "spawn") {
         const tid = this.tid + 1;
@@ -292,7 +303,12 @@ export class RuntimeThreadOwner {
       this.tid >= 0x1fffffff
     )
       return;
-    const thread = { directory: this.directory, pid: this.options.context.pid, tid: ++this.tid };
+    const thread = {
+      directory: this.directory,
+      pid: this.options.context.pid,
+      generation: this.options.context.generation,
+      tid: ++this.tid,
+    };
     const alias = this.backing.alias({ kind: "guest", thread });
     let ticket: ReturnType<RuntimeThreadOwner["ticket"]>;
     try {

@@ -484,7 +484,7 @@ export class Wasi {
         if (trace) trace(`${name}(${args.join(", ")}) = ${result}`);
         return result;
       } catch (err) {
-        if (err instanceof WasiExit) throw err;
+        if (err instanceof ExecutionUnwind) throw err;
         if (err instanceof FilesystemError) return err.errno;
         (this.opts.diagnostic ?? this.opts.stderr)(
           encoder.encode(`[wasi] ${name} failed: ${String(err)}\n`),

@@ -63,6 +63,9 @@ only for a requested launch and retains no idle workers. The query exposes no wo
 or termination controls; process ownership and cleanup checks apply after the worker receives
 its process request.
 
+[Process image replacement](host-abi.md#process-image-replacement) keeps the PID and process lifetime while stopping the old Worker and memory ticket before admitting the next image.
+The current request, cwd, descriptors and handle live on `ProcessRecord.image`; process identity, outcome and waiters stay on the record. Adapter `ProcessContext` fields retain their shape.
+
 `reserveSpawn` synchronously snapshots argv/env/cwd and retains descriptor bindings (including
 nonstandard fds); `start` asynchronously resolves the module and launches the worker. `spawn`
 combines them without waiting. `FirstSpawnStub` from `./proc/stub` reserves before returning and

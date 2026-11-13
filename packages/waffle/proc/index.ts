@@ -44,6 +44,7 @@ export type {
   ProcessContext,
   ProcessHandle,
   SpawnRequest,
+  ExecRequest,
   JobLifetime,
   SpawnReservation,
   SharedJobIdentity,

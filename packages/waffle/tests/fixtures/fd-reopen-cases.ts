@@ -474,7 +474,7 @@ test("child inherited fd 3 reopens independently through its displaced root preo
   if (pid <= 0) throw new Error(`spawn failed ${pid}`);
   const child = fixture(f.fs, [3]);
   try {
-    child.wasi.descriptors.inherit(3, f.supervisor.get(pid)!.descriptors.get(3)!);
+    child.wasi.descriptors.inherit(3, f.supervisor.get(pid)!.image.descriptors.get(3)!);
     const reopened = child.open("dev/fd/3");
     equal(child.read(reopened), "abcdef");
     equal(child.procCall("fd_kind", reopened), 3);

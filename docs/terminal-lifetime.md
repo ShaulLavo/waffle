@@ -52,3 +52,17 @@ policy turn. Independent raw `input.push()` calls and direct policy calls outsid
 that turn are not process-admitted work. Their host must keep the producer alive or
 provide its own admission fence. This API does not infer ownership for arbitrary raw
 buffer use. Reusing a poisoned input requires a new input transport.
+
+## Image handoffs
+
+`quiesce()` permanently closes the process's terminal admission across every capture.
+It belongs to final process stop. Exec uses `handoff(active)` after the captured old
+Worker stops: it joins the old image's sections and rearms only while `active()`
+still authorizes the live committed replacement. Transient and final closure occupy
+different states of the same atomic admission word. A final close cannot be reopened
+by another capture or a delayed handoff. Each handoff joins the current image's work;
+an earlier quiet result cannot skip the successor's sections.
+
+An adapter's image fence must not call process-final `quiesce()` or `stopped()`, or
+publish native return. The successor acquires fresh adapter-level terminal admission.
+`stopped()` remains the final process-native acknowledgement.

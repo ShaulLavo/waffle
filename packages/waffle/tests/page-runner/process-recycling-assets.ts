@@ -11,6 +11,7 @@ const sources = {
   "/child-diagnostic-worker.js": "child-diagnostic-worker.ts",
   "/startup-pool-worker.js": "fixtures/startup-pool-worker.ts",
   "/pipe-filestat-worker.js": "fixtures/pipe-filestat-worker.ts",
+  "/exec-worker.js": "fixtures/exec-browser-worker.ts",
   "/process-page.js": "page-runner/process-recycling-page.ts",
 };
 

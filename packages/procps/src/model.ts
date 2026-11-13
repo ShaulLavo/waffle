@@ -1,9 +1,8 @@
 import type { ProcessRecord } from "waffle/proc/table";
 
-export type ProcessInput = Pick<
-  ProcessRecord,
-  "pid" | "parentPid" | "request" | "state" | "result"
->;
+export type ProcessInput = Pick<ProcessRecord, "pid" | "parentPid" | "state" | "result"> & {
+  readonly image: Pick<ProcessRecord["image"], "request">;
+};
 
 export interface ProcessRow {
   readonly pid: number;
@@ -15,13 +14,14 @@ export interface ProcessRow {
 export function processRows(records: Iterable<ProcessInput>): ProcessRow[] {
   const rows: ProcessRow[] = [];
   for (const record of records) {
-    if (!record.request || record.result || record.state === "exited") continue;
-    const executable = record.request.executable;
+    const request = record.image.request;
+    if (!request || record.result || record.state === "exited") continue;
+    const executable = request.executable;
     rows.push({
       pid: record.pid,
       parentPid: record.parentPid,
       comm: executable.slice(executable.lastIndexOf("/") + 1),
-      args: record.request.argv.join(" "),
+      args: request.argv.join(" "),
     });
   }
   return rows;

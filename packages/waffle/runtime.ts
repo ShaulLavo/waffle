@@ -93,7 +93,13 @@ export interface RuntimeConsumer {
 export type RuntimeFilesystem = Omit<SharedFilesystem, "client" | "dispose" | "attachSocketScope">;
 export type RuntimeSupervisor = Omit<
   ProcessSupervisor,
-  "dispose" | "registerOwnedJobCleanup" | "onJobRetirement" | "jobRetired" | "retireFencedProcesses"
+  | "dispose"
+  | "registerOwnedJobCleanup"
+  | "onJobRetirement"
+  | "jobRetired"
+  | "retireFencedProcesses"
+  | "beginReplacement"
+  | "acknowledgeReplacement"
 >;
 export type ProcessService = Omit<
   BrowserProcessBroker,
@@ -299,6 +305,7 @@ const supervisorCapabilities = {
   onChildExit: "method",
   onProcessQuiescent: "method",
   registerRevocation: "method",
+  registerCurrentImageRevocation: "method",
 } satisfies Record<keyof RuntimeSupervisor, CapabilityKind>;
 
 /** Fresh capabilities, never an owner-backed Proxy. Even descriptors and prototype inspection

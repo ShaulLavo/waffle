@@ -194,6 +194,7 @@ export const enforcedModules = [
   "proc/pipes.ts",
   "proc/signals.ts",
   "proc/terminal-lifetime.ts",
+  "proc/exec.ts",
   "proc/terminal-turn.ts",
   "proc/start-errno.ts",
   "proc/start-diagnostic.ts",

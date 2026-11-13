@@ -119,7 +119,7 @@ for (const release of ["before-fence", "after-fence"] as const)
         admission.resolve(handle);
         await starting;
         expect(stops).toBe(0);
-        expect(supervisor.get(child)!.handle).toBe(handle);
+        expect(supervisor.get(child)!.image.handle).toBe(handle);
       }
       fence.resolve();
       expect((await waiting).status).toBe(137);
@@ -178,12 +178,12 @@ for (const failure of ["throw", "reject"] as const)
         expect(readOutcome(record.outcome)?.status).toBe(137);
         expect(record.revoked).toBe(true);
         expect(record.result).toBeNull();
-        expect(record.handle).toBe(handle);
+        expect(record.image.handle).toBe(handle);
         expect(errors).toEqual([error]);
         expect(stops).toBe(0);
         supervisor.dispose();
         expect(stops).toBe(0);
-        expect(record.handle).toBe(handle);
+        expect(record.image.handle).toBe(handle);
       } finally {
         admission.resolve(handle);
         await starting;

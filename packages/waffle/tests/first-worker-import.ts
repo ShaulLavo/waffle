@@ -1,6 +1,7 @@
 import * as observations from "../proc/observation.js";
 import * as memoryControls from "../memory/control.js";
 import { bindImportedMemory, createWorkerMemorySampler } from "../browser/worker-memory.js";
+import { ProcessReplaced } from "../proc/exec.js";
 import { ExecutionUnwind } from "../core/unwind.js";
 import { directoryState, isCollectedProcess } from "../proc/directory.js";
 import * as processIntrinsics from "../proc/intrinsics.ts";
@@ -70,6 +71,7 @@ export async function failFirstWorkerImport(
     controlLoad,
     controlWait,
     ExecutionUnwind,
+    ProcessReplaced,
     WasiExit,
     sharedRevoked,
     revokeFilesystem,

@@ -102,7 +102,7 @@ export interface SharedMemorySnapshot {
     readonly grownBytes: number | null;
   }[];
 }
-export type BackingOwner = Readonly<{ directory: string; pid: number }>;
+export type BackingOwner = Readonly<{ directory: string; pid: number; generation: number }>;
 export type SharedGuestThreadKey = BackingOwner & Readonly<{ tid: number }>;
 export type SharedGuestCallKey = Readonly<{ thread: SharedGuestThreadKey; sequence: number }>;
 export type SharedGuestAliasRole =
@@ -201,13 +201,19 @@ function backingOwner(owner: BackingOwner): BackingOwner {
     typeof owner.directory !== "string" ||
     !owner.directory ||
     !Number.isSafeInteger(owner.pid) ||
-    owner.pid <= 0
+    owner.pid <= 0 ||
+    !Number.isSafeInteger(owner.generation) ||
+    owner.generation < 1
   )
     throw new TypeError("Invalid shared guest owner");
-  return Object.freeze({ directory: owner.directory, pid: owner.pid });
+  return Object.freeze({
+    directory: owner.directory,
+    pid: owner.pid,
+    generation: owner.generation,
+  });
 }
 function sameBackingOwner(a: BackingOwner, b: BackingOwner): boolean {
-  return a.directory === b.directory && a.pid === b.pid;
+  return a.directory === b.directory && a.pid === b.pid && a.generation === b.generation;
 }
 function nativeSharedGuestMemory(plan: SharedGuestMemoryPlan): WebAssembly.Memory {
   return new WebAssembly.Memory({

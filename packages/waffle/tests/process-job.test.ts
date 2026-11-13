@@ -64,7 +64,7 @@ test("job wait retains the leader outcome after direct reap and waits for descen
       expect(f.abi.imports.wait_job!(f.job, 1, 64)).toBe(-6);
       expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(0);
     });
-    f.supervisor.get(f.child)!.descriptors.open(
+    f.supervisor.get(f.child)!.image.descriptors.open(
       {
         kind: "terminal",
         read: () => 0,
@@ -270,7 +270,7 @@ test("an accepted independent spawn can arrive after its parent's job was reaped
       retained,
     );
     expect(f.supervisor.get(accepted)!.parentPid).toBe(f.child);
-    expect(f.supervisor.get(accepted)!.descriptors.get(19)).toBeDefined();
+    expect(f.supervisor.get(accepted)!.image.descriptors.get(19)).toBeDefined();
     const independent = f.supervisor.jobOf(accepted);
     f.supervisor.exit(accepted, 4);
     expect(f.supervisor.waitJob(f.shell, independent)?.status).toBe(4);
@@ -368,13 +368,13 @@ test("a launch resolving during quiescence retains its revoked handle until the 
     await starting;
     expect(terminated).toBe(0);
     expect(supervisor.get(leader)!.revoked).toBe(true);
-    expect(supervisor.get(leader)!.handle).toBe(handle);
+    expect(supervisor.get(leader)!.image.handle).toBe(handle);
     expect(supervisor.wait(shell, leader)).toBeNull();
     releaseFence();
     await fence;
     await Promise.resolve();
     expect(terminated).toBe(1);
-    expect(supervisor.get(leader)!.handle).toBeUndefined();
+    expect(supervisor.get(leader)!.image.handle).toBeUndefined();
     expect(supervisor.wait(shell, leader)?.status).toBe(137);
   } finally {
     releaseFence();
@@ -394,7 +394,7 @@ test("Bun-like nested spawns join job_of(0), and shell kill_job/wait_job collect
   const abiFor = (pid: number) =>
     new ProcessABI({
       memory,
-      descriptors: supervisor.get(pid)!.descriptors,
+      descriptors: supervisor.get(pid)!.image.descriptors,
       fs: new MemFS(),
       pid,
       service: supervisor,

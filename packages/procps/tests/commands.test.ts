@@ -21,13 +21,15 @@ function processRecord(pid: number, patch: Partial<ProcessInput> = {}): ProcessI
     parentPid: 1,
     state: "running",
     result: null,
-    request: {
-      executable: "/bin/worker",
-      argv: ["changed-argv0", "a b"],
-      cwd: "/app",
-      env: { PRIVATE: "not copied" },
-      job: -1,
-      fds: [],
+    image: {
+      request: {
+        executable: "/bin/worker",
+        argv: ["changed-argv0", "a b"],
+        cwd: "/app",
+        env: { PRIVATE: "not copied" },
+        job: -1,
+        fds: [],
+      },
     },
     ...patch,
   };
@@ -35,7 +37,7 @@ function processRecord(pid: number, patch: Partial<ProcessInput> = {}): ProcessI
 
 test("snapshot excludes roots and all terminal records, derives name from executable, and retains only displayed fields", () => {
   const records = [
-    processRecord(1, { request: null }),
+    processRecord(1, { image: { request: null } }),
     processRecord(2, { state: "exited" }),
     processRecord(3, { result: { kind: "signaled", code: 15, status: 15 } }),
     processRecord(4, { state: "reserved" }),
@@ -45,7 +47,25 @@ test("snapshot excludes roots and all terminal records, derives name from execut
     { pid: 4, parentPid: 1, comm: "worker", args: "changed-argv0 a b" },
     { pid: 5, parentPid: 1, comm: "worker", args: "changed-argv0 a b" },
   ]);
-  expect(records[3]?.request?.argv).toEqual(["changed-argv0", "a b"]);
+  expect(records[3]?.image.request?.argv).toEqual(["changed-argv0", "a b"]);
+});
+
+test("snapshot follows the current image while process identity stays the same", () => {
+  const original = processRecord(7);
+  let image = original.image;
+  const record = {
+    ...original,
+    get image() {
+      return image;
+    },
+  };
+  const request = image.request;
+  if (!request) throw new Error("missing fixture request");
+  expect(processRows([record])[0]?.comm).toBe("worker");
+  image = { request: { ...request, executable: "/bin/replacement", argv: ["replacement", "new"] } };
+  expect(processRows([record])).toEqual([
+    { pid: 7, parentPid: 1, comm: "replacement", args: "replacement new" },
+  ]);
 });
 
 test("ps additive PID, command, and parent selectors do not mutate the borrowed snapshot", () => {

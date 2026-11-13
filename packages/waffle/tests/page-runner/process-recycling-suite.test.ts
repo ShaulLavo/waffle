@@ -135,7 +135,7 @@ test("absolute process deadline includes time spent before native imports and se
   expect(driver.navigations).toBe(0);
 });
 
-test("page-owned producers match every original normal Bun bundle and Worker IIFE", async () => {
+test("page-owned producers match every desktop bundle and Worker IIFE", async () => {
   const { installClientWorker } = await import("../process-recycling-browser.js");
   const { resolve } = await import("node:path");
   const assets = await processRecyclingAdapter.assets({
@@ -151,6 +151,7 @@ test("page-owned producers match every original normal Bun bundle and Worker IIF
     "/child-diagnostic-worker.js": "child-diagnostic-worker.ts",
     "/startup-pool-worker.js": "fixtures/startup-pool-worker.ts",
     "/pipe-filestat-worker.js": "fixtures/pipe-filestat-worker.ts",
+    "/exec-worker.js": "fixtures/exec-browser-worker.ts",
   };
   expect(Object.keys(assets).sort()).toEqual(
     Object.keys(originals).concat(["/process-client.js", "/process-page.js"]).sort(),
@@ -168,15 +169,15 @@ test("page-owned producers match every original normal Bun bundle and Worker IIF
   }
 }, 30_000);
 
-test("the original desktop body and options are byte-preserved after lazy imports", async () => {
+test("the desktop body and options stay pinned after lazy imports", async () => {
   const { createHash } = await import("node:crypto");
   const source = await Bun.file(
     new URL("../process-recycling-browser-runner.ts", import.meta.url),
   ).text();
-  // The import prelude is lazy; the complete original desktop body stays byte-identical.
+  // Pin the desktop route inventory and options, including the exec fixture.
   const body = source.slice(source.indexOf("// Run from the repository"));
   expect(createHash("sha256").update(body).digest("hex")).toBe(
-    "a6c19166b07c07cbb954d55e8398e6dbd470767ac30f22b99434ad8742777a5f",
+    "76b3d683773499fc90422903c28febe1186e7cc6f8ccaafed01d344cbaa2b25e",
   );
 });
 

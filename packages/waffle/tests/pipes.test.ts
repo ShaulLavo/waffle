@@ -35,6 +35,33 @@ afterEach(() => {
 });
 
 describe("process pipe endpoints", () => {
+  test("successor retains the same lane and flags through old-image close without EOF", () => {
+    const { reader, writer } = pipe();
+    const successor = writer.retainSuccessor();
+    expect(successor.handle().slot).toBe(writer.handle().slot);
+    expect(successor.handle().lifetime).not.toBe(writer.handle().lifetime);
+    writer.fdflags = 4;
+    expect(successor.fdflags).toBe(4);
+    writer.tryWrite([encode.encode("old")]);
+    writer.close();
+    expect(output(reader)).toBe("old");
+    expect(output(reader)).toBe(-PipeErrno.AGAIN);
+    successor.tryWrite([encode.encode("new")]);
+    successor.close();
+    expect(output(reader)).toBe("new");
+    expect(output(reader)).toBe("");
+  });
+
+  test("discarding staged successor leaves the caller endpoint alive", () => {
+    const { reader, writer } = pipe();
+    const successor = writer.retainSuccessor();
+    successor.close();
+    successor.close();
+    expect(writer.tryWrite([encode.encode("live")])).toBe(4);
+    expect(output(reader)).toBe("live");
+    writer.close();
+    expect(output(reader)).toBe("");
+  });
   test("zero-length IO succeeds without waiting, including closed opposite ends", () => {
     const { reader, writer } = pipe();
     expect(reader.tryRead([])).toBe(0);

@@ -454,7 +454,7 @@ async function parityFixture(kind: "worker" | "cooperative") {
     },
   });
   const root = supervisor.createRoot();
-  const descriptors = supervisor.get(root)!.descriptors;
+  const descriptors = supervisor.get(root)!.image.descriptors;
   const abi =
     kind === "worker"
       ? f.abi

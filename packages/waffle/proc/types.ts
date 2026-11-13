@@ -85,6 +85,7 @@ export interface SpawnRequest {
   /** A guest thread started as a process. Waffle gives its contents no meaning. */
   worker?: Readonly<Record<string, unknown>>;
 }
+export type ExecRequest = Omit<SpawnRequest, "job" | "jobLifetime" | "worker">;
 /** Owned copy of the guest-supplied Worker field. A non-object value is not a Worker. */
 export function snapshotSpawnWorker(worker: unknown): Pick<SpawnRequest, "worker"> {
   return worker !== null && typeof worker === "object" ? { worker: { ...worker } } : {};
@@ -116,6 +117,7 @@ export interface ProcessHandle {
   terminate(): void | Promise<void>;
 }
 export interface ProcessLifecycle {
+  readonly generation: number;
   readonly observation: ProcessObservationTransfer;
   readonly pid: number;
   readonly parentPid: number;

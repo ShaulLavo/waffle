@@ -256,7 +256,7 @@ async function selected(session: FamilyAcceptanceSession, fetches: string[]) {
   assert.equal(fetches.length, 1);
   assert.ok(fetches[0]?.endsWith("/tee.wasm"));
   const supervisor = await (await session.runtime.processes()).ready();
-  assert.ok(Array.from(supervisor.table.values()).every((record) => record.request === null));
+  assert.ok(Array.from(supervisor.table.values()).every((record) => record.image.request === null));
   assert.equal(
     Array.from(supervisor.table.jobValues()).filter((job) => job.jobLifetime === "caller-fatal")
       .length,

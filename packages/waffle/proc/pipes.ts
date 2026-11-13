@@ -1076,6 +1076,14 @@ export class PipeEndpoint implements Stream {
       ? this
       : this.state.retain(pid, this.mode, typedArrayBuffer(this.flags) as SharedArrayBuffer);
   }
+  retainSuccessor(): PipeEndpoint {
+    if (!this.live) throw new Error("pipe endpoint is closed");
+    return this.state.retain(
+      this.pid,
+      this.mode,
+      typedArrayBuffer(this.flags) as SharedArrayBuffer,
+    );
+  }
   inherit(pid: number): PipeEndpoint {
     return this.forProcess(pid);
   }

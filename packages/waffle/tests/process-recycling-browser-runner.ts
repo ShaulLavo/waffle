@@ -171,6 +171,9 @@ async function inPage<T>(browser: Browser, label?: string): Promise<T> {
     const page = await context.newPage();
     active();
     observation.observePage(page, `http://127.0.0.1:${server!.port}/`);
+    page.on("console", (message) => {
+      if (message.text().startsWith("waffle-exec ")) console.log(message.text());
+    });
     page.on("pageerror", (error) => console.error(`Process page error: ${error.message}`));
     observation.record("goto-begin", { route: "/", waitUntil: "load", defaultTimeoutMs: 30_000 });
     try {
@@ -275,6 +278,12 @@ try {
   });
   if (!pipeFilestatBuild.success)
     throw new AggregateError(pipeFilestatBuild.logs, "Pipe filestat Worker bundle failed");
+  const execWorkerBuild = await Bun.build({
+    entrypoints: [resolve(import.meta.dir, "fixtures/exec-browser-worker.ts")],
+    target: "browser",
+  });
+  if (!execWorkerBuild.success)
+    throw new AggregateError(execWorkerBuild.logs, "Exec Worker bundle failed");
   server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -289,6 +298,7 @@ try {
         "Cross-Origin-Embedder-Policy": "require-corp",
         "Content-Type": path === "/" ? "text/html" : "text/javascript",
       };
+      if (path === "/exec-worker.js") return new Response(execWorkerBuild.outputs[0]!, { headers });
       if (path === "/startup-pool-worker.js")
         return new Response(startupPoolBuild.outputs[0]!, { headers });
       if (path === "/pipe-filestat-worker.js")

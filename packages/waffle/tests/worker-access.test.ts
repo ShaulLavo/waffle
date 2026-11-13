@@ -302,8 +302,8 @@ test("cancel bypasses unrelated pending spawn admission and wakes its waiter", a
     await delivery;
     expect(f.abi.imports.access_take!(id)).toBe(-8);
     const requests = (
-      f.supervisor as unknown as { accesses: Map<number, { requests: Map<number, unknown> }> }
-    ).accesses.get(f.client.pid)!.requests;
+      f.supervisor as unknown as { accesses: WeakMap<object, { requests: Map<number, unknown> }> }
+    ).accesses.get(f.supervisor.get(f.client.pid)!.image)!.requests;
     expect(requests.size).toBe(0);
   } finally {
     admission.resolve();

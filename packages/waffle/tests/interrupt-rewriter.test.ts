@@ -434,6 +434,7 @@ test("rejects a spawn_error import with the wrong signature", () => {
 test("admits exact runtime_proc imports and rejects forged or malformed imports", () => {
   const imports = [
     ["spawn", type([0x7f, 0x7f], [0x7f])],
+    ["exec", type([0x7f, 0x7f], [0x7f])],
     ["spawn_error", type([0x7f, 0x7f, 0x7f], [0x7f])],
     ["job_of", type([0x7f], [0x7f])],
     ["wait", type([0x7f, 0x7f], [0x7f])],
@@ -714,4 +715,12 @@ test("validates countdown options before writing bytes", () => {
   const bytes = simple([0x0b]);
   for (const interval of [1, 3, 4096, 0x7fffffff])
     expect(WebAssembly.validate(rewriteInterrupts(bytes, { interval }))).toBe(true);
+});
+
+test("rejects an exec import with the wrong signature", () => {
+  const input = binary(
+    types(type([0x7f], [0x7f])),
+    section(2, vec([name("runtime_proc").concat(name("exec"), [0, 0])])),
+  );
+  expect(() => rewriteInterrupts(input)).toThrow("invalid runtime_proc.exec signature");
 });
