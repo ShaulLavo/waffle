@@ -5,6 +5,7 @@ import {
   adoptLinkPlan,
   instantiateLinkPlan,
   linkedWorkerHooks,
+  PreparedLinkPlan,
   prepareLinkPlan,
   type LinkPlanSource,
   type SharedLinkPlan,
@@ -1481,6 +1482,70 @@ test("each explicit preparation owns its compilation and adoption is synchronous
   } finally {
     compile.mockRestore();
   }
+});
+
+test("member lookup returns the exact compiled modules without compilation or instantiation", async () => {
+  const input = source();
+  const compile = WebAssembly.compile;
+  const compiled: Promise<WebAssembly.Module>[] = [];
+  const compilation = spyOn(WebAssembly, "compile").mockImplementation((bytes) => {
+    if (!(bytes instanceof Uint8Array) || !(bytes.buffer instanceof ArrayBuffer))
+      throw new Error("expected private Uint8Array compiler input");
+    const pending = compile(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    compiled.push(pending);
+    return pending;
+  });
+  const instantiate = spyOn(WebAssembly, "instantiate");
+  const instance = spyOn(WebAssembly, "Instance");
+  const moduleConstructor = WebAssembly.Module;
+  WebAssembly.Module = new Proxy(moduleConstructor, {
+    construct() {
+      throw new Error("unexpected synchronous compilation");
+    },
+  });
+  try {
+    const plan = await prepareLinkPlan({
+      ...input,
+      libraries: input.libraries.concat([{ ...input.libraries[0]!, id: "second" }]),
+    });
+    const [coreModule, engineModule, secondModule] = await Promise.all(compiled);
+    expect(compiled.length).toBe(3);
+    if (!coreModule || !engineModule || !secondModule) throw new Error("missing compiled member");
+    expect(plan.memberModule("core")).toBe(coreModule);
+    expect(plan.memberModule("core")).toBe(plan.entryModule);
+    expect(plan.memberModule("engine")).toBe(engineModule);
+    expect(plan.memberModule("engine")).toBe(plan.memberModule("engine"));
+    expect(plan.memberModule("second")).toBe(secondModule);
+    expect(secondModule).not.toBe(engineModule);
+    expect(WebAssembly.Module.exports(plan.memberModule("engine"))).toContainEqual({
+      name: "run",
+      kind: "function",
+    });
+    const adopted = adoptLinkPlan(plan.shared);
+    expect(adopted.memberModule("engine")).toBe(engineModule);
+    const cloned = adoptLinkPlan(structuredClone(plan.shared));
+    expect(cloned.memberModule("core")).toBe(cloned.entryModule);
+    expect(cloned.memberModule("engine")).toBe(cloned.memberModule("engine"));
+    expect(compilation).toHaveBeenCalledTimes(3);
+    expect(instantiate).not.toHaveBeenCalled();
+    expect(instance).not.toHaveBeenCalled();
+  } finally {
+    compilation.mockRestore();
+    instantiate.mockRestore();
+    instance.mockRestore();
+    WebAssembly.Module = moduleConstructor;
+  }
+});
+
+test("member lookup rejects unknown ids and unprepared receivers", async () => {
+  const plan = await prepareLinkPlan(source());
+  for (const id of ["missing", "", "__proto__", "toString"]) {
+    expect(() => plan.memberModule(id)).toThrow(`link ${id}: unknown member id`);
+    expect(() => adoptLinkPlan(plan.shared).memberModule(id)).toThrow("unknown member id");
+  }
+  expect(() => PreparedLinkPlan.prototype.memberModule.call(structuredClone(plan), "core")).toThrow(
+    "expected a local prepared plan",
+  );
 });
 
 async function rootAdmissionFixture() {
