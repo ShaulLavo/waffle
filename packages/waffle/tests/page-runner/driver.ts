@@ -75,6 +75,8 @@ export type DriverObservationBinding = {
   consumers: import("./owned-consumers.js").HostConsumers;
 };
 export interface Driver {
+  /** Setup only; the suite's absolute run deadline still applies. */
+  readonly startupTimeoutMs?: number;
   observe?(binding: DriverObservationBinding): Promise<DriverObservation>;
   press(key: HostKey, control: DriverPressControl): Promise<void>;
   start(signal: AbortSignal): Promise<void>;
