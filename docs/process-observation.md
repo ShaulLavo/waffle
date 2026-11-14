@@ -72,6 +72,52 @@ Native return is a product boundary. It does not prove that every physical reade
 has closed, reclaim operating-system memory, or discharge memory-group, GPU,
 pipe, shared-control, or filesystem obligations.
 
+## Foreign adapter launch failures
+
+The browser adapter entry has type
+`(context: ProcessContext) => ProcessHandle | Promise<ProcessHandle>`.
+`ProcessHandle.terminate(): void | Promise<void>` owns physical cleanup of every
+consumer accepted by that entry, including partially completed setup. A returned
+handle is still required when the adapter selects `context.startFailed(error)`.
+Selecting that result reports startup failure; it does not certify cleanup.
+
+An adapter with local asynchronous work can return its handle immediately and catch
+the work's startup error with `context.startFailed(error)`. After successful entry,
+use `context.fail(error)` for execution errors. Register revocation synchronously
+before starting work, close further admission on revocation, and retain all accepted
+acquisitions. The handle's `terminate` must join the caught work's completion fence
+and release those resources. Joining the original rejecting body promise again
+would report the execution error as cleanup failure and prevent native return.
+Failures of the completion fence or resource cleanup must still reject. A caught
+error alone is no proof that work or resources are quiet.
+
+For an adapter that must throw or reject before returning a handle, the existing
+`ProcessController` can own entry through its `launch(context)` method. Register
+that one controller before entry with `registerController(pid, controller)`. Its
+captured `stop(): void | Promise<void>` must account for every partial acquisition
+by `launch`. `revoke` closes admission, and `quiesce` fences admitted adapter work.
+Waffle joins that fence with the controller's filesystem fence before invoking
+`stop`. A fulfilled stop certifies native return even though launch failed;
+a rejected adapter fence, filesystem fence or stop retains uncertain ownership.
+An auxiliary controller without `launch` cannot certify resources acquired by the
+separate generic adapter entry. Do not register a second controller for a PID.
+
+A raw foreign throw or rejection without either owned cleanup path remains a
+startup failure with uncertain native ownership, even if the callback appears to
+have allocated nothing. Disposal rejects and observation stays `selected`.
+Waffle's own confirmed no-agent rollback is a separate case. Do not wrap an
+unknown foreign launcher in a dummy successful handle or suppress a cleanup error
+to turn its selected result into `terminated`.
+
+Startup diagnostics retain the [host ABI policy](host-abi.md#spawn-error-details).
+An admitted `runtime_proc` child leaves stderr rendering to its parent; an
+embedder-controlled launch gets one inherited-stderr fallback unless its controller
+owns the diagnostic. Cleanup failure does not select another outcome or render
+that startup line again. The focused cases in
+`tests/browser-process-broker.test.ts` cover raw synchronous and asynchronous
+failure, caught startup/body failure with a returned handle, auxiliary-controller
+non-ownership, and controller-owned launch failure with independent cleanup fences.
+
 ## Collection and capacity
 
 A consuming wait still returns the exact result after the existing filesystem and
