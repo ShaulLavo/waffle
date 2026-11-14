@@ -11,6 +11,9 @@ import {
 import { PipeController } from "../proc/pipes.js";
 import { createWorkerPipeCodec } from "../proc/worker-pipes.js";
 import { bytes, declareSharedMemoryPlatform } from "../memory/index.js";
+import type { SharedGuestSnapshot } from "../memory/reservations.js";
+import { stockThreadCase, type RuntimeThreadCase } from "./threads-runtime-cases.js";
+export type { RuntimeThreadCase } from "./threads-runtime-cases.js";
 
 function check(value: unknown, label: string): asserts value {
   if (!value) throw new Error(label);
@@ -24,17 +27,44 @@ function deadline<T>(promise: Promise<T>, label: string): Promise<T> {
     }),
   ]).finally(() => clearTimeout(timer));
 }
-export type RuntimeThreadCase =
-  | "pair"
-  | "repeat"
-  | "nested"
-  | "kill-start"
-  | "join"
-  | "child-exit"
-  | "cpu"
-  | "wait32"
-  | "wait64";
-export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", local = false) {
+
+function checkStockBackings(
+  observations: readonly (readonly SharedGuestSnapshot[])[],
+  retired: readonly SharedGuestSnapshot[],
+): void {
+  check(
+    observations
+      .concat([retired])
+      .every(
+        (items) =>
+          items.length === 1 &&
+          items[0]?.id === retired[0]?.id &&
+          items[0]?.initialPages === 17 &&
+          items[0]?.sourceMaximumPages === 16384 &&
+          items[0]?.actualMaximumPages === 512 &&
+          items[0]?.chargedBytes === 33554432,
+      ),
+    "stock aliases did not share one source-qualified 32 MiB backing",
+  );
+  check(peakAliases(observations) >= 3, "stock case did not observe concurrent backing aliases");
+}
+
+function peakAliases(observations: readonly (readonly SharedGuestSnapshot[])[]): number {
+  return observations.reduce(
+    (peak, items) =>
+      items.reduce(
+        (peak, item) =>
+          Math.max(peak, item.aliases.reserved + item.aliases.transferred + item.aliases.retained),
+        peak,
+      ),
+    0,
+  );
+}
+export async function runThreadsRuntime(
+  selected: RuntimeThreadCase = "pair",
+  local = false,
+  expectedFixtureSha256?: string,
+) {
   const errors: string[] = [];
   const created: Worker[] = [];
   const urls: string[] = [];
@@ -65,6 +95,9 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
   };
   Object.assign(globalThis, { __waffleRuntimeSafariCausalEvents: causalEvents });
   const workerTargets = new WeakMap<Worker, string>();
+  let observeBacking = (_memory: WebAssembly.Memory) => {};
+  // Hold the native object through the retirement snapshot, without copying its bytes.
+  let backingMemory: WebAssembly.Memory | undefined;
   const NativeWorker = globalThis.Worker;
   globalThis.Worker = class extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
@@ -108,6 +141,13 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
       message: unknown,
       transfer?: Transferable[] | StructuredSerializeOptions,
     ): void {
+      if (
+        message &&
+        typeof message === "object" &&
+        "memory" in message &&
+        message.memory instanceof WebAssembly.Memory
+      )
+        observeBacking(message.memory);
       const target = workerTargets.get(this) ?? "unknown";
       recordCausal("worker-post", {
         worker: target,
@@ -151,13 +191,24 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
       new BrowserProcessBroker({ ...options, onError: (error) => errors.push(String(error)) }),
   });
   const descriptors = new DescriptorTable();
+  const backingObservations: ReturnType<typeof runtime.sharedMemory.snapshot>["sharedGuests"][] =
+    [];
+  observeBacking = (memory) => {
+    check(
+      !backingMemory || backingMemory === memory,
+      "Worker aliases used different native memories",
+    );
+    backingMemory = memory;
+    const backings = runtime.sharedMemory.snapshot().sharedGuests;
+    if (backings.length) backingObservations.push(backings);
+  };
   const input = new PipeController({ relay: "manual" });
   const pipe = new PipeController({ relay: "manual" });
   let output = "";
   let drainingOutput: ReturnType<typeof setInterval> | undefined;
   try {
     recordCausal("runtime-start", { selected });
-    const stock = selected === "pair" || selected === "repeat" || selected === "nested";
+    const stock = stockThreadCase(selected);
     const killed = ["kill-start", "cpu", "wait32", "wait64"].includes(selected);
     const source = stock
       ? new Uint8Array(await (await fetch("/threads.wasm")).arrayBuffer())
@@ -167,9 +218,8 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
       (value) => value.toString(16).padStart(2, "0"),
     ).join("");
     check(
-      !stock ||
-        fixtureSha256 === "410f9f16ee994fd58a9e3e3382fbf0c092d5231518e9d6a21360582ca402fa40",
-      "stock artifact changed",
+      !stock || fixtureSha256 === expectedFixtureSha256,
+      "stock artifact does not match the verified producer receipt",
     );
     runtime.registerAdapter("thread-proof", (context, service) =>
       service.launchWorker(context, {
@@ -356,14 +406,32 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
     check(errors.length === 0, errors.join("\n"));
     const snapshot = runtime.sharedMemory.snapshot();
     check(
+      backingMemory && backingMemory.buffer instanceof SharedArrayBuffer,
+      "missing native shared backing observation",
+    );
+    check(
+      snapshot.sharedGuests.length === 1,
+      "expected one process backing at aggregate retirement",
+    );
+    check(
       snapshot.sharedGuests.every(
         (item) =>
           item.phase === "awaiting-collection" &&
           item.fence === "passed" &&
+          item.aliases.reserved === 0 &&
+          item.aliases.transferred === 0 &&
           item.aliases.retained === 0 &&
-          item.continuations.active === 0,
+          item.continuations.active === 0 &&
+          item.continuations.retained === 0,
       ),
       "aggregate did not retire",
+    );
+    if (stock) checkStockBackings(backingObservations, snapshot.sharedGuests);
+    const controlDebts = snapshot.holders.filter((holder) => holder.state === "debt");
+    check(
+      controlDebts.every((holder) => holder.label === "guest-control") &&
+        controlDebts.reduce((sum, holder) => sum + holder.declaredBytes, 0) === snapshot.debtBytes,
+      "cleanup retained debt outside consumed controls",
     );
     check(stopped === created.length, `Worker stop mismatch ${stopped}/${created.length}`);
     return {
@@ -379,6 +447,10 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
       output,
       workers: created.length,
       sharedGuests: snapshot.sharedGuests,
+      backingObservation: {
+        samples: backingObservations.length,
+        peakAliases: peakAliases(backingObservations),
+      },
       debtBytes: snapshot.debtBytes,
       controlDebts: snapshot.holders
         .filter((holder) => holder.label === "guest-control" && holder.state === "debt")
@@ -396,6 +468,7 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
       await runtime.dispose();
     } finally {
       for (const worker of created) worker.terminate();
+      backingMemory = undefined;
       globalThis.Worker = NativeWorker;
     }
   }
