@@ -89,8 +89,9 @@ on November 14. [Rust's target documentation](https://doc.rust-lang.org/rustc/pl
 describes bundled libc/CRT and warns against mixing arbitrary foreign libc. Check the
 actual pinned target installation, not the word "stable" alone. The fixture researcher
 has now built the existing source with 1.98.1 using `/work/cache/rustup`, without an install.
-Its new bytes differ from the old runner's pinned artifact. Retain one coherent producer
-receipt and refresh its consumers together. No missing-import shim or std fork is needed.
+The existing remapped producer reproduces the runner's pinned artifact; a direct build
+without its path remap has a different digest. Retain one coherent producer receipt and
+refresh its consumers together. No missing-import shim or std fork is needed.
 Supported wasi-libc pthreads do not imply [Emscripten's generated ABI](https://emscripten.org/docs/porting/pthreads.html)
 is accepted. Starship/process spawning and general Rayon workload support remain later work.
 
