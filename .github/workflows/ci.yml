@@ -356,6 +356,7 @@ jobs:
               - "packages/procps/**"
             browser:
               - ".github/workflows/ci.yml"
+              - ".github/workflows/threads-fixture.yml"
               - ".github/actions/release-downloads/**"
               - ".github/actions/save-release-downloads/**"
               - ".github/actions/setup-tools/**"
@@ -377,6 +378,8 @@ jobs:
               - "packages/waffle/fs/**"
               - "packages/waffle/proc/**"
               - "packages/waffle/interrupt/**"
+              - "packages/waffle/thread/**"
+              - "packages/waffle/memory/**"
               - "packages/waffle/browser/**"
               - "packages/waffle/search/**"
               - "packages/waffle/group/**"
@@ -386,6 +389,9 @@ jobs:
               - "package.json"
               - "packages/waffle/package.json"
               - "bun.lock"
+              - "rust-toolchain.toml"
+              - "packages/waffle/scripts/build-thread-fixture.ts"
+              - "packages/waffle/scripts/threads-fixture-producer.test.ts"
               - "packages/waffle/scripts/build-memory-group-fixture.ts"
               - "packages/waffle/scripts/build-gpu-fixture.ts"
               - "packages/waffle/scripts/test-browser.ts"
@@ -1281,10 +1287,14 @@ jobs:
           WASI_LIBC_SYSROOT_CACHE: ${{ runner.temp }}/libc-sysroot
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
+  threads-fixture:
+    needs: changes
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true')) }}
+    uses: ./.github/workflows/threads-fixture.yml
   browser:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-    needs: [changes, network-wasm, libc]
+    needs: [changes, network-wasm, libc, threads-fixture]
     if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true')) }}
     # Playwright 1.64.1 browsers are proven on Ubuntu 24.04; move the pin deliberately with a green run.
     runs-on: ubuntu-24.04
@@ -1368,11 +1378,26 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/gpu-fixture
       - run: bun packages/waffle/scripts/build-gpu-fixture.ts --verify "$RUNNER_TEMP/gpu-fixture"
+      - name: Require the Rust threads fixture artifact ID
+        run: test -n "$THREAD_ARTIFACT_ID"
+        env:
+          THREAD_ARTIFACT_ID: ${{ needs.threads-fixture.outputs.artifact-id }}
+      - uses: actions/download-artifact@v8
+        with:
+          digest-mismatch: error
+          artifact-ids: ${{ needs.threads-fixture.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/threads-fixture
+      - name: Verify the Rust threads fixture without a compiler
+        run: bun packages/waffle/scripts/build-thread-fixture.ts --verify
+        env:
+          THREAD_FIXTURE_DIR: ${{ runner.temp }}/threads-fixture
       - run: bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"
         shell: bash
         env:
           GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture
           MEMORY_GROUP_FIXTURE_DIR: ${{ runner.temp }}/memory-group-fixture
+          THREAD_FIXTURE_DIR: ${{ runner.temp }}/threads-fixture
           RECOVERY_R42_REPORT: ${{ runner.temp }}/recovery-r42-report.json
           BROWSER_CONTROLS_RESULT: ${{ runner.temp }}/browser-controls-results.json
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
@@ -1659,6 +1684,7 @@ jobs:
         tar,
         package,
         libc,
+        threads-fixture,
         browser,
         site,
         findutils-xargs,

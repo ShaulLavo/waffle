@@ -17,6 +17,7 @@ const runners = [
   "search-executor",
   "guest-watch",
   "filesystem-transport",
+  "threads-runtime",
   "gpu",
 ];
 const continuity = "workspace-continuity";
@@ -358,7 +359,13 @@ test("native GPU failure remains blocking in its single supervised Chromium invo
 
 async function nativeDiscovery(
   group: "parallel" | "serial",
-  failingRunner: "gpu-native" | "gpu-async" | "gpu-async-controls" | "notification" | undefined,
+  failingRunner:
+    | "gpu-native"
+    | "gpu-async"
+    | "gpu-async-controls"
+    | "notification"
+    | "threads-runtime"
+    | undefined,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "waffle-native-discovery-"));
   let cleanupError: CommandCleanupError | undefined;
@@ -397,6 +404,13 @@ export async function runBrowserSuite(command) {
       .split("\n")
       .map((line) => JSON.parse(line));
     expect(
+      commands.filter((command) => command[0] === "tests/threads-runtime-browser-runner.ts"),
+    ).toEqual([
+      group === "parallel"
+        ? ["tests/threads-runtime-browser-runner.ts", "chromium", "firefox"]
+        : ["tests/threads-runtime-browser-runner.ts", "webkit"],
+    ]);
+    expect(
       commands.filter((command) => command[0] === "tests/gpu-native-browser-runner.ts"),
     ).toEqual(group === "parallel" ? [["tests/gpu-native-browser-runner.ts", "chromium"]] : []);
     expect(
@@ -432,6 +446,10 @@ export async function runBrowserSuite(command) {
 for (const group of ["parallel", "serial"] as const)
   test(`native GPU executable discovery in CI ${group} group`, () =>
     nativeDiscovery(group, undefined));
+
+for (const group of ["parallel", "serial"] as const)
+  test(`Runtime threads run their default full inventory once and block the ${group} CI group`, () =>
+    nativeDiscovery(group, "threads-runtime"));
 
 test("native GPU error exits the designated CI group nonzero", () =>
   nativeDiscovery("parallel", "gpu-native"));
