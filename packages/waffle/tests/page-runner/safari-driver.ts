@@ -105,6 +105,8 @@ const w3cErrors = new Set([
   "unsupported operation",
 ]);
 const navigationTimeoutMs = 30_000;
+const launcherStartupTimeoutMs = 20_000;
+const sessionCreationTimeoutMs = 30_000;
 export const driverResponseLimit = 4 * 1024 * 1024;
 export async function readDriverResponse(
   response: Response,
@@ -264,6 +266,7 @@ export function associateListener(
   return { kind: "launchd-service", pid, started: match[4] ?? "" };
 }
 export class SafariDriver implements Driver {
+  readonly startupTimeoutMs = launcherStartupTimeoutMs + sessionCreationTimeoutMs + 5000;
   private child: ChildProcess | undefined;
   private childExit: Promise<number | null> | undefined;
   private descriptor: AttachedConnection | undefined;
@@ -363,6 +366,14 @@ export class SafariDriver implements Driver {
     return owned;
   }
   async start(signal: AbortSignal): Promise<void> {
+    await bounded(
+      this.startLauncher(AbortSignal.any([signal, AbortSignal.timeout(launcherStartupTimeoutMs)])),
+      launcherStartupTimeoutMs,
+      "driver startup",
+    );
+    await this.createSession(signal);
+  }
+  private async startLauncher(signal: AbortSignal): Promise<void> {
     this.port = await availablePort();
     this.base = `http://127.0.0.1:${this.port}`;
     const log = openSync(this.driverLogPath ?? join(this.scratch, "safaridriver.log"), "w", 0o600);
@@ -377,7 +388,6 @@ export class SafariDriver implements Driver {
       closeSync(log);
     }
     await this.ready(signal);
-    await this.createSession(signal);
   }
   async startControl(endpoint: string, signal: AbortSignal): Promise<void> {
     const url = new URL(endpoint);
@@ -417,6 +427,7 @@ export class SafariDriver implements Driver {
         },
       },
       signal,
+      sessionCreationTimeoutMs,
     );
     this.session = parseSession(value);
     this.uncertain = false;

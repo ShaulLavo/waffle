@@ -828,9 +828,10 @@ export async function runPageSuite<R>(
     checkExecution();
     driver = factory(scratch, observeFailure);
     checkExecution();
+    const startupTimeoutMs = driver.startupTimeoutMs ?? 20_000;
     await bounded(
-      driver.start(AbortSignal.any([signal, AbortSignal.timeout(20_000)])),
-      20_000,
+      driver.start(AbortSignal.any([signal, AbortSignal.timeout(startupTimeoutMs)])),
+      startupTimeoutMs,
       "driver startup",
     );
     if (!selected.length) throw new Error("No selected suite cases");
