@@ -1,5 +1,141 @@
 # Native guest threads in the browser
 
+## Current M1 addendum, November 14, 2026
+
+Status: Approved. Independent Sol review of this addendum precedes implementation.
+Inspected current main is `5cf130c45621c676e593b0e31092baa640ea5e46`. Preserve the original
+design below as history. This addendum defines the current bounded milestone and takes
+precedence over its estimates, proposed growth mediation, and statements about absent code.
+No runtime implementation or browser qualification is part of this design commit.
+
+### What is already implemented
+
+[PR 275](https://github.com/ShaulLavo/waffle/pull/275) merged the original design.
+Its description records independent documentation/source review, including descriptor reuse
+and signed spawn replies. The November 1 independent design review then found three concrete
+blockers: a blocking canonical syscall Worker, destructive secondary `proc_exit`, and missing
+aggregate backing leases. The correction records specify asynchronous service calls,
+non-destructive terminal imports, and one process backing with counted aliases/continuations.
+[PR 340](https://github.com/ShaulLavo/waffle/pull/340), merged at `dde305ff`, integrated those
+contracts as an experimental source-admitted Runtime path. It records independent correction
+approval and passing source gates, explicitly excluding general-launch and phone acceptance.
+
+The local audit trail is `/work/reports/wave-20261101/threads/`, especially
+`DESIGN-REVIEW.md`, `DESIGN-CORRECTIONS.md`,
+`memory-correction/MEMORY-CONTRACT-SOL-REVIEW.md`, and
+`runtime-integration/CORRECTIONS-RESOLUTION.md`. Its `runtime-final-browser/RESULT.md`
+records 27 passing staged desktop cases at `f31e18d7`, production pin `99d1db01`.
+Those results do not qualify today's main or iPhone. Reuse their tests rather than repeat
+the original ownership design. A fresh independent review checks this remaining scope.
+
+All source paths in the following table are relative to `packages/waffle/`.
+
+| Contract                   | Existing implementation and M1 boundary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Admission and ABI          | `runtime.ts::sourceModule` snapshots source, calls `memory/declarations.ts::inspectThreadSource`, and compiles with `supervised-thread`. The inspector validates one shared `env.memory`, supported import signatures, `_start() -> ()`, and `wasi_thread_start(i32, i32) -> ()`. `thread/guest-imports.ts` implements `wasi.thread-spawn(i32) -> i32`, preserving an opaque u32 argument, positive TID below `2^29`, and negative failure. Unsupported imports, opaque precompiled modules, extra memories, and PIE/group/network combinations remain refused.                                                                                                       |
+| Lazy process-owned workers | `browser/process-broker.ts::launchThreadWorker` dynamically imports `thread/runtime-owner.ts`. One PID owns one canonical service and fresh guest Workers, including the initial thread. Current caps are 2 threaded processes per runtime, 4 admitted guest threads per process including pending starts, and 8 across the runtime. These are experimental caps, not measured device capacity. No prewarm or used-worker reuse is needed for M1. Never queue a successful spawn behind blocked guests.                                                                                                                                                               |
+| Startup and guest runtime  | `RuntimeThreadOwner.launch/dispatch/enter` and `thread/guest-worker.ts` reserve before construction, install imports before instantiation/start-section execution, receive `ready`, then authorize command/thread entry. The spawn caller blocks on its private lane while the page remains responsive. Guest libc owns stack/TLS allocation, initialization, join, and detach. Waffle passes `tid/startArg` to `wasi_thread_start`; it never decodes the libc structure or reruns `_start` in children.                                                                                                                                                              |
+| Shared calls               | `thread/service.ts`, `service-worker.ts`, and `lane.ts` keep one descriptor owner and asynchronous filesystem/stream requests with separate guest reply lanes. `guest-imports.ts` refreshes guest views before accesses. M1 supports only the admitted import list, including existing fd read/write/stat/seek/close, clock, random, args, environment, and yield. It does not claim guest `path_open`, complete Preview 1, or secondary `runtime_proc` process operations.                                                                                                                                                                                           |
+| Terminal and physical stop | `thread/entry.ts::enterGuest/guestProcExit` distinguishes normal secondary return from process exit. `_start` return, any `proc_exit`, uncaught trap, and default panic-abort end the process with existing first-outcome arbitration. `RuntimeThreadOwner.terminal/fence/stop` seals admission, wakes tracked native wait32/wait64 and host lanes, drains continuations, fences the real filesystem identity, disposes the canonical service, then physically stops all aliases. `proc/observation.ts` keeps the original observation valid through native return. Failed fences/stops retain ownership and debt. No guest destructor is required for fatal cleanup. |
+| Memory and reservations    | `inspectThreadSource` selects `actualMaximumPages = min(512, sourceMaximumPages)` and refuses an initial size above it. `memory/reservations.ts::createSharedGuest` constructs once under the existing page ledger, keyed by directory/PID/generation. `SharedGuestBacking` owns service/guest aliases and continuations. Tickets charge worker controls without charging another guest heap. `retireSharedGuest` requires a passed fence, stopped/aborted aliases, and settled continuations before awaiting collection. Thread return never refunds the shared backing.                                                                                             |
+
+The full-ceiling reservation already bounds native `memory.grow`; M1 keeps stock allocator
+growth and the existing captured-buffer wait protocol in `interrupt/wait.ts` and
+`thread/lane.ts::ThreadWaitOwner`. It introduces neither a growth RPC nor a new registry.
+For the probed Rust producer, initial 17 pages fit the 512-page host ceiling. Charge
+33,554,432 bytes once, not the binary's 16,384-page upper limit and not once per Worker.
+The smaller maximum is permitted by [Core import limit matching](https://webassembly.github.io/spec/core/valid/matching.html#limits).
+Actual construction and growth still need the native browser gate.
+
+The page-wide ledger also counts filesystem capacity promises, arenas, and controls.
+Keep the existing explicit bounded declaration in the Runtime fixture. A 3 GiB application
+declaration is an assertion, not a measured iPhone limit. Safari reserves declared maxima;
+shared aliases do not justify another memory constructor. Control grants remain separate
+64 MiB lifetime quotas under bounded policy, and consumed-control debt can outlive a Worker.
+Successful API termination is not proof of RSS/address-space reclamation. See
+[shared reservations](../docs/shared-memory.md) and [memory groups](../docs/memory-groups.md).
+
+### J11 reuse and producer boundary
+
+Read-only J11 reference is [bun-wasm PR 657](https://github.com/ShaulLavo/bun-wasm/pull/657),
+unmerged head `525c62fe6becade2243ef69407a1ff196b885d6b`. Its
+`docs/shared-group-profile.md`, `docs/bun-patches/native-memory-group-service.md`,
+`docs/host-abi.md`, `docs/worker-threads.md`, `crates/bunwasm-host/src/shm.rs`, and
+`crates/bunwasm-runtime/src/js/worker_threads.ts` define the relevant ownership.
+Engines owns those files. No engine or J11 change belongs to this milestone.
+
+J11's group maximum of 32,768 pages, aggregate member allowance of 16,384 pages, and
+page W3 backing budget of 2 GiB are distinct. A member lease owns a relocated PIC image
+and stack. It is not a WASI TID. Members use owner-mediated `runtime_shm.group_grow`,
+with no direct `memory.grow` or start section. Stock Rust uses its own CRT start section,
+passive shared initialization, native allocator growth, and per-instance TLS/stack globals.
+Do not force it through `requireGroupPlan` or the J11 PIC profile.
+
+Reuse the existing ownership mapping: one backing identity and charge, admitted aliases
+before transfer, incarnation-qualified calls, and release only after physical stop.
+J11 member-owned effects stay retained on failed stop, while group pins/publications can
+survive member exit. In the WASI path, process-owned descriptors and shared heap survive
+normal thread return; per-thread alias/wait/call ownership retires separately. A failed
+alias stop or continuation fence keeps the single process backing as debt. Neither
+logical exit nor one stopped alias releases other actors' effects. Both paths use the
+same page reservation owner rather than competing byte budgets or memory registries.
+
+The [wasi-threads ABI](https://github.com/WebAssembly/wasi-threads/blob/main/wasi-threads.abi.md)
+and [execution convention](https://github.com/WebAssembly/wasi-threads/blob/main/README.md)
+remain the legacy Preview 1 interface. Join and synchronization use Wasm atomics.
+[wasi-libc's thread entry](https://github.com/WebAssembly/wasi-libc/blob/main/libc-top-half/musl/src/thread/wasi-threads/wasi_thread_start.s)
+sets the stack and TLS globals before its C entry. These primary sources were rechecked
+on November 14. [Rust's target documentation](https://doc.rust-lang.org/rustc/platform-support/wasm32-wasip1-threads.html)
+describes bundled libc/CRT and warns against mixing arbitrary foreign libc. Check the
+actual pinned target installation, not the word "stable" alone. The fixture researcher
+has now built the existing source with 1.98.1 using `/work/cache/rustup`, without an install.
+The existing remapped producer reproduces the runner's pinned artifact; a direct build
+without its path remap has a different digest. Retain one coherent producer receipt and
+refresh its consumers together. No missing-import shim or std fork is needed.
+Supported wasi-libc pthreads do not imply [Emscripten's generated ABI](https://emscripten.org/docs/porting/pthreads.html)
+is accepted. Starship/process spawning and general Rayon workload support remain later work.
+
+### Smallest remaining M1 and acceptance
+
+M1 qualifies the existing source-admitted Runtime with its explicit adapter, 32 MiB ceiling,
+and current caps. It does not add a general launcher, public policy API, worker recycling,
+guest allocator rewrite, or broader import support. The first unit is the current-producer
+`pair` case through the existing Runtime runner in Chromium, preserving outcome, backing,
+disposal, and ordinary-sibling filesystem assertions. Change runtime source only if that
+bounded run identifies a concrete defect and its repair receives independent review.
+
+| Unit                                     | Agent hours remaining, before new failures | Finish line                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1a. Producer and current-source binding | 1 to 2                                     | Reuse `scripts/build-thread-fixture.ts`, `tests/fixtures/threads.rs`, and existing receipt verification. Update `tests/threads-runtime-browser.ts` and `threads-runtime-safari-packet.ts` together for reviewed current bytes/source. The old whole-production `dde305ff` pin cannot qualify current main. Preserve freshness/tamper checks without imposing release-only paperwork on local retries.                                                                                                             |
+| M1b. Browser CI integration              | 2 to 3                                     | Reuse `threads-runtime-browser-runner.ts` and all nine stock/generated cases. Build the Rust fixture once, pass that artifact into existing Chromium/Firefox/WebKit jobs, and add path-selection/matrix regression controls. `.github/workflows/threads-fixture.yml` currently builds but does not execute the fixture, and `scripts/test-browser.ts` does not schedule Runtime threads. Coordinate CI routing edits with Waffle before changing them.                                                            |
+| M1c. Native acceptance                   | 2 to 4 plus fleet availability             | Reuse the Runtime case body in actual desktop Safari and C4D2 iPhone Simulator Safari. The current Safari driver requires macOS and rejects simulator capabilities; use the maintained page-owned native test host for iOS rather than weakening that desktop assertion. Preserve pair/repeat/nested, generated terminal/kill controls, budgets, and cleanup. Native Safari and iOS reports remain separate from Playwright WebKit. Physical iPhone acceptance requires its own device run and remains unclaimed. |
+| M1d. Review and delivery                 | 1 to 2                                     | Independent Sol review, required green CI, merge, then release handoff to Waffle. Update public support claims only to the measured boundary. No version bump or plan-only PR here.                                                                                                                                                                                                                                                                                                                               |
+
+Total remaining estimate is 6 to 11 agent hours, excluding fleet waits or a newly reproduced
+browser defect. Replace estimates with measured time as units finish. This supersedes the
+original engineering-day estimate for the bounded milestone, not for every later feature.
+
+The M1 report must show real Rust pair/repeat/nested spawn and join, distinct TLS/stacks,
+shared statics and exact output in Chrome, Firefox, actual desktop Safari, and C4D2 Safari.
+Require one charged backing through concurrent aliases, successful aggregate retirement,
+and unchanged ordinary-sibling filesystem behavior. Maintain bounded constructor/bootstrap,
+quota refusal, child exit, CPU, wait32/wait64, kill-during-start, delayed filesystem-section,
+and failed-stop debt tests. Existing `threads-runtime-failures.test.ts`,
+`threads-runtime-fd-descriptors.test.ts`, `threads-lifecycle.test.ts`, and real browser cases
+already cover much of this. Do not substitute hand-written Wasm for the Rust success cases.
+
+Each run owns processes, listeners, profiles, packets, and transferred binaries, with teardown
+installed first and verified on the execution host. Use the PC heavy runner and Mac FIFO.
+Keep small reports under `/work/reports/goals/waffle-threads/`, remove task-only packets and
+profiles after use, and retain the single fixture only while CI/native consumers need it.
+
+No runtime redesign or owner decision is identified by this source audit. Open acceptance
+items are the current producer receipt and source binding, maintained browser CI, and fresh
+native Safari/iOS results. Physical-device capacity and general launcher/import expansion
+remain outside this M1 support claim.
+
+## Original implementation plan
+
 Status: **Approved implementation plan. This change delivers no runtime thread support.**
 
 Prepared: 2026-10-31. Inspected Waffle baseline:

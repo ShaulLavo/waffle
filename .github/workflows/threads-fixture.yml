@@ -1,41 +1,18 @@
 name: Rust threads fixture
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/threads-fixture.yml"
-      - ".github/actions/release-downloads/**"
-      - ".github/actions/save-release-downloads/**"
-      - ".github/actions/setup-tools/**"
-      - "tools/ci-*.ts"
-      - "rust-toolchain.toml"
-      - "packages/waffle/rust-toolchain.toml"
-      - "packages/waffle/scripts/build-thread-fixture.ts"
-      - "packages/waffle/scripts/threads-fixture-producer.test.ts"
-      - "packages/waffle/tests/threads-fixture*.ts"
-      - "packages/waffle/tests/fixtures/threads*"
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - ".github/workflows/threads-fixture.yml"
-      - ".github/actions/release-downloads/**"
-      - ".github/actions/save-release-downloads/**"
-      - ".github/actions/setup-tools/**"
-      - "tools/ci-*.ts"
-      - "rust-toolchain.toml"
-      - "packages/waffle/rust-toolchain.toml"
-      - "packages/waffle/scripts/build-thread-fixture.ts"
-      - "packages/waffle/scripts/threads-fixture-producer.test.ts"
-      - "packages/waffle/tests/threads-fixture*.ts"
-      - "packages/waffle/tests/fixtures/threads*"
+  workflow_call:
+    outputs:
+      artifact-id:
+        description: Exact verified Rust threads fixture artifact
+        value: ${{ jobs.producer.outputs.artifact-id }}
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-threads-fixture-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -46,6 +23,8 @@ jobs:
     if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      artifact-id: ${{ steps.fixture.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/release-downloads
@@ -70,8 +49,9 @@ jobs:
           THREAD_FIXTURE_TEST_ROOT: ${{ runner.temp }}
           THREAD_FIXTURE_EXPORT_DIR: ${{ runner.temp }}/threads-fixture
       - uses: actions/upload-artifact@v4
+        id: fixture
         with:
-          name: threads-fixture-${{ github.sha }}
+          name: threads-fixture-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/threads-fixture
           if-no-files-found: error
       - run: rustfmt +1.98.1 --check packages/waffle/tests/fixtures/threads.rs

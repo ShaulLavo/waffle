@@ -1,4 +1,4 @@
-import { Glob, YAML } from "bun";
+import { YAML } from "bun";
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,38 +25,19 @@ const producer = record(record(workflow.jobs).producer);
 const compile =
   "bun test ./packages/waffle/scripts/threads-fixture-producer.test.ts --timeout 120000";
 
-function patterns(event: "push" | "pull_request"): string[] {
-  const paths = record(events[event]).paths;
-  if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string"))
-    throw new Error("expected fixture input paths");
-  return paths;
-}
-
-test("real fixture compilation is selected for every producer input, not unrelated runtime jobs", () => {
-  expect(patterns("push")).toEqual(patterns("pull_request"));
-  for (const path of [
-    ".github/workflows/threads-fixture.yml",
-    "rust-toolchain.toml",
-    "packages/waffle/rust-toolchain.toml",
-    "packages/waffle/scripts/build-thread-fixture.ts",
-    "packages/waffle/scripts/threads-fixture-producer.test.ts",
-    "packages/waffle/tests/threads-fixture-inspect.ts",
-    "packages/waffle/tests/threads-fixture-producer.test.ts",
-    "packages/waffle/tests/fixtures/threads.rs",
-  ])
-    expect(
-      patterns("pull_request").some((pattern) => new Glob(pattern).match(path)),
-      path,
-    ).toBe(true);
-  for (const path of [
-    "docs/concepts.md",
-    "packages/waffle/runtime.ts",
-    "packages/waffle/core/wasi.ts",
-  ])
-    expect(
-      patterns("pull_request").some((pattern) => new Glob(pattern).match(path)),
-      path,
-    ).toBe(false);
+test("real fixture compilation follows browser selection through one reusable producer", () => {
+  const ci = record(
+    YAML.parse(readFileSync(new URL("../../../.github/workflows/ci.yml", import.meta.url), "utf8")),
+  );
+  const jobs = record(ci.jobs);
+  const call = record(jobs["threads-fixture"]);
+  const browser = record(jobs.browser);
+  expect(events.workflow_call).toBeDefined();
+  expect(events.push).toBeUndefined();
+  expect(events.pull_request).toBeUndefined();
+  expect(call.uses).toBe("./.github/workflows/threads-fixture.yml");
+  expect(call.if).toBe(browser.if);
+  expect(browser.needs).toContain("threads-fixture");
 });
 
 test("the dedicated compiler job owns its pinned target and scratch without changing default discovery", () => {

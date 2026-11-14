@@ -1,19 +1,10 @@
 import { open, mkdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { assertRuntimeSafariPacket } from "./threads-runtime-safari-packet.js";
+import { runtimeThreadCases, type RuntimeThreadCase } from "./threads-runtime-cases.js";
 
-export const runtimeSafariCases = [
-  "pair",
-  "repeat",
-  "nested",
-  "join",
-  "child-exit",
-  "kill-start",
-  "cpu",
-  "wait32",
-  "wait64",
-] as const;
-type RuntimeCase = (typeof runtimeSafariCases)[number];
+export const runtimeSafariCases = runtimeThreadCases;
+type RuntimeCase = RuntimeThreadCase;
 type JsonObject = Record<string, unknown>;
 
 function object(value: unknown): JsonObject {
@@ -50,7 +41,7 @@ async function durableJson(path: string, value: unknown): Promise<void> {
   }
 }
 
-export function runtimeSafariScript(selected: RuntimeCase): string {
+export function runtimeSafariScript(selected: RuntimeCase, fixtureSha256: string): string {
   return `const done = arguments[arguments.length - 1];
 const NativeWorker = globalThis.Worker;
 const events = [];
@@ -71,7 +62,7 @@ globalThis.Worker = class extends NativeWorker {
 };
 const documentIdentity = () => ({ ...globalThis.__waffleRuntimeSafariDocument,
   url: location.href, observedTimeOrigin: performance.timeOrigin });
-import('/runtime-page.js').then(module => module.runThreadsRuntime(${JSON.stringify(selected)}))
+import('/runtime-page.js').then(module => module.runThreadsRuntime(${JSON.stringify(selected)}, false, ${JSON.stringify(fixtureSha256)}))
 .then(result => done({ document: documentIdentity(), result, causalEvents: globalThis.__waffleRuntimeSafariCausalEvents, workerEvents: events }),
 error => done({ document: documentIdentity(), failure: String(error), stack: error?.stack, causalEvents: globalThis.__waffleRuntimeSafariCausalEvents, workerEvents: events }))
 .finally(() => { globalThis.Worker = NativeWorker; });`;
@@ -212,7 +203,12 @@ export async function runThreadsRuntimeSafari(options: {
         throw new Error(`document reused for ${selected}`);
       timeOrigins.add(control.timeOrigin);
       await durableJson(join(output, `${selected}-control.json`), { window, control });
-      const report = await execute(driver, session, runtimeSafariScript(selected), []);
+      const report = await execute(
+        driver,
+        session,
+        runtimeSafariScript(selected, manifest.fixtureSha256),
+        [],
+      );
       await durableJson(join(output, `${selected}-raw.json`), report);
       if ("failure" in report) throw new Error(JSON.stringify(report));
       const document = object(report.document);

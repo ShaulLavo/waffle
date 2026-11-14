@@ -1,38 +1,51 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   assertRuntimeSafariPacket,
-  RUNTIME_SOURCE_COMMIT,
-  RUNTIME_RECEIPT_SHA256,
-  RUNTIME_FIXTURE_SHA256,
-  runtimeSafariSources,
+  runtimeNativeSources,
+  runtimeProductionSource,
+  type RuntimeSafariManifest,
 } from "./threads-runtime-safari-packet.ts";
 import { runtimeSafariCases, runtimeSafariScript } from "./threads-runtime-safari-runner.ts";
 
-async function rejectedPacket(assets: unknown, message: string): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "runtime-safari-packet-"));
+const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+async function packetControl(
+  body: (directory: string, manifest: RuntimeSafariManifest) => Promise<void>,
+) {
+  const directory = await mkdtemp(
+    join(process.env.PROCESS_SCRATCH_ROOT ?? process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "wtp-"),
+  );
   try {
-    await Bun.write(
-      join(directory, "manifest.json"),
-      JSON.stringify({
-        schema: 1,
-        source: RUNTIME_SOURCE_COMMIT,
-        sourceFiles: {},
-        receiptSha256: RUNTIME_RECEIPT_SHA256,
-        fixtureSha256: RUNTIME_FIXTURE_SHA256,
-        assets,
-        runnerSha256: "runner",
-      }),
-    );
-    await expect(assertRuntimeSafariPacket(directory)).rejects.toThrow(message);
+    const files = Object.keys(runtimeNativeSources).map((path) => path.slice(1));
+    const assets = files.map((path) => ({ path, sha256: digest(path) }));
+    for (const path of files.concat([
+      "threads.wasm",
+      "threads.receipt.json",
+      "runner.mjs",
+      "ios-runner.mjs",
+    ]))
+      await Bun.write(join(directory, path), path);
+    const manifest: RuntimeSafariManifest = {
+      schema: 1,
+      source: "a".repeat(40),
+      sourceFiles: { "packages/waffle/tests/threads-runtime-browser.ts": digest("source") },
+      receiptSha256: digest("threads.receipt.json"),
+      fixtureSha256: digest("threads.wasm"),
+      assets,
+      runnerSha256: digest("runner.mjs"),
+      nativeRunnerSha256: digest("ios-runner.mjs"),
+    };
+    await Bun.write(join(directory, "manifest.json"), JSON.stringify(manifest));
+    await body(directory, manifest);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 }
 
-test("Safari Runtime script executes exactly one selected case per document", () => {
+test("Safari Runtime script executes exactly one typed case with verified fixture identity", () => {
   expect(runtimeSafariCases).toEqual([
     "pair",
     "repeat",
@@ -45,33 +58,116 @@ test("Safari Runtime script executes exactly one selected case per document", ()
     "wait64",
   ]);
   for (const selected of runtimeSafariCases) {
-    const script = runtimeSafariScript(selected);
-    expect(script).toContain(`module.runThreadsRuntime(${JSON.stringify(selected)})`);
+    const script = runtimeSafariScript(selected, "verified-fixture");
+    expect(script).toContain(
+      `module.runThreadsRuntime(${JSON.stringify(selected)}, false, "verified-fixture")`,
+    );
     expect(script).toContain("causalEvents");
     expect(script).not.toContain("for (");
     expect(script).not.toContain("while (");
   }
 });
 
-test("Runtime Safari packet rejects missing assets without a compiler or artifact", async () => {
-  await rejectedPacket([], "asset allowlist mismatch");
+test("portable packet validates current generated identity without a historical production pin", async () => {
+  await packetControl(async (directory, manifest) => {
+    expect(await assertRuntimeSafariPacket(directory, manifest)).toEqual(manifest);
+    await expect(
+      assertRuntimeSafariPacket(directory, { ...manifest, source: "b".repeat(40) }),
+    ).rejects.toThrow("identity mismatch");
+    await expect(
+      assertRuntimeSafariPacket(directory, { ...manifest, fixtureSha256: digest("other") }),
+    ).rejects.toThrow("identity mismatch");
+    await expect(
+      assertRuntimeSafariPacket(directory, { ...manifest, receiptSha256: digest("other") }),
+    ).rejects.toThrow("identity mismatch");
+    await expect(
+      assertRuntimeSafariPacket(directory, { ...manifest, sourceFiles: {} }),
+    ).rejects.toThrow("identity mismatch");
+  });
 });
 
-test("Runtime Safari packet rejects duplicate allowlisted assets", async () => {
-  await rejectedPacket(
-    Array.from({ length: 6 }, () => ({
-      path: "runtime-page.js",
-      sha256: "digest",
-    })),
-    "asset allowlist mismatch",
-  );
+test("portable packet rejects changed assets even when manifest hashes are updated", async () => {
+  await packetControl(async (directory, manifest) => {
+    await Bun.write(join(directory, "runtime-page.js"), "changed asset");
+    const assets = manifest.assets.map((asset) =>
+      asset.path === "runtime-page.js" ? { ...asset, sha256: digest("changed asset") } : asset,
+    );
+    await Bun.write(join(directory, "manifest.json"), JSON.stringify({ ...manifest, assets }));
+    await expect(assertRuntimeSafariPacket(directory, manifest)).rejects.toThrow(
+      "identity mismatch",
+    );
+  });
 });
 
-test("Runtime Safari packet rejects a path outside its six Runtime assets", async () => {
-  const assets = Object.keys(runtimeSafariSources).map((path) => ({
-    path: path.slice(1),
-    sha256: "digest",
-  }));
-  assets[0] = { path: "../runtime-page.js", sha256: "digest" };
-  await rejectedPacket(assets, "asset allowlist mismatch");
+function git(directory: string, args: string[]): string {
+  const result = Bun.spawnSync(["git"].concat(args), {
+    cwd: directory,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  return result.stdout.toString().trim();
+}
+
+test("packet source binds current HEAD while allowing local harness edits", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wt-source-"));
+  try {
+    await mkdir(join(directory, "packages/waffle/tests"), { recursive: true });
+    const production = join(directory, "packages/waffle/runtime.ts");
+    const harness = join(directory, "packages/waffle/tests/fixture.ts");
+    await Bun.write(production, "production");
+    await Bun.write(harness, "harness");
+    git(directory, ["init", "--quiet"]);
+    git(directory, ["add", "."]);
+    git(directory, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "fixture",
+    ]);
+    const source = runtimeProductionSource(directory);
+    await Bun.write(harness, "local harness");
+    expect(runtimeProductionSource(directory)).toBe(source);
+    await Bun.write(production, "changed production");
+    expect(() => runtimeProductionSource(directory)).toThrow("production source unchanged");
+    git(directory, ["add", "packages/waffle/runtime.ts"]);
+    expect(() => runtimeProductionSource(directory)).toThrow("production source unchanged");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
+
+for (const path of [
+  "runtime-page.js",
+  "threads.wasm",
+  "threads.receipt.json",
+  "runner.mjs",
+  "ios-runner.mjs",
+]) {
+  test(`portable packet rejects changed ${path} bytes`, async () => {
+    await packetControl(async (directory, manifest) => {
+      await Bun.write(join(directory, path), "tampered");
+      await expect(assertRuntimeSafariPacket(directory, manifest)).rejects.toThrow(
+        "digest mismatch",
+      );
+    });
+  });
+}
+
+for (const mode of ["missing", "duplicate", "outside"] as const) {
+  test(`portable packet refuses ${mode} assets before execution`, async () => {
+    await packetControl(async (directory, manifest) => {
+      const assets = mode === "missing" ? [] : manifest.assets.slice();
+      if (mode === "duplicate") assets[0] = assets[1]!;
+      if (mode === "outside") assets[0] = { path: "../runtime-page.js", sha256: digest("other") };
+      await Bun.write(join(directory, "manifest.json"), JSON.stringify({ ...manifest, assets }));
+      await expect(assertRuntimeSafariPacket(directory, manifest)).rejects.toThrow(
+        "asset allowlist mismatch",
+      );
+    });
+  });
+}

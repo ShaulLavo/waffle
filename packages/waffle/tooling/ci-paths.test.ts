@@ -36,7 +36,9 @@ for (const name of ["browser", "libc"]) {
     const job = record(jobs[name]);
     // libc is also the single producer of the memory group fixture the browser gate consumes.
     expect(job.needs).toEqual(
-      name === "browser" ? ["changes", "network-wasm", "libc"] : ["changes", "network-wasm"],
+      name === "browser"
+        ? ["changes", "network-wasm", "libc", "threads-fixture"]
+        : ["changes", "network-wasm"],
     );
     const producer = name === "libc" ? " || needs.changes.outputs.browser == 'true'" : "";
     expect(job.if).toBe(
@@ -283,6 +285,124 @@ function artifactStep(steps: readonly Record<string, unknown>[], path: string) {
   if (!step) throw new Error(`expected artifact upload for ${path}`);
   return step;
 }
+
+const threadsWorkflow = record(
+  YAML.parse(
+    readFileSync(
+      new URL("../../../.github/workflows/threads-fixture.yml", import.meta.url),
+      "utf8",
+    ),
+  ),
+);
+const threadsProducer = record(record(threadsWorkflow.jobs).producer);
+if (!Array.isArray(threadsProducer.steps)) throw new Error("expected threads producer steps");
+const threadsSteps = threadsProducer.steps.map(record);
+
+test("thread, memory and producer inputs select the browser and all its fixture dependencies", () => {
+  for (const path of [
+    "packages/waffle/thread/runtime-owner.ts",
+    "packages/waffle/memory/reservations.ts",
+    "packages/waffle/tests/fixtures/threads.rs",
+    "packages/waffle/tests/threads-fixture-inspect.ts",
+    "packages/waffle/tests/threads-runtime-browser-runner.ts",
+    "packages/waffle/scripts/build-thread-fixture.ts",
+    "packages/waffle/scripts/threads-fixture-producer.test.ts",
+    "packages/waffle/rust-toolchain.toml",
+    "rust-toolchain.toml",
+    ".github/workflows/threads-fixture.yml",
+  ])
+    expect(selected("browser", path), path).toBe(true);
+  const producer = record(jobs["threads-fixture"]);
+  expect(producer.needs).toBe("changes");
+  expect(producer.if).toBe(record(jobs.browser).if);
+  expect(String(record(jobs.libc).if)).toContain("needs.changes.outputs.browser == 'true'");
+  expect(producer.uses).toBe("./.github/workflows/threads-fixture.yml");
+  const triggers = record(threadsWorkflow.on);
+  expect(Object.keys(triggers).sort()).toEqual(["workflow_call", "workflow_dispatch"]);
+  expect(String(record(threadsWorkflow.concurrency).group)).not.toBe(
+    String(record(workflow.concurrency).group),
+  );
+});
+
+test("one pinned Rust producer exports its exact uploaded artifact through the reusable workflow", () => {
+  const upload = artifactStep(threadsSteps, "${{ runner.temp }}/threads-fixture");
+  expect(record(upload.with)["if-no-files-found"]).toBe("error");
+  expect(record(threadsProducer.outputs)["artifact-id"]).toBe(
+    `\${{ steps.${upload.id}.outputs.artifact-id }}`,
+  );
+  const outputs = record(record(record(threadsWorkflow.on).workflow_call).outputs);
+  expect(record(outputs["artifact-id"]).value).toBe("${{ jobs.producer.outputs.artifact-id }}");
+  const builds = threadsSteps.filter((step) =>
+    String(step.run ?? "").includes("threads-fixture-producer.test.ts"),
+  );
+  expect(builds).toHaveLength(1);
+  expect(record(builds[0]?.env).THREAD_FIXTURE_EXPORT_DIR).toBe(record(upload.with).path);
+  const compiler = threadsSteps.find((step) => step.uses === "dtolnay/rust-toolchain@stable");
+  expect(record(compiler?.with).toolchain).toBe("1.98.1");
+  expect(record(compiler?.with).targets).toBe("wasm32-wasip1-threads");
+  expect(threadsSteps.some((step) => String(step.run).includes("cache-hit="))).toBe(true);
+});
+
+test("both browser groups download the producer ID and verify it without compiling Rust", () => {
+  const steps = stepsFor("browser");
+  const downloads = steps.filter(
+    (step) =>
+      step.uses === "actions/download-artifact@v8" &&
+      record(step.with).path === "${{ runner.temp }}/threads-fixture",
+  );
+  expect(downloads).toHaveLength(1);
+  const download = record(downloads[0]);
+  const inputs = record(download.with);
+  expect(inputs["artifact-ids"]).toBe("${{ needs.threads-fixture.outputs.artifact-id }}");
+  expect(inputs["digest-mismatch"]).toBe("error");
+  expect(inputs["merge-multiple"]).toBe(true);
+  for (const field of ["name", "pattern", "run-id", "github-token"])
+    expect(inputs[field]).toBeUndefined();
+  expect(download.if).toBeUndefined();
+  const guard = steps.find((step) => step.name === "Require the Rust threads fixture artifact ID");
+  expect(record(guard?.env).THREAD_ARTIFACT_ID).toBe(inputs["artifact-ids"]);
+  expect(steps.indexOf(record(guard))).toBeLessThan(steps.indexOf(download));
+  for (const id of ["", "45678"]) {
+    const result = Bun.spawnSync(["bash", "-e", "-c", String(guard?.run)], {
+      env: { ...process.env, THREAD_ARTIFACT_ID: id },
+    });
+    expect(result.exitCode).toBe(id ? 0 : 1);
+  }
+  const verify = steps.find(
+    (step) => step.run === "bun packages/waffle/scripts/build-thread-fixture.ts --verify",
+  );
+  const browser = steps.find((step) => String(step.run).startsWith("bun run test:browser"));
+  expect(record(verify?.env).THREAD_FIXTURE_DIR).toBe(inputs.path);
+  expect(record(browser?.env).THREAD_FIXTURE_DIR).toBe(inputs.path);
+  expect(steps.indexOf(download)).toBeLessThan(steps.indexOf(record(verify)));
+  expect(steps.indexOf(record(verify))).toBeLessThan(steps.indexOf(record(browser)));
+  expect(steps.some((step) => /rust-toolchain/.test(String(step.uses)))).toBe(false);
+  const commands = steps.map((step) => String(step.run ?? ""));
+  expect(commands.some((command) => /\b(cargo|rustc)\s/.test(command))).toBe(false);
+  expect(commands.filter((command) => command.includes("build-thread-fixture.ts"))).toEqual([
+    "bun packages/waffle/scripts/build-thread-fixture.ts --verify",
+  ]);
+});
+
+test("Complete CI gate rejects a failed or cancelled required threads producer", () => {
+  const gate = record(jobs.gate);
+  expect(gate.name).toBe("Complete CI gate");
+  expect(gate.if).toBe("always()");
+  expect(gate.needs).toContain("threads-fixture");
+  const check = stepsFor("gate").find((step) => step.name === "Reject failed or cancelled CI jobs");
+  for (const result of ["success", "skipped", "failure", "cancelled"]) {
+    const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(check?.run)], {
+      env: {
+        ...process.env,
+        RESULTS: JSON.stringify({
+          browser: { result: "skipped" },
+          "threads-fixture": { result },
+        }),
+      },
+    });
+    expect(command.exitCode).toBe(result === "success" || result === "skipped" ? 0 : 1);
+  }
+});
 
 const recoveryReportPath = "${{ runner.temp }}/recovery-r42-report.json";
 const browserProtocolPath = "${{ runner.temp }}/waffle-browser-protocol.log";

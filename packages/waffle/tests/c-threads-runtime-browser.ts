@@ -1,9 +1,7 @@
-import { BrowserProcessBroker } from "../browser/process-broker.js";
-import { createRuntime } from "../runtime.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { RIGHTS_ALL } from "../core/rights.js";
 import { inspectThreadSource } from "../memory/declarations.js";
-import { bytes, declareSharedMemoryPlatform } from "../memory/index.js";
+import { createThreadRuntime } from "./threads-runtime-host.js";
 import type { SharedMemorySnapshot } from "../memory/reservations.js";
 import {
   createWorkerProcessTransport,
@@ -199,19 +197,7 @@ export async function runCThreadsRuntime(
   const control = await workerAtomicControl(local);
   const observer = observeWorkers();
   const errors: string[] = [];
-  const runtime = createRuntime({
-    sharedMemory: declareSharedMemoryPlatform({
-      kind: "bounded",
-      budgetBytes: bytes(3 * 1024 ** 3),
-      counts: { fixedBuffer: true, sharedMemory: true, privateMemory: false },
-    }),
-    filesystem: {
-      mode: "memory",
-      workerURL: local ? new URL("../browser/fs-worker.ts", import.meta.url) : "/fs-worker.js",
-    },
-    processHost: (options) =>
-      new BrowserProcessBroker({ ...options, onError: (error) => errors.push(String(error)) }),
-  });
+  const runtime = createThreadRuntime(local, errors);
   const descriptors = new DescriptorTable();
   const pipe = new PipeController({ relay: "manual" });
   try {
