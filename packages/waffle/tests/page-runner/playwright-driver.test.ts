@@ -184,3 +184,86 @@ test("driver cleanup and final result file preserve every nested close error", a
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test.each(["confirmed", "failed"])(
+  "every observation failure survives the final JSON when lifecycle closure is %s",
+  async (outcome) => {
+    const root = await mkdtemp("/work/tmp/waffle-error-json-");
+    const first = new Error("first observer", { cause: new Error("first cause") });
+    const second = new AggregateError(
+      [new Error("second child", { cause: new Error("second cause") })],
+      "second observer",
+    );
+    const lifecycle = new AggregateError(
+      [new Error("context close", { cause: new Error("transport close") })],
+      "lifecycle failed",
+      { cause: new Error("lifecycle cause") },
+    );
+    const close = spyOn(BrowserRunnerLifecycle.prototype, "close").mockImplementation(() =>
+      outcome === "failed" ? Promise.reject(lifecycle) : Promise.resolve(),
+    );
+    const driver = new PlaywrightDriver("firefox", root);
+    const stopped: string[] = [];
+    const observations = new Map<string, { stop(): Promise<void> }>([
+      [
+        "first",
+        {
+          stop: () => {
+            stopped.push("first");
+            return Promise.reject(first);
+          },
+        },
+      ],
+      [
+        "second",
+        {
+          stop: () => {
+            stopped.push("second");
+            return Promise.reject(second);
+          },
+        },
+      ],
+      [
+        "successful",
+        {
+          stop: () => {
+            stopped.push("successful");
+            return Promise.resolve();
+          },
+        },
+      ],
+    ]);
+    Reflect.set(driver, "observations", observations);
+    try {
+      const stopping = driver.stop();
+      expect(driver.stop()).toBe(stopping);
+      const cleanup = await stopping;
+      expect(stopped).toEqual(["first", "second", "successful"]);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(cleanup.session.status).toBe("unconfirmed");
+      expect(cleanup.launcher).toEqual(cleanup.session);
+      const errors: unknown[] = [
+        { message: "first observer", cause: { message: "first cause" } },
+        {
+          message: "second observer",
+          errors: [{ message: "second child", cause: { message: "second cause" } }],
+        },
+      ];
+      if (outcome === "failed")
+        errors.push({
+          message: "lifecycle failed",
+          cause: { message: "lifecycle cause" },
+          errors: [{ message: "context close", cause: { message: "transport close" } }],
+        });
+      const tree: unknown = JSON.parse(cleanup.session.detail.split("; browser root ")[0]!);
+      expect(tree).toMatchObject({ name: "AggregateError", errors });
+      const path = join(root, "result.json");
+      // Match suite-host's final structured clone before writing the JSON result.
+      await writeResult(path, structuredClone({ cleanup }));
+      expect(await Bun.file(path).json()).toEqual({ cleanup });
+    } finally {
+      close.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

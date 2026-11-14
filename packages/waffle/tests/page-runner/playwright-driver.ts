@@ -5,7 +5,7 @@ import { navigateTestPage } from "../browser-navigation.js";
 import { dirname } from "node:path";
 import type { BrowserContext, Page } from "playwright";
 import { BrowserRunnerLifecycle, type engines } from "../browser-runner-lifecycle.js";
-import { serializeError } from "../error-serialization.js";
+import { SerializableAggregateError, serializeError } from "../error-serialization.js";
 import {
   bounded,
   DeadlineError,
@@ -192,38 +192,36 @@ export class PlaywrightDriver implements Driver {
     return (this.stopping ??= this.stopOnce());
   }
   private async stopOnce(): Promise<DriverCleanup> {
-    let observationFailure: { reason: unknown } | undefined;
+    let failures: unknown[] = [];
     try {
       const results = await Promise.allSettled(
         Array.from(this.observations.values(), (owner) => owner.stop()),
       );
-      const failed = results.find((result) => result.status === "rejected");
-      if (failed?.status === "rejected") throw failed.reason;
+      failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
     } catch (error) {
-      observationFailure = { reason: error };
+      failures.push(error);
     }
     try {
       await this.lifecycle.close();
       await Promise.allSettled(this.evaluations);
-      if (observationFailure) throw observationFailure.reason;
+    } catch (error) {
+      failures.push(error);
+    }
+    if (!failures.length)
       return {
         session: { status: "confirmed", detail: "Local browser context stopped" },
         launcher: { status: "confirmed", detail: "Local browser joined" },
         serviceDisposition: "No native service",
       };
-    } catch (error) {
-      const detail = `${JSON.stringify(serializeError(error))}; browser root ${this.lifecycle.scratch}`;
-      return {
-        session: {
-          status: "unconfirmed",
-          detail,
-        },
-        launcher: {
-          status: "unconfirmed",
-          detail,
-        },
-        serviceDisposition: "No native service",
-      };
-    }
+    const error =
+      failures.length === 1
+        ? failures[0]
+        : new SerializableAggregateError(failures, "Local browser cleanup failed");
+    const detail = `${JSON.stringify(serializeError(error))}; browser root ${this.lifecycle.scratch}`;
+    return {
+      session: { status: "unconfirmed", detail },
+      launcher: { status: "unconfirmed", detail },
+      serviceDisposition: "No native service",
+    };
   }
 }
