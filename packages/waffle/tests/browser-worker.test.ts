@@ -20,7 +20,13 @@ import {
 import { collectDirectoryJob, confirmDirectoryProcess } from "../proc/directory.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { shareFileResource } from "../core/open-file.js";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+import {
+  claimOutcome,
+  outcomeWord,
+  readOutcome,
+  readStartDiagnostic,
+  startStatus,
+} from "../proc/outcome.js";
 import {
   createWorkerProcessTransport,
   WorkerProcessClient,
@@ -646,6 +652,117 @@ test("generic startup failure reports 126 and never enters its injected executor
   ).toMatchObject([{ type: "error", code: 126, message: expect.stringContaining("_start") }]);
   expect(result.order).toEqual(["descriptor release", "filesystem release", "acknowledgement"]);
 });
+
+async function closedPreopenFixture(end: "client" | "server") {
+  const service = new FilesystemService(new MemoryBackend());
+  const connection = createFilesystemConnection();
+  service.connect(connection.server);
+  const transport = standaloneRuntimeProcess(createWorkerProcessTransport());
+  const outcome = workerProcessState(transport).signals.outcome;
+  const messages: RuntimeWorkerMessage[] = [];
+  const order: string[] = [];
+  const calls: Parameters<FilesystemClient["call"]>[] = [];
+  const post = spyOn(connection.client.port, "postMessage");
+  const executor: WorkerExecutor = {
+    setup({ fs }) {
+      expect(fs.preopen).toBe(FilesystemClient.prototype.preopen);
+      expect(fs.transportError()).toBeUndefined();
+      expect(post).not.toHaveBeenCalled();
+      expect(typeof connection[end].port.onmessageerror).toBe("function");
+      const call = fs.call.bind(fs);
+      fs.call = (...args) => {
+        calls.push(args);
+        return call(...args);
+      };
+      const dispose = fs.dispose.bind(fs);
+      fs.dispose = () => {
+        dispose();
+        order.push("filesystem release");
+      };
+      connection[end].port.dispatchEvent(new MessageEvent("messageerror"));
+      expect(fs.transportError()).toMatchObject({
+        code: "CLOSED",
+        errno: 29,
+        reason: "messageerror",
+      });
+      order.push("setup");
+    },
+    instantiate() {
+      order.push("instantiate");
+      throw new Error("closed filesystem must prevent instantiation");
+    },
+    run() {
+      order.push("guest entry");
+      return 0;
+    },
+    beforeFinish() {
+      order.push("executor cleanup");
+    },
+  };
+  try {
+    await bootstrap(
+      {
+        controlGrant: { kind: "unbounded" },
+        module,
+        args: ["fixture"],
+        env: {},
+        filesystem: connection.client,
+        runtimeProcess: transport,
+      },
+      executor,
+      {
+        crossOriginIsolated: true,
+        postMessage(message) {
+          messages.push(message);
+          if (message.type === "exit" || message.type === "error") order.push("acknowledgement");
+        },
+      },
+    );
+    const requests = post.mock.calls.filter(
+      ([frame]) => frame && typeof frame === "object" && "offset" in frame,
+    );
+    return { messages, order, outcome, requests, calls };
+  } finally {
+    connection.client.port.close();
+    service.dispose();
+    connection.server.port.close();
+    post.mockRestore();
+  }
+}
+
+for (const end of ["client", "server"] as const)
+  test(`synthetic ${end} messageerror before original bootstrap preopen preserves EIO and acknowledges cleanup once`, async () => {
+    const result = await closedPreopenFixture(end);
+    expect(result.calls).toEqual([["preopen", ["/"]]]);
+    expect(result.requests).toHaveLength(0);
+    expect(result.order).toEqual([
+      "setup",
+      "executor cleanup",
+      "filesystem release",
+      "acknowledgement",
+    ]);
+    expect(startStatus(result.outcome)).toBe(29);
+    expect(readOutcome(result.outcome)).toEqual({
+      kind: "start-failed",
+      code: 5,
+      error: "EIO",
+      status: null,
+    });
+    const acknowledgements = result.messages.filter(
+      (message) => message.type === "exit" || message.type === "error",
+    );
+    expect(acknowledgements).toHaveLength(1);
+    const failure = acknowledgements[0];
+    expect(failure).toMatchObject({ type: "error", code: 126, errno: "EIO" });
+    if (failure?.type !== "error") throw new Error("missing startup error acknowledgement");
+    const diagnostic =
+      "FilesystemTransportError: Filesystem connection could not deserialize a message [code=CLOSED] [errno=29]";
+    expect(failure.message).toContain(diagnostic);
+    expect(failure.diagnostic).toContain(diagnostic);
+    expect(readStartDiagnostic(result.outcome)).toBe(failure.diagnostic);
+    expect(failure.cleanupErrors).toBeUndefined();
+    expect(result.messages.some((message) => message.type === "cleanup-error")).toBe(false);
+  });
 
 test("throwing finish hook still releases owned resources and acknowledges the selected exit once", async () => {
   const outcome = outcomeWord().buffer as SharedArrayBuffer;
