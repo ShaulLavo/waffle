@@ -24,15 +24,11 @@ export type RuntimePacketIdentity = {
   readonly sourceFiles: Readonly<Record<string, string>>;
   readonly receiptSha256: string;
   readonly fixtureSha256: string;
+  readonly assets: readonly { readonly path: string; readonly sha256: string }[];
 };
 
-export type RuntimeSafariManifest = {
+export type RuntimeSafariManifest = RuntimePacketIdentity & {
   readonly schema: 1;
-  readonly source: string;
-  readonly sourceFiles: Readonly<Record<string, string>>;
-  readonly receiptSha256: string;
-  readonly fixtureSha256: string;
-  readonly assets: readonly { readonly path: string; readonly sha256: string }[];
   readonly runnerSha256: string;
   readonly nativeRunnerSha256: string;
 };
@@ -46,10 +42,21 @@ function record(value: unknown): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value));
 }
 
-function gitOutput(args: readonly string[]): string {
-  const result = Bun.spawnSync(["git"].concat(args), { cwd: import.meta.dir, stdout: "pipe" });
+function gitOutput(args: readonly string[], cwd = import.meta.dir): string {
+  const result = Bun.spawnSync(["git"].concat(args), { cwd, stdout: "pipe" });
   if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed`);
   return result.stdout.toString().trim();
+}
+
+export function runtimeProductionSource(root = resolve(import.meta.dir, "../../..")): string {
+  const source = gitOutput(["rev-parse", "HEAD"], root);
+  const checked = Bun.spawnSync(
+    ["git", "diff", "--quiet", source, "--", ".", ":(exclude)packages/waffle/tests"],
+    { cwd: root, stdout: "pipe", stderr: "pipe" },
+  );
+  if (checked.exitCode !== 0)
+    throw new Error("Runtime Safari packet requires production source unchanged from current HEAD");
+  return source;
 }
 
 async function sourceFiles(): Promise<Record<string, string>> {
@@ -80,14 +87,28 @@ export async function runtimeFixture(directory: string) {
 }
 
 async function currentIdentity(receiptDirectory: string) {
+  const source = runtimeProductionSource();
   const fixture = await runtimeFixture(receiptDirectory);
-  const identity: RuntimePacketIdentity = {
-    source: gitOutput(["rev-parse", "HEAD"]),
+  const identity: Omit<RuntimePacketIdentity, "assets"> = {
+    source,
     sourceFiles: await sourceFiles(),
     fixtureSha256: fixture.fixtureSha256,
     receiptSha256: fixture.receiptSha256,
   };
+  if (runtimeProductionSource() !== source)
+    throw new Error("Runtime Safari source changed during identity capture");
   return { identity, wasm: fixture.wasm };
+}
+
+async function buildRuntimeAssets(directory?: string) {
+  const assets: { path: string; sha256: string }[] = [];
+  for (const [url, source] of Object.entries(runtimeNativeSources)) {
+    const bytes = await buildBrowserAsset(source);
+    const path = url.slice(1);
+    if (directory) await Bun.write(join(directory, path), bytes);
+    assets.push({ path, sha256: digest(bytes) });
+  }
+  return assets;
 }
 
 export async function prepareThreadsRuntimeSafari(
@@ -107,24 +128,19 @@ export async function prepareThreadsRuntimeSafari(
 async function writeRuntimePacket(
   directory: string,
   receiptDirectory: string,
-  identity: RuntimePacketIdentity,
+  identity: Omit<RuntimePacketIdentity, "assets">,
   wasm: Uint8Array,
 ): Promise<RuntimeSafariManifest> {
   const { source, fixtureSha256, receiptSha256 } = identity;
   const receiptPath = join(receiptDirectory, "threads.receipt.json");
-  const assets: { path: string; sha256: string }[] = [];
-  for (const [url, source] of Object.entries(runtimeNativeSources)) {
-    const bytes = await buildBrowserAsset(source);
-    const path = url.slice(1);
-    await Bun.write(join(directory, path), bytes);
-    assets.push({ path, sha256: digest(bytes) });
-  }
+  const assets = await buildRuntimeAssets(directory);
+  const packetIdentity: RuntimePacketIdentity = { ...identity, assets };
   await Bun.write(join(directory, "threads.wasm"), wasm);
   await copyFile(receiptPath, join(directory, "threads.receipt.json"));
   const runner = await Bun.build({
     entrypoints: [new URL("./threads-runtime-safari-runner.ts", import.meta.url).pathname],
     target: "bun",
-    define: { THREAD_RUNTIME_PACKET_IDENTITY: JSON.stringify(identity) },
+    define: { THREAD_RUNTIME_PACKET_IDENTITY: JSON.stringify(packetIdentity) },
   });
   if (!runner.success || !runner.outputs[0])
     throw new AggregateError(runner.logs, "Runtime Safari runner bundle");
@@ -133,12 +149,15 @@ async function writeRuntimePacket(
   const native = await Bun.build({
     entrypoints: [new URL("./page-runner/threads-runtime-native.ts", import.meta.url).pathname],
     target: "bun",
-    define: { THREAD_RUNTIME_PACKET_IDENTITY: JSON.stringify(identity) },
+    define: { THREAD_RUNTIME_PACKET_IDENTITY: JSON.stringify(packetIdentity) },
   });
   if (!native.success || !native.outputs[0])
     throw new AggregateError(native.logs, "Runtime iOS runner bundle");
   const nativeBytes = new Uint8Array(await native.outputs[0].arrayBuffer());
   await Bun.write(join(directory, "ios-runner.mjs"), nativeBytes);
+  const latest = (await currentIdentity(receiptDirectory)).identity;
+  if (JSON.stringify(latest) !== JSON.stringify(identity))
+    throw new Error("Runtime Safari sources changed during packet preparation");
   const manifest: RuntimeSafariManifest = {
     schema: 1,
     source,
@@ -191,10 +210,17 @@ export async function assertRuntimeSafariPacket(
     nativeRunnerSha256: raw.nativeRunnerSha256,
   };
   if (!/^[a-f0-9]{40}$/.test(manifest.source)) throw new Error("invalid packet source identity");
+  const expected = Object.keys(runtimeNativeSources).map((path) => path.slice(1));
+  if (
+    manifest.assets.length !== expected.length ||
+    new Set(manifest.assets.map((asset) => asset.path)).size !== expected.length ||
+    manifest.assets.some((asset) => !expected.includes(asset.path))
+  )
+    throw new Error("Runtime Safari packet asset allowlist mismatch");
   const identity =
     expectedIdentity ??
     (typeof THREAD_RUNTIME_PACKET_IDENTITY === "undefined"
-      ? (await currentIdentity(directory)).identity
+      ? { ...(await currentIdentity(directory)).identity, assets: await buildRuntimeAssets() }
       : THREAD_RUNTIME_PACKET_IDENTITY);
   if (
     identity &&
@@ -203,22 +229,17 @@ export async function assertRuntimeSafariPacket(
       sourceFiles: manifest.sourceFiles,
       fixtureSha256: manifest.fixtureSha256,
       receiptSha256: manifest.receiptSha256,
+      assets: manifest.assets,
     }) !==
       JSON.stringify({
         source: identity.source,
         sourceFiles: identity.sourceFiles,
         fixtureSha256: identity.fixtureSha256,
         receiptSha256: identity.receiptSha256,
+        assets: identity.assets,
       })
   )
     throw new Error("Runtime Safari packet identity mismatch");
-  const expected = Object.keys(runtimeNativeSources).map((path) => path.slice(1));
-  if (
-    manifest.assets.length !== expected.length ||
-    new Set(manifest.assets.map((asset) => asset.path)).size !== expected.length ||
-    manifest.assets.some((asset) => !expected.includes(asset.path))
-  )
-    throw new Error("Runtime Safari packet asset allowlist mismatch");
   const allowed = new Set(
     expected.concat([
       "manifest.json",

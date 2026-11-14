@@ -9,6 +9,7 @@ import {
 import { PipeController } from "../proc/pipes.js";
 import { createWorkerPipeCodec } from "../proc/worker-pipes.js";
 import { createThreadRuntime } from "./threads-runtime-host.js";
+import { cleanupThreadRuntime, releaseThreadBarriers } from "./threads-runtime-cleanup.js";
 import type { SharedGuestSnapshot } from "../memory/reservations.js";
 import { stockThreadCase, type RuntimeThreadCase } from "./threads-runtime-cases.js";
 export type { RuntimeThreadCase } from "./threads-runtime-cases.js";
@@ -444,19 +445,21 @@ export async function runThreadsRuntime(
       causalEvents,
     };
   } finally {
-    if (!barrierReleased)
-      for (const worker of barriers) worker.postMessage({ kind: "fixture-release" });
-    clearInterval(drainingOutput);
-    descriptors.dispose();
-    pipe.dispose();
-    input.dispose();
-    try {
-      await runtime.dispose();
-    } finally {
-      for (const worker of created) worker.terminate();
-      backingMemory = undefined;
-      globalThis.Worker = NativeWorker;
-    }
+    await cleanupThreadRuntime({
+      release: [
+        () => releaseThreadBarriers(barriers, barrierReleased),
+        () => clearInterval(drainingOutput),
+        () => descriptors.dispose(),
+        () => pipe.dispose(),
+        () => input.dispose(),
+      ],
+      dispose: () => runtime.dispose(),
+      workers: created,
+      restore: () => {
+        backingMemory = undefined;
+        globalThis.Worker = NativeWorker;
+      },
+    });
   }
 }
 

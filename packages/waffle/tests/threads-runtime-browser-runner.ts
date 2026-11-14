@@ -35,6 +35,19 @@ export function parseRuntimeThreadCommand(args: readonly string[]): RuntimeThrea
   return { kind: "browser", engines: names.length ? names : ["chromium"], cases };
 }
 
+async function evaluateRuntimeCase({
+  selected,
+  fixtureSha256,
+}: {
+  selected: RuntimeThreadCase;
+  fixtureSha256: string;
+}) {
+  const module = (await import(
+    "/runtime-page.js" as string
+  )) as typeof import("./threads-runtime-browser.js");
+  return module.runThreadsRuntime(selected, false, fixtureSha256);
+}
+
 async function main(): Promise<void> {
   const startedAt = performance.now();
   const command = parseRuntimeThreadCommand(process.argv.slice(2));
@@ -70,15 +83,10 @@ async function main(): Promise<void> {
         const url = new URL(page.url());
         url.search = new URLSearchParams({ selected, document: crypto.randomUUID() }).toString();
         await navigateTestPage(page, url.href);
-        const report = await page.evaluate(
-          async ({ selected, fixtureSha256 }) => {
-            const module = (await import(
-              "/runtime-page.js" as string
-            )) as typeof import("./threads-runtime-browser.js");
-            return module.runThreadsRuntime(selected, false, fixtureSha256);
-          },
-          { selected, fixtureSha256: fixture.fixtureSha256 },
-        );
+        const report = await page.evaluate(evaluateRuntimeCase, {
+          selected,
+          fixtureSha256: fixture.fixtureSha256,
+        });
         reports.push({ browserVersion: page.context().browser()?.version(), ...report });
       }
       return reports;

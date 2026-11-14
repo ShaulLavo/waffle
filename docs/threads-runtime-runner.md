@@ -53,8 +53,9 @@ THREAD_FIXTURE_DIR=/absolute/fixture \
 The packet records the checkout commit, entry-source hashes, verified producer artifact and
 receipt hashes, and complete generated asset hashes. Both runners bind that identity when
 bundled and validate packet bytes before starting native resources. No historical production
-commit or fixture digest is hardcoded in source. The source hashes describe the actual entries
-used for the bundles, including local harness edits if preparation precedes their commit.
+commit or fixture digest is hardcoded in source. Preparation requires production source to match
+current HEAD and checks source consistency again after bundling. The source hashes describe the
+actual entries, including local harness edits if preparation precedes their commit.
 
 Transfer the packet to the reserved Mac. Run iOS Simulator Safari with the existing host:
 

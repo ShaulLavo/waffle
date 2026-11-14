@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   assertRuntimeSafariPacket,
   runtimeNativeSources,
+  runtimeProductionSource,
   type RuntimeSafariManifest,
 } from "./threads-runtime-safari-packet.ts";
 import { runtimeSafariCases, runtimeSafariScript } from "./threads-runtime-safari-runner.ts";
@@ -83,6 +84,61 @@ test("portable packet validates current generated identity without a historical 
       assertRuntimeSafariPacket(directory, { ...manifest, sourceFiles: {} }),
     ).rejects.toThrow("identity mismatch");
   });
+});
+
+test("portable packet rejects changed assets even when manifest hashes are updated", async () => {
+  await packetControl(async (directory, manifest) => {
+    await Bun.write(join(directory, "runtime-page.js"), "changed asset");
+    const assets = manifest.assets.map((asset) =>
+      asset.path === "runtime-page.js" ? { ...asset, sha256: digest("changed asset") } : asset,
+    );
+    await Bun.write(join(directory, "manifest.json"), JSON.stringify({ ...manifest, assets }));
+    await expect(assertRuntimeSafariPacket(directory, manifest)).rejects.toThrow(
+      "identity mismatch",
+    );
+  });
+});
+
+function git(directory: string, args: string[]): string {
+  const result = Bun.spawnSync(["git"].concat(args), {
+    cwd: directory,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  return result.stdout.toString().trim();
+}
+
+test("packet source binds current HEAD while allowing local harness edits", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wt-source-"));
+  try {
+    await mkdir(join(directory, "packages/waffle/tests"), { recursive: true });
+    const production = join(directory, "packages/waffle/runtime.ts");
+    const harness = join(directory, "packages/waffle/tests/fixture.ts");
+    await Bun.write(production, "production");
+    await Bun.write(harness, "harness");
+    git(directory, ["init", "--quiet"]);
+    git(directory, ["add", "."]);
+    git(directory, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "fixture",
+    ]);
+    const source = runtimeProductionSource(directory);
+    await Bun.write(harness, "local harness");
+    expect(runtimeProductionSource(directory)).toBe(source);
+    await Bun.write(production, "changed production");
+    expect(() => runtimeProductionSource(directory)).toThrow("production source unchanged");
+    git(directory, ["add", "packages/waffle/runtime.ts"]);
+    expect(() => runtimeProductionSource(directory)).toThrow("production source unchanged");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 for (const path of [
