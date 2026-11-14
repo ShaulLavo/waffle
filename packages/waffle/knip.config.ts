@@ -31,6 +31,7 @@ export default {
         "tests/**/*.test.ts",
         "tooling/network-translator.test.ts",
         "tooling/network-source-smoke.ts",
+        "tooling/fixtures/page-runner-error-consumer.ts",
         "tests/network-{failure,growth,resource}-control.ts",
         // Bundled and launched in a separate Node --expose-gc process.
         "tests/fixtures/root-return-gc.ts",

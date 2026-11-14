@@ -9,6 +9,47 @@ import type { BrowserResourceOwner } from "./process-recycling-browser-runner-co
 function nextTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+test("cleanup aggregation retains all original failures and nested causes in ordinary JSON", async () => {
+  const contextFailure = new Error("context failed", { cause: new Error("context cause") });
+  const browserFailure = new AggregateError(
+    [new Error("browser child", { cause: new Error("browser cause") })],
+    "browser failed",
+    { cause: { code: "TRANSPORT_CLOSED" } },
+  );
+  const lifecycle = new BrowserRunnerLifecycle(60000, 50, undefined, "caller");
+  const ledger = lifecycle as unknown as {
+    contexts: Set<BrowserResourceOwner>;
+    browsers: Set<BrowserResourceOwner>;
+  };
+  ledger.contexts.add({
+    creation: Promise.resolve({ close: () => Promise.reject(contextFailure) }),
+    stopped: false,
+  });
+  ledger.browsers.add({
+    creation: Promise.resolve({ close: () => Promise.reject(browserFailure) }),
+    stopped: false,
+  });
+  const failure: unknown = await lifecycle.close().catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(AggregateError);
+  if (!(failure instanceof AggregateError)) throw new Error("Expected cleanup aggregation");
+  expect(failure.errors).toEqual([contextFailure, browserFailure]);
+  expect(failure.errors[0]).toBe(contextFailure);
+  expect(failure.errors[1]).toBe(browserFailure);
+  expect(JSON.parse(JSON.stringify(failure))).toMatchObject({
+    name: "AggregateError",
+    message: "Browser runner cleanup failed",
+    stack: expect.any(String),
+    errors: [
+      { message: "context failed", cause: { message: "context cause" } },
+      {
+        message: "browser failed",
+        cause: { code: "TRANSPORT_CLOSED" },
+        errors: [{ message: "browser child", cause: { message: "browser cause" } }],
+      },
+    ],
+  });
+});
 for (const phase of ["creation", "closure"] as const)
   test(`persistent ${phase} timeout cannot erase independent ownership`, async () => {
     const root = await mkdtemp(resolve(tmpdir(), "vfs-owner-"));

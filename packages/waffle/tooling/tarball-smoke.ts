@@ -372,6 +372,11 @@ async function pageRunnerConsumer(directory: string): Promise<void> {
     if (typeof PlaywrightDriver !== "function") throw new Error("missing explicit driver");
   `,
   ]);
+  await writeFile(
+    join(directory, "cleanup-errors.ts"),
+    await readFile(join(import.meta.dir, "fixtures/page-runner-error-consumer.ts")),
+  );
+  consumerCommand(directory, "bun", ["cleanup-errors.ts"]);
   await writeFile(join(directory, "adapter.ts"), adapterTypes);
   await writeFile(
     join(directory, "tsconfig.json"),
