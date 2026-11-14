@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   FilesystemClient,
   FilesystemService,
@@ -138,6 +138,42 @@ test("a prestarted Worker performs its immediate first sync request with no host
     f.cleanup();
   }
 }, 10000);
+
+for (const end of ["client", "server"] as const)
+  test(`synthetic messageerror at the ${end} end before first preopen posts no request and leaves peers live`, async () => {
+    const f = fixture(),
+      bad = f.peer(),
+      good = f.peer();
+    const pair = f.pairs[1]!;
+    const post = spyOn(pair.client.port, "postMessage");
+    const failure = {
+      name: "FilesystemTransportError",
+      code: "CLOSED",
+      errno: 29,
+      reason: "messageerror",
+      message: "Filesystem connection could not deserialize a message",
+    };
+    try {
+      expect(bad.transportError()).toBeUndefined();
+      expect(post).not.toHaveBeenCalled();
+      pair[end].port.dispatchEvent(new MessageEvent("messageerror"));
+      expect(bad.transportError()).toMatchObject(failure);
+      expect(() => bad.preopen("/")).toThrow(expect.objectContaining(failure));
+      expect(
+        post.mock.calls.filter(
+          ([frame]) => frame && typeof frame === "object" && "offset" in frame,
+        ),
+      ).toHaveLength(0);
+      expect(isRevoked(bad.connection)).toBe(false);
+      expect(await bounded(f.client.asyncCall("preopen", ["/"]))).toBeGreaterThanOrEqual(0);
+      expect(await bounded(good.asyncCall("preopen", ["/"]))).toBeGreaterThanOrEqual(0);
+      expect(isRevoked(f.client.connection)).toBe(false);
+      expect(isRevoked(good.connection)).toBe(false);
+    } finally {
+      f.cleanup();
+      post.mockRestore();
+    }
+  });
 
 for (const end of ["client", "server"] as const)
   test(`messageerror at the ${end} end closes only its connection and wakes all pending values`, async () => {
