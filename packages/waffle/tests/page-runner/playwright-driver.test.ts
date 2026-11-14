@@ -1,5 +1,6 @@
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { writeResult } from "./result-file.js";
 import { swiftShaderArgs } from "../gpu-browser-qualification.js";
 import { expect, spyOn, test } from "bun:test";
@@ -142,7 +143,7 @@ test("observer failure does not skip the existing browser owner's containment", 
 });
 
 test("driver cleanup and final result file preserve every nested close error", async () => {
-  const root = await mkdtemp("/work/tmp/waffle-error-json-");
+  const root = await mkdtemp(join(tmpdir(), "waffle-error-json-"));
   const leaf = new Error("Firefox transport closed");
   const child = new Error("context close failed", { cause: leaf });
   const nested = new AggregateError([child], "nested close", { cause: new Error("nested cause") });
@@ -188,7 +189,7 @@ test("driver cleanup and final result file preserve every nested close error", a
 test.each(["confirmed", "failed"])(
   "every observation failure survives the final JSON when lifecycle closure is %s",
   async (outcome) => {
-    const root = await mkdtemp("/work/tmp/waffle-error-json-");
+    const root = await mkdtemp(join(tmpdir(), "waffle-error-json-"));
     const first = new Error("first observer", { cause: new Error("first cause") });
     const second = new AggregateError(
       [new Error("second child", { cause: new Error("second cause") })],
