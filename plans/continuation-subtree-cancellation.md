@@ -1,13 +1,27 @@
 # Retire work admitted by a cancelled continuation
 
-Status: Approved, scheduled. Waffle owns the capability and release. Safari memory owns the
-consumer design and later package-continuation qualification. Managing requested this tracked
-item on 2026-11-14. This entry starts no implementation, build, replay, or release. Fold it into
+Status: Approved tracking item, scheduled later. No implementation is active. Waffle owns
+this future capability and its release. Safari memory owns the consumer design and later
+package-continuation qualification. Managing requested this entry on 2026-11-14. Fold it into
 the next Waffle PR; do not open a standalone documentation PR.
 
-## Required behavior
+## Current behavior decision
 
-A caller-only KILL must retire all work first admitted by that continuation generation.
+Managing explicitly retained documented legacy PID-only KILL semantics for bun-wasm PR 792.
+The replacement continuation preserves the old loop's behavior: an already admitted phase
+can remain live after caller-only KILL, under Waffle's ordinary process ownership. Stronger
+descendant cancellation is outside that replacement feature's scope. This item must not block
+PR 792, its consumer qualification under that decision, or any release.
+
+The evidence report predates this disposition and still presents the choice as pending. Its
+conditional recommendation does not override this later decision. Keep its original results
+and R3 history intact. The future behavior below requires an explicit behavior decision and
+reviewed design before implementation. Tracking it does not change the released contract.
+
+## Future cancellation contract
+
+The future capability would let caller-only KILL retire all work first admitted by that
+continuation generation.
 Use a generation-bound reservation-provenance scope with an authoritative native and
 filesystem retirement fence. Preserve job identities, unrelated same-job siblings, and
 children admitted before the continuation opened its scope.
@@ -17,7 +31,7 @@ both leave an admitted phase executing after caller-only KILL. Current PID-only 
 keeps that child runtime-owned, with its real handle and filesystem identity. Logical exit,
 physical native return, sampled worker rows, and physical memory reclamation are distinct.
 
-Receive Safari memory's design before implementation. The report's `ownership-signatures.ts`
+Receive Safari memory's design before any future implementation. The report's `ownership-signatures.ts`
 is an unapplied API sketch, unavailable in the released packages. Its names do not establish
 the public API. A new cross-repository contract requires design and independent review through
 the normal Waffle workflow.
@@ -130,5 +144,6 @@ three times and use generous hang caps without speed assertions.
 After independent review, green CI, and a normal Waffle release, Safari memory can connect
 one scope to `PackageChildren`'s existing admission path and add an installed regression.
 It must register cancellation before its first await and keep local `terminate()` free of
-the scope join. Consumer engine qualification stays with Safari memory. This plan entry
-does not approve PR 792, waive R3, claim deep-subtree acceptance, or qualify memory reclamation.
+the scope join. Consumer engine qualification stays with Safari memory. These are acceptance
+requirements for a separately approved future behavior change, not prerequisites for PR 792
+or a release. This entry claims no deep-subtree implementation or physical memory reclamation.
