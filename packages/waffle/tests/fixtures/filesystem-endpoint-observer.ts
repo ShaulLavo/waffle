@@ -65,13 +65,14 @@ export function observeFilesystemEndpoint(
     record("messageerror", event.isTrusted);
   }
   const send: MessagePort["postMessage"] = function (
-    message: unknown,
-    options?: Transferable[] | StructuredSerializeOptions,
+    this: MessagePort,
+    ...args: [message: unknown, options?: Transferable[] | StructuredSerializeOptions]
   ) {
+    if (this !== port) return Reflect.apply(originalSend, this, args);
     sequence++;
-    lastSend = describeFrame(message, inherited);
+    lastSend = describeFrame(args[0], inherited);
     try {
-      Reflect.apply(originalSend, port, [message, options]);
+      Reflect.apply(originalSend, this, args);
       sends++;
       if (lastSend.kind === "request") requestSends++;
     } catch (error) {

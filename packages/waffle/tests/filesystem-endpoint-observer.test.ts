@@ -300,3 +300,72 @@ test("endpoint coverage rejects qualification without original handlers", () => 
     pair.server.port.close();
   }
 });
+
+test("endpoint observer preserves the actual receiver for borrowed sends", async () => {
+  const pair = createFilesystemConnection();
+  const borrowed = new MessageChannel();
+  const observer = observeFilesystemEndpoint(pair.client, {
+    tree: "transparent-receiver",
+    realm: "bun-test",
+    endpoint: "client",
+    workerURL: import.meta.url,
+  });
+  const delivered = Promise.withResolvers<{ receiver: string; value: unknown }>();
+  pair.server.port.onmessage = ({ data }: MessageEvent<unknown>) =>
+    delivered.resolve({ receiver: "observed", value: data });
+  borrowed.port2.onmessage = ({ data }: MessageEvent<unknown>) =>
+    delivered.resolve({ receiver: "borrowed", value: data });
+  const timer = setTimeout(() => delivered.reject(Error("borrowed send did not arrive")), 3000);
+  try {
+    const buffer = new Uint8Array([9, 8]).buffer;
+    Reflect.apply(pair.client.port.postMessage, borrowed.port1, [buffer, [buffer]]);
+    expect(buffer.byteLength).toBe(0);
+    expect(await delivered.promise).toEqual({
+      receiver: "borrowed",
+      value: new Uint8Array([9, 8]).buffer,
+    });
+    expect(observer.snapshot()).toMatchObject({ sends: 0, lastSend: null });
+  } finally {
+    clearTimeout(timer);
+    observer.dispose();
+    pair.client.port.close();
+    pair.server.port.close();
+    borrowed.port1.close();
+    borrowed.port2.close();
+  }
+});
+
+test("endpoint observer preserves the exact send argument tuple", () => {
+  const pair = createFilesystemConnection();
+  const port = pair.client.port;
+  const nativeSend = port.postMessage;
+  const calls: { receiver: MessagePort; args: unknown[] }[] = [];
+  port.postMessage = function (this: MessagePort, ...args: unknown[]) {
+    calls.push({ receiver: this, args });
+  };
+  const observer = observeFilesystemEndpoint(pair.client, {
+    tree: "transparent-arguments",
+    realm: "bun-test",
+    endpoint: "client",
+    workerURL: import.meta.url,
+  });
+  const transfers: Transferable[] = [];
+  const options: StructuredSerializeOptions = { transfer: transfers };
+  try {
+    port.postMessage("one");
+    port.postMessage("list", transfers);
+    port.postMessage("options", options);
+    port.postMessage("explicit", undefined);
+    expect(calls.map(({ args }) => args.length)).toEqual([1, 2, 2, 2]);
+    expect(calls.every(({ receiver }) => receiver === port)).toBe(true);
+    expect(calls[0]?.args).toEqual(["one"]);
+    expect(calls[1]?.args[1]).toBe(transfers);
+    expect(calls[2]?.args[1]).toBe(options);
+    expect(calls[3]?.args).toEqual(["explicit", undefined]);
+  } finally {
+    observer.dispose();
+    port.postMessage = nativeSend;
+    pair.client.port.close();
+    pair.server.port.close();
+  }
+});
