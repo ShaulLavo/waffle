@@ -1,3 +1,6 @@
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { writeResult } from "./result-file.js";
 import { swiftShaderArgs } from "../gpu-browser-qualification.js";
 import { expect, spyOn, test } from "bun:test";
 import { BrowserRunnerLifecycle } from "../browser-runner-lifecycle.js";
@@ -135,5 +138,49 @@ test("observer failure does not skip the existing browser owner's containment", 
   } finally {
     await driver.stop();
     closed.mockRestore();
+  }
+});
+
+test("driver cleanup and final result file preserve every nested close error", async () => {
+  const root = await mkdtemp("/work/tmp/waffle-error-json-");
+  const leaf = new Error("Firefox transport closed");
+  const child = new Error("context close failed", { cause: leaf });
+  const nested = new AggregateError([child], "nested close", { cause: new Error("nested cause") });
+  const failure = new AggregateError([nested, new Error("browser close failed")], "cleanup failed");
+  const close = spyOn(BrowserRunnerLifecycle.prototype, "close").mockRejectedValue(failure);
+  try {
+    const driver = new PlaywrightDriver("firefox", root);
+    const cleanup = await driver.stop();
+    expect(cleanup.session.status).toBe("unconfirmed");
+    expect(cleanup.launcher).toEqual(cleanup.session);
+    expect(close).toHaveBeenCalledTimes(1);
+    const tree: unknown = JSON.parse(cleanup.session.detail.split("; browser root ")[0]!);
+    expect(tree).toMatchObject({
+      errors: [
+        {
+          message: "nested close",
+          cause: { message: "nested cause" },
+          errors: [
+            {
+              message: child.message,
+              stack: child.stack,
+              cause: {
+                name: leaf.name,
+                message: leaf.message,
+                stack: leaf.stack,
+              },
+            },
+          ],
+        },
+        { message: "browser close failed" },
+      ],
+    });
+    const path = join(root, "result.json");
+    await writeResult(path, { cleanup, failure });
+    expect(await Bun.file(path).json()).toEqual({ cleanup, failure: tree });
+    expect(await readdir(root)).toEqual(["result.json"]);
+  } finally {
+    close.mockRestore();
+    await rm(root, { recursive: true, force: true });
   }
 });

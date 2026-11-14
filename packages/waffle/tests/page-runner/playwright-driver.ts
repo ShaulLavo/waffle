@@ -5,6 +5,7 @@ import { navigateTestPage } from "../browser-navigation.js";
 import { dirname } from "node:path";
 import type { BrowserContext, Page } from "playwright";
 import { BrowserRunnerLifecycle, type engines } from "../browser-runner-lifecycle.js";
+import { serializeError } from "../error-serialization.js";
 import {
   bounded,
   DeadlineError,
@@ -211,14 +212,15 @@ export class PlaywrightDriver implements Driver {
         serviceDisposition: "No native service",
       };
     } catch (error) {
+      const detail = `${JSON.stringify(serializeError(error))}; browser root ${this.lifecycle.scratch}`;
       return {
         session: {
           status: "unconfirmed",
-          detail: `${String(error)}; browser root ${this.lifecycle.scratch}`,
+          detail,
         },
         launcher: {
           status: "unconfirmed",
-          detail: `${String(error)}; browser root ${this.lifecycle.scratch}`,
+          detail,
         },
         serviceDisposition: "No native service",
       };

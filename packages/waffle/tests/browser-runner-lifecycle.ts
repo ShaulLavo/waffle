@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
+import { SerializableAggregateError } from "./error-serialization.js";
 import {
   stopBrowserResource,
   type BrowserResourceOwner,
@@ -295,7 +296,8 @@ export class BrowserRunnerLifecycle {
           "Retained owned directories for outer teardown",
           await this.reportDirectories(),
         );
-      if (failures.length) throw new AggregateError(failures, "Browser runner cleanup failed");
+      if (failures.length)
+        throw new SerializableAggregateError(failures, "Browser runner cleanup failed");
     } finally {
       if (this.previousTmp === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = this.previousTmp;
