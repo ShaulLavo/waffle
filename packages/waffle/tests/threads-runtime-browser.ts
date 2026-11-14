@@ -1,6 +1,4 @@
-import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { runtimeSurvivorModule, generatedRuntimeThreadModule } from "./threads-runtime-modules.js";
-import { createRuntime } from "../runtime.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { RIGHTS_ALL } from "../core/rights.js";
 import {
@@ -10,7 +8,7 @@ import {
 } from "../proc/worker-client.js";
 import { PipeController } from "../proc/pipes.js";
 import { createWorkerPipeCodec } from "../proc/worker-pipes.js";
-import { bytes, declareSharedMemoryPlatform } from "../memory/index.js";
+import { createThreadRuntime } from "./threads-runtime-host.js";
 import type { SharedGuestSnapshot } from "../memory/reservations.js";
 import { stockThreadCase, type RuntimeThreadCase } from "./threads-runtime-cases.js";
 export type { RuntimeThreadCase } from "./threads-runtime-cases.js";
@@ -177,19 +175,7 @@ export async function runThreadsRuntime(
       return super.terminate();
     }
   };
-  const runtime = createRuntime({
-    sharedMemory: declareSharedMemoryPlatform({
-      kind: "bounded",
-      budgetBytes: bytes(3 * 1024 ** 3),
-      counts: { fixedBuffer: true, sharedMemory: true, privateMemory: false },
-    }),
-    filesystem: {
-      mode: "memory",
-      workerURL: local ? new URL("../browser/fs-worker.ts", import.meta.url) : "/fs-worker.js",
-    },
-    processHost: (options) =>
-      new BrowserProcessBroker({ ...options, onError: (error) => errors.push(String(error)) }),
-  });
+  const runtime = createThreadRuntime(local, errors);
   const descriptors = new DescriptorTable();
   const backingObservations: ReturnType<typeof runtime.sharedMemory.snapshot>["sharedGuests"][] =
     [];
