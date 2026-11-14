@@ -11,7 +11,11 @@ import {
   findDirectoryJob,
 } from "../proc/directory.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { BrowserProcessBroker, type ProcessFilesystem } from "../browser/process-broker.js";
+import {
+  BrowserProcessBroker,
+  type ProcessController,
+  type ProcessFilesystem,
+} from "../browser/process-broker.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessTable } from "../proc/table.js";
@@ -3916,7 +3920,13 @@ for (const bounded of [false, true])
       }
     });
 
-for (const mode of ["throw", "reject", "owned-start-failure"] as const) {
+for (const mode of [
+  "throw",
+  "reject",
+  "throw-with-auxiliary-controller",
+  "owned-start-failure",
+  "owned-body-failure",
+] as const) {
   test(`external launch failure needs an owned native return, not just a selected result: ${mode}`, async () => {
     const identities = new ProcessIdentityAllocator();
     const registry = new ExecutableRegistry();
@@ -3925,42 +3935,202 @@ for (const mode of ["throw", "reject", "owned-start-failure"] as const) {
       module: new WebAssembly.Module(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0)),
     });
     const failure = new Error("Intentional adapter rejection");
+    const reports: unknown[] = [],
+      output: string[] = [],
+      source = new DescriptorTable();
     let stops = 0;
+    let auxiliaryStops = 0;
+    let consumerLive = false;
     const broker = new BrowserProcessBroker({
       reservations: testReservations(),
       identities,
       table: new ProcessTable(identities),
       registry,
       filesystem: unusedFilesystem(),
-      onError() {},
+      onError: (error) => reports.push(error),
       launch(context) {
-        if (mode === "throw") throw failure;
+        consumerLive = true;
+        if (mode === "throw" || mode === "throw-with-auxiliary-controller") throw failure;
         if (mode === "reject") return Promise.reject(failure);
-        context.startFailed(failure);
+        const body =
+          mode === "owned-body-failure"
+            ? Promise.reject(failure).catch((error: unknown) => context.startFailed(error))
+            : Promise.resolve();
+        if (mode === "owned-start-failure") context.startFailed(failure);
         return {
-          terminate() {
+          async terminate() {
+            await body;
             stops++;
+            consumerLive = false;
           },
         };
       },
     });
+    const stderr = source.open(
+      {
+        kind: "terminal",
+        read: () => 0,
+        write() {
+          throw new Error("startup diagnostics must not use blocking writes");
+        },
+        tryWrite(chunks) {
+          for (const chunk of chunks) output.push(new TextDecoder().decode(chunk));
+          return chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        },
+        readiness: () => ({ readable: false, writable: true, hangup: false }),
+        close() {},
+      },
+      0n,
+      0n,
+    );
     try {
       const { root, supervisor, pid } = await reserveFixtureChild(broker, "fixture");
+      const stopAuxiliary = () => {
+        auxiliaryStops++;
+      };
+      if (mode === "throw-with-auxiliary-controller")
+        broker.registerController(pid, { stop: stopAuxiliary });
+      supervisor.get(pid)!.image.descriptors.inherit(2, source.get(stderr)!);
+      source.close(stderr);
       const { captureProcessObserver } = await import("../proc/observation.ts");
       const observer = captureProcessObserver(supervisor.get(pid)!.observation);
       await supervisor.start(pid);
       expect((await supervisor.waitForExit(root, pid)).kind).toBe("start-failed");
-      if (mode === "owned-start-failure") {
+      expect(output).toEqual([`runtime: process start failed: ${String(failure)}\n`]);
+      if (mode === "owned-start-failure" || mode === "owned-body-failure") {
         await broker.dispose();
         expect(observer.read()).toEqual({ kind: "terminated" });
         expect(stops).toBe(1);
+        expect(consumerLive).toBe(false);
       } else {
-        await expect(broker.dispose()).rejects.toBeInstanceOf(AggregateError);
+        const error: unknown = await broker.dispose().catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(AggregateError);
+        if (!(error instanceof AggregateError)) throw new Error("missing disposal failure");
+        expect(error.errors).toHaveLength(1);
+        expect(error.errors[0]).toBe(failure);
         expect(observer.read().kind).toBe("selected");
         expect(stops).toBe(0);
+        expect(consumerLive).toBe(true);
+        expect(reports).toContain(failure);
       }
+      expect(output).toHaveLength(1);
+      expect(auxiliaryStops).toBe(mode === "throw-with-auxiliary-controller" ? 1 : 0);
     } finally {
+      source.dispose();
       await broker.dispose().catch(() => {});
+      consumerLive = false;
     }
-  });
+  }, 30_000);
 }
+
+for (const cleanup of [
+  "fulfilled",
+  "adapter-rejected",
+  "filesystem-rejected",
+  "stop-rejected",
+] as const)
+  test(`controller-owned failed launch retains its independent cleanup fences: ${cleanup}`, async () => {
+    const identities = new ProcessIdentityAllocator(),
+      registry = new ExecutableRegistry(),
+      filesystem = createFilesystemIdentity();
+    registry.register("fixture", {
+      adapter: "external",
+      module: new WebAssembly.Module(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0)),
+    });
+    const failure = new Error("original setup failure after acquisition"),
+      cleanupFailure = new Error("distinct cleanup failure"),
+      adapterFence = Promise.withResolvers<void>(),
+      filesystemFence = Promise.withResolvers<void>(),
+      nativeStop = Promise.withResolvers<void>(),
+      fencing = Promise.withResolvers<void>(),
+      stopping = Promise.withResolvers<void>(),
+      events: string[] = [];
+    let consumerLive = false;
+    const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
+      identities,
+      table: new ProcessTable(identities),
+      registry,
+      filesystem: {
+        ...unusedFilesystem(),
+        quiesce(identity) {
+          return identity === filesystem ? filesystemFence.promise : Promise.resolve();
+        },
+      },
+      onError() {},
+      launch() {
+        throw new Error("the registered controller owns this launch");
+      },
+    });
+    const controller: ProcessController = {
+      filesystem,
+      launch() {
+        consumerLive = true;
+        throw failure;
+      },
+      revoke: () => events.push("revoke"),
+      quiesce() {
+        fencing.resolve();
+        return adapterFence.promise;
+      },
+      stop() {
+        events.push("stop");
+        stopping.resolve();
+        return nativeStop.promise.then(() => {
+          consumerLive = false;
+        });
+      },
+      retired: () => events.push("retired"),
+    };
+    let disposal: Promise<void> | undefined;
+    try {
+      const { supervisor, pid } = await reserveFixtureChild(broker, "fixture");
+      broker.registerController(pid, controller);
+      const { captureProcessObserver } = await import("../proc/observation.ts");
+      const observer = captureProcessObserver(supervisor.get(pid)!.observation);
+      await supervisor.start(pid);
+      await fencing.promise;
+      expect(observer.read()).toMatchObject({ kind: "selected", result: { kind: "start-failed" } });
+      expect(consumerLive).toBe(true);
+      expect(events).toEqual(["revoke"]);
+      disposal = broker.dispose();
+      void disposal.catch(() => {});
+      if (cleanup === "adapter-rejected") adapterFence.reject(cleanupFailure);
+      else adapterFence.resolve();
+      expect(events).toEqual(["revoke"]);
+      if (cleanup === "filesystem-rejected") filesystemFence.reject(cleanupFailure);
+      else filesystemFence.resolve();
+      if (cleanup === "adapter-rejected" || cleanup === "filesystem-rejected") {
+        await expect(disposal).rejects.toBe(cleanupFailure);
+        expect(events).toEqual(["revoke"]);
+        expect(consumerLive).toBe(true);
+        expect(observer.read().kind).toBe("selected");
+        return;
+      }
+      await stopping.promise;
+      expect(events).toEqual(["revoke", "stop"]);
+      expect(consumerLive).toBe(true);
+      expect(observer.read().kind).toBe("selected");
+      if (cleanup === "stop-rejected") nativeStop.reject(cleanupFailure);
+      else nativeStop.resolve();
+      if (cleanup === "stop-rejected") {
+        await expect(disposal).rejects.toMatchObject({
+          errors: expect.arrayContaining([cleanupFailure]),
+        });
+        expect(consumerLive).toBe(true);
+        expect(observer.read().kind).toBe("selected");
+        expect(events).toEqual(["revoke", "stop"]);
+        return;
+      }
+      await disposal;
+      expect(observer.read()).toEqual({ kind: "terminated" });
+      expect(consumerLive).toBe(false);
+      expect(events).toEqual(["revoke", "stop", "retired"]);
+    } finally {
+      adapterFence.resolve();
+      filesystemFence.resolve();
+      nativeStop.resolve();
+      await (disposal ?? broker.dispose()).catch(() => {});
+      consumerLive = false;
+    }
+  }, 30_000);
