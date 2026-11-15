@@ -8,6 +8,7 @@ import {
   mapForEach,
   mapGet,
   mapSet,
+  mapSize,
 } from "../proc/intrinsics/core.js";
 
 // Guest watch ids and their records: the runtime_fs watch_* contract in docs/host-abi.md.
@@ -27,7 +28,7 @@ export interface GuestWatchReadiness {
   readonly active: boolean;
   /** The root's watch cells; index 3 moves on every committed watch record. */
   readonly word: Int32Array;
-  /** A watch_read would return records or an end without waiting. */
+  /** Unrevoked, unended watches have queued records or an unobserved commit. */
   pending(): boolean;
 }
 
@@ -74,12 +75,25 @@ export class GuestWatchTable implements GuestWatchReadiness {
   }
 
   pending(): boolean {
-    if (this.fs.revoked) return false;
+    return !this.fs.revoked && this.hasPending(false);
+  }
+
+  /** A read may return records, end or an error; never consumes watch state. */
+  ready(): boolean {
+    if (!mapSize(this.watches)) return false;
+    return this.fs.revoked || this.hasPending(true);
+  }
+
+  private hasPending(includeEnded: boolean): boolean {
     const generation = atomicsLoad(this.fs.cells, 3);
     let pending = false;
     mapForEach(this.watches, (watch) => {
-      if (watch.ended) return;
-      if (watch.head < watch.queue.length || watch.observed !== generation) pending = true;
+      if (
+        watch.ended
+          ? includeEnded
+          : watch.head < watch.queue.length || watch.observed !== generation
+      )
+        pending = true;
     });
     return pending;
   }

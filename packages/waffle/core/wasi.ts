@@ -431,6 +431,7 @@ export class Wasi {
     const filesystem: Record<string, (...args: never[]) => number> = {
       path_permissions_get: this.pathPermissions.bind(this),
       watch_open: this.watchOpen.bind(this),
+      watch_ready: () => (this.watches?.ready() ? 1 : 0),
       watch_read: this.watchRead.bind(this),
       watch_close: (id: number) => this.watches?.close(id >>> 0) ?? EBADF,
     };

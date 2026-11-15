@@ -8,9 +8,9 @@ function section(id: number, payload: number[]): number[] {
 }
 const I32 = 0x7f;
 
-/** Imports runtime_fs.watch_open/read/close and re-exports them with its memory. */
+/** Imports runtime_fs.watch_open/ready/read/close and re-exports them with its memory. */
 export function watchGuestModule(shared = false): WebAssembly.Module {
-  const imports = [3].concat(
+  const imports = [4].concat(
     text("runtime_fs"),
     text("watch_open"),
     [0, 0],
@@ -20,8 +20,11 @@ export function watchGuestModule(shared = false): WebAssembly.Module {
     text("runtime_fs"),
     text("watch_close"),
     [0, 2],
+    text("runtime_fs"),
+    text("watch_ready"),
+    [0, 4],
   );
-  const exports = [5].concat(
+  const exports = [6].concat(
     text("memory"),
     [2, 0],
     text("watch_open"),
@@ -31,6 +34,8 @@ export function watchGuestModule(shared = false): WebAssembly.Module {
     text("watch_close"),
     [0, 2],
     text("_start"),
+    [0, 4],
+    text("watch_ready"),
     [0, 3],
   );
   return new WebAssembly.Module(
@@ -38,7 +43,7 @@ export function watchGuestModule(shared = false): WebAssembly.Module {
       [0, 97, 115, 109, 1, 0, 0, 0].concat(
         section(
           1,
-          [4, 0x60, 3, I32, I32, I32, 1, I32, 0x60, 4, I32, I32, I32, I32, 1, I32].concat([
+          [5, 0x60, 3, I32, I32, I32, 1, I32, 0x60, 4, I32, I32, I32, I32, 1, I32].concat([
             0x60,
             1,
             I32,
@@ -47,6 +52,10 @@ export function watchGuestModule(shared = false): WebAssembly.Module {
             0x60,
             0,
             0,
+            0x60,
+            0,
+            1,
+            I32,
           ]),
         ),
         section(2, imports),
@@ -91,10 +100,11 @@ const EAGAIN = 6;
 
 /** Calls the guest's exported runtime_fs functions through the WebAssembly boundary. */
 export function watchGuest(instance: WebAssembly.Instance) {
-  const { memory, watch_open, watch_read, watch_close } = instance.exports;
+  const { memory, watch_open, watch_ready, watch_read, watch_close } = instance.exports;
   if (
     !(memory instanceof WebAssembly.Memory) ||
     typeof watch_open !== "function" ||
+    typeof watch_ready !== "function" ||
     typeof watch_read !== "function" ||
     typeof watch_close !== "function"
   )
@@ -126,5 +136,6 @@ export function watchGuest(instance: WebAssembly.Instance) {
     }
   };
   const close = (id: number) => Number(watch_close(id));
-  return { memory, open, read, drain, close };
+  const ready = () => Number(watch_ready());
+  return { memory, open, ready, read, drain, close };
 }

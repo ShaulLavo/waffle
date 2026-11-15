@@ -717,6 +717,147 @@ function guestWatches(hooks: { afterOpen?(): void; duringRead?(): void } = {}) {
   return { backend, calls, state, wasi, guest: watchGuest(instance), write, descriptor, saturate };
 }
 
+/** Readiness neither calls the service nor writes guest memory or the commit counter. */
+function expectReady(h: ReturnType<typeof guestWatches>, value: number): void {
+  const calls = { ...h.calls };
+  const generation = Atomics.load(h.backend.shared.watch.cells, 3);
+  const memory = new Uint8Array(h.guest.memory.buffer).slice();
+  for (let query = 0; query < 3; query++) expect(h.guest.ready()).toBe(value);
+  expect(h.calls).toEqual(calls);
+  expect(Atomics.load(h.backend.shared.watch.cells, 3)).toBe(generation);
+  expect(new Uint8Array(h.guest.memory.buffer)).toEqual(memory);
+}
+
+test("guest watch_ready is non-consuming across idle, partial drains and later commits", () => {
+  const h = guestWatches();
+  expectReady(h, 0);
+  const first = h.guest.open(h.descriptor("/dir"), RECURSIVE).id;
+  const second = h.guest.open(h.descriptor("/dir")).id;
+  expectReady(h, 0);
+  h.write("/dir/a", 2);
+  h.write("/dir/sub/b", 3);
+  expectReady(h, 1);
+  expect(h.guest.read(first, 11)).toMatchObject({ errno: 42, length: 12 });
+  expectReady(h, 1);
+  expect(h.guest.read(first, 12).records).toEqual([{ type: CHANGE, name: "a" }]);
+  expectReady(h, 1);
+  expect(h.guest.drain(first).records).toEqual([{ type: CHANGE, name: "sub/b" }]);
+  // The second watch's service queue is still unread after the first drains the root ring.
+  expectReady(h, 1);
+  expect(h.guest.drain(second).records).toEqual([{ type: CHANGE, name: "a" }]);
+  expectReady(h, 0);
+  expect(h.wasi.filesystemWatches?.pending()).toBe(false);
+  h.write("/dir/a", 4);
+  expectReady(h, 1);
+  expect(h.guest.drain(first).records).toEqual([{ type: CHANGE, name: "a" }]);
+  expect(h.guest.close(second)).toBe(0);
+  expectReady(h, 0);
+  expect(h.guest.close(first)).toBe(0);
+  h.write("/dir/a", 5);
+  expectReady(h, 0);
+});
+
+test("guest watch_ready retains overflow and end until the registration closes", () => {
+  const h = guestWatches();
+  const { id } = h.guest.open(h.descriptor("/dir"));
+  for (let index = 0; index <= 128; index++) h.write(`/dir/f${index}`);
+  expectReady(h, 1);
+  expect(h.guest.read(id, 7)).toMatchObject({ errno: 42, length: 8 });
+  expectReady(h, 1);
+  expect(h.guest.read(id).records).toEqual([{ type: OVERFLOW, name: null }]);
+  expect(h.wasi.filesystemWatches?.pending()).toBe(false);
+  expect(h.wasi.filesystemWatches?.active).toBe(false);
+  expectReady(h, 1);
+  expect(h.guest.read(id)).toMatchObject({ errno: 0, length: 0 });
+  expectReady(h, 1);
+  expect(h.guest.close(id)).toBe(0);
+  expectReady(h, 0);
+});
+
+test("guest watch_ready exposes real service permission errors without losing later updates", () => {
+  const h = guestWatches();
+  const { id } = h.guest.open(h.descriptor("/dir"));
+  const handle = h.backend.fs.handleForNode(h.backend.fs.lookup("/dir")!);
+  h.backend.execute("setMode", [handle, 0o300], new Uint8Array());
+  expectReady(h, 1);
+  expect(h.guest.read(id).errno).toBe(2);
+  expectReady(h, 1);
+  expect(h.guest.read(id).errno).toBe(2);
+  expect(h.wasi.filesystemWatches?.pending()).toBe(true);
+  h.backend.execute("setMode", [handle, 0o700], new Uint8Array());
+  h.write("/dir/a", 9);
+  expectReady(h, 1);
+  expect(h.guest.drain(id).records).toContainEqual({ type: CHANGE, name: "a" });
+  expectReady(h, 0);
+  expect(h.guest.close(id)).toBe(0);
+});
+
+test("guest watch_ready reports revocation with live registrations while scheduling stays idle", () => {
+  const h = guestWatches();
+  const first = h.guest.open(h.descriptor("/dir")).id;
+  const second = h.guest.open(h.descriptor("/dir")).id;
+  expectReady(h, 0);
+  h.state.revoked = true;
+  expectReady(h, 1);
+  expect(h.wasi.filesystemWatches?.pending()).toBe(false);
+  expect(h.guest.read(first).errno).toBe(11);
+  expectReady(h, 1);
+  expect(h.guest.close(first)).toBe(0);
+  expectReady(h, 1);
+  expect(h.guest.close(second)).toBe(0);
+  expectReady(h, 0);
+});
+
+test("guest watch_ready sees a reentrant write during a service read", () => {
+  let inject = true;
+  const h = guestWatches({
+    duringRead() {
+      if (!inject) return;
+      inject = false;
+      h.write("/dir/sub/b", 8);
+    },
+  });
+  const { id } = h.guest.open(h.descriptor("/dir"), RECURSIVE);
+  h.write("/dir/a", 7);
+  expect(h.guest.read(id).records).toEqual([{ type: CHANGE, name: "a" }]);
+  expectReady(h, 1);
+  expect(h.guest.drain(id).records).toEqual([{ type: CHANGE, name: "sub/b" }]);
+  expectReady(h, 0);
+  expect(h.guest.close(id)).toBe(0);
+});
+
+test("guest watch_ready uses captured collection and atomic intrinsics", () => {
+  const h = guestWatches();
+  const { id } = h.guest.open(h.descriptor("/dir"));
+  const forEach = Map.prototype.forEach;
+  const size = Object.getOwnPropertyDescriptor(Map.prototype, "size")!;
+  const load = Atomics.load;
+  const poisoned = () => {
+    throw new Error("guest replaced intrinsic");
+  };
+  let idle: number;
+  let pending: number;
+  let revoked: number;
+  try {
+    Map.prototype.forEach = poisoned;
+    Object.defineProperty(Map.prototype, "size", { get: poisoned, configurable: true });
+    Atomics.load = poisoned;
+    idle = h.guest.ready();
+    // Move the counter as a concurrent commit would.
+    Atomics.add(h.backend.shared.watch.cells, 3, 1);
+    pending = h.guest.ready();
+    h.state.revoked = true;
+    revoked = h.guest.ready();
+  } finally {
+    Map.prototype.forEach = forEach;
+    Object.defineProperty(Map.prototype, "size", size);
+    Atomics.load = load;
+  }
+  expect([idle, pending, revoked]).toEqual([0, 1, 1]);
+  expect(h.guest.close(id)).toBe(0);
+  expectReady(h, 0);
+});
+
 test("guest watch imports report direct, recursive and file names as packed records", () => {
   const h = guestWatches();
   const direct = h.guest.open(h.descriptor("/dir"));
@@ -866,6 +1007,7 @@ test("a filesystem without watches reports ENOTSUP and offers no readiness", () 
   const instance = new WebAssembly.Instance(module, wasi.imports(module));
   wasi.start(instance);
   const guest = watchGuest(instance);
+  expect(guest.ready()).toBe(0);
   expect(guest.open(3).errno).toBe(58);
   expect(guest.read(1).errno).toBe(8);
   expect(guest.close(1)).toBe(8);
@@ -889,6 +1031,7 @@ test("proc_exit drops guest watch ids without service calls", () => {
   const h = guestWatches();
   const { id } = h.guest.open(h.descriptor("/dir"));
   h.wasi.dropWatches();
+  expectReady(h, 0);
   expect(h.wasi.filesystemWatches?.active).toBe(false);
   expect(h.guest.read(id).errno).toBe(8);
   expect(h.calls.close).toBe(0);
@@ -902,6 +1045,7 @@ test("a guest watch read refused at request admission stays pending and delivers
   expect(h.guest.read(id).errno).toBe(6);
   expect(h.calls.read).toBe(0);
   expect(h.wasi.filesystemWatches?.pending()).toBe(true);
+  expectReady(h, 1);
   release();
   expect(h.guest.drain(id).records).toEqual([{ type: CHANGE, name: "a" }]);
   expect(h.calls.read).toBe(1);
@@ -911,10 +1055,14 @@ test("a guest watch close refused at request admission keeps its id for a retry"
   const h = guestWatches();
   const { id } = h.guest.open(h.descriptor("/dir"));
   const release = h.saturate();
+  h.write("/dir/a", 2);
+  expectReady(h, 1);
   expect(h.guest.close(id)).toBe(6);
+  expectReady(h, 1);
   expect(Atomics.load(h.backend.shared.watch.cells, 0)).toBe(1);
   release();
   expect(h.guest.close(id)).toBe(0);
+  expectReady(h, 0);
   expect(Atomics.load(h.backend.shared.watch.cells, 0)).toBe(0);
   expect(h.guest.close(id)).toBe(8);
 });
