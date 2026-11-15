@@ -11,6 +11,75 @@ function cell() {
 }
 
 for (const shared of [false, true])
+  test(`capacity reuse preserves zero-growth, rebinding and every publication, shared=${shared}`, () => {
+    const bytes = cell();
+    const sampler = createWorkerMemorySampler(bytes.buffer);
+    const first = new WebAssembly.Memory({ initial: 1, maximum: 8, shared });
+    sampler.bind(first);
+    first.grow(0);
+    Atomics.store(bytes, 0, -1n);
+    sampler.sample();
+    expect(Atomics.load(bytes, 0)).toBe(65536n);
+    first.grow(1);
+    sampler.sample();
+    expect(Atomics.load(bytes, 0)).toBe(131072n);
+    const second = new WebAssembly.Memory({ initial: 1, maximum: 8, shared });
+    sampler.bind(second);
+    first.grow(1);
+    sampler.sample();
+    expect(Atomics.load(bytes, 0)).toBe(65536n);
+    second.grow(0);
+    second.grow(2);
+    sampler.sample();
+    expect(Atomics.load(bytes, 0)).toBe(196608n);
+    const equalCapacity = new WebAssembly.Memory({ initial: 3, maximum: 8, shared });
+    Atomics.store(bytes, 0, -1n);
+    sampler.bind(equalCapacity);
+    expect(Atomics.load(bytes, 0)).toBe(196608n);
+    second.grow(1);
+    sampler.sample();
+    expect(Atomics.load(bytes, 0)).toBe(196608n);
+    equalCapacity.grow(1);
+    sampler.sample();
+    expect(Atomics.load(bytes, 0)).toBe(262144n);
+    sampler.bind(new WebAssembly.Memory({ initial: 0, maximum: 1, shared }));
+    expect(Atomics.load(bytes, 0)).toBe(0n);
+    Atomics.store(bytes, 0, -1n);
+    sampler.sample();
+    expect(Atomics.load(bytes, 0)).toBe(0n);
+  });
+
+test("unchanged capacity is published at host entry, return and throw boundaries", () => {
+  const bytes = cell();
+  const sampler = createWorkerMemorySampler(bytes.buffer);
+  sampler.bind(new WebAssembly.Memory({ initial: 1 }));
+  const linked = sampler.imports(sampledHostImportsGuest(), {
+    fixture: {
+      grow() {
+        expect(Atomics.load(bytes, 0)).toBe(65536n);
+        Atomics.store(bytes, 0, -2n);
+        return 17;
+      },
+      fail() {
+        expect(Atomics.load(bytes, 0)).toBe(65536n);
+        Atomics.store(bytes, 0, -3n);
+        throw Error("host failure");
+      },
+    },
+  });
+  const grow = linked.fixture!.grow,
+    fail = linked.fixture!.fail;
+  if (typeof grow !== "function" || typeof fail !== "function")
+    throw Error("missing wrapped imports");
+  Atomics.store(bytes, 0, -1n);
+  expect(grow()).toBe(17);
+  expect(Atomics.load(bytes, 0)).toBe(65536n);
+  Atomics.store(bytes, 0, -1n);
+  expect(() => fail()).toThrow("host failure");
+  expect(Atomics.load(bytes, 0)).toBe(65536n);
+});
+
+for (const shared of [false, true])
   test(`actual memory samples follow growth and host boundaries, shared=${shared}`, () => {
     const bytes = cell();
     const sampler = createWorkerMemorySampler(bytes.buffer);
