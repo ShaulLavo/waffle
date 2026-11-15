@@ -25,6 +25,9 @@ import {
   sharedArrayBufferGrow,
   createGrowableSharedArrayBuffer,
   isSharedArrayBuffer,
+  SetConstructor,
+  setAdd,
+  setDelete,
 } from "../proc/intrinsics.js";
 
 import { PAGE } from "./shared-capacity.js";
@@ -114,6 +117,7 @@ interface Arena {
   revocation: SharedArrayBuffer;
   generation: number;
   stranded: boolean;
+  formerServiceSender?: { readonly port: MessagePort; transferred: boolean };
 }
 export class FilesystemTransportError extends FilesystemError {
   readonly code = "CLOSED";
@@ -381,6 +385,9 @@ export function createRequestArenaData(allocate: RequestArenaAllocator): SharedA
 }
 /** Trusted host owner. Releasing pool references never refunds backing charges. */
 export class FilesystemRequestPool {
+  // Bare wrappers only: uncertain owners may disappear without rooting their pool or tree.
+  // Reachability does not prevent native asynchronous Disentangle.
+  private static readonly formerServicePorts = new SetConstructor<MessagePort>();
   private readonly arenas: Arena[] = [];
   private readonly receipts: SharedArrayBuffer[] = [];
   readonly connectionBytes: number;
@@ -391,6 +398,29 @@ export class FilesystemRequestPool {
     readonly allocate?: RequestArenaAllocator,
   ) {
     this.connectionBytes = validateConnectionBytes(connectionBytes);
+  }
+  retainServiceSender(memory: FilesystemRequestMemory, port: MessagePort) {
+    const arena = this.senderArena(memory);
+    if (!arena || arena.formerServiceSender) throw new FilesystemTransportError("stale");
+    const sender = { port, transferred: false };
+    setAdd(FilesystemRequestPool.formerServicePorts, port);
+    arena.formerServiceSender = sender;
+    return sender;
+  }
+  cancelServiceSender(memory: FilesystemRequestMemory, port: MessagePort): void {
+    const arena = this.senderArena(memory);
+    if (!arena) return;
+    const sender = arena.formerServiceSender;
+    if (!sender || sender.port !== port || sender.transferred) return;
+    setDelete(FilesystemRequestPool.formerServicePorts, port);
+    arena.formerServiceSender = undefined;
+  }
+  private senderArena(memory: FilesystemRequestMemory): Arena | undefined {
+    for (let i = 0; i < this.arenas.length; i++) {
+      const arena = this.arenas[i]!;
+      if (arena.control === memory.control && arena.generation === memory.generation) return arena;
+    }
+    return undefined;
   }
   /** Host connector probe; only that namespace's sole host connector writes word 3. */
   assertBudget(budget: SharedArrayBuffer): void {
@@ -476,6 +506,10 @@ export class FilesystemRequestPool {
     atomicsAdd(new Int32ArrayConstructor(this.budget), B.pending, -Number(abandoned & MASK));
     atomicsStore(control(previous), C.bytes, 0n);
     settlePrivateBytes(previous);
+    if (arena.formerServiceSender) {
+      setDelete(FilesystemRequestPool.formerServicePorts, arena.formerServiceSender.port);
+      arena.formerServiceSender = undefined;
+    }
   }
   private strand(arena: Arena): void {
     if (arena.stranded) return;
