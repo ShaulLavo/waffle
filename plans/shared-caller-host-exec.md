@@ -1,7 +1,7 @@
 # Replace a sole-member shared caller with a host continuation
 
-Status: Approved. Source implementation is in PR 516 and awaits a new independent review
-and green CI after retirement corrections. Waffle owns the provider contract and release;
+Status: Approved. Source implementation merged in PR 516 at `4f59a47f`; release and
+consumer adoption are pending. Waffle owns the provider contract and release;
 Safari memory owns the matching trusted consumer binding and later qualification.
 It creates no hold on bun-wasm PR 792, releases, pins, or engine qualification. R3's stronger
 subtree cancellation remains a separate item. Legacy caller-only KILL remains PID-only.
