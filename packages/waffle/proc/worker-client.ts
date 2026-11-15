@@ -28,6 +28,7 @@ import { MAX_ACCESS_REQUESTS } from "./access.js";
 import { controlLoad, controlStore } from "./control.js";
 import {
   createDirectory,
+  beginDirectoryAdmission,
   directoryState,
   directorySlots,
   directoryJob,
@@ -539,6 +540,14 @@ export class WorkerProcessClient {
     return sources;
   }
   private reserveSpawn(parentPid: number, request: SpawnRequest): number {
+    const release = beginDirectoryAdmission(this.options.transport.directory);
+    try {
+      return this.reserveSpawnIntent(parentPid, request);
+    } finally {
+      release();
+    }
+  }
+  private reserveSpawnIntent(parentPid: number, request: SpawnRequest): number {
     this.admit();
     const selector = request.job;
     const requestedLifetime = request.jobLifetime;

@@ -142,6 +142,7 @@ export interface ProcessLifecycle {
   registerRevocation(hook: () => void): () => void;
 }
 export interface ProcessContext extends ProcessLifecycle {
+  readonly execution?: import("./registry.js").AdapterExecution;
   readonly module: WebAssembly.Module;
   readonly adapter: string;
   readonly interruptible: boolean;

@@ -164,11 +164,23 @@ for (const name of await caches.keys()) {
 ## Registration leases
 
 `Runtime.registerAdapter(name, launcher)` and `Runtime.registerProgram(name, definition)`
+capture the exact launcher registration with each program. A later registration under the
+same adapter name does not replace a resolved or running program's launcher.
+
+`Runtime.registerHostAdapter(name, launcher)` is a trusted owner's promise that its own
+image runs host work only. Register a program with that adapter to make it eligible as
+the target of a sole-member shared caller's [exec](host-abi.md#process-image-replacement). Its borrowed
+`HostProcessService` omits `takeWorker`; image admission also rejects its own `launchWorker`
+and group requests, including the typed-thread path. Ordinary phase children remain
+available. The runtime cannot prevent arbitrary global host JavaScript from bypassing its
+own ownership promise. Do not give this registration capability or process context to guests.
+
+`Runtime.registerAdapter(name, launcher)` and `Runtime.registerProgram(name, definition)`
 return unregister functions. Call the function to remove that exact registration; repeated
 calls and calls after `Runtime.dispose()` do nothing. Active duplicate names still reject:
 release a registration before replacing it. An old lease never removes its replacement,
 even when the same launcher function is registered again. Removing a program prevents future
-lookups; removing an adapter prevents future launches through that name. Neither operation
+lookups; removing an adapter prevents new programs from registering through that name. Neither operation
 stops running processes or changes a launcher already accepted for an in-flight process.
 Registration and removal do not activate the process service or load program sources.
 

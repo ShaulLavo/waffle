@@ -62,6 +62,7 @@ import type {
   ExecutableRegistry,
   Executable,
   ScriptExecutable,
+  AdapterExecution,
 } from "./proc/registry.js";
 import type { ProcessSupervisor } from "./proc/supervisor.js";
 import type { ProcessContext, ProcessHandle } from "./proc/types.js";
@@ -113,6 +114,13 @@ export type RuntimeProcessContext = ProcessContext & {
 export type GuestLauncher = (
   context: RuntimeProcessContext,
   service: ProcessService,
+) => ProcessHandle | Promise<ProcessHandle>;
+/** A trusted owner promises this image runs only host work. Ordinary children are allowed.
+ * Global host JavaScript remains trusted; this is not a sandbox for the registering owner. */
+export type HostProcessService = Omit<ProcessService, "takeWorker">;
+export type HostLauncher = (
+  context: RuntimeProcessContext,
+  service: HostProcessService,
 ) => ProcessHandle | Promise<ProcessHandle>;
 export type ProgramLoadState =
   | { readonly kind: "registered" | "preparing" | "loaded" }
@@ -188,6 +196,8 @@ export interface Runtime {
   registerProgram(name: string, program: ProgramDefinition): () => void;
   /** Releasing the lease removes only this registration, never running processes. */
   registerAdapter(name: string, launch: GuestLauncher): () => void;
+  /** Capture a host-only launcher. Its image cannot acquire a guest Worker or group. */
+  registerHostAdapter(name: string, launch: HostLauncher): () => void;
   /** Adapter plumbing, not an application/shell API. Release only after another owner accepts
    * the consumer synchronously, or its physical cleanup is proven complete. */
   retainConsumer(consumer: RuntimeConsumer): () => void;
@@ -259,6 +269,8 @@ const processCapabilities = {
   killJob: "async",
   rootExit: "async",
 } satisfies Record<keyof ProcessService, CapabilityKind>;
+const { takeWorker: workerCapability, ...hostProcessCapabilities } = processCapabilities;
+void workerCapability;
 const supervisorCapabilities = {
   table: "readonly",
   get: "method",
@@ -443,7 +455,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     if (owners[ownerKey] === token) delete owners[ownerKey];
     throw error;
   }
-  const adapters = new Map<string, GuestLauncher>();
+  const adapters = new Map<string, AdapterExecution>();
   const programs = new Map<string, Executable | ScriptExecutable | CommandExecutable>();
   let registryActivation: Promise<ExecutableRegistry> | undefined;
   const getRegistry = (): Promise<ExecutableRegistry> => {
@@ -473,6 +485,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   let disposal: Promise<void> | undefined;
   let terminationFence: Promise<void> | undefined;
   let service: ProcessService | undefined;
+  let hostService: HostProcessService | undefined;
   const assertLive = () => {
     if (disposed) throw new Error("Runtime is disposed");
   };
@@ -586,6 +599,30 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     filesystemCapabilities,
     assertLive,
   );
+  const registerAdapter = (
+    name: string,
+    kind: AdapterExecution["kind"],
+    launch: GuestLauncher,
+  ): (() => void) => {
+    assertLive();
+    if (!name || typeof launch !== "function")
+      throw new TypeError("Adapter name and launcher are required");
+    if (adapters.has(name)) throw new Error(`Adapter already registered: ${name}`);
+    const execution: AdapterExecution = Object.freeze({
+      kind,
+      launch: (context: ProcessContext) =>
+        ownLaunch(() =>
+          launch({ ...context, identity: createProcessIdentity(context, hostIdentity) }, service!),
+        ),
+    });
+    adapters.set(name, execution);
+    let registered = true;
+    return () => {
+      if (!registered) return;
+      registered = false;
+      if (!disposed && adapters.get(name) === execution) adapters.delete(name);
+    };
+  };
   const suspend = (failures: unknown[]) => {
     if (!host) return;
     try {
@@ -609,17 +646,15 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       return disposed;
     },
     registerAdapter(name, launch) {
+      return registerAdapter(name, "guest", launch);
+    },
+    registerHostAdapter(name, launch) {
       assertLive();
-      if (!name || typeof launch !== "function")
-        throw new TypeError("Adapter name and launcher are required");
-      if (adapters.has(name)) throw new Error(`Adapter already registered: ${name}`);
-      adapters.set(name, launch);
-      let registered = true;
-      return () => {
-        if (!registered) return;
-        registered = false;
-        if (!disposed && adapters.get(name) === launch) adapters.delete(name);
-      };
+      if (typeof launch !== "function") throw new TypeError("Host launcher is required");
+      return registerAdapter(name, "host", (context) => {
+        hostService ??= borrow<HostProcessService>(service!, hostProcessCapabilities, assertLive);
+        return launch(context, hostService);
+      });
     },
     registerProgram(name, program) {
       assertLive();
@@ -640,6 +675,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       if (programs.has(name)) throw new Error(`Program already registered: ${name}`);
       if (program.adapter && !adapters.has(program.adapter))
         throw new Error(`Unknown adapter: ${program.adapter}`);
+      const execution = program.adapter ? adapters.get(program.adapter) : undefined;
       const source = program.source;
       const module = program.module;
       let executable: Executable | ScriptExecutable | CommandExecutable;
@@ -666,6 +702,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           );
         executable = {
           adapter: program.adapter,
+          execution,
           script: {
             interpreter: program.script.interpreter,
             prepare: sharedPreparation(program.script.prepare, program.onLoad, assertLive),
@@ -679,6 +716,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           throw new TypeError("Program source must provide Wasm bytes");
         executable = {
           adapter: program.adapter,
+          execution,
           interruptible: true,
           module: sourceModule(source, program.onLoad),
         };
@@ -687,7 +725,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           throw new TypeError("Compiled modules require cooperative: true");
         if (!(module instanceof WebAssembly.Module) && typeof module !== "function")
           throw new TypeError("Program module must provide a compiled WebAssembly.Module");
-        executable = { adapter: program.adapter, interruptible: false, module };
+        executable = { adapter: program.adapter, execution, interruptible: false, module };
       }
       programs.set(name, executable);
       registry?.register(name, executable);
@@ -794,14 +832,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
             }),
           launch: (context) => {
             assertLive();
-            const launch = adapters.get(context.adapter);
-            if (!launch) throw new Error(`Unknown adapter: ${context.adapter}`);
-            return ownLaunch(() =>
-              launch(
-                { ...context, identity: createProcessIdentity(context, hostIdentity) },
-                service!,
-              ),
-            );
+            if (!context.execution) throw new Error(`Unbound adapter: ${context.adapter}`);
+            return context.execution.launch(context);
           },
         };
         const created = await (options.processHost
@@ -969,15 +1001,15 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         assertLive();
         return (await getRegistry()).resolve(path, "/", assertLive);
       },
-      launchInterpreter: async (interpreter, context, service) => {
+      launchInterpreter: async (interpreter, context, _service) => {
         const executable = await (await getRegistry()).check(interpreter);
         if ("command" in executable) {
           const { ExecutableFormatError } = await import("./proc/start-failure.js");
           throw new ExecutableFormatError("Registered script interpreters require a Wasm module");
         }
-        const launch = adapters.get(executable.adapter);
-        if (!launch) throw new Error(`Unknown interpreter adapter: ${executable.adapter}`);
-        return launch({ ...context, adapter: executable.adapter }, service);
+        const execution = executable.execution;
+        if (!execution) throw new Error(`Unbound interpreter adapter: ${executable.adapter}`);
+        return execution.launch({ ...context, adapter: executable.adapter, execution });
       },
     },
     options.programs,

@@ -2,6 +2,13 @@ import { objectFreeze } from "./intrinsics.ts";
 import { ExecutableFormatError } from "./start-failure.js";
 import { dirname, normalize } from "../core/path.js";
 import type { HostCommand, HostCommandDefinition } from "./command.js";
+import type { ProcessContext, ProcessHandle } from "./types.js";
+
+/** Page-owned registration, captured with the program, never decoded from guest metadata. */
+export interface AdapterExecution {
+  readonly kind: "guest" | "host";
+  readonly launch: (context: ProcessContext) => ProcessHandle | Promise<ProcessHandle>;
+}
 
 /** Metadata admission is separate from bounded script-prefix reads; neither owns a filesystem. */
 export type ExecutableLookup = (
@@ -48,11 +55,13 @@ export interface Executable {
   module: WebAssembly.Module | (() => WebAssembly.Module | Promise<WebAssembly.Module>);
   /** Opaque guest adapter key, interpreted by the host's worker launcher, not the registry. */
   adapter: string;
+  readonly execution?: AdapterExecution;
   /** True only when admission injected interruption imports. Trusted cooperative modules omit it. */
   readonly interruptible?: boolean;
 }
 export interface ScriptExecutable {
   readonly adapter: string;
+  readonly execution?: AdapterExecution;
   readonly script: { readonly interpreter: string; readonly prepare: () => Promise<void> };
   readonly onLoad?: (
     state: { kind: "preparing" } | { kind: "loaded" } | { kind: "error"; error: unknown },
@@ -70,7 +79,7 @@ export interface CommandExecutable {
   readonly adapter?: never;
   readonly module?: never;
 }
-type RegisteredModule = Readonly<Required<Executable>>;
+type RegisteredModule = Readonly<Executable> & { readonly interruptible: boolean };
 type RegisteredExecutable = RegisteredModule | CommandExecutable;
 interface AdmittedExecutable {
   readonly entry: RegisteredExecutable;
@@ -82,6 +91,7 @@ export interface ResolvedModule {
   readonly kind: "module";
   readonly module: WebAssembly.Module;
   readonly adapter: string;
+  readonly execution?: AdapterExecution;
   readonly interruptible: boolean;
   readonly argv?: readonly string[];
 }
@@ -214,6 +224,7 @@ export class ExecutableRegistry {
       kind: "module",
       module,
       adapter: entry.adapter,
+      ...(entry.execution ? { execution: entry.execution } : {}),
       interruptible: entry.interruptible,
       ...(admitted.argv ? { argv: admitted.argv } : {}),
     };
@@ -433,7 +444,11 @@ export class ExecutableRegistry {
     );
     if ("command" in admitted.entry)
       throw new ExecutableFormatError("Registered script interpreters require a Wasm module");
-    const entry = objectFreeze({ ...admitted.entry, adapter: executable.adapter });
+    const entry = objectFreeze({
+      ...admitted.entry,
+      adapter: executable.adapter,
+      execution: executable.execution,
+    });
     if (mode === "access") return { ...admitted, entry };
     const onLoad = combineLoadObservers(executable.onLoad, admitted.onLoad);
     try {
