@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import {
   FilesystemRequestAllocator,
   FilesystemRequestPool,
@@ -14,10 +14,26 @@ import {
   type FilesystemRequestMemory,
 } from "../fs/request-memory.js";
 
+const channels: MessageChannel[] = [];
+function retainedPorts(): Set<MessagePort> {
+  const ports: unknown = Reflect.get(FilesystemRequestPool, "formerServicePorts");
+  if (!(ports instanceof Set)) throw Error("missing private former service ports");
+  return ports;
+}
+afterEach(() => {
+  for (const channel of channels.splice(0)) {
+    retainedPorts().delete(channel.port2);
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
 function connection(pool: FilesystemRequestPool) {
   const revocation = new SharedArrayBuffer(4);
   const memory = pool.take(revocation);
-  return { revocation, memory };
+  const channel = new MessageChannel();
+  channels.push(channel);
+  pool.retainServiceSender(memory, channel.port2).transferred = true;
+  return { revocation, memory, port: channel.port2 };
 }
 function retire(peer: ReturnType<typeof connection>, errno = 0): void {
   retireRequestMemory(peer.memory, errno);
@@ -93,6 +109,9 @@ test("sweep preserves live, unreaped, unretired, in-section and stranded arenas"
     [live, unreaped, unretired, copying, failed, reused].map((p) => p.memory),
   );
   expect(stranded).toEqual([failed.memory.data]);
+  for (const peer of [live, unreaped, unretired, copying, failed])
+    expect(retainedPorts().has(peer.port)).toBe(true);
+  for (const peer of [safe, excess]) expect(retainedPorts().has(peer.port)).toBe(false);
   expect(requestTransportError(live.memory)).toBeUndefined();
   expect(requestTransportError(copying.memory)).toBeUndefined();
   const liveRequest = new FilesystemRequestAllocator(live.memory).allocate(16);
@@ -111,6 +130,8 @@ test("sweep preserves live, unreaped, unretired, in-section and stranded arenas"
   const later = connection(pool);
   expect(later.memory.data).not.toBe(failed.memory.data);
   expect(stranded).toEqual([failed.memory.data]);
+  expect(retainedPorts().has(failed.port)).toBe(true);
+  expect(retainedPorts().has(copying.port)).toBe(false);
   expectOwned(
     pool,
     [live, unreaped, unretired, afterCopy, failed, reused, later].map((p) => p.memory),
@@ -193,6 +214,7 @@ test("reuse allocation failure leaves the selected arena recoverable and excess 
   expect(requestBudgetBytes(budget)).toBe(charged);
   expect(requestMemoryResources(peers[0]!.memory).namespaceRequests).toBe(0);
   expect(Reflect.get(pool, "receipts")).toHaveLength(3);
+  for (const peer of peers) expect(retainedPorts().has(peer.port)).toBe(false);
   failControl = false;
   const recovered = connection(pool);
   expect(recovered.memory.data).toBe(peers[0]!.memory.data);
@@ -224,17 +246,23 @@ test("final release preserves uncertain lifetimes and settles eligible arenas on
   const before = requestBudgetBytes(pool.budget);
   pool.releaseRetired();
   const kept = [live, unreaped, unretired, copying, failed].map((peer) => peer.memory);
+  for (const peer of [live, unreaped, unretired, copying, failed])
+    expect(retainedPorts().has(peer.port)).toBe(true);
+  for (const peer of [safe, excess]) expect(retainedPorts().has(peer.port)).toBe(false);
   expectOwned(pool, kept);
   expect(requestMemoryResources(live.memory).namespaceRequests).toBe(0);
   expect(requestTransportError(safe.memory)?.reason).toBe("stale");
   expect(requestBudgetBytes(pool.budget)).toBe(before);
   pool.releaseRetired();
   expectOwned(pool, kept);
+  for (const peer of [live, unreaped, unretired, copying, failed])
+    expect(retainedPorts().has(peer.port)).toBe(true);
   releaseRequestBuffer(abandoned, REQUEST_CLIENT);
   releaseRequestBuffer(abandoned, REQUEST_SERVICE);
   expect(requestBudgetBytes(pool.budget)).toBe(before);
   Atomics.sub(new BigInt64Array(copying.memory.control), 7, 1n);
   pool.releaseRetired();
+  expect(retainedPorts().has(copying.port)).toBe(false);
   expectOwned(
     pool,
     [live, unreaped, unretired, failed].map((peer) => peer.memory),
@@ -245,4 +273,99 @@ test("final release preserves uncertain lifetimes and settles eligible arenas on
   const request = new FilesystemRequestAllocator(later.memory).allocate(16);
   releaseRequestBuffer(request, REQUEST_CLIENT);
   releaseRequestBuffer(request, REQUEST_SERVICE);
+});
+
+test("sender ownership binds the exact control object and generation before arena reuse", () => {
+  const pool = new FilesystemRequestPool(createRequestBudget(), 65536);
+  const first = connection(pool);
+  const other = new MessageChannel();
+  channels.push(other);
+  for (const stale of [
+    { ...first.memory, control: new SharedArrayBuffer(REQUEST_CONTROL_BYTES) },
+    { ...first.memory, generation: first.memory.generation + 1 },
+  ]) {
+    expect(() => pool.retainServiceSender(stale, other.port2)).toThrow();
+    pool.cancelServiceSender(stale, first.port);
+    expect(retainedPorts().has(first.port)).toBe(true);
+    expect(retainedPorts().has(other.port2)).toBe(false);
+  }
+  expect(() => pool.retainServiceSender(first.memory, other.port2)).toThrow();
+  pool.cancelServiceSender(first.memory, first.port);
+  expect(retainedPorts().has(first.port)).toBe(true);
+  retire(first);
+  // Observe inside control allocation: settlement has already dropped the old wrapper.
+  const allocate = Reflect.get(pool, "createControl");
+  Reflect.set(pool, "createControl", function (this: FilesystemRequestPool) {
+    expect(retainedPorts().has(first.port)).toBe(false);
+    return Reflect.apply(allocate, this, []);
+  });
+  const second = connection(pool);
+  expect(second.memory.data).toBe(first.memory.data);
+  expect(second.memory.control).not.toBe(first.memory.control);
+  expect(second.memory.generation).not.toBe(first.memory.generation);
+  expect(retainedPorts().has(second.port)).toBe(true);
+  expect(() => pool.retainServiceSender(first.memory, other.port2)).toThrow();
+  pool.cancelServiceSender(first.memory, second.port);
+  retireRequestMemory(first.memory);
+  pool.releaseRetired();
+  expect(retainedPorts().has(second.port)).toBe(true);
+  retire(second);
+  pool.releaseRetired();
+  pool.releaseRetired();
+  expect(retainedPorts().has(second.port)).toBe(false);
+});
+
+test("only an exact provisional sender can be cancelled", () => {
+  const pool = new FilesystemRequestPool(createRequestBudget(), 65536);
+  const memory = pool.take(new SharedArrayBuffer(4));
+  const channel = new MessageChannel();
+  channels.push(channel);
+  for (const stale of [
+    { ...memory, control: new SharedArrayBuffer(REQUEST_CONTROL_BYTES) },
+    { ...memory, generation: memory.generation + 1 },
+  ]) {
+    expect(() => pool.retainServiceSender(stale, channel.port2)).toThrow();
+    expect(retainedPorts().has(channel.port2)).toBe(false);
+  }
+  const sender = pool.retainServiceSender(memory, channel.port2);
+  pool.cancelServiceSender({ ...memory, generation: memory.generation + 1 }, channel.port2);
+  pool.cancelServiceSender(
+    { ...memory, control: new SharedArrayBuffer(REQUEST_CONTROL_BYTES) },
+    channel.port2,
+  );
+  pool.cancelServiceSender(memory, channel.port1);
+  expect(retainedPorts().has(channel.port2)).toBe(true);
+  expect(sender.transferred).toBe(false);
+  pool.cancelServiceSender(memory, channel.port2);
+  expect(retainedPorts().has(channel.port2)).toBe(false);
+  pool.cancelServiceSender(memory, channel.port2);
+  pool.retainServiceSender(memory, channel.port2).transferred = true;
+  pool.cancelServiceSender(memory, channel.port2);
+  expect(retainedPorts().has(channel.port2)).toBe(true);
+  // Remove every pool-owned local arena reference; only bare ports remain globally rooted.
+  Reflect.set(pool, "arenas", []);
+  expect(Array.from(retainedPorts()).every((port) => port instanceof MessagePort)).toBe(true);
+  expect(retainedPorts().has(channel.port2)).toBe(true);
+});
+
+test("private sender roots use captured collection operations", () => {
+  const pool = new FilesystemRequestPool(createRequestBudget(), 65536);
+  const memory = pool.take(new SharedArrayBuffer(4));
+  const channel = new MessageChannel();
+  channels.push(channel);
+  const add = Set.prototype.add;
+  const remove = Set.prototype.delete;
+  const unexpected = () => {
+    throw Error("mutable collection operation observed a private port");
+  };
+  try {
+    Set.prototype.add = unexpected;
+    Set.prototype.delete = unexpected;
+    pool.retainServiceSender(memory, channel.port2);
+    pool.cancelServiceSender(memory, channel.port2);
+  } finally {
+    Set.prototype.add = add;
+    Set.prototype.delete = remove;
+  }
+  expect(retainedPorts().has(channel.port2)).toBe(false);
 });

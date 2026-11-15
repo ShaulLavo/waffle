@@ -2,6 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import { SharedFilesystem, type SharedFilesystemOptions } from "../browser/shared-fs.js";
 import { FilesystemError, FilesystemSection, type FilesystemConnection } from "../fs/protocol.js";
 import { localPublication, type PublicationLimits } from "../fs/publication-internal.js";
+import { FilesystemRequestPool, retireRequestMemory } from "../fs/request-memory.js";
+
+function formerPorts(): Set<MessagePort> {
+  const ports: unknown = Reflect.get(FilesystemRequestPool, "formerServicePorts");
+  if (!(ports instanceof Set)) throw Error("missing private former service ports");
+  return ports;
+}
 
 type PageMessage = { connect?: FilesystemConnection; dispose?: true };
 type WorkerEvent = { data?: unknown; message?: string; preventDefault(): void };
@@ -16,6 +23,7 @@ class PageWorkerStandIn {
   readonly listeners = new Map<string, ((event: WorkerEvent) => void)[]>();
   terminations = 0;
   postFailure?: { reason: unknown };
+  stopFailure?: Error;
   constructor() {
     workers.push(this);
   }
@@ -28,6 +36,7 @@ class PageWorkerStandIn {
   }
   terminate(): void {
     this.terminations++;
+    if (this.stopFailure) throw this.stopFailure;
   }
   emit(type: string, data?: unknown): void {
     const event = { data, message: "original worker error", preventDefault() {} };
@@ -78,7 +87,11 @@ function fixture(options: SharedFilesystemOptions = {}) {
       await stopping.catch(() => {});
       // Explicit fixture reclamation is not a successful failed-owner disposal receipt.
       fs.client.dispose();
-      for (const message of worker.messages) message.connect?.port.close();
+      for (const message of worker.messages) {
+        if (!message.connect) continue;
+        formerPorts().delete(message.connect.port);
+        message.connect.port.close();
+      }
     },
   };
   fixtures.push(value);
@@ -123,10 +136,57 @@ function observe(promise: Promise<void>) {
   };
 }
 function expectRetained(fs: SharedFilesystem, worker: PageWorkerStandIn): void {
+  expect(formerPorts().has(worker.messages[0]!.connect!.port)).toBe(true);
   expect(worker.terminations).toBe(0);
   expect(new Int32Array(fs.client.connection.revocations[0]!)[0]).not.toBe(2);
   expect(new Int32Array(fs.client.connection.ownerStates)[fs.client.connection.owner]).not.toBe(2);
 }
+
+test("successful ordinary disposal releases retired children but keeps its unretired root sender", async () => {
+  const { fs, worker } = fixture({ mode: "memory" });
+  const root = worker.messages[0]!.connect!;
+  const child = fs.connect(fs.createIdentity());
+  try {
+    const server = worker.messages.at(-1)!.connect!;
+    fs.reap(child);
+    retireRequestMemory(child.requests);
+    expect(formerPorts().has(server.port)).toBe(true);
+    await fs.dispose();
+    expect(formerPorts().has(root.port)).toBe(true);
+    expect(formerPorts().has(server.port)).toBe(false);
+    await fs.dispose();
+    expect(formerPorts().has(root.port)).toBe(true);
+  } finally {
+    child.port.close();
+  }
+});
+
+test("successful joined disposal releases eligible senders only after the root section fence", async () => {
+  const { fs, worker, hold } = fixture();
+  worker.ready();
+  const root = worker.messages[0]!.connect!;
+  const release = hold();
+  retireRequestMemory(root.requests);
+  const stopping = fs.dispose();
+  worker.acknowledge();
+  await checkpoint();
+  expectRetained(fs, worker);
+  release();
+  await stopping;
+  expect(formerPorts().has(root.port)).toBe(false);
+});
+
+test("a failed worker stop retains even an otherwise eligible sender", async () => {
+  const { fs, worker } = fixture();
+  worker.ready();
+  const root = worker.messages[0]!.connect!;
+  retireRequestMemory(root.requests);
+  worker.stopFailure = Error("worker stop failed");
+  const stopping = fs.dispose();
+  worker.acknowledge();
+  await expect(stopping).rejects.toThrow("worker stop failed");
+  expect(formerPorts().has(root.port)).toBe(true);
+});
 
 for (const first of ["ack", "section"] as const) {
   test(`ready ordinary disposal joins the original ${first}-first close and root fence`, async () => {

@@ -117,6 +117,13 @@ function workerError(data: unknown): Error | undefined {
     error.stack = `${error.message}\n${data.stack}`;
   return error;
 }
+function cleanupAfterFailure(actions: readonly (() => void)[]): void {
+  for (const cleanup of actions) {
+    try {
+      cleanup();
+    } catch {}
+  }
+}
 /** Page-side API: never blocks the UI thread and owns no tree. Mutations complete in memory;
  * drain orders service requests, while flush checkpoints their data and metadata to storage.
  * Operations issued during opening/waiting remain pending until ownership and recovery finish.
@@ -195,6 +202,7 @@ export class SharedFilesystem {
     this.requestPool = connection.pool;
     let worker: Worker | undefined;
     let client: FilesystemClient | undefined;
+    let transferred = false;
     try {
       this.worker = worker = new Worker(
         options.workerURL ?? new URL("./fs-worker.js", location.href),
@@ -233,24 +241,39 @@ export class SharedFilesystem {
       };
       if (onStartupStage) message.observeStartup = true;
       reportRuntimeStartup(onStartupStage, "filesystem-connect-requested");
-      worker.postMessage(message, [connection.server.port]);
+      transferred = this.postServiceConnection(connection.server, message, [
+        connection.server.port,
+      ]);
     } catch (error) {
       // Constructor failure must not escape an ownerless worker or untransferred channel.
       // Cleanup failures cannot replace the startup error or prevent subsequent cleanup.
-      for (const cleanup of [
+      cleanupAfterFailure([
         () => revokeFilesystemService(connection.client),
         () => client?.dispose(),
         () => connection.client.port.close(),
-        () => connection.server.port.close(),
+        () => {
+          if (!transferred) connection.server.port.close();
+        },
         () => worker?.terminate(),
         () => withdrawCapacity?.(),
-      ]) {
-        try {
-          cleanup();
-        } catch {}
-      }
+      ]);
       throw error;
     }
+  }
+  private postServiceConnection(
+    connection: FilesystemConnection,
+    message: unknown,
+    transfers: Transferable[],
+  ): true {
+    const sender = this.requestPool.retainServiceSender(connection.requests, connection.port);
+    try {
+      this.worker.postMessage(message, transfers);
+      sender.transferred = true;
+    } catch (error) {
+      this.requestPool.cancelServiceSender(connection.requests, connection.port);
+      throw error;
+    }
+    return true;
   }
   /** A tree whose construction fails holds no capacity promise either. */
   private createConnection(
@@ -397,28 +420,38 @@ export class SharedFilesystem {
       if (error instanceof FilesystemError && error.errno === 11) throw error;
       throw new FilesystemError(76);
     }
-    const client = new FilesystemClient(pair.client);
-    const channel = new MessageChannel();
+    let client: FilesystemClient | undefined;
+    let channel: MessageChannel | undefined;
+    let transferred = false;
     try {
-      const attached = await this.socketAttachment(channel.port1, () =>
-        this.worker.postMessage(
+      client = new FilesystemClient(pair.client);
+      const reply = (channel = new MessageChannel());
+      const attached = await this.socketAttachment(reply.port1, () => {
+        transferred = this.postServiceConnection(
+          pair.server,
           {
             connect: pair.server,
             socketScope: {
               guest: { owner: guest.owner, sections: guest.sections },
               directory,
             },
-            reply: channel.port2,
+            reply: reply.port2,
           },
-          [pair.server.port, channel.port2],
-        ),
-      );
+          [pair.server.port, reply.port2],
+        );
+      });
       client.adopt(attached.reservation);
       return { client, root: attached.root, rootIno: attached.rootIno };
     } catch (error) {
-      client.dispose();
-      pair.server.port.close();
-      channel.port2.close();
+      cleanupAfterFailure([
+        () => client?.dispose(),
+        () => pair.client.port.close(),
+        () => {
+          if (!transferred) pair.server.port.close();
+        },
+        () => channel?.port1.close(),
+        () => channel?.port2.close(),
+      ]);
       if (isRevoked(guest)) throw new FilesystemError(11);
       throw error;
     }
@@ -482,7 +515,17 @@ export class SharedFilesystem {
       segments: mergeSegmentDirectories(this.client.connection.segments, identity.segments),
     };
     const connection = connectFilesystemIdentity(current, this.requestPool, undefined, headroom);
-    this.worker.postMessage({ connect: connection.server }, [connection.server.port]);
+    try {
+      this.postServiceConnection(connection.server, { connect: connection.server }, [
+        connection.server.port,
+      ]);
+    } catch (error) {
+      cleanupAfterFailure([
+        () => connection.client.port.close(),
+        () => connection.server.port.close(),
+      ]);
+      throw error;
+    }
     return connection.client;
   }
   /** Cancellation is immediate, but terminate() does not establish worker death. */
