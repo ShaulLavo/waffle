@@ -38,6 +38,8 @@ export default {
         "tests/fixtures/exec-{browser-worker,node-control}.ts",
         // Spawned in isolation to observe native API background-rejection delivery.
         "tests/fixtures/indexeddb-background-confirmation.ts",
+        // Pre-import native getter control and the separate shared-memory growing Worker.
+        "tests/fixtures/stable-memory-{reader,grow-worker}.ts",
         // Bundled dynamically for the storage lifecycle observer's service Worker.
         "tests/fixtures/storage-lifecycle-fs-worker.ts",
         "tests/page-runner/*-page.ts",

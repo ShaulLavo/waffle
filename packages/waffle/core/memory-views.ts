@@ -25,10 +25,20 @@ export function memoryViews(
       const buffer = memory.toResizableBuffer();
       const bytes = new Uint8Array(buffer);
       const view = new DataView(buffer);
+      // Switching an unshared memory back to fixed length detaches its kept buffer.
+      const shared = typeof SharedArrayBuffer === "function" && buffer instanceof SharedArrayBuffer;
       views = {
         bytes: () => bytes,
         view: () => view,
-        range: (ptr, length) => new Uint8Array(memory.buffer, ptr, length),
+        // Coercion can grow a memory after a switch to fixed buffers; preserve getter ordering.
+        range: (ptr, length) =>
+          new Uint8Array(
+            shared && typeof ptr === "number" && typeof length === "number"
+              ? buffer
+              : memory.buffer,
+            ptr,
+            length,
+          ),
       };
     } catch {
       // Some hosts expose the conversion but reject it for this memory.
