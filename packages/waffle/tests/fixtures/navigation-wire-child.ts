@@ -26,6 +26,17 @@ async function runObserver(): Promise<void> {
   const observer: typeof import("../process-navigation-observer.ts") = await import(observerPath);
   const primary = Object.freeze({ kind: "primary-interruption" });
   const interruption = Promise.withResolvers<never>();
+  const consumed = Promise.withResolvers<void>();
+  const captured = (message: unknown) => {
+    if (
+      typeof message === "object" &&
+      message !== null &&
+      "kind" in message &&
+      message.kind === "capture-consumed"
+    )
+      consumed.resolve();
+  };
+  process.on("message", captured);
   process.once("SIGTERM", () => interruption.reject(primary));
   const originalLog = console.log;
   let capturePid = 0;
@@ -38,13 +49,19 @@ async function runObserver(): Promise<void> {
   let caught: unknown;
   try {
     await observer.startNavigationCapture(12345);
+    await consumed.promise;
     if (process.env.WIRE_QUIET !== "1")
       observer.NavigationObservation.begin("synthetic", "retention").failed(primary);
-    process.send?.({ kind: "ready", capturePid });
+    process.send?.({
+      kind: "ready",
+      capturePid,
+      wireCaptured: observer.navigationCaptureSnapshot().output.text.endsWith(wireText),
+    });
     await interruption.promise;
   } catch (error) {
     caught = error;
   } finally {
+    process.off("message", captured);
     await observer.stopNavigationCapture();
   }
   writeFileSync(

@@ -15,6 +15,24 @@ import { captureDiagnostics, captureTail, wireText } from "./fixtures/navigation
 
 const fixture = fileURLToPath(new URL("./fixtures/navigation-wire-child.ts", import.meta.url));
 const source = fileURLToPath(new URL("./process-navigation-observer.ts", import.meta.url));
+const printedWire = wireText.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+
+async function readOutput(
+  stream: ReadableStream<Uint8Array>,
+  printed: () => void,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = "";
+  let observed = false;
+  for await (const chunk of stream) {
+    text += decoder.decode(chunk, { stream: true });
+    if (!observed && text.includes(printedWire)) {
+      observed = true;
+      printed();
+    }
+  }
+  return text + decoder.decode();
+}
 
 function signalIfAlive(pid: number, signal: NodeJS.Signals): void {
   try {
@@ -48,6 +66,7 @@ type Checkpoint = {
   stdoutBytes: number;
   stderrBytes: number;
   expectedStdout: number;
+  readyWithWire: boolean;
   ready: ReturnType<typeof Promise.withResolvers<void>>;
   consumed: ReturnType<typeof Promise.withResolvers<void>>;
   messages: unknown[];
@@ -65,7 +84,10 @@ function receiveCheckpoint(state: Checkpoint, message: unknown): void {
   }
   if (!("capturePid" in message) || typeof message.capturePid !== "number") return;
   state.capturePid = message.capturePid;
-  if ("kind" in message && message.kind === "ready") state.ready.resolve();
+  if ("kind" in message && message.kind === "ready") {
+    state.readyWithWire = "wireCaptured" in message && message.wireCaptured === true;
+    state.ready.resolve();
+  }
 }
 
 function writeObserver(scratch: string, breakPreflightSink = false): string {
@@ -109,6 +131,7 @@ async function controlledInterruption(
     stdoutBytes: 0,
     stderrBytes: 0,
     expectedStdout: (fill ? 600 * 1024 : 0) + wireText.length,
+    readyWithWire: false,
     ready: Promise.withResolvers<void>(),
     consumed: Promise.withResolvers<void>(),
     messages: [],
@@ -133,16 +156,22 @@ async function controlledInterruption(
       detached: true,
       ipc: (message: unknown) => receiveCheckpoint(state, message),
     });
-    const output = new Response(child.stdout).text();
+    const printed = Promise.withResolvers<void>();
+    const output = readOutput(child.stdout, printed.resolve);
     const errors = new Response(child.stderr).text();
+    const observerChild = child;
+    const captured = state.consumed.promise.then(() => {
+      observerChild.send({ kind: "capture-consumed" });
+    });
     await deadline(
       Promise.race([
-        Promise.all([state.ready.promise, state.consumed.promise]),
+        Promise.all([state.ready.promise, captured].concat(quiet ? [] : [printed.promise])),
         child.exited.then(() => {
           throw new Error("Observer exited before checkpoint");
         }),
       ]),
     );
+    expect(state.readyWithWire).toBe(true);
     if (breakSink) {
       const directories = readdirSync(evidence);
       expect(directories).toHaveLength(1);
@@ -159,7 +188,7 @@ async function controlledInterruption(
     const transcript = await output;
     expect(transcript).toContain("PROCESS_NAVIGATION_CAPTURE_OWNER");
     if (quiet) expect(transcript).not.toContain("PROCESS_NAVIGATION_WIRE ");
-    else expect(transcript).toContain(wireText.replace(/\r/g, "\\r").replace(/\n/g, "\\n"));
+    else expect(transcript).toContain(printedWire);
     expect(await errors).not.toContain("Unhandled");
     expect(saved).toHaveLength(1);
     const snapshot = JSON.parse(saved[0]!);
