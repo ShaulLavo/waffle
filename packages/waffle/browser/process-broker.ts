@@ -686,10 +686,7 @@ export class BrowserProcessBroker {
     this.acquireObservation(context.observation, true);
     const observation = this.observationOwners.get(context.pid);
     const nativeReturned = this.nativeLaunchReturns.get(context.pid) ?? observation?.acquire();
-    const controller = this.controllerFor(context.pid);
-    const controllerReturn = controller?.launch
-      ? this.controllerNativeReturnFor(context.pid)
-      : undefined;
+    let controllerReturn: NativeReturnFollowers | undefined;
     const failedLaunch = (error: unknown) => {
       const child = this.children.get(context.pid);
       if (child?.generation === context.generation) return;
@@ -704,6 +701,17 @@ export class BrowserProcessBroker {
         this.imageStops.delete(context.pid);
         observation?.fail(error);
       }
+    };
+    const invokeLauncher = (): ProcessHandle | Promise<ProcessHandle> => {
+      if ("command" in context) return this.launchCommand(context);
+      if (context.execution?.kind === "host") return this.options.launch(context);
+      const controller = this.controllerFor(context.pid);
+      if (!controller?.launch) return this.options.launch(context);
+      controllerReturn = this.controllerNativeReturnFor(context.pid);
+      const candidate = controller.launch(context);
+      if (candidate !== undefined && candidate !== null) return candidate;
+      controllerReturn = undefined;
+      return this.options.launch(context);
     };
     if (nativeReturned) this.nativeLaunchReturns.set(context.pid, nativeReturned);
     this.traceProcess(context, "launching");
@@ -733,12 +741,7 @@ export class BrowserProcessBroker {
     };
     let launched: ProcessHandle | Promise<ProcessHandle>;
     try {
-      launched =
-        "command" in context
-          ? this.launchCommand(context)
-          : context.execution?.kind === "host"
-            ? this.options.launch(context)
-            : (this.controllerFor(context.pid)?.launch?.(context) ?? this.options.launch(context));
+      launched = invokeLauncher();
     } catch (error) {
       failedLaunch(error);
       launch.active = false;

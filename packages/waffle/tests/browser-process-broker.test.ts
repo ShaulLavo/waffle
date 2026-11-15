@@ -3924,15 +3924,26 @@ for (const mode of [
   "throw",
   "reject",
   "throw-with-auxiliary-controller",
+  "host-throw-with-bypassed-controller",
+  "host-reject-with-bypassed-controller",
   "owned-start-failure",
   "owned-body-failure",
 ] as const) {
   test(`external launch failure needs an owned native return, not just a selected result: ${mode}`, async () => {
     const identities = new ProcessIdentityAllocator();
     const registry = new ExecutableRegistry();
+    const host = mode.startsWith("host-");
     registry.register("fixture", {
       adapter: "external",
       module: new WebAssembly.Module(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0)),
+      execution: host
+        ? {
+            kind: "host",
+            launch() {
+              throw new Error("fixture uses the broker launch hook");
+            },
+          }
+        : undefined,
     });
     const failure = new Error("Intentional adapter rejection");
     const reports: unknown[] = [],
@@ -3940,6 +3951,7 @@ for (const mode of [
       source = new DescriptorTable();
     let stops = 0;
     let auxiliaryStops = 0;
+    let controllerLaunches = 0;
     let consumerLive = false;
     const broker = new BrowserProcessBroker({
       reservations: testReservations(),
@@ -3950,8 +3962,14 @@ for (const mode of [
       onError: (error) => reports.push(error),
       launch(context) {
         consumerLive = true;
-        if (mode === "throw" || mode === "throw-with-auxiliary-controller") throw failure;
-        if (mode === "reject") return Promise.reject(failure);
+        if (
+          mode === "throw" ||
+          mode === "throw-with-auxiliary-controller" ||
+          mode === "host-throw-with-bypassed-controller"
+        )
+          throw failure;
+        if (mode === "reject" || mode === "host-reject-with-bypassed-controller")
+          return Promise.reject(failure);
         const body =
           mode === "owned-body-failure"
             ? Promise.reject(failure).catch((error: unknown) => context.startFailed(error))
@@ -3990,6 +4008,14 @@ for (const mode of [
       };
       if (mode === "throw-with-auxiliary-controller")
         broker.registerController(pid, { stop: stopAuxiliary });
+      if (host)
+        broker.registerController(pid, {
+          launch() {
+            controllerLaunches++;
+            throw new Error("classified registration must bypass controller launch");
+          },
+          stop: stopAuxiliary,
+        });
       supervisor.get(pid)!.image.descriptors.inherit(2, source.get(stderr)!);
       source.close(stderr);
       const { captureProcessObserver } = await import("../proc/observation.ts");
@@ -4014,7 +4040,8 @@ for (const mode of [
         expect(reports).toContain(failure);
       }
       expect(output).toHaveLength(1);
-      expect(auxiliaryStops).toBe(mode === "throw-with-auxiliary-controller" ? 1 : 0);
+      expect(auxiliaryStops).toBe(host || mode === "throw-with-auxiliary-controller" ? 1 : 0);
+      expect(controllerLaunches).toBe(0);
     } finally {
       source.dispose();
       await broker.dispose().catch(() => {});
