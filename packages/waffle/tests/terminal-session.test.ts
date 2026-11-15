@@ -5,6 +5,7 @@ import { DescriptorTable, type Stream } from "../core/descriptors.js";
 import { MemFS } from "../fs/memory.js";
 import { ProcessABI } from "../proc/abi.js";
 import { claimOutcome, readOutcome } from "../proc/outcome.js";
+import { controlStore } from "../proc/control.js";
 import { collectDirectoryProcess, confirmDirectoryProcess } from "../proc/directory.js";
 import {
   createWorkerProcessTransport,
@@ -24,6 +25,7 @@ import {
   terminalControls,
   TERMINAL_SESSION_LIMITS,
   type TerminalContext,
+  type TerminalControlReceipt,
   type TerminalPolicy,
   type TerminalResult,
   type TerminalTurn,
@@ -106,14 +108,17 @@ function fixture(
     },
     discard() {},
   };
-  const client = new WorkerProcessClient({
-    transport: root,
-    descriptors,
-    codec,
-    postMessage: (message) => messages.push(message),
-  });
-  function spawn(): WorkerProcessTransport {
-    const pid = client.spawn(root.pid, {
+  function processClient(transport: WorkerProcessTransport) {
+    return new WorkerProcessClient({
+      transport,
+      descriptors,
+      codec,
+      postMessage: (message) => messages.push(message),
+    });
+  }
+  const client = processClient(root);
+  function spawn(parent = root): WorkerProcessTransport {
+    const pid = (parent === root ? client : processClient(parent)).spawn(parent.pid, {
       executable: "fixture",
       argv: [],
       env: {},
@@ -798,27 +803,157 @@ function transitionFixture() {
     },
   };
 }
-for (const operation of ["bind", "admit"] as const)
-  test(`participant death during ${operation} policy cannot publish authority`, () => {
+const admissionLossCases = ["bind-child", "admit-child", "bind-parent"] as const;
+async function participantLossCase(
+  f: ReturnType<typeof transitionFixture>,
+  scenario: (typeof admissionLossCases)[number],
+) {
+  const parent = f.spawn();
+  const parentMember = must(f.authority.admitExisting({ group: f.editor, pid: parent.pid }));
+  const sibling = f.spawn();
+  const siblingMember = must(f.authority.admitExisting({ group: f.editor, pid: sibling.pid }));
+  const child = f.spawn(parent);
+  const spare = f.spawn();
+  const plan = must(f.authority.planMember({ group: f.editor, parent: parentMember.member }));
+  const before = must(f.display.snapshot());
+  let published = false;
+  let provisionalGroup: ReturnType<typeof f.authority.createGroup> | undefined;
+  let provisionalMember: ReturnType<typeof f.authority.admitExisting> | undefined;
+  const loseParticipant = () => {
+    f.fault(() => {});
+    const lost = scenario === "bind-parent" ? parent : child;
+    claimOutcome(workerProcessState(lost).signals.outcome, { kind: "exited", code: 0 });
+  };
+  const result = await f.authority.control((turn) => {
+    provisionalGroup = f.authority.createGroup({ initialMode: "cooked" });
+    must(provisionalGroup);
+    provisionalMember = f.authority.admitExisting({ group: f.editor, pid: spare.pid });
+    must(provisionalMember);
+    turn.publish(() => {
+      published = true;
+    });
+    f.fault(loseParticipant);
+    return scenario === "admit-child"
+      ? f.authority.admitExisting({ group: f.editor, pid: child.pid })
+      : f.authority.bindMember({ planned: plan.member, pid: child.pid });
+  });
+  expect(result.kind === "error" ? result.code : "OK").toBe("PROCESS_GONE");
+  expect(result.receipt.phase).toBe("rolled-back");
+  expect(result.receipt.state?.kind).toBe("open");
+  expect(result.receipt.member(plan.member)).toBe("pending");
+  expect(result.receipt.member(siblingMember.member)).toBe("bound");
+  expect(result.receipt.lease(siblingMember.lease!)).toBe(true);
+  const abandoned = must(provisionalMember!);
+  expect(result.receipt.group(must(provisionalGroup!))).toBe("stale");
+  expect(result.receipt.member(abandoned.member)).toBe("stale");
+  expect(result.receipt.lease(abandoned.lease!)).toBe(false);
+  expect(published).toBe(false);
+  expect(readOutcome(workerProcessState(f.root).signals.outcome)).toBeNull();
+  expect(readOutcome(workerProcessState(sibling).signals.outcome)).toBeNull();
+  expect(must(f.display.snapshot())).toEqual(before);
+  expect(terminalControls(f.attachment.resolve(0))!.snapshot().kind).toBe("ok");
+  const liveSibling = f.attach(sibling, siblingMember.context);
+  try {
+    expect(terminalControls(liveSibling.resolve(0))!.snapshot().kind).toBe("ok");
+    expect(f.input([66, 67])).toEqual({ kind: "ok", value: 2 });
+    const rootBytes = new Uint8Array(1),
+      siblingBytes = new Uint8Array(1);
+    expect(f.attachment.resolve(0).tryRead!([rootBytes])).toBe(1);
+    expect(liveSibling.resolve(0).tryRead!([siblingBytes])).toBe(1);
+    expect(rootBytes[0]).toBe(65);
+    expect(siblingBytes[0]).toBe(66);
+  } finally {
+    liveSibling.dispose();
+  }
+  const later = await f.authority.control(() =>
+    f.authority.admitExisting({ group: f.editor, pid: spare.pid }),
+  );
+  const admitted = must(later);
+  expect(later.receipt.phase).toBe("committed");
+  expect(later.receipt.member(admitted.member)).toBe("bound");
+  expect(later.receipt.lease(admitted.lease!)).toBe(true);
+  expect(later.receipt.member(abandoned.member)).toBe("stale");
+  expect(later.receipt.lease(abandoned.lease!)).toBe(false);
+  if (scenario === "bind-child")
+    must(f.authority.bindMember({ planned: plan.member, pid: f.spawn(parent).pid }));
+  else must(f.authority.cancelPlan(plan.member));
+}
+for (const scenario of admissionLossCases)
+  test(`participant death during ${scenario} rolls back queued authority and preserves the session`, async () => {
     const f = transitionFixture();
     try {
-      const child = f.spawn(),
-        group = must(f.authority.createGroup({ initialMode: "cooked" }));
-      const plan = must(f.authority.planMember({ group, parent: f.editorMember.member }));
-      must(f.authority.transfer({ from: f.editorLease, to: group }));
-      f.fault(() => {
-        claimOutcome(workerProcessState(child).signals.outcome, { kind: "exited", code: 0 });
-      });
-      const result =
-        operation === "bind"
-          ? f.authority.bindMember({ planned: plan.member, pid: child.pid })
-          : f.authority.admitExisting({ group, pid: child.pid });
-      expect(result.kind === "error" ? result.code : "OK").toBe("CLOSED");
-      expect(f.display.snapshot()).toEqual({ kind: "error", code: "CLOSED" });
+      await participantLossCase(f, scenario);
     } finally {
       f.cleanup();
     }
   });
+
+const admissionFailures = [
+  "authorization",
+  "policy-reject",
+  "policy-throw",
+  "check-throw",
+  "root",
+] as const;
+async function strictAdmissionCase(
+  f: ReturnType<typeof boundaryFixture>,
+  operation: "bind" | "admit",
+  failure: (typeof admissionFailures)[number],
+) {
+  const child = f.spawn();
+  const plan = must(f.authority.planMember({ group: f.editor, parent: f.editorMember.member }));
+  const before = controlWords(f.display).slice();
+  let published = false;
+  let receipt: TerminalControlReceipt | undefined;
+  f.fault(() => {
+    if (failure === "authorization") controlStore(workerProcessState(child).controlParent, 0, 0);
+    if (failure === "check-throw") f.revoke();
+    if (failure === "root")
+      claimOutcome(workerProcessState(f.root).signals.outcome, { kind: "exited", code: 0 });
+    if (failure === "policy-throw") throw new Error("admission policy failed");
+    return failure === "policy-reject"
+      ? { kind: "error", code: "DENIED" }
+      : { kind: "ok", value: undefined };
+  });
+  const pending = f.authority.control(
+    (turn) => {
+      turn.publish(() => {
+        published = true;
+      });
+      return operation === "bind"
+        ? f.authority.bindMember({ planned: plan.member, pid: child.pid })
+        : f.authority.admitExisting({ group: f.editor, pid: child.pid });
+    },
+    {
+      settled(value) {
+        receipt = value;
+      },
+    },
+  );
+  if (failure === "policy-throw" || failure === "check-throw")
+    await expect(pending).rejects.toThrow(
+      failure === "policy-throw" ? "admission policy failed" : "R29 admission revoked",
+    );
+  else
+    expect(await pending).toMatchObject({
+      kind: "error",
+      code: failure === "root" ? "PROCESS_GONE" : "CLOSED",
+    });
+  expect(receipt?.phase).toBe("rolled-back");
+  expect(receipt?.state?.kind).toBe("closed");
+  expect(published).toBe(false);
+  expectClosedWithoutPublication(f.display, before);
+}
+for (const operation of ["bind", "admit"] as const)
+  for (const failure of admissionFailures)
+    test(`${operation} confirmation closes queued control on ${failure} failure`, async () => {
+      const f = boundaryFixture();
+      try {
+        await strictAdmissionCase(f, operation, failure);
+      } finally {
+        f.cleanup();
+      }
+    });
 
 test("descendant exit during selection confirmation rolls back without closing the editor", async () => {
   const f = transitionFixture();

@@ -478,6 +478,8 @@ function modeWord(value: TerminalMode): number {
   return value === "raw" ? 1 : 0;
 }
 
+type ConfirmationCheck = () => "PROCESS_GONE" | "CLOSED" | undefined;
+
 interface Publication {
   readonly operation: (receipt: TerminalControlReceipt) => undefined;
   next?: Publication;
@@ -1260,19 +1262,18 @@ class Authority implements TerminalAuthority {
       return operation();
     });
   }
-  private confirm(
-    check: () => boolean,
-    recoverableFailure?: TerminalFailure,
-  ): TerminalResult<void> {
+  private confirm(check: ConfirmationCheck): TerminalResult<void> {
+    let failure: ReturnType<ConfirmationCheck>;
     try {
       this.checkActive();
-      if (!this.session.closed() && this.session.rootLive() && check()) return ok(undefined);
+      failure = this.session.closed() || !this.session.rootLive() ? "CLOSED" : check();
+      if (failure === undefined) return ok(undefined);
     } catch (cause) {
       this.session.close();
       throw cause;
     }
-    if (recoverableFailure !== undefined && !this.session.closed() && this.session.rootLive())
-      return error(recoverableFailure);
+    if (failure === "PROCESS_GONE" && !this.session.closed() && this.session.rootLive())
+      return error(failure);
     this.session.close();
     return error("CLOSED");
   }
@@ -1415,13 +1416,12 @@ class Authority implements TerminalAuthority {
     const group = this.rowGroup(plan.row);
     if (!group) return error("STALE");
     if (this.existingMember(group, state.pid) !== undefined) return error("INVALID");
-    const changed = this.membershipChange(
-      group,
-      () =>
-        !!alive(s.identity, state.slot, state.pid) &&
-        this.authorized(state) &&
-        !!alive(s.identity, s.get(plan.row + 6), state.parentPid),
-    );
+    const changed = this.membershipChange(group, () => {
+      if (!alive(s.identity, state.slot, state.pid)) return "PROCESS_GONE";
+      if (!this.authorized(state)) return "CLOSED";
+      if (!alive(s.identity, s.get(plan.row + 6), state.parentPid)) return "PROCESS_GONE";
+      return undefined;
+    });
     if (changed.kind === "error") return changed;
     s.put(plan.row + 4, state.slot);
     s.put(plan.row + 5, state.pid);
@@ -1466,12 +1466,11 @@ class Authority implements TerminalAuthority {
     if (duplicate !== undefined) return ok(this.admitted(duplicate));
     const allocation = this.allocate(MEMBERS, TERMINAL_SESSION_LIMITS.memberships);
     if (allocation.kind === "error") return allocation;
-    const changed = this.membershipChange(
-      group,
-      () =>
-        !!alive(s.identity, state.slot, state.pid) &&
-        (state.pid === s.identity.rootPid || this.authorized(state)),
-    );
+    const changed = this.membershipChange(group, () => {
+      if (!alive(s.identity, state.slot, state.pid)) return "PROCESS_GONE";
+      if (state.pid !== s.identity.rootPid && !this.authorized(state)) return "CLOSED";
+      return undefined;
+    });
     if (changed.kind === "error") return changed;
     const row = allocation.value;
     s.put(row, mapGet(this.generations, row)!);
@@ -1515,7 +1514,10 @@ class Authority implements TerminalAuthority {
       lease: this.currentLease(group),
     };
   }
-  private membershipChange(group: Group, check = () => true): TerminalResult<void> {
+  private membershipChange(
+    group: Group,
+    check: ConfirmationCheck = () => undefined,
+  ): TerminalResult<void> {
     const s = this.session,
       roster = s.next(group.row + 3);
     if (roster.kind === "error") return roster;
@@ -1607,7 +1609,7 @@ class Authority implements TerminalAuthority {
       next: next.value as TerminalSelection,
     });
     if (changed.kind === "error") return changed;
-    const confirmed = this.confirm(() => this.membersLive(group), "PROCESS_GONE");
+    const confirmed = this.confirm(() => (this.membersLive(group) ? undefined : "PROCESS_GONE"));
     if (confirmed.kind === "error") return confirmed;
     this.saveMode();
     s.put(group.row + 1, RUNNING);
@@ -1648,7 +1650,7 @@ class Authority implements TerminalAuthority {
         next: null,
       });
       if (changed.kind === "error") return changed;
-      const confirmed = this.confirm(() => true);
+      const confirmed = this.confirm(() => undefined);
       if (confirmed.kind === "error") return confirmed;
       this.saveMode();
       this.session.put(H.selected, 0);
