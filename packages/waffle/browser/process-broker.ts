@@ -332,6 +332,11 @@ interface RuntimeChild {
   stopped: boolean;
   quiescence?: Promise<void>;
   stopping?: Promise<void>;
+  /** Borrowed Worker stop excludes adapter-owned work and member/process retirement. */
+  nativeStopping?: Promise<void>;
+  /** Exact accepted entry handle, captured before acquisition is published. */
+  adapter?: ProcessHandle;
+  replacing?: boolean;
   startupStderr?: PipeEndpoint;
   network?: Preview1Network;
   graphics?: GraphicsGrant;
@@ -754,11 +759,16 @@ export class BrowserProcessBroker {
       this.traceProcess(context, "launched");
       const terminal = this.terminalLifetimes.get(context.pid);
       if (this.children.has(context.pid) || !this.controllerFor(context.pid)) {
+        const child = this.children.get(context.pid);
+        const adapter =
+          child?.generation === context.generation
+            ? (child.adapter = ownedAdapterHandle(handle))
+            : undefined;
         launch.active = false;
         this.launches?.delete(context.pid);
         settled();
         return this.children.has(context.pid)
-          ? handle
+          ? (adapter ?? handle)
           : nativeStopHandle(
               handle,
               terminal,
@@ -1892,7 +1902,13 @@ export class BrowserProcessBroker {
         throw new Error("Threaded Preview 1 requires validated source bytes");
       return this.launchOwnedWorker(context, { ...options, network, graphics });
     } catch (error) {
-      if (!this.children.has(context.pid) && typeof error === "object" && error !== null)
+      if (
+        !this.children.has(context.pid) &&
+        context.execution?.kind !== "host" &&
+        this.options.table.get(context.pid)?.image.execution?.kind !== "host" &&
+        typeof error === "object" &&
+        error !== null
+      )
         this.neverConstructed.set(error, context.pid);
       try {
         graphics?.dispose();
@@ -2143,7 +2159,7 @@ export class BrowserProcessBroker {
       this.disposeNetwork(child);
       throw error;
     }
-    return { terminate: () => this.stop(child) };
+    return { terminate: () => this.stopWorker(child) };
   }
   /** The group whose launched member runs as `pid`. Trusted embedder use only. */
   memoryGroupOf(pid: number): MemoryGroupHandle | undefined {
@@ -2654,6 +2670,20 @@ export class BrowserProcessBroker {
     const child = this.children.get(pid);
     if (!child || child.generation !== generation || !this.canExec(child.transport))
       throw new ProcessError(ProcessErrno.NOTSUP, "replacement lost its owned source image");
+    const membership = this.closeReplacementGroup(child, resolved);
+    child.replacing = true;
+    return {
+      rollback: () => {
+        membership?.rollback();
+        // A fatal winner still joins the accepted handle before releasing this source.
+        if (!readOutcome(child.context.outcome)) child.replacing = false;
+      },
+    };
+  }
+  private closeReplacementGroup(
+    child: RuntimeChild,
+    resolved: ResolvedExecutable,
+  ): { rollback(): void } | undefined {
     if (!child.group) return;
     if (resolved.kind !== "module" || resolved.execution?.kind !== "host")
       throw new ProcessError(
@@ -2752,9 +2782,11 @@ export class BrowserProcessBroker {
       this.finalizeProcess(child.context.pid),
     );
   }
+  private stopWorker(child: RuntimeChild): Promise<void> {
+    return child.replacing ? this.stopNativeResources(child) : this.stop(child);
+  }
   private stopPhysical(child: RuntimeChild, replacing = false): void | Promise<void> {
     if (child.stopping) return child.stopping;
-    if (child.stopped) return;
     child.accesses?.dispose();
     if (child.threads) {
       child.stopping = child.threads
@@ -2769,26 +2801,9 @@ export class BrowserProcessBroker {
       return child.stopping;
     }
     const stop = async () => {
-      if (child.stopped) return;
-      child.stopped = true;
       const errors: unknown[] = [];
-      this.disposeNetwork(child);
-      if (child.graphics) await settleStop(() => child.graphics!.retired(), errors);
-      if (child.notifications) await this.stopNotifications(child, errors);
-      await settleStop(async () => {
-        const worker = child.worker;
-        const pending = worker?.terminate();
-        if (pending) await pending;
-        if (!worker) return;
-        worker.onmessage = null;
-        worker.onerror = null;
-        child.worker = undefined;
-      }, errors);
-      await settleStop(
-        () => child.controllerStopping?.pending ?? child.capturedControllerStop?.(),
-        errors,
-      );
-      await settleStop(() => child.cleanup?.(), errors);
+      if (child.replacing) await settleStop(() => this.stopAcceptedAdapter(child), errors);
+      await settleStop(() => this.stopNativeResources(child), errors);
       if (errors.length) {
         // Cleanup after a failed terminate proves nothing: keep group memory and capacity.
         child.group?.failed();
@@ -2806,6 +2821,7 @@ export class BrowserProcessBroker {
       child.output?.retire();
       this.serviceTerminalOutput(child.identity.rootPid);
       this.retireChildController(child.context.pid, child);
+      child.adapter = undefined;
     };
     const fence = replacing ? this.imageFence(child) : this.quiesceProcess(child.context.pid);
     child.stopping = (fence ? fence.then(stop) : stop()).catch((error) => {
@@ -2816,6 +2832,43 @@ export class BrowserProcessBroker {
     });
     this.imageStops.set(child.context.pid, child.stopping);
     return child.stopping;
+  }
+  private async stopAcceptedAdapter(child: RuntimeChild): Promise<void> {
+    await child.launch.pending?.acquired;
+    if (!child.adapter)
+      throw new Error("replacement source has no accepted adapter cleanup handle");
+    await child.adapter.terminate();
+  }
+  private stopNativeResources(child: RuntimeChild): Promise<void> {
+    if (child.nativeStopping) return child.nativeStopping;
+    const stopped = Promise.withResolvers<void>();
+    child.nativeStopping = stopped.promise;
+    void this.stopNativeResourcesNow(child).then(stopped.resolve, stopped.reject);
+    return stopped.promise;
+  }
+  private async stopNativeResourcesNow(child: RuntimeChild): Promise<void> {
+    if (child.replacing) await this.imageFence(child);
+    if (child.stopped) return;
+    child.stopped = true;
+    const errors: unknown[] = [];
+    this.disposeNetwork(child);
+    if (child.graphics) await settleStop(() => child.graphics!.retired(), errors);
+    if (child.notifications) await this.stopNotifications(child, errors);
+    await settleStop(() => this.terminateWorker(child), errors);
+    await settleStop(
+      () => child.controllerStopping?.pending ?? child.capturedControllerStop?.(),
+      errors,
+    );
+    await settleStop(() => child.cleanup?.(), errors);
+    if (errors.length) throw new AggregateError(errors, "Child native resource stop failed");
+  }
+  private async terminateWorker(child: RuntimeChild): Promise<void> {
+    const worker = child.worker;
+    if (!worker) return;
+    await worker.terminate();
+    worker.onmessage = null;
+    worker.onerror = null;
+    child.worker = undefined;
   }
   private retireChildController(pid: number, child?: RuntimeChild): void {
     if (this.reservedRoots.has(pid) || this.roots.has(pid) || (!child && this.suspended)) return;
@@ -3256,6 +3309,25 @@ async function settleStop(stop: () => void | Promise<void>, errors: unknown[]): 
   } catch (error) {
     errors.push(error);
   }
+}
+
+/** One accepted adapter entry, including wrappers around the borrowed native Worker handle. */
+function ownedAdapterHandle(handle: ProcessHandle): ProcessHandle {
+  let stopping: Promise<void> | undefined;
+  const terminate = handle.terminate.bind(handle);
+  return {
+    terminate() {
+      if (stopping) return stopping;
+      const stopped = Promise.withResolvers<void>();
+      stopping = stopped.promise;
+      try {
+        stopped.resolve(terminate());
+      } catch (error) {
+        stopped.reject(error);
+      }
+      return stopping;
+    },
+  };
 }
 
 function terminalPreparationError(code: TerminalFailure): ProcessError {

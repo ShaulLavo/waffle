@@ -354,6 +354,9 @@ export function reserveDirectoryProcess(
   foreground = true,
   jobLifetime: JobLifetime = "independent",
 ): ReturnType<typeof reserveDirectoryProcessIntent> {
+  // Root bootstrap starts with a fresh directory. Descendants must own a live caller row
+  // before even the admission stamp may change this shared directory.
+  if (parentPid !== 0) directoryState(handle);
   const release = beginDirectoryAdmission(handle.directory);
   try {
     return reserveDirectoryProcessIntent(

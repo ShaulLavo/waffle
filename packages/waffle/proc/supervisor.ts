@@ -116,6 +116,7 @@ export interface SupervisorOptions {
   quiesce?(pid: number): void | Promise<void>;
   /** Join physical adapter ownership not represented by a successfully returned launch handle. */
   retire?(pid: number): void | Promise<void>;
+  /** The image owner joins its exact accepted adapter handle and native resources before release. */
   stopImage?(pid: number, generation: number, active: () => boolean): Promise<void>;
   /** Synchronous owner transition after full resolution, before irreversible signal reset. */
   commitReplacement?(
@@ -967,6 +968,7 @@ export class ProcessSupervisor {
       await this.options.stopImage!(record.pid, image.generation, () =>
         this.replacementActive(record, replacement),
       );
+      // The image owner joins the exact accepted adapter handle as well as its native resources.
       image.handle = undefined;
     };
     image.stopping = (image.acquiring ? image.acquiring.then(stop) : stop()).catch((error) => {

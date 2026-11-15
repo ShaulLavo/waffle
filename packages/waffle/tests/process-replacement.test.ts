@@ -76,6 +76,9 @@ async function fixture(
     shared?: boolean;
     typed?: boolean;
     acquired?: (context: ProcessContext) => Promise<void>;
+    wrap?: (
+      handle: import("../proc/types.js").ProcessHandle,
+    ) => import("../proc/types.js").ProcessHandle;
   } = {},
 ) {
   const previous = globalThis.Worker;
@@ -164,7 +167,8 @@ async function fixture(
           ...(shared ? { linkPlan: shared.linkPlan } : {}),
         },
       });
-      return options.acquired ? options.acquired(context).then(() => handle) : handle;
+      const accepted = options.wrap?.(handle) ?? handle;
+      return options.acquired ? options.acquired(context).then(() => accepted) : accepted;
     },
   });
   const root = createWorkerProcessTransport({ identity: identities.buffer, capacity: 32 });
@@ -1153,6 +1157,44 @@ test("the classified host successor can spawn ordinary phase children in fresh g
     expect(f.workers).toHaveLength(2);
     expect(f.workers[1]!.stops).toBe(0);
   } finally {
+    await f.close();
+  }
+});
+
+test("a direct broker joins its exact accepted wrapper once through fatal pre-ack disposal", async () => {
+  const entered = deferred();
+  const released = deferred();
+  let stops = 0;
+  const f = await fixture({
+    shared: true,
+    wrap: (handle) => ({
+      async terminate() {
+        stops++;
+        await handle.terminate();
+        entered.resolve();
+        await released.promise;
+      },
+    }),
+  });
+  let disposing: Promise<void> | undefined;
+  const record = f.table.require(f.pid);
+  try {
+    expect((await f.stage(request({ executable: "host" }))).result).toBe(0);
+    f.supervisor.kill(f.pid, 9);
+    await entered.promise;
+    expect(f.workers[0]!.stops).toBe(1);
+    expect(f.broker.memoryGroups()[0]?.members).toBe(1);
+    disposing = f.broker.dispose();
+    expect(captureProcessObserver(record.observation).read().kind).not.toBe("terminated");
+    released.resolve();
+    await disposing;
+    await record.stopping?.complete;
+    expect(stops).toBe(1);
+    expect(f.broker.memoryGroups()).toEqual([]);
+    expect(captureProcessObserver(record.observation).read()).toEqual({ kind: "terminated" });
+  } finally {
+    released.resolve();
+    await disposing;
     await f.close();
   }
 });

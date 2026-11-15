@@ -7,7 +7,18 @@ import {
   commitDirectoryAdmission,
   createDirectory,
   directoryAdmissionVersion,
+  reserveDirectoryProcess,
+  collectDirectoryProcess,
+  confirmDirectoryProcess,
 } from "../proc/directory.js";
+import {
+  createWorkerProcessTransport,
+  WorkerProcessClient,
+  workerProcessState,
+} from "../proc/worker-client.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { createWorkerPipeCodec } from "../proc/worker-pipes.js";
+import { claimOutcome } from "../proc/outcome.js";
 
 test("sole-member closure uses the exact launched incarnation and preserves earlier joins", () => {
   const groups = new MemoryGroups({ stackBytes: 65536 });
@@ -72,4 +83,39 @@ test("retained members and released incarnations cannot close admission", () => 
   sibling.stopped();
   source.stopped();
   expect(() => source.closeAdmission()).toThrow(ProcessError);
+});
+
+test("a collected caller cannot stamp spawn intent or raw reservation into its old directory", () => {
+  const root = createWorkerProcessTransport({ capacity: 3 });
+  const child = { ...root, ...reserveDirectoryProcess(root, 2, root.pid, 2, root.pid) };
+  const descriptors = new DescriptorTable();
+  const client = new WorkerProcessClient({
+    transport: child,
+    descriptors,
+    codec: createWorkerPipeCodec(),
+    postMessage() {
+      throw new Error("stale caller published");
+    },
+    prepareSpawn() {
+      throw new Error("stale caller prepared an acquisition");
+    },
+  });
+  try {
+    claimOutcome(workerProcessState(child).signals.outcome, { kind: "exited", code: 0 });
+    confirmDirectoryProcess(child);
+    collectDirectoryProcess(child);
+    const before = Array.from(new Uint8Array(root.directory));
+    const request = { executable: "next", argv: [], env: {}, cwd: "/", job: -1, fds: [] };
+    expect(() => client.spawn(child.pid, request)).toThrow(ProcessError);
+    expect(Array.from(new Uint8Array(root.directory))).toEqual(before);
+    expect(() => reserveDirectoryProcess(child, 3, child.pid, 3, child.pid)).toThrow(ProcessError);
+    expect(Array.from(new Uint8Array(root.directory))).toEqual(before);
+    const state = workerProcessState(root);
+    expect(() =>
+      reserveDirectoryProcess(child, 4, child.pid, state.job, root.pid, state.jobSlot),
+    ).toThrow(ProcessError);
+    expect(Array.from(new Uint8Array(root.directory))).toEqual(before);
+  } finally {
+    descriptors.dispose();
+  }
 });

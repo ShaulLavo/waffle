@@ -540,6 +540,10 @@ export class WorkerProcessClient {
     return sources;
   }
   private reserveSpawn(parentPid: number, request: SpawnRequest): number {
+    // A collected caller has no authority even to stamp this shared directory.
+    this.admit();
+    if (parentPid !== this.pid)
+      throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
     const release = beginDirectoryAdmission(this.options.transport.directory);
     try {
       return this.reserveSpawnIntent(parentPid, request);

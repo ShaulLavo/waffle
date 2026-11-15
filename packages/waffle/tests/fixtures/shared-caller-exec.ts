@@ -32,7 +32,24 @@ export type SharedExecMode =
   | "native-failure"
   | "filesystem-failure"
   | "controller-failure"
-  | "cleanup-failure";
+  | "cleanup-failure"
+  | "adapter-handle"
+  | "late-adapter-handle"
+  | "adapter-before-worker"
+  | "adapter-handle-failure"
+  | "adapter-before-worker-failure"
+  | "adapter-handle-kill"
+  | "adapter-kill-before-ack"
+  | "adapter-handle-dispose"
+  | "late-adapter-dispose";
+
+function sourceEnvironment(mode: SharedExecMode): Record<string, string> {
+  return {
+    TARGET: mode === "missing" ? "/missing" : mode === "shebang" ? "/script" : "/held-host",
+    EXPECT: mode === "missing" ? "-44" : "-58",
+    DESCRIPTORS: mode === "descriptors" ? "1" : "0",
+  };
+}
 
 /** Public Runtime, genuine filesystem Worker, imported PIE and gated real native return. */
 export async function sharedCallerExec(mode: SharedExecMode) {
@@ -51,6 +68,12 @@ export async function sharedCallerExec(mode: SharedExecMode) {
   const controllerStopGate = Promise.withResolvers<void>();
   const handleGate = Promise.withResolvers<void>();
   const replaced = Promise.withResolvers<void>();
+  const adapterEntered = Promise.withResolvers<void>();
+  const adapterGate = Promise.withResolvers<void>();
+  let adapterHandleStops = 0;
+  let adapterCleanupComplete = false;
+  let processOwner: BrowserProcessBroker | undefined;
+  let beforeAcknowledge: (() => void) | undefined;
   let sourceFilesystem: FilesystemIdentity | undefined;
   let heldSection: FilesystemSection | undefined;
   let sectionActive = false;
@@ -64,6 +87,8 @@ export async function sharedCallerExec(mode: SharedExecMode) {
   const descriptors = new DescriptorTable();
   const negative = mode === "unclassified" || mode === "missing" || mode === "shebang";
   const debt = mode.endsWith("-failure");
+  const gatedAdapter = (mode.startsWith("adapter-") || mode.startsWith("late-adapter-")) && !debt;
+  const lateSource = mode === "source-acquisition" || mode.startsWith("late-adapter-");
   const cleanup = {
     createdWorkers: 0,
     nativeReturns: 0,
@@ -83,7 +108,10 @@ export async function sharedCallerExec(mode: SharedExecMode) {
       workers.push(this);
       if (String(url).endsWith("shared-caller-exec-worker.ts")) sourceWorker = workers.at(-1);
       this.addEventListener("message", ({ data }) => {
-        if (data?.type === "replaced") replaced.resolve();
+        if (data?.type === "replaced") {
+          beforeAcknowledge?.();
+          replaced.resolve();
+        }
         if (data?.type !== "error") return;
         rejected.reject(new Error(data.message));
         sourceReady.reject(new Error(data.message));
@@ -116,7 +144,7 @@ export async function sharedCallerExec(mode: SharedExecMode) {
       },
       memoryGroups: { maximumPages: 65536, stackBytes: 65536 },
       processHost: (options) =>
-        new BrowserProcessBroker({
+        (processOwner = new BrowserProcessBroker({
           ...options,
           onError: () => {},
           filesystem: {
@@ -130,7 +158,7 @@ export async function sharedCallerExec(mode: SharedExecMode) {
                 failStop();
             },
           },
-        }),
+        })),
     });
     runtime.registerAdapter("source", (context, service) => {
       source = context;
@@ -169,7 +197,22 @@ export async function sharedCallerExec(mode: SharedExecMode) {
         onMessage,
         cleanup: mode === "cleanup-failure" ? failStop : undefined,
       });
-      return mode === "source-acquisition" ? handleGate.promise.then(() => handle) : handle;
+      const accepted = {
+        async terminate() {
+          adapterHandleStops++;
+          if (mode === "adapter-before-worker-failure") failStop();
+          if (mode === "adapter-before-worker") {
+            adapterEntered.resolve();
+            await adapterGate.promise;
+          }
+          await handle.terminate();
+          adapterEntered.resolve();
+          if (gatedAdapter) await adapterGate.promise;
+          if (mode === "adapter-handle-failure") failStop();
+          adapterCleanupComplete = true;
+        },
+      };
+      return lateSource ? handleGate.promise.then(() => accepted) : accepted;
     });
     const launch = (context: RuntimeProcessContext) => {
       target = context;
@@ -246,6 +289,8 @@ export async function sharedCallerExec(mode: SharedExecMode) {
     await runtime.filesystem.writeFile("/script", "#!/source\n");
     await runtime.filesystem.writeFile("/still-usable", "original runtime filesystem");
     const service = await runtime.processes();
+    const owner = processOwner;
+    assert(owner);
     const supervisor = await service.ready();
     const root = createWorkerProcessTransport({
       pid: runtime.identities.pid(),
@@ -282,11 +327,7 @@ export async function sharedCallerExec(mode: SharedExecMode) {
     const pid = client.spawn(root.pid, {
       executable: "/source",
       argv: ["source"],
-      env: {
-        TARGET: mode === "missing" ? "/missing" : mode === "shebang" ? "/script" : "/held-host",
-        EXPECT: mode === "missing" ? "-44" : "-58",
-        DESCRIPTORS: mode === "descriptors" ? "1" : "0",
-      },
+      env: sourceEnvironment(mode),
       cwd: "/",
       job: -1,
       fds: mode === "descriptors" ? [{ parent: 9, child: 3 }] : [],
@@ -294,7 +335,7 @@ export async function sharedCallerExec(mode: SharedExecMode) {
     for (const message of notices) await service.runtimeMessage(message, root.pid);
     if (mode === "descriptors") descriptors.close(9);
     const starting = supervisor.start(pid);
-    if (mode !== "source-acquisition") await starting;
+    if (!lateSource) await starting;
     await sourceReady.promise;
     assert(source && sourceWorker);
     const admittedWorker = sourceWorker;
@@ -306,6 +347,23 @@ export async function sharedCallerExec(mode: SharedExecMode) {
     assert(group);
     const original = service.memoryGroups();
     const charge = original[0]?.committedBytes;
+    const workerTickets = () =>
+      admittedRuntime.sharedMemory
+        .snapshot()
+        .holders.filter((holder) => holder.label === "guest-memory" && holder.scope === "worker");
+    const originalTickets = workerTickets();
+    const waiting = supervisor.waitForExit(root.pid, pid);
+    let cancelled = false;
+    let disposing: Promise<void> | undefined;
+    const cancelSource = () => {
+      if (cancelled) return;
+      cancelled = true;
+      if (mode.endsWith("dispose")) {
+        disposing = admittedRuntime.dispose();
+        void disposing.catch(() => {});
+      } else supervisor.kill(pid, 9);
+    };
+    if (mode === "adapter-kill-before-ack") beforeAcknowledge = cancelSource;
     if (mode === "filesystem-fence") {
       assert(sourceFilesystem);
       heldSection = new FilesystemSection(sourceFilesystem);
@@ -325,11 +383,12 @@ export async function sharedCallerExec(mode: SharedExecMode) {
         }
         controllerStopGate.resolve();
       }
-      if (mode === "source-acquisition") {
+      if (lateSource) {
         await replaced.promise;
         assert.equal(targetEntries, 0);
         assert.equal(stopped.has(admittedWorker), false);
         assert.equal(service.memoryGroupOf(pid), group);
+        if (mode === "late-adapter-dispose") cancelSource();
         handleGate.resolve();
         await starting;
       }
@@ -357,6 +416,9 @@ export async function sharedCallerExec(mode: SharedExecMode) {
       assert.equal(targetEntries, 0);
       assert.notEqual(observer.read().kind, "terminated");
       assert.equal(faulted, true);
+      if (mode === "adapter-handle-failure" || mode === "adapter-before-worker-failure")
+        assert.equal(stopped.has(admittedWorker), true);
+      assert(workerTickets().some((holder) => holder.state === "debt"));
       return {
         mode,
         outcome: "PASS",
@@ -368,6 +430,17 @@ export async function sharedCallerExec(mode: SharedExecMode) {
       };
     }
     const finishPositive = async () => {
+      if (mode === "adapter-before-worker") {
+        await Promise.race([
+          adapterEntered.promise,
+          targetEntered.promise.then(() => {
+            throw new Error("target entered before accepted adapter cleanup");
+          }),
+        ]);
+        assert.equal(stopped.has(admittedWorker), false);
+        assert.equal(service.memoryGroupOf(pid), group);
+        adapterGate.resolve();
+      }
       await Promise.race([
         stopEntered.promise,
         rejected.promise.then(() => {
@@ -375,14 +448,34 @@ export async function sharedCallerExec(mode: SharedExecMode) {
         }),
       ]);
       assert.equal(stopped.has(admittedWorker), false);
-      assert.equal(service.memoryGroupOf(pid), group);
-      assert.equal(service.memoryGroups()[0]?.committedBytes, charge);
-      assert.equal(service.memoryGroups()[0]?.members, 1);
+      assert.equal(owner.memoryGroupOf(pid), group);
+      assert.equal(owner.memoryGroups()[0]?.committedBytes, charge);
+      assert.equal(owner.memoryGroups()[0]?.members, 1);
       assert.equal(targetEntries, 0);
-      assert.equal(service.transportFor(pid)?.generation, 1);
-      assert.deepEqual(observer.read(), { kind: "pending" });
+      if (!cancelled) assert.equal(owner.transportFor(pid)?.generation, 1);
+      assert.equal(observer.read().kind, cancelled ? "selected" : "pending");
       if (mode === "descriptors") assert.equal(descriptorPipe?.tryRead([new Uint8Array(1)]), -6);
       stopGate.resolve();
+      if (gatedAdapter) {
+        await Promise.race([
+          adapterEntered.promise,
+          targetEntered.promise.then(() => {
+            throw new Error("target entered before accepted adapter cleanup");
+          }),
+        ]);
+        assert.equal(owner.memoryGroupOf(pid), group);
+        assert.equal(owner.memoryGroups()[0]?.committedBytes, charge);
+        assert.equal(targetEntries, 0);
+        assert.equal(adapterHandleStops, 1);
+        assert.equal(adapterCleanupComplete, false);
+        if (!cancelled) assert.deepEqual(workerTickets(), originalTickets);
+        assert.equal(observer.read().kind, cancelled ? "selected" : "pending");
+        if (mode === "adapter-handle-kill" || mode === "adapter-handle-dispose") cancelSource();
+        assert.equal(owner.memoryGroupOf(pid), group);
+        assert.equal(owner.memoryGroups()[0]?.committedBytes, charge);
+        assert.notEqual(observer.read().kind, "terminated");
+        adapterGate.resolve();
+      }
       if (mode === "controller-stop") {
         await controllerStopEntered.promise;
         assert.equal(stopped.has(admittedWorker), true);
@@ -391,8 +484,11 @@ export async function sharedCallerExec(mode: SharedExecMode) {
         assert.equal(service.memoryGroups()[0]?.committedBytes, charge);
         controllerStopGate.resolve();
       }
+      if (cancelled) return;
       await targetEntered.promise;
       assert(target);
+      assert.equal(adapterHandleStops, 1);
+      assert.equal(adapterCleanupComplete, true);
       assert.equal(target.pid, admittedSource.pid);
       assert.equal(target.parentPid, admittedSource.parentPid);
       assert.equal(target.job, admittedSource.job);
@@ -421,14 +517,15 @@ export async function sharedCallerExec(mode: SharedExecMode) {
       assert.deepEqual(observer.read(), { kind: "pending" });
       sourceWorker.postMessage({ kind: "release" });
     } else await finishPositive();
-    const exit = await supervisor.waitForExit(root.pid, pid);
-    assert.equal(exit.kind, "exited");
-    assert.equal(exit.code, negative ? 0 : 137);
+    const exit = await waiting;
+    assert.equal(exit.kind, cancelled ? "signaled" : "exited");
+    assert.equal(exit.code, cancelled ? 9 : negative ? 0 : 137);
     while (observer.read().kind !== "terminated")
       await new Promise((resolve) => setTimeout(resolve, 1));
     assert.equal(observer.read().kind, "terminated");
     assert.equal(replacedRegistrationEntries, 0);
-    assert.equal(targetEntries, negative ? 0 : 1);
+    assert.equal(targetEntries, negative || cancelled ? 0 : 1);
+    await disposing;
     if (mode === "descriptors") assert.equal(descriptorPipe?.tryRead([new Uint8Array(1)]), 0);
     return {
       mode,
@@ -436,6 +533,8 @@ export async function sharedCallerExec(mode: SharedExecMode) {
       exit,
       targetEntries,
       sourceNativeReturned: stopped.has(admittedWorker),
+      adapterHandleStops,
+      adapterCleanupComplete,
       groupsBefore: original,
       identity: {
         pid,
@@ -471,6 +570,7 @@ export async function sharedCallerExec(mode: SharedExecMode) {
     stopGate.resolve();
     controllerStopGate.resolve();
     handleGate.resolve();
+    adapterGate.resolve();
     if (sectionActive) heldSection?.exit();
     targetGate.resolve();
     sourceWorker?.postMessage({ kind: "release" });
@@ -488,6 +588,9 @@ export async function sharedCallerExec(mode: SharedExecMode) {
       globalThis.Worker = NativeWorker;
     }
     assert.equal(stopped.size, workers.length);
+    if (!debt || mode === "adapter-handle-failure" || mode === "adapter-before-worker-failure")
+      assert.equal(adapterHandleStops, 1);
+    if (!debt) assert.equal(adapterCleanupComplete, true);
     cleanup.createdWorkers = workers.length;
     cleanup.nativeReturns = stopped.size;
   }
