@@ -22,6 +22,8 @@ const result = await authority.control(
 
 Terminal metadata is staged while the gate is held and commits only after successful synchronous work and liveness checks. On error or cancellation, new group/member incarnations are invalidated; reused groups and selection are not rewritten. Policy callbacks can have external effects, which this journal cannot undo. Use `turn.publish` for local bookkeeping that must become visible only after commit. Publication callbacks must only update local state, not call terminal operations. A retained turn expires.
 
+If a descendant exits during bind or admission confirmation, or a required binding parent exits, the operation returns PROCESS_GONE. A queued control rolls back its staged authority and keeps a healthy root Session usable. Authorization loss during confirmation, rejected or thrown policy callbacks, and thrown admission checks still close the Session. Root loss and interrupted native holders retain their existing closure behavior.
+
 Control is private to the current realm and stack. Same-Session root aliases can reuse that grant; matching a shared PID does not grant reentrancy. Blocking runtime waits and recursive control waits inside a control/policy turn are rejected. Work must remain bounded and synchronous. Promise results are invalid. Large input-drain flows retain their phase/byte progress and release the turn before waiting for input readiness; a failed data read is not a reason to replay a completed control phase.
 
 ## Descendant preparation
