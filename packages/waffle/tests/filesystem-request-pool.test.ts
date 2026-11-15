@@ -203,3 +203,46 @@ test("reuse allocation failure leaves the selected arena recoverable and excess 
   }
   expect(requestMemoryResources(recovered.memory).namespaceRequests).toBe(0);
 });
+
+test("final release preserves uncertain lifetimes and settles eligible arenas once", () => {
+  const pool = new FilesystemRequestPool(createRequestBudget(), 65536);
+  const live = connection(pool);
+  const unreaped = connection(pool);
+  const unretired = connection(pool);
+  const copying = connection(pool);
+  const failed = connection(pool);
+  const safe = connection(pool);
+  const excess = connection(pool);
+  retireRequestMemory(unreaped.memory);
+  Atomics.store(new Int32Array(unretired.revocation), 0, 2);
+  Atomics.add(new BigInt64Array(copying.memory.control), 7, 1n);
+  retire(copying);
+  retire(failed, 29);
+  const abandoned = new FilesystemRequestAllocator(safe.memory).allocate(16, 100);
+  retire(safe);
+  retire(excess);
+  const before = requestBudgetBytes(pool.budget);
+  pool.releaseRetired();
+  const kept = [live, unreaped, unretired, copying, failed].map((peer) => peer.memory);
+  expectOwned(pool, kept);
+  expect(requestMemoryResources(live.memory).namespaceRequests).toBe(0);
+  expect(requestTransportError(safe.memory)?.reason).toBe("stale");
+  expect(requestBudgetBytes(pool.budget)).toBe(before);
+  pool.releaseRetired();
+  expectOwned(pool, kept);
+  releaseRequestBuffer(abandoned, REQUEST_CLIENT);
+  releaseRequestBuffer(abandoned, REQUEST_SERVICE);
+  expect(requestBudgetBytes(pool.budget)).toBe(before);
+  Atomics.sub(new BigInt64Array(copying.memory.control), 7, 1n);
+  pool.releaseRetired();
+  expectOwned(
+    pool,
+    [live, unreaped, unretired, failed].map((peer) => peer.memory),
+  );
+  const later = connection(pool);
+  expect(later.memory.data).not.toBe(safe.memory.data);
+  expect(later.memory.data).not.toBe(failed.memory.data);
+  const request = new FilesystemRequestAllocator(later.memory).allocate(16);
+  releaseRequestBuffer(request, REQUEST_CLIENT);
+  releaseRequestBuffer(request, REQUEST_SERVICE);
+});

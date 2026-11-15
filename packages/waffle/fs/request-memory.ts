@@ -429,7 +429,7 @@ export class FilesystemRequestPool {
     });
   }
   /** Keep one safe arena for this take; release excess references without refunding backing.
-   * Retirement is published remotely, so a final idle burst waits for the next take to sweep. */
+   * A live owner observes remote retirement only on its next take. */
   private sweep(): Arena | undefined {
     let reusable: Arena | undefined;
     let retained = 0;
@@ -446,6 +446,16 @@ export class FilesystemRequestPool {
     }
     this.arenas.length = retained;
     return reusable;
+  }
+  /** A successfully stopped owner needs no idle cache. Unconfirmed and failed lifetimes stay. */
+  releaseRetired(): void {
+    let retained = 0;
+    for (let i = 0; i < this.arenas.length; i++) {
+      const arena = this.arenas[i]!;
+      if (this.reusable(arena)) this.settle(arena);
+      else this.arenas[retained++] = arena;
+    }
+    this.arenas.length = retained;
   }
   private reusable(arena: Arena): boolean {
     if (arena.stranded) return false;
