@@ -116,7 +116,14 @@ export interface SupervisorOptions {
   quiesce?(pid: number): void | Promise<void>;
   /** Join physical adapter ownership not represented by a successfully returned launch handle. */
   retire?(pid: number): void | Promise<void>;
+  /** The image owner joins its exact accepted adapter handle and native resources before release. */
   stopImage?(pid: number, generation: number, active: () => boolean): Promise<void>;
+  /** Synchronous owner transition after full resolution, before irreversible signal reset. */
+  commitReplacement?(
+    pid: number,
+    generation: number,
+    resolved: ResolvedExecutable,
+  ): { rollback(): void } | undefined;
   replacementFailed?(pid: number, error: unknown): void;
   staleImage?(pid: number, generation: number): void;
   /** Cleanup failures are diagnostics, never a reason to leave peers blocked or skip teardown. */
@@ -840,6 +847,7 @@ export class ProcessSupervisor {
       },
       cancel: async (error = new ProcessError(ProcessErrno.SRCH, "replacement cancelled")) => {
         if (replacement.state.phase === "done") return;
+        if (replacement.state.phase === "resolving") replacement.admission?.rollback();
         replacement.state = { phase: "cancelled" };
         try {
           await replacement.discard();
@@ -885,6 +893,11 @@ export class ProcessSupervisor {
         replacement.request.argv,
       );
       active();
+      replacement.admission = this.options.commitReplacement?.(
+        record.pid,
+        replacement.image.generation,
+        resolved,
+      );
       const signal = resetImageSignals(record.signalState, record.interrupt);
       if (signal) this.defaultSignal(record.pid, signal);
       active();
@@ -955,6 +968,7 @@ export class ProcessSupervisor {
       await this.options.stopImage!(record.pid, image.generation, () =>
         this.replacementActive(record, replacement),
       );
+      // The image owner joins the exact accepted adapter handle as well as its native resources.
       image.handle = undefined;
     };
     image.stopping = (image.acquiring ? image.acquiring.then(stop) : stop()).catch((error) => {
@@ -1002,10 +1016,12 @@ export class ProcessSupervisor {
       return this.options.launchCommand({ ...context, command: executable });
     }
     this.table.require(context.pid).image.nativeAcquisition = { kind: "invoked" };
+    this.table.require(context.pid).image.execution = executable.execution;
     return this.options.launch({
       ...context,
       module: executable.module,
       adapter: executable.adapter,
+      ...(executable.execution ? { execution: executable.execution } : {}),
       interruptible: executable.interruptible,
     });
   }

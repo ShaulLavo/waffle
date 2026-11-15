@@ -474,7 +474,7 @@ export class WorkerProcessBroker {
       if (transport.generation !== sender.generation + 1)
         throw new ProcessError(ProcessErrno.INVAL, "exec image generation differs from sender");
       if (state.pid !== sender.pid || state.parentPid === 0 || !this.options.canExec?.(sender))
-        throw new ProcessError(ProcessErrno.NOTSUP, "exec requires an owned non-group worker");
+        throw new ProcessError(ProcessErrno.NOTSUP, "exec requires an owned worker image");
       const supervisor = await this.ready();
       codec = this.codec(transport);
       descriptors = new DescriptorTable();

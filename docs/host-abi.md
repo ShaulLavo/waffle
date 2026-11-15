@@ -218,7 +218,7 @@ or terminal stop between images.
 Validation, descriptor staging, executable lookup, and module loading or compilation
 failures return negative WASI errno before commit. The caller remains usable, and
 `spawn_error(0, ...)` contains the diagnostic for that attempt. Invalid guest spans
-return `-EFAULT`. Unsupported socket bindings, roots, group members, threaded images,
+return `-EFAULT`. Unsupported socket bindings, roots, threaded images,
 and executors without an owned Worker return `-ENOTSUP`. A service without exec
 returns `-ENOSYS`; a missing common wake or revocation registration returns
 `-ENOTSUP`. Each attempt clears the previous diagnostic.
@@ -229,6 +229,22 @@ A previously selected fatal signal keeps its outcome. Handled signal disposition
 reset to default, ignored dispositions stay ignored, and a pending terminating
 signal prevents replacement launch. Handled signals are not consumed while the
 import waits.
+
+A shared-memory caller can replace itself only with a fully resolved target registered
+through `Runtime.registerHostAdapter`. The exact current non-root Worker must be the
+group's sole launched member. Reserved or retained members and unresolved same-directory
+spawn or adapter acquisitions cause precommit `-ENOTSUP`. The owner orders this check
+against concurrent spawn intents and closes the group to later joins in one synchronous
+transition, after target lookup and before signal reset. It never cancels an earlier join
+or waits for a child to finish to make the caller eligible.
+
+The host target retains the exact program and launcher registration through lookup and
+source stop. Guest JSON, environment, module contents, paths and adapter names supply no
+host classification. The target cannot acquire its own guest Worker, group or typed-thread
+image through the process service. It can spawn ordinary child processes. The original
+group remains charged until source filesystem and controller fences, native termination,
+controller stop and adapter cleanup all succeed. Any failed stop retains the old member
+and its memory charge. This transition does not cancel descendants or change PID-only KILL.
 
 ### Descriptors and preopens across exec
 

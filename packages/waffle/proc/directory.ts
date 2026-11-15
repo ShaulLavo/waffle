@@ -41,6 +41,39 @@ import {
 const HEADER_BYTES = 32;
 const PROCESS_WORDS = 79 + START_DIAGNOSTIC_WORDS;
 const JOB_WORDS = 10;
+const INTENT_STEP = 0x100000000n;
+
+/** Stamp before spawn preparation can hide a reservation from the page owner. */
+export function beginDirectoryAdmission(directory: SharedArrayBuffer): () => void {
+  const word = new BigInt64ArrayConstructor(directory, 16, 1);
+  for (;;) {
+    const before = atomicsLoad(word, 0);
+    if (before < 0n || before > 0x7ffffffe00000000n || (before & 0xffffffffn) === 0xffffffffn)
+      throw new ProcessError(ProcessErrno.NOTSUP, "process admission identity exhausted");
+    if (atomicsCompareExchange(word, 0, before, before + INTENT_STEP + 1n) !== before) continue;
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      atomicsAdd(word, 0, -1n);
+    };
+  }
+}
+
+/** A pending stamp is not a cancellable reservation or permission to wait for a child. */
+export function directoryAdmissionVersion(directory: SharedArrayBuffer): bigint {
+  const version = atomicsLoad(new BigInt64ArrayConstructor(directory, 16, 1), 0);
+  if ((version & 0xffffffffn) !== 0n)
+    throw new ProcessError(ProcessErrno.NOTSUP, "process admission is unresolved");
+  return version;
+}
+
+/** Linearize the owner decision against every concurrent earlier spawn intent. No freeze. */
+export function commitDirectoryAdmission(directory: SharedArrayBuffer, version: bigint): void {
+  const word = new BigInt64ArrayConstructor(directory, 16, 1);
+  if (atomicsCompareExchange(word, 0, version, version + INTENT_STEP) !== version)
+    throw new ProcessError(ProcessErrno.NOTSUP, "process admission changed during exec");
+}
 export interface DirectoryHandle {
   readonly directory: SharedArrayBuffer;
   readonly slot: number;
@@ -312,6 +345,36 @@ export function directoryControls(
   return false;
 }
 export function reserveDirectoryProcess(
+  handle: DirectoryHandle,
+  pid: number,
+  parentPid: number,
+  job: number,
+  ownerPid: number,
+  jobSlot?: number,
+  foreground = true,
+  jobLifetime: JobLifetime = "independent",
+): ReturnType<typeof reserveDirectoryProcessIntent> {
+  // Root bootstrap starts with a fresh directory. Descendants must own a live caller row
+  // before even the admission stamp may change this shared directory.
+  if (parentPid !== 0) directoryState(handle);
+  const release = beginDirectoryAdmission(handle.directory);
+  try {
+    return reserveDirectoryProcessIntent(
+      handle,
+      pid,
+      parentPid,
+      job,
+      ownerPid,
+      jobSlot,
+      foreground,
+      jobLifetime,
+    );
+  } finally {
+    release();
+  }
+}
+
+function reserveDirectoryProcessIntent(
   handle: DirectoryHandle,
   pid: number,
   parentPid: number,

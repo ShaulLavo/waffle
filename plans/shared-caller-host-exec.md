@@ -1,10 +1,18 @@
 # Replace a sole-member shared caller with a host continuation
 
-Status: Approved future design, independently reviewed on 2026-11-15. Implementation is not
-commissioned. Waffle owns the provider contract and release; Safari memory owns the matching
-trusted consumer binding and later qualification. Fold this entry into the next Waffle PR.
+Status: Approved. Source implementation is in PR 516 and awaits a new independent review
+and green CI after retirement corrections. Waffle owns the provider contract and release;
+Safari memory owns the matching trusted consumer binding and later qualification.
 It creates no hold on bun-wasm PR 792, releases, pins, or engine qualification. R3's stronger
 subtree cancellation remains a separate item. Legacy caller-only KILL remains PID-only.
+
+PR 516 implements the owner-held registration with `Runtime.registerHostAdapter`, atomic
+sole-member admission and source retirement. Its correction joins the exact accepted source
+adapter handle, including wrappers and late acquisition, before member/ticket release. Host
+registration failures retain their own uncertain work, and stale callers cannot change the
+directory admission stamp. The released .130 negative and real source positive remain
+separate controls. No release or consumer adoption is established by this source status.
+Descriptions of current source barriers below refer to .130/.131, the reviewed design base.
 
 ## Decision and released behavior
 

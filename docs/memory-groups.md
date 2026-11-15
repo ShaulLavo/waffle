@@ -79,6 +79,17 @@ A member blocked in `futex_wait` is cancelled by that same hard stop. Group stat
 
 The group ends when no member is reserved, launched, or retained. Publications, region metadata, pins and arenas are retired exactly once at that point, so a retained ended owner reports zero regions, holds, pins, watches and publications. Its `committedBytes` keeps the historical value; the page budget is what returns to zero. Its page-held reservation remains charged until safe pool reuse or a local finalization receipt. An external root receives the memory object in its bootstrap request, so its backing is treated as exposed and is never recycled.
 
+A sole-member non-root Worker can [exec a registered host target](host-abi.md#process-image-replacement).
+The owner first resolves the exact host launcher, then reconciles shared-directory spawn
+intents, pending adapters and all member leases. Unknown sibling acquisitions also prevent
+replacement because they might hold an explicit group handle. This conservative refusal
+does not cancel earlier reservations or affect a child already running in an independent group.
+Only the final synchronous owner transition closes group admission. Precommit rollback
+reopens only its own closure. Successful commit keeps the group closed through real source
+filesystem and controller fences, native stop and cleanup. A failure retains member debt.
+Pins and publications follow ordinary last-member retirement and never transfer to the
+successor by PID. Group retirement makes no claim about physical memory reclamation.
+
 A FUTEX watch is pending until the first `futex_wake` that selects it. The waker claims the hit atomically, so a later or concurrent one-count wake moves on to the next pending watch and never reports progress twice for one watch. A hit watch stays ready until `futex_unwatch`.
 
 Output pointers are checked before an import changes owner state. A misaligned or out-of-bounds output span returns `-EINVAL` and leaves regions, holds and pins as they were.

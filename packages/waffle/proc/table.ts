@@ -22,6 +22,8 @@ import {
 } from "./types.js";
 
 export interface ProcessImage {
+  /** Exact resolved registration for this image. Never supplied by a spawn request. */
+  execution?: import("./registry.js").AdapterExecution;
   readonly generation: number;
   readonly cwd: string;
   readonly descriptors: DescriptorTable;
@@ -88,6 +90,7 @@ export interface ProcessRecord {
   waiters: Set<(result: ProcessExit) => void>;
 }
 export interface ProcessReplacement {
+  admission?: { rollback(): void };
   readonly image: ProcessImage;
   readonly request: Readonly<SpawnRequest>;
   readonly descriptors: DescriptorTable;

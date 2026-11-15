@@ -211,6 +211,8 @@ export interface MemberLease {
   failed(): void;
   /** True once this incarnation's memory and capacity were returned. */
   settled(): boolean;
+  /** Close this exact sole launched incarnation to new joins until physical stop. */
+  closeAdmission(): { rollback(): void };
 }
 
 const SMALL_REGION = 32 * 1024;
@@ -228,6 +230,7 @@ export class MemoryGroupOwner {
   private readonly handles = new IdentityCounter();
   private readonly pinIds = new IdentityCounter();
   private ended = false;
+  private closing?: { readonly member: Member };
   /** Bytes charged to the page budget for this group's backing. */
   private charged = PAGE_BYTES;
   private memberPages = 0;
@@ -294,6 +297,8 @@ export class MemoryGroupOwner {
   /** W1: reserve a member slot before any Worker exists. */
   reserve(pid: number): MemberLease {
     if (this.ended) throw new ProcessError(ProcessErrno.SRCH, "memory group has ended");
+    if (this.closing)
+      throw new ProcessError(ProcessErrno.NOTSUP, "memory group admission is closed");
     this.reconcile();
     if (this.bypassed)
       throw new ProcessError(ProcessErrno.INVAL, "memory group grew outside its owner");
@@ -360,7 +365,27 @@ export class MemoryGroupOwner {
         }
       },
       settled: () => member.phase === "released",
+      closeAdmission: () => this.closeAdmission(member),
     });
+  }
+
+  private closeAdmission(member: Member): { rollback(): void } {
+    this.reconcile();
+    if (
+      this.ended ||
+      this.bypassed ||
+      this.closing ||
+      !this.receives(member) ||
+      this.members.some((entry) => entry !== undefined && entry !== member)
+    )
+      throw new ProcessError(ProcessErrno.NOTSUP, "exec requires the sole launched group member");
+    const closing = { member };
+    this.closing = closing;
+    return {
+      rollback: () => {
+        if (this.closing === closing && this.receives(member)) this.closing = undefined;
+      },
+    };
   }
 
   private launch(member: Member): { request: MemoryGroupMemberRequest; transfer: Transferable[] } {

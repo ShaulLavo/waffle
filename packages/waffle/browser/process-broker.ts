@@ -63,6 +63,8 @@ import { WorkerExecutableAccess, rejectWorkerAccess } from "../proc/worker-acces
 import {
   directoryGroups,
   directoryProcesses,
+  directoryAdmissionVersion,
+  commitDirectoryAdmission,
   isCollectedProcess,
   wakeDirectory,
 } from "../proc/directory.js";
@@ -70,7 +72,7 @@ import { type ControlCells, TaggedCells, controlLoad, controlStore } from "../pr
 import { type FilesystemConnection, type FilesystemIdentity, isRevoked } from "../fs/protocol.js";
 
 import type { ProcessSupervisor, RootProcessOptions } from "../proc/supervisor.js";
-import type { ExecutableRegistry } from "../proc/registry.js";
+import type { ExecutableRegistry, ResolvedExecutable } from "../proc/registry.js";
 import type { ProcessIdentityAllocator } from "../proc/identity.js";
 import type { ProcessRecord, ProcessTable } from "../proc/table.js";
 import {
@@ -325,10 +327,16 @@ interface RuntimeChild {
   context: ProcessContext;
   worker?: Worker;
   acknowledged: boolean;
+  replacementAcknowledged?: boolean;
   failed: boolean;
   stopped: boolean;
   quiescence?: Promise<void>;
   stopping?: Promise<void>;
+  /** Borrowed Worker stop excludes adapter-owned work and member/process retirement. */
+  nativeStopping?: Promise<void>;
+  /** Exact accepted entry handle, captured before acquisition is published. */
+  adapter?: ProcessHandle;
+  replacing?: boolean;
   startupStderr?: PipeEndpoint;
   network?: Preview1Network;
   graphics?: GraphicsGrant;
@@ -466,6 +474,8 @@ export class BrowserProcessBroker {
           quiesce: (pid) => this.quiesceProcess(pid),
           retire: (pid) => this.retireProcess(pid),
           stopImage: (pid, generation, active) => this.stopImage(pid, generation, active),
+          commitReplacement: (pid, generation, resolved) =>
+            this.commitReplacement(pid, generation, resolved),
           replacementFailed: (pid, error) => this.reportReplacementFailure(pid, error),
           staleImage: (pid) => {
             const record = this.options.table.get(pid);
@@ -681,10 +691,7 @@ export class BrowserProcessBroker {
     this.acquireObservation(context.observation, true);
     const observation = this.observationOwners.get(context.pid);
     const nativeReturned = this.nativeLaunchReturns.get(context.pid) ?? observation?.acquire();
-    const controller = this.controllerFor(context.pid);
-    const controllerReturn = controller?.launch
-      ? this.controllerNativeReturnFor(context.pid)
-      : undefined;
+    let controllerReturn: NativeReturnFollowers | undefined;
     const failedLaunch = (error: unknown) => {
       const child = this.children.get(context.pid);
       if (child?.generation === context.generation) return;
@@ -699,6 +706,17 @@ export class BrowserProcessBroker {
         this.imageStops.delete(context.pid);
         observation?.fail(error);
       }
+    };
+    const invokeLauncher = (): ProcessHandle | Promise<ProcessHandle> => {
+      if ("command" in context) return this.launchCommand(context);
+      if (context.execution?.kind === "host") return this.options.launch(context);
+      const controller = this.controllerFor(context.pid);
+      if (!controller?.launch) return this.options.launch(context);
+      controllerReturn = this.controllerNativeReturnFor(context.pid);
+      const candidate = controller.launch(context);
+      if (candidate !== undefined && candidate !== null) return candidate;
+      controllerReturn = undefined;
+      return this.options.launch(context);
     };
     if (nativeReturned) this.nativeLaunchReturns.set(context.pid, nativeReturned);
     this.traceProcess(context, "launching");
@@ -728,10 +746,7 @@ export class BrowserProcessBroker {
     };
     let launched: ProcessHandle | Promise<ProcessHandle>;
     try {
-      launched =
-        "command" in context
-          ? this.launchCommand(context)
-          : (this.controllerFor(context.pid)?.launch?.(context) ?? this.options.launch(context));
+      launched = invokeLauncher();
     } catch (error) {
       failedLaunch(error);
       launch.active = false;
@@ -744,11 +759,16 @@ export class BrowserProcessBroker {
       this.traceProcess(context, "launched");
       const terminal = this.terminalLifetimes.get(context.pid);
       if (this.children.has(context.pid) || !this.controllerFor(context.pid)) {
+        const child = this.children.get(context.pid);
+        const adapter =
+          child?.generation === context.generation
+            ? (child.adapter = ownedAdapterHandle(handle))
+            : undefined;
         launch.active = false;
         this.launches?.delete(context.pid);
         settled();
         return this.children.has(context.pid)
-          ? handle
+          ? (adapter ?? handle)
           : nativeStopHandle(
               handle,
               terminal,
@@ -1863,6 +1883,7 @@ export class BrowserProcessBroker {
       },
     };
     try {
+      this.checkGuestImage(context.pid, context.generation);
       if (options.memoryGroup)
         requireGroupPlan(
           options.request.module,
@@ -1881,7 +1902,13 @@ export class BrowserProcessBroker {
         throw new Error("Threaded Preview 1 requires validated source bytes");
       return this.launchOwnedWorker(context, { ...options, network, graphics });
     } catch (error) {
-      if (!this.children.has(context.pid) && typeof error === "object" && error !== null)
+      if (
+        !this.children.has(context.pid) &&
+        context.execution?.kind !== "host" &&
+        this.options.table.get(context.pid)?.image.execution?.kind !== "host" &&
+        typeof error === "object" &&
+        error !== null
+      )
         this.neverConstructed.set(error, context.pid);
       try {
         graphics?.dispose();
@@ -2132,7 +2159,7 @@ export class BrowserProcessBroker {
       this.disposeNetwork(child);
       throw error;
     }
-    return { terminate: () => this.stop(child) };
+    return { terminate: () => this.stopWorker(child) };
   }
   /** The group whose launched member runs as `pid`. Trusted embedder use only. */
   memoryGroupOf(pid: number): MemoryGroupHandle | undefined {
@@ -2149,6 +2176,7 @@ export class BrowserProcessBroker {
     program: { readonly module: WebAssembly.Module; readonly linkPlan: SharedLinkPlan },
     join: MemoryGroupLaunch = "new",
   ): RootMemoryGroupMember {
+    this.checkGuestImage(pid);
     requireGroupPlan(program?.module, program?.linkPlan);
     if (this.suspended) throw new Error("Process broker is disposed");
     const transport = this.roots.get(pid);
@@ -2299,7 +2327,7 @@ export class BrowserProcessBroker {
       return;
     }
     child.acknowledged = true;
-    this.options.filesystem.reap(child.filesystem);
+    child.replacementAcknowledged = true;
     void this.supervisor
       ?.acknowledgeReplacement(child.context.pid, child.generation)
       .catch((error) => this.report(error));
@@ -2499,7 +2527,7 @@ export class BrowserProcessBroker {
     if (pending.length) return Promise.all(pending).then(() => {});
   }
   private quiesceChild(child: RuntimeChild): void | Promise<void> {
-    if (child.acknowledged) return;
+    if (child.acknowledged && !child.replacementAcknowledged) return;
     return (child.quiescence ??= this.options.filesystem.quiesce(child.filesystem));
   }
   private disposeNetwork(child: RuntimeChild): void {
@@ -2611,14 +2639,91 @@ export class BrowserProcessBroker {
     return (
       !!child?.worker &&
       this.currentChild(child) &&
-      !child.group &&
       !child.threads &&
+      !child.stopped &&
+      !child.stopping &&
+      !child.failed &&
       !this.roots.has(transport.pid) &&
       !this.reservedRoots.has(transport.pid) &&
       !this.rootAdmissions.has(transport.pid) &&
       this.options.table.get(transport.pid)?.image.phase === "current" &&
+      child.generation === transport.generation &&
+      !this.options.table.get(transport.pid)?.image.request?.worker &&
       workerProcessDirectoryId(child.transport) === workerProcessDirectoryId(transport)
     );
+  }
+  private checkGuestImage(pid: number, generation?: number): void {
+    const image = this.options.table.get(pid)?.image;
+    if (image?.execution?.kind === "host")
+      throw new ProcessError(
+        ProcessErrno.NOTSUP,
+        "host-only image cannot acquire a guest consumer",
+      );
+    if (generation !== undefined && image?.generation !== generation)
+      throw new ProcessError(ProcessErrno.SRCH, "guest consumer image is no longer current");
+  }
+  private commitReplacement(
+    pid: number,
+    generation: number,
+    resolved: ResolvedExecutable,
+  ): { rollback(): void } | undefined {
+    const child = this.children.get(pid);
+    if (!child || child.generation !== generation || !this.canExec(child.transport))
+      throw new ProcessError(ProcessErrno.NOTSUP, "replacement lost its owned source image");
+    const membership = this.closeReplacementGroup(child, resolved);
+    child.replacing = true;
+    return {
+      rollback: () => {
+        membership?.rollback();
+        // A fatal winner still joins the accepted handle before releasing this source.
+        if (!readOutcome(child.context.outcome)) child.replacing = false;
+      },
+    };
+  }
+  private closeReplacementGroup(
+    child: RuntimeChild,
+    resolved: ResolvedExecutable,
+  ): { rollback(): void } | undefined {
+    if (!child.group) return;
+    if (resolved.kind !== "module" || resolved.execution?.kind !== "host")
+      throw new ProcessError(
+        ProcessErrno.NOTSUP,
+        "shared caller requires a bound host-only target",
+      );
+    const directory = child.transport.directory;
+    const version = directoryAdmissionVersion(directory);
+    this.checkGroupIntents(child);
+    commitDirectoryAdmission(directory, version);
+    return child.group.closeAdmission();
+  }
+  private checkGroupIntents(source: RuntimeChild): void {
+    const directory = source.identity.directory;
+    for (const state of directoryProcesses(source.transport.directory)) {
+      if (state.pid === source.context.pid) continue;
+      if (this.pendingLaunches?.has(state.pid))
+        throw new ProcessError(
+          ProcessErrno.NOTSUP,
+          "same-directory adapter acquisition is unresolved",
+        );
+      if (this.roots.has(state.pid)) continue;
+      const child = this.children.get(state.pid);
+      if (child?.launch.pending)
+        throw new ProcessError(
+          ProcessErrno.NOTSUP,
+          "same-directory adapter acquisition is unresolved",
+        );
+      if (child && this.currentChild(child) && !child.failed) continue;
+      const image = this.options.table.get(state.pid)?.image;
+      if (image?.execution?.kind === "host") continue;
+      if (controlLoad(state.confirmed) && !this.acquiredProcesses.has(state.pid)) continue;
+      throw new ProcessError(ProcessErrno.NOTSUP, "same-directory group intent is unresolved");
+    }
+    for (const preparation of this.pendingPreparations) {
+      if (preparation.pid === source.context.pid) continue;
+      const root = this.roots.get(preparation.rootPid);
+      if (root && workerProcessDirectoryId(root) === directory)
+        throw new ProcessError(ProcessErrno.NOTSUP, "same-directory preparation is unresolved");
+    }
   }
   private reportReplacementFailure(pid: number, error: unknown): void {
     const image = this.options.table.get(pid)?.image;
@@ -2677,9 +2782,11 @@ export class BrowserProcessBroker {
       this.finalizeProcess(child.context.pid),
     );
   }
+  private stopWorker(child: RuntimeChild): Promise<void> {
+    return child.replacing ? this.stopNativeResources(child) : this.stop(child);
+  }
   private stopPhysical(child: RuntimeChild, replacing = false): void | Promise<void> {
     if (child.stopping) return child.stopping;
-    if (child.stopped) return;
     child.accesses?.dispose();
     if (child.threads) {
       child.stopping = child.threads
@@ -2694,26 +2801,9 @@ export class BrowserProcessBroker {
       return child.stopping;
     }
     const stop = async () => {
-      if (child.stopped) return;
-      child.stopped = true;
       const errors: unknown[] = [];
-      this.disposeNetwork(child);
-      if (child.graphics) await settleStop(() => child.graphics!.retired(), errors);
-      if (child.notifications) await this.stopNotifications(child, errors);
-      await settleStop(async () => {
-        const worker = child.worker;
-        const pending = worker?.terminate();
-        if (pending) await pending;
-        if (!worker) return;
-        worker.onmessage = null;
-        worker.onerror = null;
-        child.worker = undefined;
-      }, errors);
-      await settleStop(
-        () => child.controllerStopping?.pending ?? child.capturedControllerStop?.(),
-        errors,
-      );
-      await settleStop(() => child.cleanup?.(), errors);
+      if (child.replacing) await settleStop(() => this.stopAcceptedAdapter(child), errors);
+      await settleStop(() => this.stopNativeResources(child), errors);
       if (errors.length) {
         // Cleanup after a failed terminate proves nothing: keep group memory and capacity.
         child.group?.failed();
@@ -2723,6 +2813,7 @@ export class BrowserProcessBroker {
       // The launch revocation backing stays strongly owned through physical guest stop.
       child.graphics = undefined;
       child.controllerNativeStop?.imageReturned();
+      if (child.replacementAcknowledged) this.options.filesystem.reap(child.filesystem);
       child.group?.stopped();
       child.launched?.stopped();
       if (this.children.get(child.context.pid) === child) this.children.delete(child.context.pid);
@@ -2730,6 +2821,7 @@ export class BrowserProcessBroker {
       child.output?.retire();
       this.serviceTerminalOutput(child.identity.rootPid);
       this.retireChildController(child.context.pid, child);
+      child.adapter = undefined;
     };
     const fence = replacing ? this.imageFence(child) : this.quiesceProcess(child.context.pid);
     child.stopping = (fence ? fence.then(stop) : stop()).catch((error) => {
@@ -2740,6 +2832,43 @@ export class BrowserProcessBroker {
     });
     this.imageStops.set(child.context.pid, child.stopping);
     return child.stopping;
+  }
+  private async stopAcceptedAdapter(child: RuntimeChild): Promise<void> {
+    await child.launch.pending?.acquired;
+    if (!child.adapter)
+      throw new Error("replacement source has no accepted adapter cleanup handle");
+    await child.adapter.terminate();
+  }
+  private stopNativeResources(child: RuntimeChild): Promise<void> {
+    if (child.nativeStopping) return child.nativeStopping;
+    const stopped = Promise.withResolvers<void>();
+    child.nativeStopping = stopped.promise;
+    void this.stopNativeResourcesNow(child).then(stopped.resolve, stopped.reject);
+    return stopped.promise;
+  }
+  private async stopNativeResourcesNow(child: RuntimeChild): Promise<void> {
+    if (child.replacing) await this.imageFence(child);
+    if (child.stopped) return;
+    child.stopped = true;
+    const errors: unknown[] = [];
+    this.disposeNetwork(child);
+    if (child.graphics) await settleStop(() => child.graphics!.retired(), errors);
+    if (child.notifications) await this.stopNotifications(child, errors);
+    await settleStop(() => this.terminateWorker(child), errors);
+    await settleStop(
+      () => child.controllerStopping?.pending ?? child.capturedControllerStop?.(),
+      errors,
+    );
+    await settleStop(() => child.cleanup?.(), errors);
+    if (errors.length) throw new AggregateError(errors, "Child native resource stop failed");
+  }
+  private async terminateWorker(child: RuntimeChild): Promise<void> {
+    const worker = child.worker;
+    if (!worker) return;
+    await worker.terminate();
+    worker.onmessage = null;
+    worker.onerror = null;
+    child.worker = undefined;
   }
   private retireChildController(pid: number, child?: RuntimeChild): void {
     if (this.reservedRoots.has(pid) || this.roots.has(pid) || (!child && this.suspended)) return;
@@ -3180,6 +3309,25 @@ async function settleStop(stop: () => void | Promise<void>, errors: unknown[]): 
   } catch (error) {
     errors.push(error);
   }
+}
+
+/** One accepted adapter entry, including wrappers around the borrowed native Worker handle. */
+function ownedAdapterHandle(handle: ProcessHandle): ProcessHandle {
+  let stopping: Promise<void> | undefined;
+  const terminate = handle.terminate.bind(handle);
+  return {
+    terminate() {
+      if (stopping) return stopping;
+      const stopped = Promise.withResolvers<void>();
+      stopping = stopped.promise;
+      try {
+        stopped.resolve(terminate());
+      } catch (error) {
+        stopped.reject(error);
+      }
+      return stopping;
+    },
+  };
 }
 
 function terminalPreparationError(code: TerminalFailure): ProcessError {

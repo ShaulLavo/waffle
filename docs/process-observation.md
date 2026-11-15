@@ -81,6 +81,15 @@ consumer accepted by that entry, including partially completed setup. A returned
 handle is still required when the adapter selects `context.startFailed(error)`.
 Selecting that result reports startup failure; it does not certify cleanup.
 
+Exec also joins that exact accepted handle before retiring the old image's member or
+memory ticket. Returning a wrapper around `launchWorker` does not transfer its extra cleanup
+to the Worker's `cleanup` option. During replacement, the borrowed Worker handle stops only
+that image's native resources. It does not close process observation or release membership.
+The image owner joins the adapter wrapper, checks the native stop and then releases the
+old member. A wrapper can therefore clean up before or after calling its Worker handle
+without recursively joining its own replacement. Late handles remain owned, and cleanup
+rejection retains debt. Concurrent Runtime disposal joins the same accepted stop once.
+
 An adapter with local asynchronous work can return its handle immediately and catch
 the work's startup error with `context.startFailed(error)`. After successful entry,
 use `context.fail(error)` for execution errors. Register revocation synchronously
