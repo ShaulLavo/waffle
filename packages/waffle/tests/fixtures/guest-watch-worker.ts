@@ -22,9 +22,20 @@ self.onmessage = ({
   wasi.start(instance);
   const guest = watchGuest(instance);
   const opened = guest.open(3, 1);
-  self.postMessage({ opened, pending: wasi.filesystemWatches?.pending() });
+  self.postMessage({ opened, ready: guest.ready(), pending: wasi.filesystemWatches?.pending() });
   Atomics.wait(control, 0, 0);
-  self.postMessage({ drained: guest.drain(opened.id), pending: wasi.filesystemWatches?.pending() });
-  // Parked with a live subscription: only the owner's forced cleanup may release it.
+  const ready = guest.ready();
+  self.postMessage({
+    ready,
+    drained: guest.drain(opened.id),
+    afterDrain: guest.ready(),
+    pending: wasi.filesystemWatches?.pending(),
+  });
   Atomics.wait(control, 1, 0);
+  self.postMessage({
+    revoked: [guest.ready(), guest.ready(), guest.read(opened.id).errno, guest.ready()],
+    pending: wasi.filesystemWatches?.pending(),
+  });
+  // Parked with a live subscription: only the owner's forced cleanup may release it.
+  Atomics.wait(control, 1, 1);
 };

@@ -17,7 +17,7 @@ try {
 ```
 
 A synchronous guest cannot await `next()`. It reads the same subscriptions through the
-`runtime_fs.watch_open`, `watch_read` and `watch_close` imports, whose packed records, delivery
+`runtime_fs.watch_open`, `watch_ready`, `watch_read` and `watch_close` imports, whose packed records, delivery
 guarantee and wake-up path are specified under
 [guest filesystem watches](host-abi.md#guest-filesystem-watches).
 

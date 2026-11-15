@@ -1071,11 +1071,12 @@ standard 64-byte Preview1 filestat record, perform open-based inference, or fetc
 
 ## Guest filesystem watches
 
-A synchronous guest reads committed watch events through three `runtime_fs` imports. The WASI
-adapter supplies them without activating process services; they need a filesystem that offers
-watches (`FileSystem.watches`, which `FilesystemClient` provides), and return `ENOTSUP`, errno 58,
-otherwise. All three return a **positive WASI errno, 0 on success**. Arguments are unsigned i32.
-Each call validates every output span before any state changes (`EFAULT` 21). Output is
+A synchronous guest reads committed watch events through four `runtime_fs` imports. The WASI
+adapter supplies them without activating process services. Opening a watch needs a filesystem that
+offers watches (`FileSystem.watches`, which `FilesystemClient` provides), or returns `ENOTSUP`,
+errno 58. Open, read and close return a **positive WASI errno, 0 on success**; readiness returns
+an i32 boolean. Arguments are unsigned i32.
+Calls with output spans validate every span before any state changes (`EFAULT` 21). Output is
 little-endian. Ids are process-local positive u32 values, never reused within the process. They
 are not descriptors: `fd_kind`, `dup`, `fd_close`, spawn bindings, `/dev/fd` and `poll` don't see
 them.
@@ -1085,6 +1086,10 @@ runtime_fs.watch_open(fd: u32, flags: u32, out_id_ptr: u32) -> errno
   fd     an open file or directory descriptor of the caller; the watch follows that node's identity
   flags  bit0 RECURSIVE (descendants of a directory; ignored for a file). Other bits: EINVAL 28
   out    u32 id
+
+runtime_fs.watch_ready() -> i32
+  1        at least one registered watch may return records, end or an error
+  0        no registered watches, or every registered watch is idle
 
 runtime_fs.watch_read(id: u32, buf_ptr: u32, buf_len: u32, out_len_ptr: u32) -> errno
   0        out_len > 0: that many bytes of whole records written
@@ -1148,6 +1153,18 @@ two reads of one watch.
   ordering between independent writers, and ordering against any non-watch source.
 
 ### Readiness
+
+`watch_ready()` is a non-consuming query across this process's registrations. It returns 1
+for local queued records, an unobserved root commit, an ended registration, or a revoked
+filesystem with a registration still present. End and revocation remain ready until the guest
+closes or drops the registrations. No watches, all closed watches, and a filesystem without watch
+support return 0. The query makes no service call, writes no guest memory, and does not change
+ids, queue cursors, observed counters, overflow or end state. It does not clear errors.
+
+A root commit can leave a watch without matching records, so 1 permits `watch_read` to return
+`EAGAIN`; readiness is not a guarantee of a matching event. A guest can query once per turn
+containing watches, skip empty reads when it returns 0, and drain watches before other sources.
+It must query again on later turns, including after reentrant callbacks or writes.
 
 There is no watch poll subscription and no timer. `Wasi.filesystemWatches` exposes the process's
 `GuestWatchReadiness`: `pending()` is true while a watch has local records, or its `observed`

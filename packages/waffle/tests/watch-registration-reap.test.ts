@@ -70,11 +70,14 @@ for (const phase of ["contention", "capture"] as const) {
 }
 
 type GuestReply =
-  | { opened: { errno: number; id: number }; pending: boolean }
+  | { opened: { errno: number; id: number }; ready: number; pending: boolean }
   | {
+      ready: number;
       drained: ReturnType<ReturnType<typeof watchGuest>["drain"]>;
+      afterDrain: number;
       pending: boolean;
-    };
+    }
+  | { revoked: number[]; pending: boolean };
 
 test("a force-terminated guest's import watches return the root to zero subscriptions", async () => {
   const pair = createFilesystemConnection();
@@ -98,16 +101,21 @@ test("a force-terminated guest's import watches return the root to zero subscrip
   try {
     await page.asyncCall("writeFile", ["/a", false], new Uint8Array([1]));
     worker.postMessage({ connection, control: control.buffer }, [connection.port]);
-    expect(await reply(0)).toEqual({ opened: { errno: 0, id: 1 }, pending: false });
+    expect(await reply(0)).toEqual({ opened: { errno: 0, id: 1 }, ready: 0, pending: false });
     expect(Atomics.load(backend.shared.watch.cells, 0)).toBe(1);
     await page.asyncCall("writeFile", ["/a", false], new Uint8Array([2]));
     Atomics.store(control, 0, 1);
     Atomics.notify(control, 0);
     expect(await reply(1)).toEqual({
+      ready: 1,
       drained: { errno: 0, ended: false, records: [{ type: 1, name: "a" }] },
+      afterDrain: 0,
       pending: false,
     });
     revokeFilesystem(connection);
+    Atomics.store(control, 1, 1);
+    Atomics.notify(control, 1);
+    expect(await reply(2)).toEqual({ revoked: [1, 1, 11, 1], pending: false });
     worker.terminate();
     reapFilesystem(connection);
     service.sweep();
