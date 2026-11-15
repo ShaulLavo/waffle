@@ -755,7 +755,8 @@ export class BrowserProcessBroker {
       throw error;
     }
     const track = (handle: ProcessHandle): ProcessHandle => {
-      this.imageStops.delete(context.pid);
+      // Worker acquisition already clears the previous image's stop. A late handle
+      // must retain the stop started while its adapter acquisition was pending.
       this.traceProcess(context, "launched");
       const terminal = this.terminalLifetimes.get(context.pid);
       if (this.children.has(context.pid) || !this.controllerFor(context.pid)) {
