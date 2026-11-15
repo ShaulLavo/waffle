@@ -133,6 +133,7 @@ export function createGrowableSharedArrayBuffer(bytes: number, maximum: number):
 const sharedPrototype = SharedArrayBufferConstructor?.prototype;
 const sharedLength = sharedPrototype && descriptor(sharedPrototype, "byteLength")!.get!;
 const sharedMaxLength = sharedPrototype && descriptor(sharedPrototype, "maxByteLength")?.get;
+const sharedGrowable = sharedPrototype && descriptor(sharedPrototype, "growable")?.get;
 const sharedGrow =
   sharedPrototype && (sharedPrototype as SharedArrayBuffer & { grow(length: number): void }).grow;
 export function sharedArrayBufferByteLength(buffer: SharedArrayBuffer): number {
@@ -253,10 +254,20 @@ export function arrayBufferLength(value: unknown): number | undefined {
 }
 type WasmBufferReader =
   | { kind: "array"; buffer: ArrayBuffer; read: (buffer: ArrayBuffer) => number }
-  | { kind: "shared"; buffer: SharedArrayBuffer; read: (buffer: SharedArrayBuffer) => number };
+  | {
+      kind: "shared";
+      buffer: SharedArrayBuffer;
+      read: (buffer: SharedArrayBuffer) => number;
+      growable: boolean;
+    };
 function bufferReader(buffer: ArrayBuffer | SharedArrayBuffer): WasmBufferReader {
   if (isSharedArrayBuffer(buffer))
-    return { kind: "shared", buffer, read: sharedArrayBufferByteLength };
+    return {
+      kind: "shared",
+      buffer,
+      read: sharedArrayBufferByteLength,
+      growable: sharedGrowable ? apply(sharedGrowable, buffer, noArguments) : false,
+    };
   return { kind: "array", buffer, read: arrayBufferByteLength };
 }
 function readBuffer(reader: WasmBufferReader): number {
@@ -274,10 +285,11 @@ export function wasmMemoryByteLength(memory: WebAssembly.Memory): number {
     ? sharedArrayBufferByteLength(buffer)
     : arrayBufferByteLength(buffer);
 }
-/** Cache the current buffer brand and refresh it only when memory.grow replaces the buffer. */
+/** A kept growable shared buffer has a live length, including growth by another agent. */
 export function wasmMemoryByteLengthReader(memory: WebAssembly.Memory): () => number {
   let reader: WasmBufferReader | undefined;
   return () => {
+    if (reader?.kind === "shared" && reader.growable) return readBuffer(reader);
     const buffer = apply(wasmMemoryBufferGetter, memory, noArguments);
     if (!reader || reader.buffer !== buffer) reader = bufferReader(buffer);
     return readBuffer(reader);
