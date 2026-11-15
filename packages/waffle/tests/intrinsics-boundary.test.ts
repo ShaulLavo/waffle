@@ -33,6 +33,7 @@ async function isolatedIntrinsics(
     clearTimeout,
     setInterval,
     clearInterval,
+    AbortController,
     AbortSignal,
     EventTarget,
     TextEncoder: class extends TextEncoder {},
@@ -45,6 +46,76 @@ async function isolatedIntrinsics(
 }
 
 describe("private process authority builtin boundary", () => {
+  test("reused empty arguments stay private across captured native calls", async () => {
+    const context = await isolatedIntrinsics({
+      getRandomValues: crypto.getRandomValues.bind(crypto),
+      randomUUID: crypto.randomUUID.bind(crypto),
+    });
+    const result: unknown = runInNewContext(
+      `
+      const api = module.exports;
+      const bytes = new Uint8Array(7);
+      const ordinary = new ArrayBuffer(9);
+      const shared = new SharedArrayBuffer(8, { maxByteLength: 16 });
+      const memory = new WebAssembly.Memory({ initial: 1, maximum: 4 });
+      const sharedMemory = new WebAssembly.Memory({ initial: 1, maximum: 4, shared: true });
+      const read = api.wasmMemoryByteLengthReader(memory);
+      const readShared = api.wasmMemoryByteLengthReader(sharedMemory);
+      const map = new Map([[1, shared]]);
+      const controller = new AbortController();
+      const define = Object.defineProperty;
+      const nativeApply = Reflect.apply;
+      let observed = 0;
+      const replaced = () => { observed++; throw Error("guest builtin reached"); };
+      Reflect.apply = replaced;
+      try { Reflect.apply(() => {}, null, []); } catch {}
+      if (observed !== 1) throw Error("missing apply canary");
+      define(Array.prototype, "0", { configurable: true, get: replaced, set: replaced });
+      try { [][0]; } catch {}
+      if (observed !== 2) throw Error("missing array-like canary");
+      Map.prototype.clear = replaced;
+      const typed = Object.getPrototypeOf(Uint8Array.prototype);
+      for (const prototype of [typed, ArrayBuffer.prototype, SharedArrayBuffer.prototype])
+        define(prototype, "byteLength", { configurable: true, get: replaced });
+      define(SharedArrayBuffer.prototype, "maxByteLength", { configurable: true, get: replaced });
+      define(WebAssembly.Memory.prototype, "buffer", { configurable: true, get: replaced });
+      Array.prototype[Symbol.iterator] = replaced;
+      Function.prototype.call = replaced;
+      Function.prototype.apply = replaced;
+      observed = 0;
+      if (api.typedArrayByteLength(bytes) !== 7 || api.arrayBufferLength(ordinary) !== 9)
+        throw Error("wrong native lengths");
+      if (api.arrayBufferLength(shared) !== undefined || api.isSharedArrayBuffer(ordinary))
+        throw Error("wrong native brands");
+      if (!api.isSharedArrayBuffer(shared) || api.sharedArrayBufferByteLength(shared) !== 8 ||
+          api.sharedArrayBufferMaxByteLength(shared) !== 16) throw Error("wrong shared lengths");
+      api.sharedArrayBufferGrow(shared, 16);
+      if (api.sharedArrayBufferByteLength(shared) !== 16) throw Error("shared growth lost");
+      api.mapClear(map);
+      if (map.size !== 0) throw Error("map not cleared");
+      if (api.wasmMemoryByteLength(memory) !== 65536 ||
+          api.arrayBufferLength(api.wasmMemoryBuffer(memory)) !== 65536 ||
+          read() !== 65536 || readShared() !== 65536) throw Error("wrong memory length");
+      memory.grow(0);
+      sharedMemory.grow(0);
+      if (read() !== 65536 || readShared() !== 65536) throw Error("zero growth lost");
+      memory.grow(1);
+      sharedMemory.grow(1);
+      if (read() !== 131072 || readShared() !== 131072) throw Error("memory growth lost");
+      if (api.abortSignalAborted(controller.signal)) throw Error("wrong abort state");
+      controller.abort();
+      if (!api.abortSignalAborted(controller.signal)) throw Error("abort lost");
+      const uuid = api.cryptoRandomUUID();
+      if (typeof uuid !== "string" || uuid.length !== 36) throw Error("wrong native UUID");
+      if ("noArguments" in api) throw Error("private argument list exported");
+      if (observed !== 0) throw Error("private arguments reached guest hooks");
+      nativeApply(() => true, null, []);
+    `,
+      context,
+    );
+    expect(result).toBe(true);
+  });
+
   test("diagnostic encoding keeps native methods after guest prototype replacement", async () => {
     const context = await isolatedIntrinsics();
     const text = runInNewContext(

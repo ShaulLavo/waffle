@@ -8,6 +8,7 @@ import {
   typedArrayByteOffset,
   typedArrayLength,
 } from "./core.ts";
+const noArguments: readonly unknown[] = [];
 export const atomicsOr = Atomics.or;
 export const atomicsWaitAsync = (
   Atomics as unknown as {
@@ -56,7 +57,7 @@ const tagGetter = descriptor(prototype, Symbol.toStringTag)!.get!;
 const setMethod = prototype.set;
 const fillMethod = prototype.fill;
 export function typedArrayByteLength(view: TypedArray): number {
-  return apply(byteLengthGetter, view, []);
+  return apply(byteLengthGetter, view, noArguments);
 }
 export function typedArrayFill(view: Uint8Array, value: number): void {
   apply(fillMethod, view, [value]);
@@ -100,7 +101,7 @@ export function typedArraySubarray<T extends Int32Array | Uint8Array | BigInt64A
 
 const mapClearMethod = Map.prototype.clear;
 export function mapClear<K, V>(map: Map<K, V>): void {
-  apply(mapClearMethod, map, []);
+  apply(mapClearMethod, map, noArguments);
 }
 export function isInt32Array(value: unknown): value is Int32Array {
   return apply(tagGetter, value, []) === "Int32Array";
@@ -135,10 +136,10 @@ const sharedMaxLength = sharedPrototype && descriptor(sharedPrototype, "maxByteL
 const sharedGrow =
   sharedPrototype && (sharedPrototype as SharedArrayBuffer & { grow(length: number): void }).grow;
 export function sharedArrayBufferByteLength(buffer: SharedArrayBuffer): number {
-  return apply(sharedLength!, buffer, []);
+  return apply(sharedLength!, buffer, noArguments);
 }
 export function sharedArrayBufferMaxByteLength(buffer: SharedArrayBuffer): number {
-  return apply(sharedMaxLength!, buffer, []);
+  return apply(sharedMaxLength!, buffer, noArguments);
 }
 export function sharedArrayBufferGrow(buffer: SharedArrayBuffer, length: number): void {
   apply(sharedGrow!, buffer, [length]);
@@ -186,7 +187,7 @@ export const cryptoGetRandomValues = nativeCrypto.getRandomValues.bind(nativeCry
 // Capture without binding; only identity allocation needs this capability.
 const randomUUID = nativeCrypto.randomUUID;
 export function cryptoRandomUUID(): string {
-  return apply(randomUUID, nativeCrypto, []);
+  return apply(randomUUID, nativeCrypto, noArguments);
 }
 // Relay scheduling passes a closure over private pipe state to the native timer.
 export const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
@@ -228,7 +229,7 @@ export function setForEach<T>(set: ReadonlySet<T>, callback: (value: T) => void)
 export function isSharedArrayBuffer(value: unknown): value is SharedArrayBuffer {
   if (!sharedLength) return false;
   try {
-    apply(sharedLength, value, []);
+    apply(sharedLength, value, noArguments);
     return true;
   } catch {
     return false;
@@ -238,14 +239,14 @@ export function isSharedArrayBuffer(value: unknown): value is SharedArrayBuffer 
 const wasmMemoryBufferGetter = descriptor(WebAssembly.Memory.prototype, "buffer")!.get!;
 const arrayBufferByteLengthGetter = descriptor(ArrayBuffer.prototype, "byteLength")!.get!;
 const arrayBufferByteLength = (buffer: ArrayBuffer): number =>
-  apply(arrayBufferByteLengthGetter, buffer, []);
+  apply(arrayBufferByteLengthGetter, buffer, noArguments);
 export const ArrayBufferConstructor = ArrayBuffer;
 export const RangeErrorConstructor = RangeError;
 export const symbolIterator: typeof Symbol.iterator = Symbol.iterator;
 /** The native byte length of a genuine non-shared ArrayBuffer, or undefined for anything else. */
 export function arrayBufferLength(value: unknown): number | undefined {
   try {
-    return apply(arrayBufferByteLengthGetter, value, []);
+    return apply(arrayBufferByteLengthGetter, value, noArguments);
   } catch {
     return undefined;
   }
@@ -264,11 +265,11 @@ function readBuffer(reader: WasmBufferReader): number {
 }
 /** The memory's current buffer through the captured native getter. */
 export function wasmMemoryBuffer(memory: WebAssembly.Memory): ArrayBuffer | SharedArrayBuffer {
-  return apply(wasmMemoryBufferGetter, memory, []);
+  return apply(wasmMemoryBufferGetter, memory, noArguments);
 }
 /** Read the current buffer through captured natives, including after memory.grow. */
 export function wasmMemoryByteLength(memory: WebAssembly.Memory): number {
-  const buffer = apply(wasmMemoryBufferGetter, memory, []);
+  const buffer = apply(wasmMemoryBufferGetter, memory, noArguments);
   return isSharedArrayBuffer(buffer)
     ? sharedArrayBufferByteLength(buffer)
     : arrayBufferByteLength(buffer);
@@ -277,7 +278,7 @@ export function wasmMemoryByteLength(memory: WebAssembly.Memory): number {
 export function wasmMemoryByteLengthReader(memory: WebAssembly.Memory): () => number {
   let reader: WasmBufferReader | undefined;
   return () => {
-    const buffer = apply(wasmMemoryBufferGetter, memory, []);
+    const buffer = apply(wasmMemoryBufferGetter, memory, noArguments);
     if (!reader || reader.buffer !== buffer) reader = bufferReader(buffer);
     return readBuffer(reader);
   };
@@ -290,7 +291,7 @@ const abortedGetter = descriptor(AbortSignal.prototype, "aborted")!.get!;
 const eventAdd = EventTarget.prototype.addEventListener;
 const eventRemove = EventTarget.prototype.removeEventListener;
 export function abortSignalAborted(signal: AbortSignal): boolean {
-  return apply(abortedGetter, signal, []);
+  return apply(abortedGetter, signal, noArguments);
 }
 export function listenAbort(signal: AbortSignal, listener: () => void): void {
   apply(eventAdd, signal, ["abort", listener]);

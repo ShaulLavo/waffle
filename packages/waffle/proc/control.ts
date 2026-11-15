@@ -14,7 +14,6 @@ import {
   typedArrayLength,
 } from "./intrinsics/core.ts";
 
-const MASK = 0xffffffffn;
 // Executors may replace the global clock with a guest polyfill. Wait deadlines
 // must keep using the host's monotonic clock, independently of guest time.
 const clock = performance.now.bind(performance);
@@ -35,18 +34,27 @@ export interface TaggedCellsTransfer {
   validity?: CellValidity;
 }
 /** Captures an incarnation once. Every mutation compares the complete tagged word; a
- * suspended writer can never adopt the identity of a replacement row. */
+ * suspended writer can never adopt the identity of a replacement row. Identity
+ * metadata stays fixed for this wrapper; revival constructs a new wrapper, while
+ * retirement and slot reuse change the shared words. */
 export class TaggedCells {
   readonly cells: BigInt64Array;
   readonly id: number;
   readonly validity?: CellValidity;
   private readonly identity?: BigInt64Array;
+  private readonly expectedIdentity?: bigint;
+  private readonly idBits: bigint;
+  private readonly prefix: bigint;
   constructor(cells: BigInt64Array, id: number, validity?: CellValidity) {
     this.cells = cells;
     this.id = id;
+    this.idBits = BigInt(id);
+    this.prefix = this.idBits << 32n;
     this.validity = validity;
-    if (validity)
+    if (validity) {
       this.identity = new BigInt64ArrayConstructor(validity.buffer, validity.byteOffset, 1);
+      this.expectedIdentity = packedControl(validity.id, 1);
+    }
   }
   get buffer(): SharedArrayBuffer {
     return typedArrayBuffer(this.cells) as SharedArrayBuffer;
@@ -58,10 +66,7 @@ export class TaggedCells {
     return typedArrayLength(this.cells);
   }
   valid(): boolean {
-    return (
-      this.identity === undefined ||
-      atomicsLoad(this.identity, 0) === packedControl(this.validity!.id, 1)
-    );
+    return this.identity === undefined || atomicsLoad(this.identity, 0) === this.expectedIdentity;
   }
   check(): void {
     if (!this.valid())
@@ -69,9 +74,9 @@ export class TaggedCells {
   }
   private checked(value: bigint): number {
     this.check();
-    if (value >> 32n !== BigInt(this.id))
+    if (value >> 32n !== this.idBits)
       throw new ProcessError(ProcessErrno.SRCH, "process incarnation was collected");
-    return Number(BigInt.asIntN(32, value & MASK));
+    return Number(BigInt.asIntN(32, value));
   }
   load(index = 0): number {
     this.check();
@@ -83,8 +88,8 @@ export class TaggedCells {
       atomicsCompareExchange(
         this.cells,
         index,
-        packedControl(this.id, expected),
-        packedControl(this.id, replacement),
+        this.prefix | BigInt(expected >>> 0),
+        this.prefix | BigInt(replacement >>> 0),
       ),
     );
   }

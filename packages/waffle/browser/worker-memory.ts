@@ -26,9 +26,17 @@ export function createWorkerMemorySampler(buffer: SharedArrayBuffer) {
   if (!isSharedArrayBuffer(buffer) || sharedArrayBufferByteLength(buffer) !== 8)
     throw new TypeError("memory observation requires one shared 64-bit cell");
   const cell = new BigInt64ArrayConstructor(buffer);
+  let lastCapacity: number | undefined;
+  let encodedCapacity = 0n;
   let readMemoryByteLength: (() => number) | undefined;
   const sample = () => {
-    if (readMemoryByteLength) atomicsStore(cell, 0, BigIntConstructor(readMemoryByteLength()));
+    if (!readMemoryByteLength) return;
+    const capacity = readMemoryByteLength();
+    if (capacity !== lastCapacity) {
+      encodedCapacity = BigIntConstructor(capacity);
+      lastCapacity = capacity;
+    }
+    atomicsStore(cell, 0, encodedCapacity);
   };
   return {
     bind(value: WebAssembly.Memory) {
