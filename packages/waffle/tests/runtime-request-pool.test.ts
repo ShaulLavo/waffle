@@ -6,6 +6,17 @@ import {
   waitForFilesystemTransportRetirement,
 } from "../fs/request-memory.js";
 
+async function disposeRuntime(
+  runtime: ReturnType<typeof createRuntime> | undefined,
+  clients: readonly FilesystemClient[],
+) {
+  try {
+    for (const client of clients) client.dispose();
+  } finally {
+    await runtime?.dispose();
+  }
+}
+
 test("successful default-owned runtime disposal releases service-retired child arenas", async () => {
   const take = FilesystemRequestPool.prototype.take;
   let observed: WeakRef<FilesystemRequestPool> | undefined;
@@ -13,15 +24,16 @@ test("successful default-owned runtime disposal releases service-retired child a
     observed = new WeakRef(this);
     return Reflect.apply(take, this, args);
   };
-  const runtime = createRuntime({
-    filesystem: {
-      mode: "memory",
-      workerURL: new URL("../browser/fs-worker.ts", import.meta.url),
-    },
-  });
-  const filesystem = runtime.filesystem;
+  let runtime: ReturnType<typeof createRuntime> | undefined;
   const clients: FilesystemClient[] = [];
   try {
+    runtime = createRuntime({
+      filesystem: {
+        mode: "memory",
+        workerURL: new URL("../browser/fs-worker.ts", import.meta.url),
+      },
+    });
+    const filesystem = runtime.filesystem;
     await filesystem.writeFile("/kept", "exact bytes");
     expect(() => createRuntime()).toThrow("live page runtime");
     for (let i = 0; i < 3; i++) {
@@ -58,8 +70,10 @@ test("successful default-owned runtime disposal releases service-retired child a
     await runtime.dispose();
     expect(Reflect.get(pool, "arenas")).toHaveLength(remainingCount);
   } finally {
-    for (const client of clients) client.dispose();
-    await runtime.dispose();
-    FilesystemRequestPool.prototype.take = take;
+    try {
+      await disposeRuntime(runtime, clients);
+    } finally {
+      FilesystemRequestPool.prototype.take = take;
+    }
   }
 }, 60000);
