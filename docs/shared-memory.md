@@ -60,7 +60,9 @@ Filesystem pools own request arenas. Admission tickets reserve construction head
 
 Each filesystem connection allocation scans its pool, reuses one safely idle request arena and drops the pool's references to any additional safely idle arenas. Keeping one for immediate reuse avoids allocating another large reservation for sequential connections. Safe idle requires authoritative reap, successful service retirement and zero transport sections. Live, unconfirmed and stranded arenas stay owned. The scan settles abandoned request counts and private bytes, but releasing a reference never refunds backing reservations or debt. Collection receipts remain responsible for accounting.
 
-The scan runs when a connection takes an arena. If the last burst retires afterwards, its arenas remain owned until the next allocation. Owner reap can precede the service's asynchronous retirement, so it cannot establish a final idle bound. Reference release also does not prove immediate garbage collection or native memory reclamation.
+The scan runs when a connection takes an arena. Successful filesystem disposal also scans and drops every safely retired arena, without keeping an idle cache. Failed disposal leaves the pool intact. Owner reap can precede the service's asynchronous retirement, so disposal retains any arena without that receipt. Ordinary memory disposal does not join service shutdown; its root can still lack retirement when the Worker stops. The root client can also retain its original arena through its connection and allocator. Reference release does not prove immediate garbage collection or native memory reclamation.
+
+Later local file-reference cleanup is permitted for an authoritatively reaped, successfully retired transport with no active sections. This does not admit new requests or suppress message, protocol, or unconfirmed-lifetime errors.
 
 Guest-memory charges return only after successful physical Worker termination and cleanup. Signals, logical exit and filesystem quiescence do not return them. Failed physical stops and stranded arenas remain charged debt.
 

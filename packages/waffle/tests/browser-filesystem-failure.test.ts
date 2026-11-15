@@ -19,6 +19,7 @@ function fixture() {
   // Exercise the actual page-side failure handler without starting a browser worker.
   const fs = Object.assign(Object.create(SharedFilesystem.prototype), {
     client,
+    requestPool: root.pool,
     worker: {
       terminate() {
         terminated++;
@@ -27,7 +28,7 @@ function fixture() {
     writes: Promise.resolve(),
     socketAttachments: new Set(),
     _state: { status: "opening" },
-  }) as unknown as { fail(error: Error): void; dispose(): void };
+  }) as unknown as { fail(error: Error): void; dispose(): Promise<void> };
   cleanups.push(() => {
     client.dispose();
     root.server.port.close();
@@ -63,10 +64,11 @@ test("filesystem worker failure revokes independent process identities and pendi
   ]);
 });
 
-test("disposing the filesystem service revokes process identities allocated but not yet connected", () => {
+test("disposing the filesystem service revokes process identities allocated but not yet connected", async () => {
   const { fs, client } = fixture();
   const pending = createProcessFilesystemIdentity(client.connection);
   expect(sharedRevoked(pending)()).toBe(false);
-  fs.dispose();
+  const disposal = fs.dispose();
   expect(sharedRevoked(pending)()).toBe(true);
+  await disposal;
 });

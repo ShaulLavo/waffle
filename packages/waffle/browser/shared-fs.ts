@@ -611,6 +611,7 @@ export class SharedFilesystem {
     }).then(
       () => {
         this.stop();
+        this.requestPool.releaseRetired();
         this.setState("disposed");
       },
       (reason: unknown) => {
@@ -653,8 +654,12 @@ export class SharedFilesystem {
     this.disposal = new Promise<void>((resolve, reject) => {
       finish = (error) => {
         this.stop();
-        if (error) reject(error);
-        else resolve();
+        if (error) {
+          reject(error);
+          return;
+        }
+        this.requestPool.releaseRetired();
+        resolve();
       };
     });
     this.finishDisposal = finish;

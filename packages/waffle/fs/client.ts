@@ -7,7 +7,11 @@ import { ResidentAttachment, stopWorkspaceBridge } from "./publication-attachmen
 import { localPublication } from "./publication-internal.js";
 import {
   FilesystemRequestAllocator,
+  FilesystemTransportError,
   FilesystemTransportSection,
+  requestMemoryRetired,
+  requestMemoryRetirementError,
+  requestMemorySections,
   requestCells,
   requestBytes,
   requestCancelled,
@@ -380,6 +384,19 @@ function clientWatches(
 export interface FilesystemClientOptions {
   /** Trusted host capability; never included in a serialized connection or supplied to a guest. */
   readonly connect?: (identity: FilesystemIdentity) => FilesystemConnection;
+}
+function retiredLocalRelease(connection: FilesystemConnection, error: unknown): boolean {
+  if (!(error instanceof FilesystemTransportError) || error.reason !== "stale") return false;
+  if (atomicsLoad(new Int32ArrayConstructor(connection.revocations[0]!), 0) !== 2) return false;
+  try {
+    return (
+      requestMemoryRetired(connection.requests) &&
+      !requestMemoryRetirementError(connection.requests) &&
+      requestMemorySections(connection.requests) === 0
+    );
+  } catch {
+    return false;
+  }
 }
 export class FilesystemClient implements FileSystem {
   readonly completions = new MapConstructor<number, FilesystemCompletion>();
@@ -880,7 +897,11 @@ export class FilesystemClient implements FileSystem {
     try {
       this.section.enter();
     } catch (error) {
-      if (!(error instanceof FilesystemError) || error.errno !== 11) throw error;
+      if (
+        !retiredLocalRelease(this.connection, error) &&
+        (!(error instanceof FilesystemError) || error.errno !== 11)
+      )
+        throw error;
       mapDelete(this.openHandles, handle);
       mapDelete(this.fileSlots, handle);
       this.closeIO(handle);
