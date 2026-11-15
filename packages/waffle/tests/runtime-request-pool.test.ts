@@ -26,6 +26,7 @@ test("successful default-owned runtime disposal releases service-retired child a
   };
   let runtime: ReturnType<typeof createRuntime> | undefined;
   const clients: FilesystemClient[] = [];
+  let releaseRetiredReference: (() => void) | undefined;
   try {
     runtime = createRuntime({
       filesystem: {
@@ -38,7 +39,8 @@ test("successful default-owned runtime disposal releases service-retired child a
     expect(() => createRuntime()).toThrow("live page runtime");
     for (let i = 0; i < 3; i++) {
       const client = new FilesystemClient(filesystem.connect(filesystem.createIdentity()));
-      client.preopen("/");
+      const handle = client.preopen("/");
+      releaseRetiredReference ??= () => client.release(handle);
       clients.push(client);
     }
     const pool = observed?.deref();
@@ -67,6 +69,8 @@ test("successful default-owned runtime disposal releases service-retired child a
     }
     expect(() => filesystem.createIdentity()).toThrow("disposed");
     await expect(filesystem.readFile("/kept")).rejects.toThrow("disposed");
+    if (!releaseRetiredReference) throw Error("missing retired client reference");
+    expect(releaseRetiredReference).not.toThrow();
     await runtime.dispose();
     expect(Reflect.get(pool, "arenas")).toHaveLength(remainingCount);
   } finally {
