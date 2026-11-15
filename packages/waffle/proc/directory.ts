@@ -226,6 +226,27 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
     throw new ProcessError(ProcessErrno.SRCH, "process incarnation was collected");
   return state;
 }
+/** Scan live identities without constructing state for unrelated process rows. */
+export function findDirectoryProcess(handle: DirectoryHandle, pid: number) {
+  const capacity = directoryCapacity(handle.directory);
+  const processes = new BigInt64ArrayConstructor(
+    handle.directory,
+    HEADER_BYTES,
+    capacity * PROCESS_WORDS,
+  );
+  for (let slot = 0; slot < capacity; slot++) {
+    const token = atomicsLoad(processes, slot * PROCESS_WORDS);
+    if ((token & 0xffffffffn) !== 1n || Number(token >> 32n) !== pid) continue;
+    // The caller's own physical slot must still belong to its captured incarnation.
+    if (slot === handle.slot && pid !== handle.pid) continue;
+    try {
+      return directoryState({ directory: handle.directory, slot, pid });
+    } catch (error) {
+      if (!isCollectedProcess(error)) throw error;
+    }
+  }
+  return undefined;
+}
 /** Only generation-captured entries escape enumeration; unrelated collection is harmless. */
 export function isCollectedProcess(error: unknown): error is ProcessError {
   return (

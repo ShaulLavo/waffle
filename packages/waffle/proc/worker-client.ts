@@ -30,6 +30,7 @@ import {
   createDirectory,
   beginDirectoryAdmission,
   directoryState,
+  findDirectoryProcess,
   directorySlots,
   directoryJob,
   findDirectoryJob,
@@ -695,17 +696,11 @@ export class WorkerProcessClient {
     }
   }
   private find(pid: number, retained = false) {
-    const directory = this.options.transport.directory;
-    const slots = directorySlots(directory);
-    for (let index = 0; index < slots.length; index++) {
-      const slot = slots[index]!;
-      try {
-        const state = directoryState(this.options.transport, slot);
-        if (state.pid !== pid) continue;
-        if (retained || controlLoad(state.jobPending, 0) >= 0) return state;
-      } catch (error) {
-        if (!isCollectedProcess(error)) throw error;
-      }
+    try {
+      const state = findDirectoryProcess(this.options.transport, pid);
+      if (state && (retained || controlLoad(state.jobPending, 0) >= 0)) return state;
+    } catch (error) {
+      if (!isCollectedProcess(error)) throw error;
     }
     throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
   }
