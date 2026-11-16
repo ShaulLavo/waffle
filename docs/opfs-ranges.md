@@ -3,7 +3,9 @@
 `OpfsStorage.readRange(key, { offset, length, signal? })` returns an owned
 `Uint8Array` for an existing immutable storage key. It reads native sync-access
 handles at physical offsets. It does not call `read(key)` or hydrate the whole
-payload before slicing. `read(key)` still returns the complete payload.
+payload before slicing. A runtime-retained key instead reads a clipped native File
+snapshot without acquiring a second exclusive handle. `read(key)` still returns the
+complete payload, after validating its native size against saved metadata.
 
 ## Range contract
 
@@ -44,6 +46,12 @@ Ranges use the existing cache, handle limit, eviction, one-shot close outcome,
 and failed-close ownership. A failed original close still retains that original
 handle and the workspace lock. Cancellation does not retry the close or turn the
 failed outcome into success.
+
+Retained snapshot reads reacquire File only for native `NotReadableError`, up to
+three attempts, and check cancellation before another acquisition. Other native
+errors retain their exact reason. Close joins admitted snapshot reads even when
+they fail, then performs normal native cleanup. [Internal OPFS qualification](opfs-qualification.md)
+maps the snapshot, allocation, locking and write controls and their limits.
 
 ## Proof and limits
 

@@ -57,6 +57,8 @@ export class RangeFile implements FileSystemFileHandle {
   acquire?: () => Promise<void>;
   opened?: (access: RangeAccess) => void;
   snapshotRead?: () => Promise<void>;
+  snapshotGet?: () => Promise<void>;
+  snapshots = 0;
   data?: Uint8Array<ArrayBuffer>;
   mutable = false;
   constructor(
@@ -72,14 +74,29 @@ export class RangeFile implements FileSystemFileHandle {
     return access;
   }
   async getFile() {
+    this.snapshots++;
+    await this.snapshotGet?.();
     if (this.name.startsWith("p-")) return new RangeSnapshot(this);
-    return new File([this.data ?? this.text], this.name);
+    return new MetadataSnapshot(this, this.data ?? this.text);
   }
   async createWritable(): Promise<FileSystemWritableFileStream> {
     throw new Error("Unexpected writable stream");
   }
   async isSameEntry(other: FileSystemHandle): Promise<boolean> {
     return this === other;
+  }
+}
+
+class MetadataSnapshot extends File {
+  constructor(
+    private readonly source: RangeFile,
+    contents: string | Uint8Array<ArrayBuffer>,
+  ) {
+    super([contents], source.name);
+  }
+  override async text(): Promise<string> {
+    await this.source.snapshotRead?.();
+    return super.text();
   }
 }
 
