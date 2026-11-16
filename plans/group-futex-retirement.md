@@ -100,9 +100,10 @@ record is odd while a wait is pending.
    otherwise return `status(result)` exactly as today.
 
 `stopped()` calls `hooks.checkActive()` and then throws `ProcessError(SRCH, "memory group member
-stopped")`; it never returns a status. Step 5 matters only where termination does not end a woken
-thread (Bun tests without real termination, or a host without termination): a member that the page
-closed never runs guest code again. A wake that a live member counted before the close stays
+stopped")`; it never returns a status. Step 5 matters wherever termination does not end a woken
+thread: Bun tests without real termination, WebKit 8624 (parked until a notify), and Chromium,
+where `terminate()` returns while the thread is still parked or running (PR 544). A member that the
+page closed never runs guest code again, unless the guest catches the throw (see "Remaining gaps"). A wake that a live member counted before the close stays
 counted, like a Linux thread killed right after its futex wake. Step 3 is the stop-before-register
 case.
 
@@ -169,6 +170,10 @@ call cannot reinsert a released record or touch a later occupant. This intention
 fixed bytes per retired incarnation while the group remains open; it is not bounded by live slots.
 Keep collection-based ledger charges until actual collection, without a new cap or logical-release
 refund. Constructor failure still refunds only its provisional reservation.
+
+`release` also stores CLOSED=1 in the released record, without a notify, before its chunks return
+to the free list (PR 544, `group/state.ts:810`). A stale thread woken later then throws instead of
+resuming guest code on pages another member now owns. Final sealing still notifies the record.
 
 `release` first sets `stopRequested` on the releasing member, so an embedder that only calls
 `stopped()` still gets the wake before group end (post-stop backstop). Terminal admission sealing
@@ -272,6 +277,69 @@ supervised waits keep their own paths. None of these was pending at stop in the 
 except notification helpers, which hold small fixed buffers. Record each as a follow-up item here when
 it is designed; no broad notification is added in this PR.
 
+## Remaining gaps after PR 544 (Approved follow-up, needs a design decision first)
+
+Background. bun-wasm's "Shared Browser (spidermonkey)" check (`tests/fixtures/shared-wasm-memory/
+group-lane-lifetime.ts`, `churn()`: 200 workers in turn, every second one killed while parked)
+crashed the Chromium 156 renderer on every run on a 28-core PC. A killed member stayed parked in
+`futex_wait` after `Worker.terminate()` returned, its data and stack chunks went to the free list,
+the next member got the same pages, and its `futex_wake` on the same cell woke the stale thread,
+which returned `ok` into its guest on a shared stack. Instrumented, six such wakes appeared in one
+run. PR 544 closes the record at release (`group/state.ts:810`), so that wake now throws
+(`group/member.ts:198`). Test: `a released wait32/64 woken by the reusing member stops instead of
+resuming` (`tests/group-futex.test.ts:477`), red without the store. After the fix, 0 crashes in 3
+full bun-wasm SpiderMonkey shared Browser runs on 28 cores. Report:
+`/work/reports/goals/iphone-memory-bounds-20261116/sm-shared-browser-crash/RESULT.md`.
+
+### Gap 1: a member running guest code when terminated
+
+Evidence. Not observed, reasoned from the release path: `release()` (`group/state.ts:802-834`) runs
+after `terminateWorker` (`browser/process-broker.ts:3001`, `ended = worker.terminate()`), and
+`terminate()` returning proves neither thread exit nor that guest code stopped. A member computing
+in guest code with no host call keeps running until the engine acts on termination (V8 at its next
+interrupt check). If a new member is admitted and boots in that window, both run on the same pages.
+The window needs a reservation, a Worker start and a guest boot, so it is narrow. Frequency: 0 in the
+runs above; there is no reproduction yet. First step for a fresh agent: a bun test or browser test
+that kills a member spinning in a pure Wasm loop on group memory and immediately launches a reusing
+member that writes a pattern the old loop checks.
+
+Design options and costs:
+
+- Proof of exit through a per-incarnation Web Lock. The worker takes an `ifAvailable` lock
+  (`navigator.locks.request`) before guest code and refuses to start without it. After terminate, the
+  owner requests the same lock and returns chunks only when it is granted, then keeps holding it so
+  a late start cannot acquire it. Available wherever SharedArrayBuffer is (secure contexts) in
+  Chromium, Firefox and Safari 15.4+. Cost: on WebKit 8624 a terminated worker parked in an untimed
+  wait keeps its context (Problem section above), so its lock and pages stay held until a notify
+  reaches it, which can be group end. That retains memory on WebKit and works against the iPhone
+  memory bounds. Chromium's delay between `terminate()` and context teardown is unmeasured.
+- MessagePort `close` events as the proof. Not portable; check current Safari support before use.
+- Quarantine: keep released chunks off the free list for a while (or until N later releases).
+  Cheap and portable, lowers the odds, proves nothing, raises the group's high-water mark.
+- Revoke on stop through the interrupt word, so a guest that polls interrupts throws at its next
+  poll. Narrows the window for interruptible guests only; still not a proof.
+
+### Gap 2: a stale waiter can absorb a counted wake meant for a live one
+
+Evidence. A killed member parked on a cell in a region that live siblings still hold (held regions
+are not freed) stays in that cell's native FIFO. A sibling's `futex_wake(cell, 1)` wakes the stale
+thread, which now throws, and the live waiter stays parked. This existed before PR 544; only what the
+stale thread does after waking changed. Not observed in tests; no frequency yet. Exact per-member
+cancellation is impossible with browser APIs (the proof under "What is impossible" above: the FIFO
+cannot be read or edited, and any notify that reaches the stale entry also wakes earlier live
+waiters). The only mitigation is a notify-all on the released record's pending address at release.
+That turns the lost wake into spurious wakes, which futex callers must tolerate, but it breaks the
+documented "individual stops add no wakes" contract, so it needs an owner decision.
+
+### Guests with Wasm exception handling can catch the stop
+
+The stop is a JavaScript throw from the import. The link loader admits `try_table`
+(`interrupt/rewriter-internal.ts:291`), and a `catch_all` handler (C++ `catch (...)` or a destructor
+cleanup pad) catches JavaScript exceptions, so it would run guest code on reused pages before
+rethrowing or resuming. bun-wasm's guests have no exception section today. The group-end seal path
+has the same property. Parking the stale thread forever instead would bring back the WebKit
+reservation leak.
+
 ## Tests
 
 Record the runtime in each: Bun 1.4.4 is JavaScriptCore and ends parked terminated Workers, so Bun
@@ -316,8 +384,8 @@ New behavior:
     a retained handle during cleanup or debt cannot reopen the group. No new or unrelated live
     member receives a cancellation wake. Cleanup and release still complete on the sealed owner.
 16. Staggered retirement: release parked A while B is live, reuse A's index for C, then stop B/C.
-    A's exact retired record is closed/notified only at final sealing, including a pause before
-    publication and late old lease calls. End drops all retired records without guest aliases.
+    A's exact retired record is closed (no wake) at its release and notified only at final
+    sealing, including a pause before publication and late old lease calls. End drops all retired records without guest aliases.
 17. Failure-before-attempt: a retained incarnation whose fence rejects before native terminate
     blocks final cancellation. Native throw/rejection after invocation marks only that exact attempt
     and keeps debt. Cover child and adopted/external root paths.
