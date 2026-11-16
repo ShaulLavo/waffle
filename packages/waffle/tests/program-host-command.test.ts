@@ -64,10 +64,13 @@ test("module-less commands execute without compiling Wasm or exposing runtime au
     },
   );
   const pkgRun: HostCommand = async (context) => {
+    expect(context.processIdentity).toEqual({ pid: context.pid, parentPid: context.parentPid });
+    expect(Object.isFrozen(context.processIdentity)).toBe(true);
     expect(Object.keys(context).sort()).toEqual([
       "abort",
       "parentPid",
       "pid",
+      "processIdentity",
       "processes",
       "request",
       "signals",

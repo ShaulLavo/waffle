@@ -50,6 +50,7 @@ function fixture() {
   let tick = 0;
   let action: (() => void) | undefined;
   const abi = new ProcessABI({
+    processIdentity: service.processIdentity,
     memory,
     descriptors,
     fs: new MemFS(),

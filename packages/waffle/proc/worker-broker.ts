@@ -23,7 +23,7 @@ import {
   isCollectedProcess,
   settleDirectoryJobLifetimes,
 } from "./directory.js";
-import { controlLoad, controlStore } from "./control.js";
+import { controlLoad, controlStore, controlCas } from "./control.js";
 import { DescriptorTable, type Resource } from "../core/descriptors.js";
 import { claimOutcome, readOutcome } from "./outcome.js";
 import {
@@ -33,7 +33,13 @@ import {
 } from "./admission.js";
 import { requestSignal } from "./signals.js";
 import type { ProcessSupervisor } from "./supervisor.js";
-import { ProcessErrno, ProcessError, checkedJobLifetime, checkedProcessCwd } from "./types.js";
+import {
+  ProcessErrno,
+  ProcessError,
+  checkedJobLifetime,
+  checkedProcessCwd,
+  checkedProcessKind,
+} from "./types.js";
 import {
   confirmWorkerProcessJob,
   installWorkerBindings,
@@ -484,6 +490,12 @@ export class WorkerProcessBroker {
         descriptors,
         complete: (result, error) => this.completeExec(message, result, error),
         install: () => {
+          controlCas(
+            workerProcessState(transport).imageAdmission,
+            0,
+            -(transport.generation - 1),
+            transport.generation,
+          );
           this.accesses.revoke(transport.pid, workerProcessDirectoryId(transport));
           this.transports.set(transport.pid, transport);
         },
@@ -499,6 +511,13 @@ export class WorkerProcessBroker {
         await this.discardExec(message, error);
       }
     }
+  }
+  private checkSpawnKind(
+    transport: WorkerProcessTransport,
+    request: import("./types.js").SpawnRequest,
+  ): void {
+    if (checkedProcessKind(request.processKind) !== workerProcessState(transport).processKind)
+      throw new ProcessError(ProcessErrno.INVAL, "spawn kind conflicts with published reservation");
   }
   private async spawn(
     transport: WorkerProcessTransport,
@@ -519,6 +538,7 @@ export class WorkerProcessBroker {
       codec = this.codec(transport);
       if (transport.generation !== 1)
         throw new ProcessError(ProcessErrno.INVAL, "spawn image generation must be one");
+      this.checkSpawnKind(transport, request);
       if (
         request.job <= 0 &&
         (checkedJobLifetime(request.job, request.jobLifetime) !== state.jobLifetime ||
@@ -563,6 +583,7 @@ export class WorkerProcessBroker {
         { ...request, fds: [] },
         {
           pid: state.pid,
+          processIdentity: state.processIdentity,
           nativeReturn: this.options.nativeReturn?.(transport) ?? captureNativeReturn(transport),
           observation: transport,
           job: state.job,

@@ -171,6 +171,7 @@ test("CLEANUP wait preserves pending handled signals and validates output before
   const memory = new WebAssembly.Memory({ initial: 1 });
   const wake = new Int32Array(new SharedArrayBuffer(4));
   const abi = new ProcessABI({
+    processIdentity: s.get(root)!.processIdentity,
     memory,
     fs: new MemFS(),
     descriptors: signals.image.descriptors,
@@ -373,6 +374,7 @@ test("guest JSON cannot supply another process as lifetime owner", () => {
   );
   new Uint8Array(memory.buffer).set(bytes);
   const abi = new ProcessABI({
+    processIdentity: s.get(root)!.processIdentity,
     memory,
     descriptors: s.get(root)!.image.descriptors,
     fs: new MemFS(),
@@ -422,6 +424,7 @@ test("CLEANUP waits on a notification despite handled TERM, but fatal outcome un
   const wake = new Int32Array(new SharedArrayBuffer(4));
   let waits = 0;
   const abi = new ProcessABI({
+    processIdentity: s.get(root)!.processIdentity,
     memory,
     fs: new MemFS(),
     descriptors: signals.image.descriptors,
@@ -450,6 +453,7 @@ test("CLEANUP rejects unsupported notification routes, foreign jobs and repeated
   const memory = new WebAssembly.Memory({ initial: 1 });
   const signals = s.get(root)!;
   const options = {
+    processIdentity: signals.processIdentity,
     memory,
     fs: new MemFS(),
     descriptors: signals.image.descriptors,
@@ -460,7 +464,13 @@ test("CLEANUP rejects unsupported notification routes, foreign jobs and repeated
   expect(new ProcessABI(options).imports.wait_job!(job, 2, 0)).toBe(-58);
   const wake = new Int32Array(new SharedArrayBuffer(4));
   const other = s.createRoot();
-  const stranger = new ProcessABI({ ...options, pid: other, signals: s.get(other)!, wake });
+  const stranger = new ProcessABI({
+    ...options,
+    processIdentity: s.get(other)!.processIdentity,
+    pid: other,
+    signals: s.get(other)!,
+    wake,
+  });
   expect(stranger.imports.wait_job!(job, 2, 0)).toBe(-63);
   const abi = new ProcessABI({ ...options, wake });
   expect(abi.imports.wait_job!(9999, 2, 0)).toBe(-71);
@@ -489,6 +499,7 @@ test("CLEANUP reacquires growing guest memory before consuming the job", async (
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
   let views = 0;
   const abi = new ProcessABI({
+    processIdentity: s.get(root)!.processIdentity,
     memory: () => {
       if (++views === 2) memory.grow(1);
       return memory;
@@ -517,6 +528,7 @@ test("shared CLEANUP reports physical-retirement error without collecting the jo
   await f.broker.handle(f.messages.shift()!, f.root.pid);
   await turn();
   const abi = new ProcessABI({
+    processIdentity: f.root.processIdentity,
     memory: new WebAssembly.Memory({ initial: 1 }),
     fs: new MemFS(),
     descriptors: f.root.options.descriptors,
@@ -549,6 +561,7 @@ test("a failed filesystem fence reports an error but never confirms or physicall
   s.exit(child, 0);
   await turn();
   const abi = new ProcessABI({
+    processIdentity: s.get(root)!.processIdentity,
     memory: new WebAssembly.Memory({ initial: 1 }),
     fs: new MemFS(),
     descriptors: s.get(root)!.image.descriptors,

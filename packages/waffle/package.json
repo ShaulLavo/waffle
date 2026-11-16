@@ -685,5 +685,5 @@
     "wabt": "1.0.39",
     "webdriverio": "9.29.1"
   },
-  "waffleHostInterface": 2
+  "waffleHostInterface": 3
 }

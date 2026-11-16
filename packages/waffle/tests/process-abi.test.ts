@@ -44,6 +44,7 @@ function fixture(overrides: Partial<ProcessABIOptions> = {}) {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
   let waits = 0;
   const abi = new ProcessABI({
+    processIdentity: supervisor.get(pid)!.processIdentity,
     memory,
     descriptors,
     fs,
@@ -111,6 +112,7 @@ test("fd_kind is local, needs no rights and preserves every resource's state", (
     throw new Error("fd_kind must not read memory, wait or contact a service");
   };
   const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
     memory: unused,
     descriptors: f.descriptors,
     fs: new Proxy(f.fs, { get: unused }),
@@ -135,6 +137,7 @@ test("getpid returns each caller's own runtime identity, not its parent or job",
   const child = f.spawn();
   const record = f.supervisor.get(child)!;
   const childABI = new ProcessABI({
+    processIdentity: record.processIdentity,
     memory: f.memory,
     descriptors: record.image.descriptors,
     fs: f.fs,
@@ -156,6 +159,7 @@ for (const pid of [37, 0x7fffffff])
       throw new Error("getpid must remain local and nonblocking");
     };
     const abi = new ProcessABI({
+      processIdentity: f.supervisor.get(f.pid)!.processIdentity,
       memory: unused,
       descriptors: f.descriptors,
       fs: f.fs,
@@ -590,6 +594,7 @@ test("poll timeout, invalid subscriptions and filesystem completion do not corru
     filesystemReady: (_pid: number, request: number) => request === 77 && complete,
   };
   const other = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
     memory: f.memory,
     descriptors: f.descriptors,
     fs: f.fs,
@@ -662,6 +667,7 @@ test("guest kill authority rejects siblings and foreign jobs while allowing desc
     sibling = f.spawn();
   const record = f.supervisor.get(first)!;
   const child = new ProcessABI({
+    processIdentity: record.processIdentity,
     memory: f.memory,
     descriptors: record.image.descriptors,
     fs: f.fs,
@@ -838,6 +844,7 @@ test("runtime_proc never calls the preview1 terminal's blocking stdin callback",
   cleanups.push(() => wasi.descriptors.dispose());
   wasi.start({ exports: { memory: f.memory, _start() {} } } as unknown as WebAssembly.Instance);
   const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
     memory: f.memory,
     descriptors: wasi.descriptors,
     fs: f.fs,
@@ -880,6 +887,7 @@ test("blocking terminal stdin does not turn async read-poll-read into a hot loop
   expect(functions.poll_oneoff!(0, 1024, 1, 2048)).toBe(0);
   expect(f.view().getUint32(2048, true)).toBe(1);
   const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
     memory: f.memory,
     descriptors: wasi.descriptors,
     fs: f.fs,
@@ -920,6 +928,7 @@ test("async terminal EOF remains ready and unsupported hangup does not mask a su
   });
   cleanups.push(() => wasi.descriptors.dispose());
   const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
     memory: f.memory,
     descriptors: wasi.descriptors,
     fs: f.fs,
@@ -979,6 +988,7 @@ test("custom terminal immediate I/O keeps its explicit async readiness contract"
   });
   cleanups.push(() => wasi.descriptors.dispose());
   const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
     memory: f.memory,
     descriptors: wasi.descriptors,
     fs: f.fs,
@@ -1413,6 +1423,7 @@ test("exec validates the request and span before staging and shares spawn_error(
     },
   });
   const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
     memory: f.memory,
     descriptors: f.descriptors,
     fs: f.fs,
@@ -1453,6 +1464,7 @@ test("exec needs the service capability, common wake and revocation registration
     },
   });
   const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
     memory: f.memory,
     descriptors: f.descriptors,
     fs: f.fs,
@@ -1477,6 +1489,7 @@ test("successful exec waits on the common wake and unwinds as execution control 
   });
   let waits = 0;
   const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
     memory: f.memory,
     descriptors: f.descriptors,
     fs: f.fs,
@@ -1511,6 +1524,7 @@ test("fatal cancellation wins over an exec completion published while the import
     },
   });
   const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
     memory: f.memory,
     descriptors: f.descriptors,
     fs: f.fs,
@@ -1538,6 +1552,7 @@ test("fatal cancellation during exec staging unwinds instead of returning its st
     },
   });
   const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
     memory: f.memory,
     descriptors: f.descriptors,
     fs: f.fs,

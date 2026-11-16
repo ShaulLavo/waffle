@@ -35,6 +35,7 @@ test("pipe metadata rights and filestat survive local supervisor inheritance wit
   });
   const pid = supervisor.createRoot({ descriptors: wasi.descriptors });
   const abi = new ProcessABI({
+    processIdentity: supervisor.get(pid)!.processIdentity,
     memory: () => guest.memory,
     descriptors: wasi.descriptors,
     fs,

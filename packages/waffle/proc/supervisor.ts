@@ -1,4 +1,5 @@
 import { admitProcessObservation, captureNativeReturn } from "./observation.js";
+import { directoryState, directoryHasProcessSibling } from "./directory.js";
 import { allocateSharedControl } from "../memory/control.ts";
 import {
   isInstance,
@@ -59,6 +60,11 @@ import {
   checkedJobLifetime,
   checkedProcessCwd,
   snapshotSpawnWorker,
+  checkedProcessKind,
+  snapshotLogicalProcessIdentity,
+  type AdmittedSpawnReservation,
+  type ProcessKind,
+  type LogicalProcessIdentity,
   type ChildExitEvent,
   type ProcessContext,
   type ProcessLifecycle,
@@ -158,6 +164,7 @@ function snapshot(
   // Own all mutable request data before returning to the guest's synchronous spawn call.
   return {
     executable: spec.executable,
+    processKind: checkedProcessKind(spec.processKind),
     argv: spec.argv.slice(),
     env: { ...spec.env },
     cwd: checkedProcessCwd(spec.cwd),
@@ -501,6 +508,8 @@ export class ProcessSupervisor {
       {
         pid,
         parentPid: 0,
+        processKind: "process",
+        processIdentity: snapshotLogicalProcessIdentity({ pid, parentPid: 0 }),
         job: job.id,
         image: createProcessImage(1, cwd, options.descriptors ?? new DescriptorTable(), null),
         interrupt,
@@ -535,7 +544,7 @@ export class ProcessSupervisor {
   reserveAdmittedSpawn(
     parentPid: number,
     spec: SpawnRequest,
-    reservation: SpawnReservation = {},
+    reservation: AdmittedSpawnReservation,
     retainedDescriptors?: DescriptorTable,
     jobIdentity?: SharedJobIdentity,
   ): number {
@@ -560,16 +569,15 @@ export class ProcessSupervisor {
     const selector = spec.job;
     const requestedLifetime = spec.jobLifetime;
     const jobLifetime = checkedJobLifetime(selector, requestedLifetime);
+    const processKind = checkedProcessKind(spec.processKind);
+    if (!admitted && reservation.processIdentity !== undefined)
+      throw new ProcessError(ProcessErrno.INVAL, "ordinary spawn cannot override process identity");
+    const capturedIdentity = admitted
+      ? this.admittedIdentity(parentPid, spec, reservation)
+      : undefined;
     const parent = this.table.get(parentPid);
-    // A separately selected job can be admitted after an ancestor reaped its exited parent.
-    // Its worker already retained the capabilities and ancestry before that reap.
-    if (!parent && (!admitted || !retainedDescriptors))
-      throw new ProcessError(ProcessErrno.SRCH, `unknown process ${parentPid}`);
-    if (
-      !admitted &&
-      (parent!.result || parent!.signal === Signal.SIGKILL || readOutcome(parent!.outcome))
-    )
-      throw new ProcessError(ProcessErrno.SRCH, "parent process has exited or is being killed");
+    const parentImage = parent?.image;
+    this.checkSpawnParent(parentPid, parent, processKind, admitted, retainedDescriptors);
     const parentDescriptors = retainedDescriptors ?? parent!.image.descriptors;
     if (!Number.isInteger(selector) || selector < -1)
       throw new ProcessError(ProcessErrno.INVAL, "invalid job selection");
@@ -585,8 +593,12 @@ export class ProcessSupervisor {
       requestedSignal = signalWord(reservation.requestedSignal),
       outcome = outcomeWord(reservation.outcome),
       signalState = createSignalState(reservation.signalState);
-    const request = snapshot(spec, { job: selector, jobLifetime: requestedLifetime });
+    const request = snapshot(
+      { ...spec, processKind },
+      { job: selector, jobLifetime: requestedLifetime },
+    );
     const pid = reservation.pid ?? this.table.identities.pid();
+    const processIdentity = this.spawnIdentity(pid, processKind, parent, capturedIdentity);
     this.table.checkPid(pid, admitted ? reservation.outcome : undefined);
     const observation = admitProcessObservation(pid, outcome, reservation.observation);
     let job = reservation.job ?? (selector > 0 ? selector : undefined);
@@ -646,10 +658,13 @@ export class ProcessSupervisor {
           rightsInheriting: source.rightsInheriting,
         });
       }
+      this.checkThreadPublication(parent, parentImage, processKind, admitted);
       this.table.insert(
         {
           pid,
           parentPid,
+          processKind,
+          processIdentity,
           job,
           image: createProcessImage(1, request.cwd, descriptors, request, revocations),
           controlParent: reservation.controlParent,
@@ -677,6 +692,97 @@ export class ProcessSupervisor {
       throw error;
     }
     return pid;
+  }
+  private checkSpawnParent(
+    parentPid: number,
+    parent: ProcessRecord | undefined,
+    kind: ProcessKind,
+    admitted: boolean,
+    retained: DescriptorTable | undefined,
+  ): void {
+    // Accepted transfers keep their captured ancestry after their creator is collected.
+    if (!parent && (!admitted || !retained))
+      throw new ProcessError(ProcessErrno.SRCH, `unknown process ${parentPid}`);
+    if (admitted) return;
+    if (parent!.result || parent!.signal === Signal.SIGKILL || readOutcome(parent!.outcome))
+      throw new ProcessError(ProcessErrno.SRCH, "parent process has exited or is being killed");
+    if (kind === "thread" && parent!.image.phase !== "current")
+      throw new ProcessError(ProcessErrno.SRCH, "spawning image is retiring");
+  }
+  private checkThreadPublication(
+    parent: ProcessRecord | undefined,
+    image: ProcessImage | undefined,
+    kind: ProcessKind,
+    admitted: boolean,
+  ): void {
+    if (admitted || kind !== "thread") return;
+    if (
+      this.table.get(parent!.pid) !== parent ||
+      parent!.image !== image ||
+      image!.phase !== "current" ||
+      parent!.revoked ||
+      readOutcome(parent!.outcome)
+    )
+      throw new ProcessError(ProcessErrno.SRCH, "spawning image is no longer current");
+  }
+  private spawnIdentity(
+    pid: number,
+    kind: ProcessKind,
+    parent: ProcessRecord | undefined,
+    captured: LogicalProcessIdentity | undefined,
+  ): LogicalProcessIdentity {
+    const pair =
+      captured ??
+      snapshotLogicalProcessIdentity(
+        kind === "thread"
+          ? parent!.processIdentity
+          : { pid, parentPid: parent!.processIdentity.pid },
+      );
+    if (kind === "process" && pair.pid !== pid)
+      throw new ProcessError(ProcessErrno.INVAL, "process leader must own its execution identity");
+    return pair;
+  }
+  private admittedIdentity(parentPid: number, spec: SpawnRequest, reservation: SpawnReservation) {
+    const pair = snapshotLogicalProcessIdentity(reservation.processIdentity!);
+    const observation = reservation.observation;
+    if (observation?.kind !== "directory")
+      throw new ProcessError(
+        ProcessErrno.INVAL,
+        "admitted spawn requires a published directory row",
+      );
+    const state = directoryState(observation);
+    if (
+      state.parentPid !== parentPid ||
+      reservation.pid !== state.pid ||
+      checkedProcessKind(spec.processKind) !== state.processKind ||
+      pair.pid !== state.processIdentity.pid ||
+      pair.parentPid !== state.processIdentity.parentPid
+    )
+      throw new ProcessError(
+        ProcessErrno.INVAL,
+        "admitted process identity conflicts with published row",
+      );
+    return pair;
+  }
+  /** Existing consumer records survive logical collection until full physical retirement. */
+  hasProcessSibling(pid: number): boolean {
+    const source = this.table.require(pid);
+    if (
+      source.observation.kind === "directory" &&
+      directoryHasProcessSibling(source.observation, source.processIdentity.pid)
+    )
+      return true;
+    for (const records of this.consumers.values()) {
+      for (const record of records) {
+        if (
+          record.pid !== pid &&
+          record.processIdentity.pid === source.processIdentity.pid &&
+          record.retirement?.kind !== "complete"
+        )
+          return true;
+      }
+    }
+    return false;
   }
   private checkJobAdmission(job: number, admitted: boolean): void {
     if (admitted) return;
@@ -767,6 +873,7 @@ export class ProcessSupervisor {
       generation: image.generation,
       pid: record.pid,
       parentPid: record.parentPid,
+      processIdentity: snapshotLogicalProcessIdentity(record.processIdentity),
       job: record.job,
       request:
         executable.argv === undefined
@@ -820,6 +927,8 @@ export class ProcessSupervisor {
     },
   ): ProcessReplacement {
     const record = this.accessOwner(pid);
+    if (record.processKind === "thread" || this.hasProcessSibling(pid))
+      throw new ProcessError(ProcessErrno.NOTSUP, "exec requires a sole process leader");
     if (!this.options.stopImage || record.image.phase !== "current" || record.replacement)
       throw new ProcessError(ProcessErrno.NOTSUP, "process image cannot be replaced");
     const image = record.image;
@@ -893,6 +1002,8 @@ export class ProcessSupervisor {
         replacement.request.argv,
       );
       active();
+      if (record.processKind === "thread" || this.hasProcessSibling(record.pid))
+        throw new ProcessError(ProcessErrno.NOTSUP, "exec requires a sole process leader");
       replacement.admission = this.options.commitReplacement?.(
         record.pid,
         replacement.image.generation,

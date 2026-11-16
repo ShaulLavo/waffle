@@ -38,6 +38,7 @@ function fixture(
     record = supervisor.get(pid)!;
   const memory = new WebAssembly.Memory({ initial: 1 });
   const abi = new ProcessABI({
+    processIdentity: record.processIdentity,
     memory,
     descriptors: record.image.descriptors,
     fs: new MemFS(),

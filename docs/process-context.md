@@ -14,7 +14,7 @@ Omitting `hostIdentity` produces `runtime.hostIdentity === null`. Adapters must 
 
 ## Process metadata
 
-`GuestLauncher` receives `RuntimeProcessContext`, the existing process context plus immutable `identity` metadata:
+`GuestLauncher` receives `RuntimeProcessContext`, the existing process context plus immutable execution `identity` metadata:
 
 ```ts
 interface RuntimeProcessIdentity {
@@ -28,9 +28,22 @@ interface RuntimeProcessIdentity {
 
 The page snapshots host configuration when it creates the runtime. Mutating the caller's object cannot change launched or future processes. Broker-launched workers receive that same host identity regardless of adapter request fields, child environment variables, or adapter-specific spawn data. Waffle does not implement credential changes, so descendants inherit the runtime host identity.
 
+The separate `processIdentity: LogicalProcessIdentity` holds immutable logical
+`{ pid, parentPid }` metadata. Roots use their reserved execution PID and parent 0.
+An ordinary child receives its fresh execution PID and its caller's logical PID as
+parent. A `processKind: "thread"` admission copies the caller's whole logical pair.
+Nested threads therefore retain the same parent. Leader exit and execution-row
+collection do not change the pair or keep the leader's resources alive.
+
+`identity`, lifecycle `pid`/`parentPid`, jobs, waits, signals and descriptor authority
+continue to use execution IDs. `HostCommandContext.processIdentity` also provides a
+frozen copied logical pair. These numbers grant no cross-member access.
+
 ## Worker adapters and externally launched roots
 
 `WorkerSetupContext.identity` exposes the worker's immutable process identity. Bootstrap reads its PID and parent PID from the admitted `runtimeProcess` shared transport. Without that transport, `identity` is null; bootstrap cannot invent ancestry.
+`WorkerSetupContext.processIdentity` separately exposes the frozen admitted logical
+pair and is also null without a transport.
 
 An adapter that launches an interactive root directly passes the owning page's host identity alongside its real transport:
 
@@ -48,7 +61,7 @@ worker.postMessage(
 );
 ```
 
-Broker launches set `hostIdentity` themselves. Adapter callbacks can read `context.identity` without editing `proc/types.ts` or adding a second runtime. Guest-specific UID, EUID, PPID, and hostname imports remain the guest adapter's responsibility. Waffle's preview1 ABI gains no invented POSIX imports.
+Broker launches set `hostIdentity` themselves. Adapter callbacks can read `context.identity` without editing `proc/types.ts` or adding a second runtime. Guest-specific UID, EUID and hostname imports remain the guest adapter's responsibility. Logical process queries use the common process ABI described in [Host ABI](host-abi.md). Waffle's preview1 ABI gains no invented POSIX imports.
 
 ## Preparing descendants before entry
 

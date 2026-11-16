@@ -91,5 +91,5 @@
   "engines": {
     "node": ">=22.18"
   },
-  "waffleHostInterface": 2
+  "waffleHostInterface": 3
 }

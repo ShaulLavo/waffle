@@ -69,6 +69,7 @@ let runtime: Runtime | undefined;
 let ports: MessagePort[];
 let requests: RuntimeWorkerRequest[];
 let entered: RuntimeProcessIdentity[];
+let logical: import("../proc/types.js").LogicalProcessIdentity[];
 let observations: number[][];
 let completions: Promise<void>[];
 let launches: number;
@@ -100,7 +101,11 @@ class IdentityFixtureWorker {
     await bootstrap(
       request,
       {
-        setup({ fs, identity }) {
+        setup({ fs, identity, processIdentity }) {
+          if (processIdentity) {
+            expect(Object.isFrozen(processIdentity)).toBe(true);
+            logical.push(processIdentity);
+          }
           if (identity) entered.push(identity);
           fs.preopen = () => 1;
           fs.retain = () => {};
@@ -122,7 +127,7 @@ class IdentityFixtureWorker {
           const code = preview1Executor.run(context, exited);
           const memory = context.instance.exports.memory;
           if (!(memory instanceof WebAssembly.Memory)) throw new Error("missing guest memory");
-          observations.push(Array.from(new Uint32Array(memory.buffer, 0, 4)));
+          observations.push(Array.from(new Uint32Array(memory.buffer, 0, 7)));
           return code;
         },
       },
@@ -141,6 +146,7 @@ beforeEach(() => {
   ports = [];
   requests = [];
   entered = [];
+  logical = [];
   observations = [];
   completions = [];
   launches = 0;
@@ -168,11 +174,15 @@ function page(hostIdentity?: RuntimeHostIdentity) {
   return runtime;
 }
 
-async function runChild(hostIdentity?: RuntimeHostIdentity) {
+async function runChild(
+  hostIdentity?: RuntimeHostIdentity,
+  processKind: "process" | "thread" = "process",
+) {
   const owner = page(hostIdentity);
   const adapterContexts: RuntimeProcessIdentity[] = [];
   owner.registerAdapter("identity", (context, service) => {
     adapterContexts.push(context.identity);
+    expect(Object.isFrozen(context.processIdentity)).toBe(true);
     const request = {
       module: context.module,
       args: context.request.argv,
@@ -217,6 +227,7 @@ async function runChild(hostIdentity?: RuntimeHostIdentity) {
     postMessage: (message) => notices.push(message),
   });
   const child = client.spawn(root, {
+    processKind,
     executable: "/app",
     argv: [],
     cwd: "/",
@@ -262,7 +273,9 @@ test.each([
     expect(entered).toEqual([{ pid: child, parentPid: root, host }]);
     expect(adapterContexts).toEqual(entered);
     expect(requests[0]!.hostIdentity).toEqual(host);
-    expect(observations).toEqual([[host.uid, host.euid, root, host.hostname.charCodeAt(0)]]);
+    expect(observations).toEqual([
+      [host.uid, host.euid, root, host.hostname.charCodeAt(0), child, child, root],
+    ]);
   },
 );
 
@@ -270,7 +283,7 @@ test("unconfigured page preserves ancestry but guest host metadata is unsupporte
   const { root, child } = await runChild();
   expect(entered).toEqual([{ pid: child, parentPid: root, host: null }]);
   expect(requests[0]!.hostIdentity).toBeNull();
-  expect(observations).toEqual([[0xffff_ffc6, 0xffff_ffc6, root, 0xffff_ffc6]]);
+  expect(observations).toEqual([[0xffff_ffc6, 0xffff_ffc6, root, 0xffff_ffc6, child, child, root]]);
 });
 
 test("externally launched roots use the page snapshot and their actual zero parent", async () => {
@@ -293,7 +306,9 @@ test("externally launched roots use the page snapshot and their actual zero pare
   });
   await Promise.all(completions);
   expect(entered).toEqual([{ pid: transport.pid, parentPid: 0, host: hostIdentity }]);
-  expect(observations).toEqual([[8005, 9006, 0, "r".charCodeAt(0)]]);
+  expect(observations).toEqual([
+    [8005, 9006, 0, "r".charCodeAt(0), transport.pid, transport.pid, 0],
+  ]);
 });
 
 test("bootstrap does not invent process identity without an admitted transport", async () => {
@@ -314,6 +329,7 @@ test("bootstrap does not invent process identity without an admitted transport",
       setup(context) {
         observed = true;
         expect(context.identity).toBeNull();
+        expect(context.processIdentity).toBeNull();
         context.finish({ code: 0 });
       },
       run() {
@@ -323,4 +339,11 @@ test("bootstrap does not invent process identity without an admitted transport",
     { crossOriginIsolated: true, postMessage() {} },
   );
   expect(observed).toBe(true);
+});
+
+test("thread guests read their copied logical pair while getpid keeps the execution handle", async () => {
+  const { root, child } = await runChild(undefined, "thread");
+  expect(entered[0]).toMatchObject({ pid: child, parentPid: root });
+  expect(logical).toEqual([{ pid: root, parentPid: 0 }]);
+  expect(observations).toEqual([[0xffff_ffc6, 0xffff_ffc6, root, 0xffff_ffc6, child, root, 0]]);
 });

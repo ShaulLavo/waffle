@@ -114,6 +114,7 @@ async function fixture() {
   });
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
   const abi = new ProcessABI({
+    processIdentity: client.processIdentity,
     memory,
     fs,
     descriptors,
@@ -459,6 +460,7 @@ async function parityFixture(kind: "worker" | "cooperative") {
     kind === "worker"
       ? f.abi
       : new ProcessABI({
+          processIdentity: supervisor.get(root)!.processIdentity,
           memory: f.memory,
           fs: f.fs,
           descriptors,
