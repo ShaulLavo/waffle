@@ -373,3 +373,36 @@ test("a sealed job remains excluded from target and retained-child lookups", () 
   childError(() => f.client.childExited(1, f.child.pid));
   childError(() => f.client.spawnDiagnostic(1, f.child.pid));
 });
+
+for (const query of ["directory", "wait"] as const)
+  test(`logical identity capture tolerates collection during its scalar read: ${query}`, () => {
+    const f = fixture(2);
+    const { directory, outcome, observation } = f.api;
+    const state = directory.directoryState(f.child);
+    const returned = observation.captureNativeReturn(f.child);
+    const raw = processRow(f);
+    let raced = false;
+    f.hook((view, index) => {
+      if (
+        view.buffer !== raw.buffer ||
+        view.byteOffset !== raw.byteOffset ||
+        index !== raw.length - 4
+      )
+        return;
+      f.hook();
+      raced = true;
+      outcome.claimOutcome(state.signals.outcome, { kind: "exited", code: 0 });
+      returned();
+      directory.confirmDirectoryProcess(f.child);
+      directory.collectDirectoryProcess(f.child);
+      directory.collectDirectoryJob(f.child.directory, state.jobSlot, state.job);
+      directory.reserveDirectoryProcess(f.root, 99, 1, 99, 1);
+    });
+    if (query === "directory")
+      expect(() => directory.directoryState(f.child)).toThrow(
+        expect.objectContaining({ errno: 71 }),
+      );
+    else childError(() => f.client.wait(1, f.child.pid));
+    expect(raced).toBe(true);
+    expect(directory.directoryState(f.root).processIdentity).toEqual({ pid: 1, parentPid: 0 });
+  });

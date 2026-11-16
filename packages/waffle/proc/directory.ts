@@ -203,15 +203,24 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
     job = data.load(2),
     jobSlot = data.load(75);
   const group = directoryJob(handle.directory, jobSlot, job);
+  const logicalPid = data.load(PROCESS_ID),
+    logicalParent = data.load(PROCESS_PARENT),
+    kind = data.load(PROCESS_KIND);
+  const processIdentity = snapshotLogicalProcessIdentity({
+    pid: logicalPid,
+    parentPid: logicalParent,
+  });
   const state = {
     slot,
     pid,
     parentPid: data.load(1),
-    processIdentity: snapshotLogicalProcessIdentity({
-      pid: data.load(PROCESS_ID),
-      parentPid: data.load(PROCESS_PARENT),
-    }),
-    processKind: data.load(PROCESS_KIND) === 1 ? ("thread" as const) : ("process" as const),
+    processIdentity,
+    processKind:
+      kind === 1
+        ? ("thread" as const)
+        : kind === 0
+          ? ("process" as const)
+          : checkedProcessKind(kind),
     // Spawn/exec alone need this view; ordinary lookup keeps its existing construction bound.
     get imageAdmission() {
       return liveCells(raw, pid, IMAGE_ADMISSION);

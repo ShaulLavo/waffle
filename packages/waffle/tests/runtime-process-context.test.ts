@@ -62,7 +62,7 @@ import {
 import { FilesystemService } from "../fs/service.js";
 import { MemoryBackend } from "../fs/backend.js";
 import type { FilesystemConnection } from "../fs/protocol.js";
-import { processContextGuest } from "./fixtures/process-context-guest.js";
+import { logicalProcessContextGuest as processContextGuest } from "./fixtures/logical-process-context-guest.js";
 
 const nativeWorker = globalThis.Worker;
 let runtime: Runtime | undefined;
