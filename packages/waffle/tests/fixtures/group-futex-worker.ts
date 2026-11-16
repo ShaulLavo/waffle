@@ -6,7 +6,7 @@ export interface FutexFixtureRequest {
   addr: number;
   mode?: "provider" | "raw" | "statuses";
   gate?: SharedArrayBuffer;
-  stage?: "address" | "width" | "epoch" | "pre-wait" | "exit" | "post-closed";
+  stage?: "address" | "width" | "epoch" | "pre-wait" | "after-entry" | "exit" | "post-closed";
   throwWait?: boolean;
   repeat?: number;
 }
@@ -53,7 +53,9 @@ onmessage = async ({ data }: MessageEvent<FutexFixtureRequest>) => {
   Atomics.wait = ((array: Int32Array, index: number, value: number, timeout?: number) => {
     gate("pre-wait");
     if (data.throwWait) throw new Error("native wait injection");
+    // This is call entry, before parking. It is not a native-queue membership receipt.
     postMessage({ event: "native-entry", timeout });
+    gate("after-entry");
     return wait(array, index, value, timeout);
   }) as typeof Atomics.wait;
   const { createGroupMember } = await import("../../group/member.ts");

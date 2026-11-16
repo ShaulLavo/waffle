@@ -23,22 +23,34 @@ interface Message {
   stage?: string;
   epoch?: number;
   closed?: number;
+  closedReads?: number;
   timeout?: number;
 }
-const workers: Worker[] = [];
+const workers: { worker: Worker; closed: Promise<void>; lease: MemberLease }[] = [];
 const leases: MemberLease[] = [];
 const gates: Int32Array[] = [];
 const ports: MessagePort[] = [];
+const nativeWaitCells: Int32Array[] = [];
 afterEach(async () => {
+  for (const { worker, lease } of workers) {
+    try {
+      worker.terminate();
+    } finally {
+      lease.stopRequested();
+    }
+  }
   for (const gate of gates) {
     Atomics.store(gate, 0, 1);
     Atomics.notify(gate, 0);
   }
-  await Promise.all(workers.map((worker) => worker.terminate()));
+  for (const cells of nativeWaitCells) Atomics.notify(cells, 16, Infinity);
+  for (const lease of leases) lease.abort();
+  await Promise.all(workers.map(({ closed }) => closed));
   for (const lease of leases) lease.stopped();
   for (const port of ports) port.close();
   workers.length = leases.length = gates.length = 0;
   ports.length = 0;
+  nativeWaitCells.length = 0;
 });
 
 function setup() {
@@ -63,7 +75,10 @@ function launch(lease: MemberLease, options: Partial<Omit<FutexFixtureRequest, "
   ports.push(launched.request.port);
   const cells = new Int32Array(launched.request.reply);
   const worker = new Worker(new URL("./fixtures/group-futex-worker.ts", import.meta.url).href);
-  workers.push(worker);
+  const closed = new Promise<void>((resolve) =>
+    worker.addEventListener("close", () => resolve(), { once: true }),
+  );
+  workers.push({ worker, closed, lease });
   const queue: Message[] = [];
   let notify: (() => void) | undefined;
   let failure: unknown;
@@ -200,32 +215,84 @@ for (const width of [4, 8] as const) {
   }, 10_000);
 }
 
-test("raw, provider and watch wake budgets retain native-first and zero/all semantics", async () => {
-  const { reserve } = setup();
-  const lease = reserve();
-  const f = launch(lease);
-  const member = createGroupMember(f.request, { checkActive() {} });
-  try {
-    f.start();
-    await f.next("ready");
-    await f.next("native-entry");
-    const raw = Atomics.waitAsync(new Int32Array(f.request.memory.buffer), 16, 0);
-    expect(member.imports.futex_watch!(64, 0, 0)).toBe(0);
-    expect(member.imports.futex_watch!(64, 0, 4)).toBe(0);
-    expect(member.imports.futex_wake!(64, 0)).toBe(0);
-    expect(member.watchReady(1)).toBe(false);
-    expect(member.imports.futex_wake!(64, 2)).toBe(2);
-    expect(await raw.value).toBe("ok");
-    expect((await f.next("result")).result).toBe(0);
-    expect([member.watchReady(1), member.watchReady(2)]).toEqual([false, false]);
-    expect(member.imports.futex_wake!(64, 1)).toBe(1);
-    expect([member.watchReady(1), member.watchReady(2)]).toEqual([true, false]);
-    expect(member.imports.futex_wake!(64, -1)).toBe(1);
-    expect(member.watchReady(2)).toBe(true);
-  } finally {
-    member.dispose();
+/** waitAsync's async return establishes registration before any tested wake runs. */
+async function nativeWakeBudgets(
+  member: ReturnType<typeof createGroupMember>,
+  buffer: SharedArrayBuffer,
+): Promise<void> {
+  const words = new Int32Array(buffer);
+  nativeWaitCells.push(words);
+  const raw32 = Atomics.waitAsync(words, 16, 0);
+  const raw64 = Atomics.waitAsync(new BigInt64Array(buffer), 8, 0n);
+  expect([raw32.async, raw64.async]).toEqual([true, true]);
+  expect(member.imports.futex_watch!(64, 0, 0)).toBe(0);
+  expect(member.imports.futex_watch!(64, 0, 4)).toBe(0);
+  expect(member.imports.futex_wake!(64, 0)).toBe(0);
+  expect([member.watchReady(1), member.watchReady(2)]).toEqual([false, false]);
+  expect(member.imports.futex_wake!(64, 2)).toBe(2);
+  expect(await Promise.all([raw32.value, raw64.value])).toEqual(["ok", "ok"]);
+  expect([member.watchReady(1), member.watchReady(2)]).toEqual([false, false]);
+  expect(member.imports.futex_wake!(64, 1)).toBe(1);
+  expect([member.watchReady(1), member.watchReady(2)]).toEqual([true, false]);
+  const lastRaw = Atomics.waitAsync(words, 16, 0);
+  expect(lastRaw.async).toBe(true);
+  expect(member.imports.futex_wake!(64, -1)).toBe(2);
+  expect(await lastRaw.value).toBe("ok");
+  expect(member.watchReady(2)).toBe(true);
+  expect(member.imports.futex_wake!(64, -1)).toBe(0);
+}
+
+for (const width of [4, 8] as const) {
+  for (const forced of [false, true]) {
+    test(`provider wait${width * 8} and deterministic native/watch wake budgets, before-park gate=${forced}`, async () => {
+      const { reserve } = setup();
+      const pause = gate();
+      const lease = reserve();
+      const f = launch(lease, {
+        width,
+        ...(forced ? { stage: "after-entry", gate: pause.buffer } : {}),
+      });
+      const member = createGroupMember(f.request, { checkActive() {} });
+      try {
+        f.start();
+        await f.next("native-entry");
+        if (forced) await beforeParkWake(f, member, pause);
+        // With no competing raw waiters or watches, this one consumed wake proves provider parking.
+        expect(await notifyWaiter(() => member.imports.futex_wake!(64, 1))).toBe(1);
+        expect((await f.next("result")).result).toBe(0);
+        expect(Atomics.load(f.cells, WAIT_EPOCH)).toBe(2);
+        await nativeWakeBudgets(member, lease.group.buffer());
+      } finally {
+        member.dispose();
+      }
+    });
   }
-});
+}
+
+async function beforeParkWake(
+  f: ReturnType<typeof launch>,
+  member: ReturnType<typeof createGroupMember>,
+  pause: ReturnType<typeof gate>,
+): Promise<void> {
+  const receipt = await f.next("gate");
+  expect(receipt.stage).toBe("after-entry");
+  expect(receipt.closed).toBe(0);
+  expect(receipt.closedReads).toBe(1);
+  expect(receipt.epoch).toBe(1);
+  const cells = new Int32Array(f.request.memory.buffer);
+  nativeWaitCells.push(cells);
+  const raw = Atomics.waitAsync(cells, 16, 0);
+  expect(raw.async).toBe(true);
+  expect(member.imports.futex_watch!(64, 0, 0)).toBe(0);
+  expect(member.imports.futex_watch!(64, 0, 4)).toBe(0);
+  expect(member.imports.futex_wake!(64, 2)).toBe(2);
+  expect(await raw.value).toBe("ok");
+  // The provider is positively gated outside the queue: the second wake belongs to watch 1.
+  expect([member.watchReady(1), member.watchReady(2)]).toEqual([true, false]);
+  expect(member.imports.futex_unwatch!(1)).toBe(0);
+  expect(member.imports.futex_unwatch!(2)).toBe(0);
+  pause.release();
+}
 
 for (const width of [4, 8] as const) {
   test(`a real individual wait${width * 8} stop adds no wake to a live same-cell sibling`, async () => {
