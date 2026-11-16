@@ -11,8 +11,13 @@ import {
   GroupErrno,
   GroupOp,
   MAX_GROUP_PAGES,
+  MEMBER_CELL_WORDS,
   PAGE_BYTES,
   REPLY_WORDS,
+  WAIT_ADDR,
+  WAIT_CLOSED,
+  WAIT_EPOCH,
+  WAIT_WIDTH,
   WATCH_HEADER_WORDS,
   WATCH_SLOT_WORDS,
   controlBytes,
@@ -150,6 +155,8 @@ interface Member {
   readonly holds: Map<number, number>;
   port?: MessagePort;
   reply?: Int32Array;
+  stopRequested: boolean;
+  waitsClosed: boolean;
 }
 interface Arena {
   readonly page: number;
@@ -209,6 +216,8 @@ export interface MemberLease {
   stopped(): void;
   /** Physical stop failed: keep capacity, memory, holds and pins charged as debt. */
   failed(): void;
+  /** Native termination was attempted, including throw/rejection. This is not a stop receipt. */
+  stopRequested(): void;
   /** True once this incarnation's memory and capacity were returned. */
   settled(): boolean;
   /** Close this exact sole launched incarnation to new joins until physical stop. */
@@ -230,7 +239,9 @@ export class MemoryGroupOwner {
   private readonly handles = new IdentityCounter();
   private readonly pinIds = new IdentityCounter();
   private ended = false;
-  private closing?: { readonly member: Member };
+  private admission: "open" | "sealed" | { readonly member: Member } = "open";
+  /** Only private incarnation records survive reusable slot release. No guest memory aliases. */
+  private readonly retiredWaits: Int32Array[] = [];
   /** Bytes charged to the page budget for this group's backing. */
   private charged = PAGE_BYTES;
   private memberPages = 0;
@@ -248,6 +259,7 @@ export class MemoryGroupOwner {
     private readonly onEnd: (group: MemoryGroupOwner) => void,
     private readonly source?: GroupMemorySource,
     private readonly backing?: GroupBacking,
+    private readonly terminalAdmission?: () => boolean,
   ) {
     if (!budget.charge(PAGE_BYTES))
       throw new ProcessError(GroupErrno.NOMEM, "memory group budget is exhausted");
@@ -297,14 +309,22 @@ export class MemoryGroupOwner {
   /** W1: reserve a member slot before any Worker exists. */
   reserve(pid: number): MemberLease {
     if (this.ended) throw new ProcessError(ProcessErrno.SRCH, "memory group has ended");
-    if (this.closing)
+    if (this.admission !== "open")
       throw new ProcessError(ProcessErrno.NOTSUP, "memory group admission is closed");
     this.reconcile();
     if (this.bypassed)
       throw new ProcessError(ProcessErrno.INVAL, "memory group grew outside its owner");
     const index = this.members.indexOf(undefined);
     if (index < 0) throw new ProcessError(ProcessErrno.AGAIN, "memory group member limit reached");
-    const member: Member = { phase: "reserved", index, pid, chunks: [], holds: new Map() };
+    const member: Member = {
+      phase: "reserved",
+      index,
+      pid,
+      chunks: [],
+      holds: new Map(),
+      stopRequested: false,
+      waitsClosed: false,
+    };
     this.members[index] = member;
     return this.lease(member);
   }
@@ -362,7 +382,13 @@ export class MemoryGroupOwner {
         if (member.phase !== "released") {
           member.phase = "retained";
           if (this.backing) this.source?.failed(this.backing);
+          this.settleStopping();
         }
+      },
+      stopRequested: () => {
+        if (this.members[member.index] !== member || !member.reply) return;
+        member.stopRequested = true;
+        this.settleStopping();
       },
       settled: () => member.phase === "released",
       closeAdmission: () => this.closeAdmission(member),
@@ -374,16 +400,16 @@ export class MemoryGroupOwner {
     if (
       this.ended ||
       this.bypassed ||
-      this.closing ||
+      this.admission !== "open" ||
       !this.receives(member) ||
       this.members.some((entry) => entry !== undefined && entry !== member)
     )
       throw new ProcessError(ProcessErrno.NOTSUP, "exec requires the sole launched group member");
     const closing = { member };
-    this.closing = closing;
+    this.admission = closing;
     return {
       rollback: () => {
-        if (this.closing === closing && this.receives(member)) this.closing = undefined;
+        if (this.admission === closing && this.receives(member)) this.admission = "open";
       },
     };
   }
@@ -391,7 +417,8 @@ export class MemoryGroupOwner {
   private launch(member: Member): { request: MemoryGroupMemberRequest; transfer: Transferable[] } {
     if (member.phase !== "reserved" || member.port)
       throw new Error("memory group member was already launched");
-    const reply = this.source?.control(REPLY_WORDS * 4) ?? allocateSharedControl(REPLY_WORDS * 4);
+    const reply =
+      this.source?.control(MEMBER_CELL_WORDS * 4) ?? allocateSharedControl(MEMBER_CELL_WORDS * 4);
     const channel = new MessageChannel();
     member.port = channel.port1;
     member.reply = new Int32Array(reply);
@@ -429,6 +456,7 @@ export class MemoryGroupOwner {
     )
       return;
     const result = this.dispatch(member, data.op, data.args);
+    if (!this.receives(member) || !member.reply) return;
     const reply = member.reply;
     for (let index = 1; index < REPLY_WORDS; index++) reply[index] = result[index - 1] ?? 0;
     Atomics.store(reply, 0, data.seq | 0);
@@ -732,10 +760,51 @@ export class MemoryGroupOwner {
     }
   }
 
+  /** Synchronous admission decision and irreversible seal precede every teardown notify. */
+  settleStopping(): void {
+    if (this.ended) return;
+    for (let index = 0; index < this.members.length; index++) {
+      const member = this.members[index];
+      if (member && member.phase !== "released" && (!member.reply || !member.stopRequested)) return;
+    }
+    if (this.admission !== "sealed" && this.terminalAdmission && !this.terminalAdmission()) return;
+    this.admission = "sealed";
+    for (let index = 0; index < this.members.length; index++)
+      this.closeMemberWait(this.members[index]);
+    for (let index = 0; index < this.retiredWaits.length; index++)
+      this.closeWait(this.retiredWaits[index]!);
+    this.retiredWaits.length = 0;
+    if (this.members.every((member) => member === undefined)) this.end();
+  }
+
+  private closeMemberWait(member: Member | undefined): void {
+    if (!member || member.waitsClosed || !member.reply) return;
+    member.waitsClosed = true;
+    this.closeWait(member.reply);
+  }
+
+  private closeWait(cells: Int32Array): void {
+    Atomics.store(cells, WAIT_CLOSED, 1);
+    for (;;) {
+      const epoch = Atomics.load(cells, WAIT_EPOCH);
+      if ((epoch & 1) === 0) return;
+      const addr = Atomics.load(cells, WAIT_ADDR) >>> 0;
+      const width = Atomics.load(cells, WAIT_WIDTH);
+      if (Atomics.load(cells, WAIT_EPOCH) !== epoch) continue;
+      const buffer = this.memory.buffer;
+      if ((width === 4 || width === 8) && addr % width === 0 && addr + width <= buffer.byteLength)
+        Atomics.notify(new Int32Array(buffer), addr / 4, Infinity);
+      return;
+    }
+  }
+
   /** Physical stop or a launch that never constructed an agent. Runs once per incarnation. */
   private release(member: Member): void {
     if (this.members[member.index] !== member) return;
+    member.stopRequested = true;
     member.phase = "released";
+    this.settleStopping();
+    if (member.reply && !member.waitsClosed) this.retiredWaits.push(member.reply);
     // Pins whose delivery this member owned have no remaining consumer.
     for (const pin of Array.from(this.pins.values())) {
       if (pin.owner.kind === "member" && pin.owner.member === member) this.dropPin(pin);
@@ -753,8 +822,10 @@ export class MemoryGroupOwner {
     member.chunks.length = 0;
     this.clearWatches(member.index);
     member.port?.close();
+    member.port = undefined;
+    member.reply = undefined;
     this.members[member.index] = undefined;
-    if (this.members.every((other) => other === undefined)) this.end();
+    this.settleStopping();
   }
 
   private end(): void {
@@ -795,6 +866,7 @@ export class MemoryGroups {
     directory: string,
     join: "new" | MemoryGroupHandle,
     headroom: Headroom | null = null,
+    terminalAdmission?: () => boolean,
   ): MemberLease {
     if (join !== "new") return this.join(pid, directory, join);
     if (this.groups.size >= this.policy.groups)
@@ -815,6 +887,7 @@ export class MemoryGroups {
         },
         this.memories,
         backing,
+        terminalAdmission,
       );
     } catch (error) {
       if (backing) this.memories?.retire(backing);
@@ -849,5 +922,9 @@ export class MemoryGroups {
     let count = 0;
     for (const group of this.groups.values()) count += group.unsettled();
     return count;
+  }
+  /** Retry deferred terminal decisions after exact admission/preparation settlement. */
+  settleStopping(): void {
+    for (const group of this.groups.values()) group.settleStopping();
   }
 }

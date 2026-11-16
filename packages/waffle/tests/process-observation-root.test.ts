@@ -12,6 +12,175 @@ import { createWorkerProcessTransport } from "../proc/worker-client.ts";
 import { captureProcessObserver } from "../proc/observation.ts";
 import { createFilesystemIdentity } from "../fs/protocol.ts";
 import { testReservations } from "./fixtures/shared-memory-platform.ts";
+import { WAIT_ADDR, WAIT_WIDTH, WAIT_EPOCH, WAIT_CLOSED } from "../group/protocol.ts";
+import { beginDirectoryAdmission } from "../proc/directory.ts";
+
+function pendingRoot(group: ReturnType<BrowserProcessBroker["admitRootMemoryGroup"]>) {
+  const cells = new Int32Array(group.request.reply);
+  Atomics.store(cells, WAIT_ADDR, 64);
+  Atomics.store(cells, WAIT_WIDTH, 4);
+  Atomics.store(cells, WAIT_EPOCH, 1);
+  const words = new Int32Array(group.request.memory.buffer);
+  return { cells, words };
+}
+
+test("adopted root native attempt closes its exact wait before awaiting the native promise", async () => {
+  const invoked = Promise.withResolvers<void>();
+  const native = Promise.withResolvers<void>();
+  const f = await rootFixture(
+    {
+      stop() {
+        invoked.resolve();
+        return native.promise;
+      },
+    },
+    "group",
+  );
+  const group = f.broker.admitRootMemoryGroup(f.transport.pid, await groupLinkProgram());
+  const pending = pendingRoot(group);
+  const wake = Atomics.waitAsync(pending.words, 16, 0);
+  const disposing = f.broker.dispose();
+  try {
+    await invoked.promise;
+    expect(Atomics.load(pending.cells, WAIT_CLOSED)).toBe(1);
+    expect(await wake.value).toBe("ok");
+    expect(f.broker.memoryGroups()[0]?.members).toBe(1);
+    native.resolve();
+    await disposing;
+    expect(f.broker.memoryGroups()).toEqual([]);
+  } finally {
+    native.resolve();
+    group.request.port.close();
+    await disposing.catch(() => {});
+  }
+});
+
+test("independent helper stop cannot authorize root group cancellation", async () => {
+  const f = await rootFixture({}, "group");
+  const group = f.broker.admitRootMemoryGroup(f.transport.pid, await groupLinkProgram());
+  const pending = pendingRoot(group);
+  const helper = f.broker.captureRootStop(f.transport.pid, () => {});
+  try {
+    await helper();
+    expect(Atomics.load(pending.cells, WAIT_CLOSED)).toBe(0);
+    group.terminating();
+    expect(Atomics.load(pending.cells, WAIT_CLOSED)).toBe(1);
+  } finally {
+    group.stopped();
+    group.request.port.close();
+    await f.broker.dispose();
+  }
+});
+
+test("a retained old root membership cannot terminate or acknowledge the new incarnation", async () => {
+  const f = await rootFixture({ stop() {} }, "group");
+  const program = await groupLinkProgram();
+  const old = f.broker.admitRootMemoryGroup(f.transport.pid, program);
+  const handles: unknown = Reflect.get(f.broker, "controllerNativeStops");
+  if (!(handles instanceof Map)) throw new Error("missing native controller captures");
+  const oldHandle: unknown = handles.get(f.transport.pid);
+  if (
+    !oldHandle ||
+    typeof oldHandle !== "object" ||
+    !("terminate" in oldHandle) ||
+    typeof oldHandle.terminate !== "function"
+  )
+    throw new Error("missing captured old native consumer");
+  old.stopped();
+  const next = f.broker.admitRootMemoryGroup(f.transport.pid, program);
+  try {
+    old.terminating();
+    old.stopped();
+    await Reflect.apply(oldHandle.terminate, oldHandle, []);
+    expect(Atomics.load(new Int32Array(next.request.reply), WAIT_CLOSED)).toBe(0);
+    expect(f.broker.memoryGroupOf(f.transport.pid)).toBe(next.group);
+  } finally {
+    next.stopped();
+    old.request.port.close();
+    next.request.port.close();
+    await f.broker.dispose();
+  }
+});
+
+for (const mode of ["throw", "reject"] as const) {
+  test(`root native ${mode} records the attempt, authorizes cancellation and retains debt`, async () => {
+    const error = new Error("root native failure");
+    const f = await rootFixture(
+      {
+        stop() {
+          if (mode === "throw") throw error;
+          return Promise.reject(error);
+        },
+      },
+      "group",
+    );
+    const group = f.broker.admitRootMemoryGroup(f.transport.pid, await groupLinkProgram());
+    const pending = pendingRoot(group);
+    try {
+      await expect(f.broker.dispose()).rejects.toBeInstanceOf(AggregateError);
+      expect(Atomics.load(pending.cells, WAIT_CLOSED)).toBe(1);
+      expect(f.broker.memoryGroups()[0]?.retained).toBe(1);
+    } finally {
+      group.request.port.close();
+      await f.broker.dispose().catch(() => {});
+    }
+  });
+}
+
+test("failed exact-consumer binding releases a bootstrap that never escaped", async () => {
+  const f = await rootFixture({ stop() {} }, "group");
+  const captures: unknown = Reflect.get(f.broker, "controllerNativeStops");
+  if (!(captures instanceof Map)) throw new Error("missing native consumer captures");
+  const handle: unknown = captures.get(f.transport.pid);
+  if (!handle || typeof handle !== "object") throw new Error("missing native consumer");
+  const bind = Reflect.get(handle, "bindGroup");
+  Reflect.set(handle, "bindGroup", () => {
+    throw new Error("binding refused");
+  });
+  try {
+    const program = await groupLinkProgram();
+    expect(() => f.broker.admitRootMemoryGroup(f.transport.pid, program)).toThrow(
+      "binding refused",
+    );
+    expect(f.broker.memoryGroups()).toEqual([]);
+  } finally {
+    Reflect.set(handle, "bindGroup", bind);
+    await f.broker.dispose();
+  }
+});
+
+test("an earlier directory stamp defers root cancellation and settlement retries without polling", async () => {
+  const invoked = Promise.withResolvers<void>();
+  const native = Promise.withResolvers<void>();
+  const f = await rootFixture(
+    {
+      stop() {
+        invoked.resolve();
+        return native.promise;
+      },
+    },
+    "group",
+  );
+  const group = f.broker.admitRootMemoryGroup(f.transport.pid, await groupLinkProgram());
+  const pending = pendingRoot(group);
+  const release = beginDirectoryAdmission(f.transport.directory);
+  const wake = Atomics.waitAsync(pending.words, 16, 0);
+  const disposing = f.broker.dispose();
+  try {
+    await invoked.promise;
+    expect(Atomics.load(pending.cells, WAIT_CLOSED)).toBe(0);
+    release();
+    expect(await wake.value).toBe("ok");
+    expect(Atomics.load(pending.cells, WAIT_CLOSED)).toBe(1);
+    native.resolve();
+    await disposing;
+  } finally {
+    release();
+    native.resolve();
+    group.request.port.close();
+    await disposing.catch(() => {});
+  }
+});
 
 async function rootFixture(
   controller: ProcessController = {},

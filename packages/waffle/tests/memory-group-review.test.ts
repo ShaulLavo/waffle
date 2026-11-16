@@ -3,7 +3,7 @@ import { pieCore } from "./fixtures/memory-group-pie.js";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import { createGroupMember } from "../group/member.js";
-import { GroupOp, PAGE_BYTES, REPLY_WORDS } from "../group/protocol.js";
+import { GroupOp, PAGE_BYTES, MEMBER_CELL_WORDS } from "../group/protocol.js";
 import { MemoryGroups } from "../group/state.js";
 import { growthFree } from "../link/code.js";
 import { prepareLinkPlan } from "../link/index.js";
@@ -109,7 +109,7 @@ function member(watches = 4) {
     {
       memory: new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true }),
       control: new SharedArrayBuffer(16 + watches * 16),
-      reply: new SharedArrayBuffer(REPLY_WORDS * 4),
+      reply: new SharedArrayBuffer(MEMBER_CELL_WORDS * 4),
       port: channel.port2,
       index: 0,
       watches,

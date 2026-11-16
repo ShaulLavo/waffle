@@ -109,12 +109,12 @@ function withExecutionObservation(expected: string[]) {
   }
   return events.sort();
 }
-/** Publication descriptors widened the memory group reply cell from five words to nine. */
-function withPublicationReply(expected: string[]) {
+/** Nine reply words and four private futex-record words replace the original five replies. */
+function withGroupMemberCells(expected: string[]) {
   const oldReply = '"initial":20,"maximum":20,"growable":false';
   expect(expected.filter((event) => event.includes(oldReply))).toHaveLength(2);
   return expected
-    .map((event) => event.replace(oldReply, '"initial":36,"maximum":36,"growable":false'))
+    .map((event) => event.replace(oldReply, '"initial":52,"maximum":52,"growable":false'))
     .sort();
 }
 for (const [mode, agent] of [
@@ -164,7 +164,7 @@ for (const [mode, agent] of [
       expect(current.boundary).toBe("PRE-IMPORT PAGE-OWNED JavaScript");
       expect(current.fixtures).toEqual(baseline.fixtures);
       expect(withoutStorageRoot(current, 33_289_256)).toEqual(
-        withPublicationReply(
+        withGroupMemberCells(
           withExecutionObservation(
             withPrivateInputArena(
               withoutIdleWorkers(

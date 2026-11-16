@@ -14,6 +14,8 @@ Safari allocates requested WebAssembly memory ahead of time; Chrome and Firefox 
 
 Safari, especially on iOS, reserves the whole `maxByteLength` of a growable `SharedArrayBuffer` and the whole maximum of a shared WebAssembly memory when it is constructed. A zero initial length is not zero cost. So do not create growable backing ahead of the data it will hold, and count the full declared maximum against the iPhone reservation budget, never `byteLength` or the initial pages. This is a budgeting rule for new code, not an explanation of any particular past failure.
 
+On WebKit a terminated Worker still parked in an untimed native wait can keep shared backing reserved. [Memory groups](memory-groups.md#lifetime-and-physical-stop) describes the provider futex teardown boundary and its limits.
+
 The filesystem follows it. A new tree holds only its fixed root. The filesystem owner builds each further 16 MiB data segment as a fixed buffer when a page in it is first needed, and a tree that stays small never declares the rest. The request arena is the one growable buffer a connection has: it is the transport every guest needs before it runs, and it is counted at its full maximum.
 
 ## Explicit bounded declarations
