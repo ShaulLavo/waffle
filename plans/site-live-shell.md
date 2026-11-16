@@ -3,9 +3,12 @@
 Status: **Approved** (owner, 2026-11-16). Scheduled after the process-table landing page.
 
 The landing page at `/` shows a scripted demo session: the terminal replays a fixed transcript
-and the process-table drawing follows the script (`site/src/scripts/home/session.ts`). Because it
-is scripted, the headline says "A kernel that runs in a browser tab." and the terminal bar says
-"demo session".
+and the process-table drawing follows the script (`site/src/scripts/home/session.ts`). The terminal bar
+says "demo session".
+
+The headline already says "A kernel is running in this tab." (owner's choice, 2026-11-16: keep
+that line now and make it true later). Until this plan lands, that headline is ahead of the page.
+Closing that gap is the point of this plan.
 
 ## Finish line
 
@@ -16,7 +19,8 @@ is scripted, the headline says "A kernel that runs in a browser tab." and the te
   source.
 - While the visitor is idle, a demo types commands into the real shell. When the visitor types,
   the demo stops and hands the shell over.
-- The headline returns to "A kernel is running in this tab." and the "demo session" note goes.
+- The headline "A kernel is running in this tab." is literally true, and the "demo session" note
+  goes.
 - The site's smoke check covers the live shell in Chromium, Firefox and WebKit, phone and desktop.
 
 ## Open questions
