@@ -299,4 +299,15 @@ test("failed package cleanup blocks replacement rather than proving physical sto
   expect(blocked.runtime()).toBeUndefined();
   expect(await rejection(blocked.open(options))).toBe(replacement);
   expect(await rejection(blocked.close())).toBe(replacement);
+
+  // A reset during the dequeue wait supersedes the old request instead of rethrowing its error.
+  const pending = blocked.preload();
+  const outcome = pending.then(
+    (result) => ({ kind: "result", result }),
+    (error: unknown) => ({ kind: "error", error }),
+  );
+  await Promise.resolve();
+  const closing = rejection(blocked.close());
+  expect(await outcome).toEqual({ kind: "result", result: "superseded" });
+  expect(await closing).toBe(replacement);
 });
