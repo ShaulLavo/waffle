@@ -1,0 +1,438 @@
+---
+// The landing page. Static HTML; the drawings and the demo session are drawn by the scripts in
+// src/scripts/home/. The code sample is the createRuntime example from docs/getting-started.md,
+// read and highlighted at build time, so it cannot drift from the tutorial.
+import { Code } from "astro:components";
+import gettingStarted from "../../../docs/getting-started.md?raw";
+
+const GITHUB = "https://github.com/ShaulLavo/waffle";
+const DOCS = `${GITHUB}/blob/main/docs`;
+const PACKAGES = `${GITHUB}/tree/main/packages`;
+const BASH_WEB = "https://github.com/ShaulLavo/bash-web";
+const BUN_DEMO = "https://bun.sprockt.dev/";
+const START = `${DOCS}/getting-started.md`;
+
+const snippet = Array.from(
+  gettingStarted.matchAll(/```ts\n([\s\S]*?)\n```/g),
+  (match) => match[1] ?? "",
+).find((code) => code.includes("createRuntime("));
+if (!snippet)
+  throw new Error("docs/getting-started.md has no TypeScript block calling createRuntime");
+const lineCount = snippet.split("\n").filter((line) => line.trim() !== "").length;
+const numberWords = [
+  "Zero",
+  "One",
+  "Two",
+  "Three",
+  "Four",
+  "Five",
+  "Six",
+  "Seven",
+  "Eight",
+  "Nine",
+  "Ten",
+  "Eleven",
+  "Twelve",
+  "Thirteen",
+  "Fourteen",
+  "Fifteen",
+  "Sixteen",
+  "Seventeen",
+  "Eighteen",
+  "Nineteen",
+  "Twenty",
+];
+const lineWord = numberWords[lineCount];
+if (!lineWord)
+  throw new Error(`The getting-started sample has ${lineCount} lines; add its number word`);
+
+// Shiki theme in the page palette: keywords blue, strings mint, calls butter.
+const codeTheme = {
+  name: "waffle-night",
+  type: "dark" as const,
+  colors: { "editor.background": "#111319", "editor.foreground": "#DCDFEA" },
+  settings: [
+    { settings: { foreground: "#DCDFEA", background: "#111319" } },
+    { scope: ["comment"], settings: { foreground: "#6E7183" } },
+    {
+      scope: ["keyword", "storage", "storage.type", "keyword.control", "keyword.operator.new"],
+      settings: { foreground: "#9DB4FF" },
+    },
+    {
+      scope: ["string", "string.quoted", "string punctuation.definition.string"],
+      settings: { foreground: "#58E0A7" },
+    },
+    {
+      scope: [
+        "entity.name.function",
+        "support.function",
+        "meta.function-call entity.name.function",
+        "entity.name.type",
+        "support.class",
+      ],
+      settings: { foreground: "#FFC53D" },
+    },
+    {
+      scope: ["punctuation", "meta.brace", "keyword.operator", "variable", "support.variable"],
+      settings: { foreground: "#DCDFEA" },
+    },
+  ],
+};
+
+const parts = [
+  {
+    name: "bash-web",
+    note: "Our shell, with real pipes between programs",
+    kind: "Shell",
+    href: BASH_WEB,
+  },
+  {
+    name: "bun",
+    note: "Our browser build of Bun. Runs TypeScript in the tab",
+    kind: "Runtime",
+    href: BUN_DEMO,
+  },
+  {
+    name: "python",
+    note: "CPython 3.15 and its standard library",
+    kind: "Package",
+    href: `${PACKAGES}/python`,
+  },
+  {
+    name: "git",
+    note: "init, commit, diff, merge, stash",
+    kind: "Package",
+    href: `${PACKAGES}/git`,
+  },
+  {
+    name: "coreutils",
+    note: "ls, cat, cp, sort, wc, tr and more",
+    kind: "Package",
+    href: `${PACKAGES}/coreutils`,
+  },
+  { name: "findutils", note: "find and xargs", kind: "Package", href: `${PACKAGES}/findutils` },
+  { name: "grep", note: "Search lines by pattern", kind: "Package", href: `${PACKAGES}/grep` },
+  {
+    name: "ripgrep",
+    note: "Recursive search, ripgrep 15.2",
+    kind: "Package",
+    href: `${PACKAGES}/ripgrep`,
+  },
+  { name: "sed", note: "Stream editor, from uutils", kind: "Package", href: `${PACKAGES}/sed` },
+  { name: "jq", note: "JSON queries, built from jaq", kind: "Package", href: `${PACKAGES}/jq` },
+];
+
+const details = [
+  {
+    id: "detail-a",
+    topic: "process",
+    caption: "spawn, run, exit 0",
+    title: "Real processes",
+    text: "Each program runs in its own worker with its own memory, a pid, an exit code and signals.",
+  },
+  {
+    id: "detail-b",
+    topic: "filesystem",
+    caption: "git writes, python reads",
+    title: "One shared filesystem",
+    text: "A filesystem worker owns the tree in shared memory. Every process reads and writes it directly.",
+  },
+  {
+    id: "detail-c",
+    topic: "pipe",
+    caption: "buffer full, the writer waits",
+    title: "Pipes that block",
+    text: "Ring buffers in shared memory. A program waits while the page serves its call, so blocking WASI code runs unchanged.",
+  },
+  {
+    id: "detail-d",
+    topic: "network",
+    caption: "request out, response back",
+    title: "Loopback TCP",
+    text: "A dev server in one process serves a preview in another, without leaving the tab.",
+  },
+];
+const detailLetters = ["A", "B", "C", "D"];
+---
+
+<a class="skip" href="#main">
+  Skip to content
+</a>
+<header class="nav">
+  <div class="wrap nav__bar">
+    <a class="logo" href="#top" aria-label="Waffle, back to top">
+      waffle
+    </a>
+    <a class="nav__link nav__link--wide" href="#how">
+      How it works
+    </a>
+    <a class="nav__link nav__link--wide" href="#api">
+      The API
+    </a>
+    <a class="nav__link nav__link--wide" href="#parts">
+      Parts list
+    </a>
+    <a class="nav__link" href={GITHUB}>
+      GitHub
+    </a>
+    <a class="btn btn--small" href={START}>
+      Get started
+    </a>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" id="top">
+    <div class="wrap">
+      <div class="hero__grid" id="stage">
+        <div class="hero__copy">
+          <h1 class="rise">
+            <span>A kernel that runs</span>
+            <span>
+              <em>in a browser tab.</em>
+            </span>
+          </h1>
+          <p class="hero__lead rise" style="--i:1">
+            Waffle gives WebAssembly programs processes, pipes, a shared filesystem and a loopback
+            network, inside one page.{" "}
+            <strong>Every command a shell runs on it is a real process.</strong>
+          </p>
+          <div class="hero__actions rise" style="--i:2">
+            <a class="btn" href={START}>
+              Get started
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path
+                  d="M3 9h11M10 4l5 5-5 5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                ></path>
+              </svg>
+            </a>
+            <a class="btn btn--ghost" href={BUN_DEMO}>
+              Open the Bun sandbox
+            </a>
+          </div>
+        </div>
+
+        <div class="term rise" style="--i:3">
+          <div class="term__bar">
+            <span class="live" aria-hidden="true"></span>
+            <b>bash-web</b>
+            <span>pid 1</span>
+            <span class="term__note">demo session</span>
+            <button
+              class="pause"
+              id="pause"
+              type="button"
+              aria-label="Pause the session"
+              aria-pressed="false"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                <path id="pauseIcon" d="M3 2h3v10H3zM8 2h3v10H8z" fill="currentColor"></path>
+              </svg>
+            </button>
+          </div>
+          <div class="tty">
+            <div class="tty__view">
+              <pre id="tty" aria-label="Shell session"></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="draw">
+          <p class="fig mono">
+            <span class="live" aria-hidden="true"></span>Process table
+          </p>
+          <figure
+            id="plate"
+            role="img"
+            aria-label="Line drawing of a square board with sixteen slots. A block rises out of a slot for each running process, and a dotted bridge joins two blocks when a pipe connects them."
+          ></figure>
+          <dl class="gauges">
+            <div>
+              <dt>Running</dt>
+              <dd id="count">1</dd>
+            </div>
+            <div>
+              <dt>Pipes open</dt>
+              <dd id="pipes">0</dd>
+            </div>
+            <div>
+              <dt>Files</dt>
+              <dd id="files">0</dd>
+            </div>
+            <div>
+              <dt>Spawned</dt>
+              <dd id="spawned">1</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="how">
+    <div class="wrap">
+      <div class="head">
+        <div>
+          <p class="mono label">How it works</p>
+          <h2 class="h2">One runtime per page. Programs borrow the rest.</h2>
+        </div>
+        <p class="sub">
+          The page creates a single runtime. Programs use its filesystem, processes, pipes and
+          network instead of each bringing their own.
+        </p>
+      </div>
+      <div class="details" id="details">
+        {details.map((item, n) => (
+          <article class="detail">
+            <p class="detail__top mono">
+              <span>Detail {detailLetters[n]}</span>
+              <span>{item.topic}</span>
+            </p>
+            <figure>
+              <div class="detail__plate" id={item.id} />
+              <figcaption>{item.caption}</figcaption>
+            </figure>
+            <h3>{item.title}</h3>
+            <p>{item.text}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="api">
+    <div class="wrap">
+      <div class="two">
+        <div>
+          <p class="mono label">The API</p>
+          <h2 class="h2">{lineWord} lines to a running filesystem.</h2>
+          <p class="sub">
+            Create the runtime once and hand its capabilities to every program. The process
+            supervisor only loads on the first spawn.
+          </p>
+          <p class="api__action">
+            <a class="btn" href={START}>
+              Read Getting started
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path
+                  d="M3 9h11M10 4l5 5-5 5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                ></path>
+              </svg>
+            </a>
+          </p>
+        </div>
+        <figure class="code">
+          <figcaption class="code__bar mono">
+            <span>Detail E</span>
+            <span>app.ts</span>
+          </figcaption>
+          <Code code={snippet} lang="ts" theme={codeTheme} />
+        </figure>
+      </div>
+      <dl class="stats">
+        <div class="stat">
+          <dt>core runtime, gzipped</dt>
+          <dd>~12 KB</dd>
+        </div>
+        <div class="stat">
+          <dt>processes at once, by default</dt>
+          <dd>1,024</dd>
+        </div>
+        <div class="stat">
+          <dt>resident file pool</dt>
+          <dd>1.5 GiB</dd>
+        </div>
+        <div class="stat">
+          <dt>browser engines tested in CI</dt>
+          <dd>3</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="section" id="parts">
+    <div class="wrap">
+      <div class="head">
+        <div>
+          <p class="mono label">Parts list</p>
+          <h2 class="h2">Ten programs, ready to run.</h2>
+        </div>
+        <p class="sub">
+          Our shell and our browser build of Bun run on Waffle. The rest are WASI builds of everyday
+          tools that you install into a runtime.
+        </p>
+      </div>
+      <div class="bom" id="bom">
+        <span class="bom__hl" aria-hidden="true"></span>
+        <ul>
+          {parts.map((part, n) => (
+            <li>
+              <a href={part.href}>
+                <span class="n">{String(n + 1).padStart(2, "0")}</span>
+                <span class="p">{part.name}</span>
+                <span class="d">{part.note}</span>
+                <span class="s">{part.kind}</span>
+                <span class="a" aria-hidden="true">
+                  →
+                </span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer__top">
+      <h2 class="h2 footer__line">Start with one runtime and one program.</h2>
+      <a class="btn" href={START}>
+        Get started
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+          <path
+            d="M3 9h11M10 4l5 5-5 5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          ></path>
+        </svg>
+      </a>
+    </div>
+    <div class="footer__meta">
+      <nav aria-label="Footer">
+        <a href={`${GITHUB}/tree/main/docs`}>Docs</a>
+        <a href={GITHUB}>GitHub</a>
+        <a href={BASH_WEB}>Bash Web</a>
+        <a href={BUN_DEMO}>Bun sandbox</a>
+        <a href={`${DOCS}/status.md`}>Status and limits</a>
+        <a href="/assets/FONTS-LICENSE.txt">Font licenses</a>
+      </nav>
+      <span>pre-1.0 · MIT license</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  import { startDetails } from "../scripts/home/details";
+  import { startPartsList } from "../scripts/home/parts";
+  import { startSession } from "../scripts/home/session";
+
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  startSession(reduced);
+  startDetails(reduced);
+  startPartsList();
+</script>

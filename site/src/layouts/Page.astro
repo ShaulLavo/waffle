@@ -1,0 +1,91 @@
+---
+// The document shell for the landing page and the 404 page: head, self-hosted fonts and the one
+// stylesheet. Bricolage Grotesque is split by weight into a text face and a display face, so the
+// browser picks the file from `font-weight` alone; see the fonts row in docs/bun-patches.md.
+import displayUrl from "../assets/bricolage-grotesque-display.woff2?url";
+import textUrl from "../assets/bricolage-grotesque-text.woff2?url";
+// The wordmark face holds only a to z (3.8 KB), so it is inlined into the page's font rules as a
+// data URL: the logo renders without a request and needs no preload.
+import wordmarkUrl from "../assets/fredoka-wordmark.woff2?url&inline";
+import monoUrl from "../assets/martian-mono.woff2?url";
+import "../styles/main.css";
+
+type Font = "text" | "display" | "mono";
+
+interface Props {
+  title: string;
+  description: string;
+  /** Absolute URL of the canonical page; omitted for pages that are not indexed. */
+  canonical?: string;
+  noindex?: boolean;
+  /** Fonts the first screen needs, preloaded so they do not swap in late. */
+  preload: readonly Font[];
+}
+
+const { title, description, canonical, noindex = false, preload } = Astro.props;
+const urls: Record<Font, string> = {
+  text: textUrl,
+  display: displayUrl,
+  mono: monoUrl,
+};
+const fontFaces = `
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 400 650;
+  font-display: swap;
+  src: url("${textUrl}") format('woff2');
+}
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 680 750;
+  font-display: swap;
+  src: url("${displayUrl}") format('woff2');
+}
+@font-face {
+  font-family: 'Fredoka';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("${wordmarkUrl}") format('woff2');
+}
+@font-face {
+  font-family: 'Martian Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("${monoUrl}") format('woff2');
+}
+`;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    {noindex && <meta name="robots" content="noindex" />}
+    {canonical && <link rel="canonical" href={canonical} />}
+    <meta name="theme-color" content="#0A0B10" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    {canonical && (
+      <>
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content={canonical} />
+        <meta property="og:title" content={title} />
+        <meta property="og:description" content={description} />
+        <meta name="twitter:card" content="summary" />
+      </>
+    )}
+    {preload.map((font) => (
+      <link rel="preload" href={urls[font]} as="font" type="font/woff2" crossorigin />
+    ))}
+    <style is:inline set:html={fontFaces}></style>
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>
