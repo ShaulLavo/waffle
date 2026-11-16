@@ -212,7 +212,10 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
       parentPid: data.load(PROCESS_PARENT),
     }),
     processKind: data.load(PROCESS_KIND) === 1 ? ("thread" as const) : ("process" as const),
-    imageAdmission: liveCells(raw, pid, IMAGE_ADMISSION),
+    // Spawn/exec alone need this view; ordinary lookup keeps its existing construction bound.
+    get imageAdmission() {
+      return liveCells(raw, pid, IMAGE_ADMISSION);
+    },
     job,
     jobSlot,
     rootPid: data.load(74),

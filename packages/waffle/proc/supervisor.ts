@@ -706,8 +706,7 @@ export class ProcessSupervisor {
     if (admitted) return;
     if (parent!.result || parent!.signal === Signal.SIGKILL || readOutcome(parent!.outcome))
       throw new ProcessError(ProcessErrno.SRCH, "parent process has exited or is being killed");
-    if (kind === "thread" && parent!.image.phase !== "current")
-      throw new ProcessError(ProcessErrno.SRCH, "spawning image is retiring");
+    if (kind === "thread") this.checkThreadImage(parent!, parent!.image);
   }
   private checkThreadPublication(
     parent: ProcessRecord | undefined,
@@ -724,6 +723,14 @@ export class ProcessSupervisor {
       readOutcome(parent!.outcome)
     )
       throw new ProcessError(ProcessErrno.SRCH, "spawning image is no longer current");
+    this.checkThreadImage(parent!, image!);
+  }
+  private checkThreadImage(parent: ProcessRecord, image: ProcessImage): void {
+    if (image.phase !== "current")
+      throw new ProcessError(ProcessErrno.SRCH, "spawning image is retiring");
+    if (parent.observation.kind !== "directory") return;
+    if (controlLoad(directoryState(parent.observation).imageAdmission) !== image.generation)
+      throw new ProcessError(ProcessErrno.SRCH, "spawning image admission is closed");
   }
   private spawnIdentity(
     pid: number,
@@ -765,7 +772,7 @@ export class ProcessSupervisor {
     return pair;
   }
   /** Existing consumer records survive logical collection until full physical retirement. */
-  hasProcessSibling(pid: number): boolean {
+  private hasProcessSibling(pid: number): boolean {
     const source = this.table.require(pid);
     if (
       source.observation.kind === "directory" &&

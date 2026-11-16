@@ -343,8 +343,16 @@ test("thread publication rejects retiring and stale image generations", () => {
   const f = fixture();
   const state = workerProcessState(f.root);
   controlStore(state.imageAdmission, 0, -1);
+  code(
+    () => f.supervisor.reserveSpawn(f.root.pid, request({ processKind: "thread" })),
+    ProcessErrno.SRCH,
+  );
   code(() => f.parent.spawn(f.root.pid, request({ processKind: "thread" })), ProcessErrno.SRCH);
   controlStore(state.imageAdmission, 0, 2);
+  code(
+    () => f.supervisor.reserveSpawn(f.root.pid, request({ processKind: "thread" })),
+    ProcessErrno.SRCH,
+  );
   code(() => f.parent.spawn(f.root.pid, request({ processKind: "thread" })), ProcessErrno.SRCH);
   const successor = f.client({ ...f.root, generation: 2 });
   expect(successor.spawn(f.root.pid, request({ processKind: "thread" }))).toBe(2);
@@ -441,4 +449,34 @@ test("host thread publication rechecks its captured image after descriptor reent
     ProcessErrno.SRCH,
   );
   expect(Array.from(f.supervisor.table.values())).toHaveLength(1);
+});
+
+test("the actual ABI validates JSON kinds and exec rejects an identity selection", () => {
+  const f = fixture();
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const abi = new ProcessABI({
+    memory,
+    processIdentity: f.parent.processIdentity,
+    pid: f.root.pid,
+    fs: new MemFS(),
+    descriptors: f.supervisor.get(f.root.pid)!.image.descriptors,
+    service: f.supervisor,
+    signals: workerProcessState(f.root).signals,
+  });
+  const invoke = (operation: "spawn" | "exec", value: unknown) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(value));
+    new Uint8Array(memory.buffer).set(bytes);
+    return abi.imports[operation]!(0, bytes.length);
+  };
+  for (const processKind of [null, 1, "other", {}, []])
+    expect(invoke("spawn", { ...request(), processKind })).toBe(-ProcessErrno.INVAL);
+  const thread = invoke("spawn", request({ processKind: "thread" }));
+  expect(f.supervisor.get(thread)!.processIdentity).toEqual({ pid: f.root.pid, parentPid: 0 });
+  const ordinary = invoke("spawn", request({ worker: {} }));
+  expect(f.supervisor.get(ordinary)!.processIdentity).toEqual({
+    pid: ordinary,
+    parentPid: f.root.pid,
+  });
+  const exec = { executable: "fixture", argv: [], env: {}, cwd: "/", fds: [] };
+  expect(invoke("exec", { ...exec, processKind: "process" })).toBe(-ProcessErrno.INVAL);
 });

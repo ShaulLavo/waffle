@@ -101,7 +101,6 @@ export type RuntimeSupervisor = Omit<
   | "retireFencedProcesses"
   | "beginReplacement"
   | "acknowledgeReplacement"
-  | "hasProcessSibling"
 >;
 export type ProcessService = Omit<
   BrowserProcessBroker,

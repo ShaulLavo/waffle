@@ -2793,7 +2793,6 @@ export class BrowserProcessBroker {
     return (
       !!child?.worker &&
       this.options.table.get(transport.pid)?.processKind === "process" &&
-      !this.supervisor?.hasProcessSibling(transport.pid) &&
       this.currentChild(child) &&
       !child.threads &&
       !child.stopped &&

@@ -1480,6 +1480,7 @@ test("collected logical siblings block exec through adapter stop and release unc
     });
     await f.flush(f.pid);
     await f.supervisor.start(tid);
+    const threadJob = f.supervisor.jobOf(tid);
     expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
     const worker = f.workers.find((w) => w.request.runtimeProcess?.pid === tid)!;
     worker.emit({ type: "exit", code: 0 });
@@ -1489,7 +1490,7 @@ test("collected logical siblings block exec through adapter stop and release unc
     expect(f.table.get(tid)).toBeUndefined();
     expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
     stopping.resolve();
-    await until(() => !f.supervisor.hasProcessSibling(f.pid));
+    await until(() => f.supervisor.jobRetired(threadJob));
     const completed = f.caller.service.spawn(f.pid, {
       ...request({ cwd: "/" }),
       job: -1,
@@ -1497,10 +1498,11 @@ test("collected logical siblings block exec through adapter stop and release unc
     });
     await f.flush(f.pid);
     await f.supervisor.start(completed);
+    const completedJob = f.supervisor.jobOf(completed);
     f.workers
       .find((w) => w.request.runtimeProcess?.pid === completed)!
       .emit({ type: "exit", code: 0 });
-    await until(() => !f.supervisor.hasProcessSibling(f.pid));
+    await until(() => f.supervisor.jobRetired(completedJob));
     expect(f.table.get(completed)!.result?.code).toBe(0);
     expect((await f.stage()).result).toBe(0);
   } finally {
@@ -1527,6 +1529,7 @@ test("pending thread acquisition and cancellation retain exec blockers until nat
     });
     await f.flush(f.pid);
     starting = f.supervisor.start(tid);
+    const threadJob = f.supervisor.jobOf(tid);
     await until(() => f.table.require(tid).image.nativeAcquisition.kind === "invoked");
     expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
     f.supervisor.kill(tid, 9);
@@ -1535,7 +1538,7 @@ test("pending thread acquisition and cancellation retain exec blockers until nat
     await starting;
     expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
     stopped.resolve();
-    await until(() => !f.supervisor.hasProcessSibling(f.pid));
+    await until(() => f.supervisor.jobRetired(threadJob));
     expect((await f.stage()).result).toBe(0);
   } finally {
     acquiring.resolve({ terminate() {} });
