@@ -286,3 +286,8 @@ peer. Its value transport preserves original bigint fields and copied byte array
 Local adapter controls run with `PUBLICATION_BROWSER_CONTROLS=1 bun test
 packages/waffle/tests/page-runner/worker-lifecycle-browser.test.ts`. These controls and desktop
 publication results do not qualify actual iOS Safari.
+
+The no-guest bootstrap arrival controls run with
+`bun packages/waffle/tests/bootstrap-arrival-browser-runner.ts webkit` and in the serial browser
+CI group. A held arrival response must settle before the native driver admits observation
+and the next navigation. Missing arrival and real transport failure remain startup failures.

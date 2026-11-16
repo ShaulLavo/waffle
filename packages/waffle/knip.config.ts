@@ -70,6 +70,7 @@ export default {
         "tests/link-browser-runner.ts",
         // Local passive WebKit/native-wait control, bundled and served by its runner.
         "tests/group-futex-browser-runner.ts",
+        "tests/bootstrap-arrival-browser-runner.ts",
         // Bundled by the link browser runner before the linker imports execute.
         "tests/fixtures/link-relay-worker.ts",
         "tests/gpu-async-browser-runner.ts",

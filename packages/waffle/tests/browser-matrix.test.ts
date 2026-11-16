@@ -27,6 +27,7 @@ const networkControls = "network-controls";
 const recovery = "recovery-r42";
 const nativeGpu = "gpu-native";
 const asyncGpu = "gpu-async";
+const bootstrapArrival = "bootstrap-arrival";
 const memoryGroup = "memory-group";
 const chromiumOnly = [continuity, rootContinuity, rootControls, networkControls, memoryGroup];
 const socket = "fs-socket";
@@ -137,12 +138,27 @@ if (existsSync("gpu-async." + phase + ".finished")) throw Error("async repeated"
 const predecessor = phase === "parallel" ? "gpu-native" : "gpu-async.parallel";
 if (phase === "parallel" && !existsSync("gpu-native.scratch")) throw Error("async ran before native controls");
 if (phase === "webkit" && !${JSON.stringify(runners)}.every((name) => existsSync(name + ".webkit.finished"))) throw Error("early async WebKit");
+if (phase === "webkit" && !existsSync("bootstrap-arrival.finished")) throw Error("async WebKit ran before bootstrap arrival");
+if (phase === "webkit" && process.platform === "linux" && existsSync(readFileSync("bootstrap-arrival.scratch", "utf8"))) throw Error("async WebKit overlapped bootstrap arrival");
 if (process.platform === "linux" && existsSync(readFileSync(predecessor + ".scratch", "utf8"))) throw Error("async overlapped predecessor scratch");
 writeFileSync("gpu-async." + phase + ".scratch", scratch);
 writeFileSync("gpu-async.scratch", scratch);
 writeFileSync("gpu-async." + phase + ".finished", engines);
 appendFileSync("isolated.order", "gpu-async:" + phase + "\\n");
 if (process.env.MATRIX_FAIL.split("|").includes("gpu-async:" + engines)) throw Error("async fixture failure");
+`;
+
+const bootstrapArrivalFixture = `
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+const engines = process.argv.slice(2).join(",");
+if (engines !== "webkit") throw Error("changed bootstrap arrival engine");
+if (!${JSON.stringify(runners)}.every((name) => existsSync(name + ".webkit.finished"))) throw Error("early bootstrap arrival");
+if (existsSync("bootstrap-arrival.finished") || existsSync("gpu-async.webkit.finished")) throw Error("repeated or late bootstrap arrival");
+appendFileSync("bootstrap-arrival.invocations", engines + "\\n");
+writeFileSync("bootstrap-arrival.scratch", process.env.STORAGE_SCRATCH_ROOT);
+writeFileSync("bootstrap-arrival.finished", engines);
+appendFileSync("isolated.order", "bootstrap-arrival\\n");
+if (process.env.MATRIX_FAIL.split("|").includes("bootstrap-arrival:" + engines)) throw Error("bootstrap arrival fixture failure");
 `;
 
 const matrixEntry = `
@@ -182,6 +198,10 @@ async function matrix(failing: readonly string[]): Promise<void> {
     await writeFile(join(root, "tests/recovery-r42-browser-runner.ts"), recoveryFixture);
     await writeFile(join(root, "tests/gpu-native-browser-runner.ts"), nativeGpuFixture);
     await writeFile(join(root, "tests/gpu-async-browser-runner.ts"), asyncGpuFixture);
+    await writeFile(
+      join(root, "tests/bootstrap-arrival-browser-runner.ts"),
+      bootstrapArrivalFixture,
+    );
     await mkdir(join(root, "tests/page-runner"));
     await writeFile(join(root, "tests/page-runner/browser-controls-runner.ts"), fixture);
     await writeFile(join(root, "tests/page-runner/gpu-async-controls-runner.ts"), fixture);
@@ -217,7 +237,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
       ).toBe(true);
     }
     expect(await readFile(join(root, "isolated.order"), "utf8")).toBe(
-      [recovery, nativeGpu, "gpu-async:parallel", "gpu-async:webkit"]
+      [recovery, nativeGpu, "gpu-async:parallel", bootstrapArrival, "gpu-async:webkit"]
         .concat(chromiumOnly, [socket], reporterControls, [
           processControls,
           gpuAsyncControls,
@@ -246,7 +266,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
       .concat(
         [`${recovery}:chromium`, `${nativeGpu}:chromium`, `${asyncGpu}:chromium,firefox`],
         runners.map((runner) => `${runner}:webkit`),
-        [`${asyncGpu}:webkit`],
+        [`${bootstrapArrival}:webkit`, `${asyncGpu}:webkit`],
         chromiumOnly.map((runner) => `${runner}:${isolatedEngines(runner)}`),
         [`${socket}:firefox`],
         reporterControls.map((runner) => `${runner}:${isolatedEngines(runner)}`),
@@ -276,6 +296,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
     expect(await readFile(join(root, "gpu-async.invocations"), "utf8")).toBe(
       "chromium,firefox\nwebkit\n",
     );
+    expect(await readFile(join(root, `${bootstrapArrival}.invocations`), "utf8")).toBe("webkit\n");
     for (const runner of runners) {
       expect(await readFile(join(root, `${runner}.parallel.finished`), "utf8")).toBe(
         "chromium,firefox",
@@ -290,6 +311,10 @@ async function matrix(failing: readonly string[]): Promise<void> {
 
 test("browser matrix overlaps Chromium and Firefox suites before running WebKit suites alone", async () => {
   await matrix([]);
+}, 15_000);
+
+test("bootstrap arrival failure remains independently blocking before later serial controls", async () => {
+  await matrix([`${bootstrapArrival}:webkit`]);
 }, 15_000);
 
 for (const runner of runners) {
