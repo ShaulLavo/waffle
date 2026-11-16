@@ -11,6 +11,24 @@ type NativeAccess = {
 };
 type SyncFile = FileSystemFileHandle & { createSyncAccessHandle(): Promise<NativeAccess> };
 
+function observeSlice(
+  blob: Blob,
+  failed: (error: unknown) => void,
+  restore: () => Promise<void>,
+): Blob {
+  const read = blob.arrayBuffer;
+  blob.arrayBuffer = function () {
+    return read
+      .call(this)
+      .catch((error: unknown) => {
+        failed(error);
+        throw error;
+      })
+      .finally(restore);
+  };
+  return blob;
+}
+
 function observeSnapshot(
   file: File,
   failed: (error: unknown) => void,
@@ -18,20 +36,19 @@ function observeSnapshot(
 ): File {
   const slice = file.slice;
   file.slice = function (start, end, type) {
-    const blob = slice.call(this, start, end, type);
-    const read = blob.arrayBuffer;
-    blob.arrayBuffer = function () {
-      return read
-        .call(this)
-        .catch((error: unknown) => {
-          failed(error);
-          throw error;
-        })
-        .finally(restore);
-    };
-    return blob;
+    return observeSlice(slice.call(this, start, end, type), failed, restore);
   };
   return file;
+}
+
+async function restoreSnapshot(handle: SyncFile, contents: Uint8Array): Promise<void> {
+  const access = await handle.createSyncAccessHandle();
+  try {
+    access.truncate(contents.length);
+    assert(access.write(contents, { at: 0 }) === contents.length, "restore complete native bytes");
+  } finally {
+    access.close();
+  }
 }
 
 async function invalidatedSnapshot(open: Open): Promise<void> {
@@ -65,18 +82,7 @@ async function invalidatedSnapshot(open: Open): Promise<void> {
       (error) => {
         nativeFailure = { error };
       },
-      async () => {
-        const access = await handle.createSyncAccessHandle();
-        try {
-          access.truncate(contents.length);
-          assert(
-            access.write(contents, { at: 0 }) === contents.length,
-            "restore complete native bytes",
-          );
-        } finally {
-          access.close();
-        }
-      },
+      () => restoreSnapshot(handle, contents),
     );
   };
   try {
