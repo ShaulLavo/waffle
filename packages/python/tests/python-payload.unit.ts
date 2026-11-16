@@ -50,7 +50,7 @@ function fixture(context: TestContext) {
   const calls: string[] = [];
   const removed: string[] = [];
   let fetchedManifest: unknown = metadata;
-  let fetchHook: (url: string) => Promise<void> = async () => {};
+  let fetchHook: (url: string, init?: RequestInit) => Promise<Response | void> = async () => {};
   let writeHook: (path: string) => Promise<void> = async () => {};
   let drainHook = async () => {};
   const runtime = {
@@ -96,15 +96,19 @@ function fixture(context: TestContext) {
     },
   };
   const previous = globalThis.fetch;
-  const fetchMock = Object.assign(async (input: RequestInfo | URL) => {
-    const url = String(input);
-    fetched.push(url);
-    await fetchHook(url);
-    if (url.endsWith("manifest.json")) return Response.json(fetchedManifest);
-    const path = new URL(url).pathname.replace(/^\/files/, "");
-    const bytes = data.get(path);
-    return bytes ? new Response(bytes) : new Response(null, { status: 404 });
-  }, { preconnect() {} });
+  const fetchMock = Object.assign(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      fetched.push(url);
+      const response = await fetchHook(url, init);
+      if (response) return response;
+      if (url.endsWith("manifest.json")) return Response.json(fetchedManifest);
+      const path = new URL(url).pathname.replace(/^\/files/, "");
+      const bytes = data.get(path);
+      return bytes ? new Response(bytes) : new Response(null, { status: 404 });
+    },
+    { preconnect() {} },
+  );
   globalThis.fetch = fetchMock;
   const payload = createPythonPayload(runtime, { payloadUrl: "https://assets.test/manifest.json" });
   context.after(async () => {
@@ -357,8 +361,308 @@ test("interpreter failure joins payload loading and rolls back its files", async
     /interpreter unavailable/,
   );
   assert.equal(state.files.size, 0);
-  assert.equal(state.fetched.length, metadata.files.length + 1);
+  assert.equal(state.calls.length, 0);
   await state.payload.load(async () => wasm);
+});
+
+test("declared file bytes stop an oversized stream before its remaining body", async (context) => {
+  const state = fixture(context);
+  let pulls = 0;
+  let cancelled = 0;
+  state.fetch(async (url) => {
+    if (!url.endsWith("/os.py")) return;
+    return new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            pulls++;
+            controller.enqueue(
+              new Uint8Array(pulls === 1 ? data.get("/Lib/os.py")!.length + 1 : 4096),
+            );
+            if (pulls === 2) controller.close();
+          },
+          cancel() {
+            cancelled++;
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+    );
+  });
+  await assert.rejects(
+    state.payload.load(async () => wasm),
+    (error) => message(error).includes("byte count mismatch"),
+  );
+  assert.equal(pulls, 1);
+  assert.equal(cancelled, 1);
+  assert.equal(state.calls.length, 0);
+  state.fetch(async () => {});
+  await state.payload.load(async () => wasm);
+  assert.equal(state.files.size, data.size);
+});
+
+test("a failed file aborts its peers and leaves later manifest entries unfetched", async (context) => {
+  const state = fixture(context);
+  const allStarted = deferred();
+  const failed = deferred();
+  const primary = new Error("first download failed");
+  const extra = Array.from({ length: 9 }, (_, index) => ({
+    ...metadata.files[0]!,
+    path: `/Lib/extra-${index}.py`,
+    url: `https://assets.test/files/Lib/extra-${index}.py`,
+  }));
+  state.manifest({ ...metadata, files: metadata.files.concat(extra) });
+  let started = 0;
+  const signals: AbortSignal[] = [];
+  state.fetch(async (url, init) => {
+    if (url.endsWith("manifest.json")) return;
+    if (++started === 8) allStarted.resolve();
+    if (init?.signal) signals.push(init.signal);
+    if (url.endsWith("/os.py")) {
+      await allStarted.promise;
+      failed.resolve();
+      throw primary;
+    }
+    const path = new URL(url).pathname.replace(/^\/files/, "");
+    const bytes = data.get(path) ?? data.get("/Lib/os.py")!;
+    return new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          async pull(controller) {
+            await failed.promise;
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+    );
+  });
+  let rejection: unknown;
+  await assert.rejects(
+    state.payload.load(async () => wasm),
+    (error) => {
+      rejection = error;
+      return message(error).includes(primary.message);
+    },
+  );
+  assert.equal(started, 8);
+  assert.equal(rejection, primary);
+  assert.equal(signals.length, 8);
+  assert.equal(
+    signals.every((signal) => signal.aborted && signal.reason === primary),
+    true,
+  );
+  assert.equal(state.calls.length, 0);
+});
+
+test("an unsafe declared aggregate fails before any payload download", async (context) => {
+  const state = fixture(context);
+  state.manifest({
+    ...metadata,
+    files: metadata.files.map((file) => ({ ...file, bytes: Number.MAX_SAFE_INTEGER })),
+  });
+  await assert.rejects(
+    state.payload.load(async () => wasm),
+    /aggregate byte count/,
+  );
+  assert.deepEqual(state.fetched, ["https://assets.test/manifest.json"]);
+  assert.equal(state.calls.length, 0);
+});
+
+test("valid binary chunks use only their views and never collect a whole response", async (context) => {
+  const state = fixture(context);
+  const expected = Uint8Array.of(0, 255, 128, 13, 10);
+  const backing = new Uint8Array(1024 * 1024).fill(99);
+  const view = backing.subarray(100, 103);
+  let offset = 0;
+  state.manifest({
+    ...metadata,
+    files: metadata.files.map((file) =>
+      file.path === "/Lib/os.py"
+        ? {
+            ...file,
+            bytes: expected.length,
+            sha256: createHash("sha256").update(expected).digest("hex"),
+          }
+        : file,
+    ),
+  });
+  state.fetch(async (url) => {
+    if (!url.endsWith("/os.py")) return;
+    const response = new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            const chunk = expected.subarray(offset, offset + view.length);
+            view.set(chunk);
+            controller.enqueue(view.subarray(0, chunk.length));
+            offset += chunk.length;
+            if (offset === expected.length) controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+    );
+    response.arrayBuffer = async () => {
+      throw new Error("whole-response collection is forbidden");
+    };
+    return response;
+  });
+  await state.payload.load(async () => wasm);
+  backing.fill(0);
+  assert.deepEqual(state.files.get("/Lib/os.py"), expected);
+  assert.equal(state.files.get("/Lib/os.py")?.buffer.byteLength, expected.length);
+});
+
+test("disposal aborts a pending body and joins its cancellation cleanup", async (context) => {
+  const state = fixture(context);
+  const reading = deferred();
+  const cancelling = deferred();
+  const release = deferred();
+  state.fetch(async (url) => {
+    if (!url.endsWith("/os.py")) return;
+    return new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull() {
+            reading.resolve();
+          },
+          async cancel() {
+            cancelling.resolve();
+            await release.promise;
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+    );
+  });
+  const loading = assert.rejects(
+    state.payload.load(async () => wasm),
+    /disposed/,
+  );
+  await reading.promise;
+  let disposed = false;
+  const disposal = state.payload.dispose().then(() => {
+    disposed = true;
+  });
+  try {
+    await cancelling.promise;
+    assert.equal(disposed, false);
+    assert.equal(state.calls.length, 0);
+  } finally {
+    release.resolve();
+    await Promise.all([loading, disposal]);
+  }
+});
+
+test("a body cleanup failure retains the primary mismatch before retry", async (context) => {
+  const state = fixture(context);
+  const cleanup = new Error("body cleanup failed");
+  state.fetch(async (url) => {
+    if (!url.endsWith("/os.py")) return;
+    return new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            controller.enqueue(new Uint8Array(data.get("/Lib/os.py")!.length + 1));
+          },
+          cancel() {
+            throw cleanup;
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+    );
+  });
+  await assert.rejects(
+    state.payload.load(async () => wasm),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.match(message(error.errors[0]), /byte count mismatch/);
+      assert.equal(error.errors[1], cleanup);
+      return true;
+    },
+  );
+  assert.equal(state.files.size, 0);
+  state.fetch(async () => {});
+  await state.payload.load(async () => wasm);
+});
+
+test("a synchronous interpreter failure stays primary and is retryable", async (context) => {
+  const state = fixture(context);
+  const primary = new Error("synchronous source failure");
+  await assert.rejects(
+    state.payload.load(() => {
+      throw primary;
+    }),
+    (error) => error === primary,
+  );
+  assert.equal(state.calls.length + state.fetched.length, 0);
+  await state.payload.load(async () => wasm);
+});
+
+test("an asynchronous interpreter failure cancels a pending payload body", async (context) => {
+  const state = fixture(context);
+  const reading = deferred();
+  const primary = new Error("interpreter failed during payload fetch");
+  let cancelled = 0;
+  state.fetch(async (url) => {
+    if (!url.endsWith("/os.py")) return;
+    return new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull() {
+            reading.resolve();
+          },
+          cancel() {
+            cancelled++;
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+    );
+  });
+  await assert.rejects(
+    state.payload.load(async () => {
+      await reading.promise;
+      throw primary;
+    }),
+    (error) => error === primary,
+  );
+  assert.equal(cancelled, 1);
+  assert.equal(state.calls.length, 0);
+});
+
+test("cumulative streamed length is checked before copying an excess chunk", async (context) => {
+  const state = fixture(context);
+  let pulls = 0;
+  let cancelled = 0;
+  state.fetch(async (url) => {
+    if (!url.endsWith("/os.py")) return;
+    return new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            pulls++;
+            controller.enqueue(pulls === 1 ? data.get("/Lib/os.py")! : Uint8Array.of(1));
+          },
+          cancel() {
+            cancelled++;
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+    );
+  });
+  await assert.rejects(
+    state.payload.load(async () => wasm),
+    /byte count mismatch/,
+  );
+  assert.equal(pulls, 2);
+  assert.equal(cancelled, 1);
+  assert.equal(state.calls.length, 0);
 });
 
 test("original preparation failure and cleanup failure are both reported", async (context) => {
