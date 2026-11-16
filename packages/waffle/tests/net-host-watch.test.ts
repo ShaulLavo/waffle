@@ -6,7 +6,7 @@ import type { NotificationWaitSet } from "../browser/notification-wait.js";
 import type { GuestWatchReadiness } from "../fs/guest-watch.js";
 
 /** A single-thread stand-in for the armed set: one sequence word plus the filesystem counter. */
-function waitSet(cells: Int32Array, onWait: (count: number) => void = () => {}) {
+function waitSet(cells: Int32Array, onWait: (count: number, deadline: number) => void = () => {}) {
   const sequence = new Int32Array(new SharedArrayBuffer(4));
   let closed = false;
   let waits = 0;
@@ -22,7 +22,7 @@ function waitSet(cells: Int32Array, onWait: (count: number) => void = () => {}) 
       process: undefined,
     }),
     wait(observed, deadline) {
-      onWait(++waits);
+      onWait(++waits, deadline);
       if (closed) return "closed";
       if (Atomics.load(cells, 3) !== observed.filesystem) return "not-equal";
       const remaining = Math.max(0, deadline - performance.now());
@@ -95,6 +95,40 @@ test("a closed wait set ends poll(60000) with no news", () => {
     set.dispose();
     host.attachNotifications(set, () => undefined);
     expect(host.poll(60000)).toBe(0);
+  } finally {
+    host.dispose();
+  }
+});
+
+test("an expired poll ends even when every wait races irrelevant filesystem news", () => {
+  const cells = counter();
+  const host = new NetHost(createRing(), () => {});
+  const delay = new Int32Array(new SharedArrayBuffer(4));
+  try {
+    const { set, waits } = waitSet(cells, (count, deadline) => {
+      if (count !== 1) throw new Error("poll reentered an expired wait");
+      Atomics.wait(delay, 0, 0, Math.max(0, deadline - performance.now()));
+      Atomics.add(cells, 3, 1);
+    });
+    host.attachNotifications(set, () => undefined);
+    expect(host.poll(100)).toBe(0);
+    expect(waits()).toBe(1);
+  } finally {
+    host.dispose();
+  }
+});
+
+test("a timed-out wait performs its final readiness scan before returning", () => {
+  const cells = counter();
+  const host = new NetHost(createRing(), () => {});
+  const watches = readiness(cells);
+  try {
+    const { set, waits } = waitSet(cells, () => {
+      watches.ready = true;
+    });
+    host.attachNotifications(set, () => watches);
+    expect(host.poll(100)).toBe(1);
+    expect(waits()).toBe(1);
   } finally {
     host.dispose();
   }

@@ -203,6 +203,21 @@ Actual Safari, iPhone and deployed remote UDP acceptance remain separate checks.
 
 Reporter controls prepare their shared framework bootstrap once, then run Chromium and WebKit in separate serial commands. Each command keeps the existing ten-minute supervisor limit. An outer interruption fails the control even when an expected negative failure was already present.
 
+### Qualify notification fairness under load
+
+```sh
+STORAGE_SCRATCH_ROOT=/work/tmp bun packages/waffle/tests/notification-fairness-browser-runner.ts chromium firefox webkit
+```
+
+This bounded command runs the shipped relay with real filesystem writes, process-pipe
+traffic and network-ring records. It checks relay-local timer and control progress,
+disposal during traffic, idle event-driven waits, queued and briefly empty writer queues,
+and replacement-scope isolation. A blocked guest races each finite network wait with
+completed unrelated filesystem writes while its wall clock jumps. Every wait must retain
+the original monotonic deadline. Handshakes have ten-second hang caps; the whole command
+has a two-minute supervisor. It runs once in the serial CI group. Playwright WebKit is
+engine coverage, not native Safari qualification.
+
 The libc suite builds guest binaries with a pinned wasi-sdk and runs them under Wasmtime. See [Guest libc](wasi-libc.md) for its requirements. `bun run test:libc` runs it.
 
 ## Where things live
