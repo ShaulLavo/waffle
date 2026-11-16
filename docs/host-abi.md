@@ -865,7 +865,7 @@ every waiter on each recorded pending address. A raw non-member waiter on that s
 receive a teardown-only spurious `ok`; callers must recheck their condition. Normal operation
 and stopping one member with live siblings add no wakes or deadline changes. On WebKit,
 an individually terminated worker can stay parked until a normal notify reaches it, and
-Chromium can keep one running briefly after `terminate()` returns. Releasing a member
+Chromium can leave one parked, or still running, briefly after `terminate()` returns. Releasing a member
 therefore closes its record without a wake: if a later notify wakes it, typically from the
 member that reused its pages, its wait throws instead of returning to guest code.
 
