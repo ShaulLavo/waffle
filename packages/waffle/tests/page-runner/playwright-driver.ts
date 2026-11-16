@@ -1,4 +1,5 @@
 import { observePlaywrightPage } from "./playwright-observer.js";
+import { settleBootstrapNavigation } from "./bootstrap-navigation.js";
 import type { HostKey } from "./protocol.js";
 import { driverResponseLimit } from "./safari-driver.js";
 import { navigateTestPage } from "../browser-navigation.js";
@@ -135,6 +136,7 @@ export class PlaywrightDriver implements Driver {
     signal.throwIfAborted();
     try {
       await navigateTestPage(this.current(), url, { timeout: 15_000 });
+      await settleBootstrapNavigation(this, url, signal);
     } catch (error) {
       this.uncertain = true;
       throw error;

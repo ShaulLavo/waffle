@@ -36,6 +36,7 @@ const parallel = [
 const serial = runners
   .map((runner) => [{ runner, engines: ["webkit"] }])
   .concat(
+    [[{ runner: "tests/bootstrap-arrival-browser-runner.ts", engines: ["webkit"] }]],
     [[{ runner: asyncGpuRunner, engines: ["webkit"] }]],
     [[{ runner: "tests/workspace-continuity-browser-runner.ts", engines: ["chromium"] }]],
     [[{ runner: "tests/root-continuity-browser-runner.ts", engines: ["chromium"] }]],

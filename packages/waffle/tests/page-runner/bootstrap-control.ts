@@ -10,10 +10,10 @@ export async function loadBootstrap(url: string): Promise<void> {
   expect(marker).toBeGreaterThan(0);
   expect(html.indexOf("<script>")).toBeGreaterThan(marker);
   let requests = 0;
-  const arrived: Response = await new Function("fetch", `return ${script[1]}`)((path: string) => {
+  const arrived: unknown = await new Function("fetch", `return ${script[1]}`)((path: string) => {
     requests++;
     return fetch(new URL(path, url));
   });
   expect(requests).toBe(1);
-  expect(arrived.status).toBe(204);
+  expect(arrived).toEqual({ status: 204 });
 }
