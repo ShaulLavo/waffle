@@ -279,6 +279,7 @@ export class NetHelper {
       error = sink.error.bind(sink);
     let delivered: Promise<void> | undefined;
     let connection: PreviewConnection | null = null;
+    let finished = false;
     const finish: PreviewSink = {
       head: (head: ResponseHead) => sinkHead(head),
       data: (chunk) => {
@@ -286,10 +287,14 @@ export class NetHelper {
         if (receipt) delivered = Promise.all([delivered, receipt]).then(() => {});
       },
       end: () => {
+        if (finished) return;
+        finished = true;
         connection?.close();
         end();
       },
       error: (message) => {
+        if (finished) return;
+        finished = true;
         connection?.close();
         error(message);
       },

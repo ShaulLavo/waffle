@@ -250,6 +250,113 @@ test("owner disposal removes live listeners and pending sockets without touching
   }
 });
 
+test.each([false, true])(
+  "preview retirement delivers one error (accepted: %s)",
+  async (accepted) => {
+    const f = await fixture();
+    try {
+      const server = f.add();
+      const listener = server.host.listen("localhost", 32129);
+      const events: string[] = [];
+      expect(
+        server.helper.request(
+          32129,
+          { method: "GET", target: "/", headers: [], body: null },
+          {
+            head: () => events.push("head"),
+            data: () => {
+              events.push("data");
+            },
+            end: () => events.push("end"),
+            error: (message) => events.push(`error:${message}`),
+          },
+        ),
+      ).toBe(true);
+      if (accepted)
+        await until(
+          () => server.host.accept(listener),
+          (id) => id > 0,
+        );
+      server.helper.dispose();
+      expect(events).toEqual(["error:the server closed the connection without a response"]);
+      expect(server.host.listen("localhost", 32129)).toBe(ERROR);
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test.each([
+  ["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", ["head:200", "data:ok", "end"]],
+  ["INVALID\r\n\r\n", ['error:malformed status line: "INVALID"']],
+  ["", ["error:the server closed the connection without a response"]],
+])("preview response has one terminal callback for %j", async (response, expected) => {
+  const f = await fixture();
+  try {
+    const server = f.add();
+    const listener = server.host.listen("localhost", 32129);
+    const events: string[] = [];
+    expect(
+      server.helper.request(
+        32129,
+        { method: "GET", target: "/", headers: [], body: null },
+        {
+          head: (head) => events.push(`head:${head.status}`),
+          data: (chunk) => {
+            events.push(`data:${text(chunk)}`);
+          },
+          end: () => {
+            events.push("end");
+            server.helper.dispose();
+          },
+          error: (message) => {
+            events.push(`error:${message}`);
+            server.helper.dispose();
+          },
+        },
+      ),
+    ).toBe(true);
+    const conn = await until(
+      () => server.host.accept(listener),
+      (id) => id > 0,
+    );
+    if (response) expect(server.host.write(conn, bytes(response))).toBe(response.length);
+    else server.host.close(conn);
+    expect(events).toEqual(expected);
+  } finally {
+    f.close();
+  }
+});
+
+test("preview terminal callback exceptions remain visible during disposal", async () => {
+  const f = await fixture();
+  try {
+    const server = f.add();
+    server.host.listen("localhost", 32129);
+    let errors = 0;
+    expect(
+      server.helper.request(
+        32129,
+        { method: "GET", target: "/", headers: [], body: null },
+        {
+          head() {},
+          data() {},
+          end() {},
+          error: () => {
+            errors++;
+            throw new Error("sink failed");
+          },
+        },
+      ),
+    ).toBe(true);
+    expect(() => server.helper.dispose()).toThrow("Network helper disposal failed");
+    expect(errors).toBe(1);
+    expect(server.host.listen("localhost", 32129)).toBe(ERROR);
+  } finally {
+    f.close();
+  }
+});
+
 test("reading a full connection wakes the blocked peer's ring and closing releases the port", async () => {
   const f = await fixture();
   try {
