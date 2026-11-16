@@ -137,7 +137,14 @@ export class ProgramSession {
     targets: Parameters<Runtime["programs"]["preload"]>,
   ): Promise<SessionResult> {
     // Resolve the session at dequeue, rather than retaining the one at enqueue.
-    await this.replacement;
+    const generation = this.generation;
+    try {
+      await this.replacement;
+    } catch (error) {
+      if (this.generation !== generation) return "superseded";
+      throw error;
+    }
+    if (this.generation !== generation) return "superseded";
     const session = this.view;
     if (!("runtime" in session)) throw new Error("No active program session");
     session.preparation = { kind: "preparing" };

@@ -134,6 +134,22 @@ test("rejected work leaves the next queued operation usable and the shell keeps 
   expect(await shell.exec("/bin/tool", ["tool"])).toMatchObject({ kind: "exited", code: 0 });
 });
 
+for (const reset of ["reopen", "close"] as const) {
+  test(`${reset} during the preparation dequeue wait returns superseded`, async () => {
+    await session.open(options);
+    const pending = session.preload();
+    const outcome = pending.then(
+      (result) => ({ kind: "result", result }),
+      (error: unknown) => ({ kind: "error", error }),
+    );
+    await Promise.resolve();
+    const replacement = reset === "reopen" ? session.open(options) : session.close();
+    expect(await outcome).toEqual({ kind: "result", result: "superseded" });
+    await replacement;
+    expect(session.snapshot().kind).toBe(reset === "reopen" ? "active" : "closed");
+  });
+}
+
 for (const fail of [false, true]) {
   test(`reopen during preparation suppresses stale completion, fail=${fail}, and dequeues into the replacement`, async () => {
     const old = command("old", fail);
