@@ -130,6 +130,30 @@ async function parallel<T>(
   if (state.failure !== undefined) throw state.failure.reason;
 }
 
+// File snapshots can become unreadable after native modification. Retry only that
+// native failure, reacquiring the File each time; decoding failures are not retries.
+async function readSnapshot<T>(
+  handle: FileSystemFileHandle,
+  read: (file: File) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
+    try {
+      const file = await handle.getFile();
+      signal?.throwIfAborted();
+      const result = await read(file);
+      signal?.throwIfAborted();
+      return result;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (!(error instanceof DOMException) || error.name !== "NotReadableError" || attempt === 2)
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, 5 * (attempt + 1)));
+    }
+  }
+}
+
 /** One immutable OPFS payload per logical file revision, and two checksummed snapshot copies.
  * A checkpoint closes payloads without flushing each one; explicit flush(keys) fsyncs those
  * payloads and then the naming snapshot. No payload is read while loading the index. */
@@ -349,17 +373,13 @@ export class OpfsStorage implements StorageBackend {
   read(key: string): Promise<Uint8Array> {
     return this.enqueue(async () => {
       await this.initialize();
-      if (!this.known.has(key)) throw new Error(`Missing filesystem payload: ${key}`);
+      const size = this.known.get(key);
+      if (size === undefined) throw new Error(`Missing filesystem payload: ${key}`);
       try {
         const access = await this.cached(key);
-        const bytes = new Uint8Array(access.getSize());
-        for (let offset = 0; offset < bytes.length;) {
-          const count = access.read(bytes.subarray(offset), { at: offset });
-          if (!(count > 0)) throw new Error(`Short filesystem payload: ${key}`);
-          offset += count;
-        }
-        if (bytes.length !== this.known.get(key))
-          throw new Error(`Invalid filesystem payload size: ${key}`);
+        if (access.getSize() !== size) throw new Error(`Invalid filesystem payload size: ${key}`);
+        const bytes = new Uint8Array(size);
+        this.readPayloadRange(access, bytes, 0);
         return bytes;
       } catch (error) {
         throw translate(error, "read payload");
@@ -396,11 +416,17 @@ export class OpfsStorage implements StorageBackend {
     if (size === undefined || !this.readers.has(key))
       throw new Error("Missing retained filesystem payload");
     // Immutable File snapshots need no exclusive sync handle or writer-queue turn.
-    const file = await (await this.data.getFileHandle(payloadName(key))).getFile();
-    signal?.throwIfAborted();
-    if (file.size !== size) throw new PayloadCorruption("Invalid retained filesystem payload size");
     const count = Math.min(length, Math.max(0, size - offset));
-    const bytes = new Uint8Array(await file.slice(offset, offset + count).arrayBuffer());
+    const handle = await this.data.getFileHandle(payloadName(key));
+    const bytes = await readSnapshot(
+      handle,
+      async (file) => {
+        if (file.size !== size)
+          throw new PayloadCorruption("Invalid retained filesystem payload size");
+        return new Uint8Array(await file.slice(offset, offset + count).arrayBuffer());
+      },
+      signal,
+    );
     signal?.throwIfAborted();
     this.assertHandleOwnership();
     if (bytes.length !== count) throw new Error("Short retained filesystem payload range");
@@ -496,7 +522,7 @@ export class OpfsStorage implements StorageBackend {
   close(): Promise<void> {
     if (!this.closing) {
       this.closed = true;
-      this.closing = Promise.all(Array.from(this.readerWork).concat([this.tail])).then(() =>
+      this.closing = Promise.allSettled(Array.from(this.readerWork).concat([this.tail])).then(() =>
         this.closeOwned(),
       );
     }
@@ -593,14 +619,17 @@ export class OpfsStorage implements StorageBackend {
         );
       existed = true;
       if (name !== "snapshot-initial.json") ordinarySnapshotExisted = true;
+      const text = await readSnapshot(handle as FileSystemFileHandle, (file) => file.text());
+      let record: unknown;
       try {
-        const index = await decodeSnapshot(
-          JSON.parse(await (handle as FileSystemFileHandle).getFile().then((file) => file.text())),
-        );
-        if (index) snapshots.push({ name, index });
-      } catch {
-        /* An interrupted new snapshot never damages the prior copy. */
+        record = JSON.parse(text);
+      } catch (error) {
+        // Torn bytes may fall back to a complete checkpoint. Native I/O faults may not.
+        if (error instanceof SyntaxError) continue;
+        throw error;
       }
+      const index = await decodeSnapshot(record);
+      if (index) snapshots.push({ name, index });
     }
     if (!existed && !formatPresent) await this.assertEmptyData();
     snapshots.sort(
@@ -723,15 +752,7 @@ export class OpfsStorage implements StorageBackend {
           try {
             if (access.getSize() !== bytes.length)
               throw new Error(`Cannot overwrite immutable filesystem payload: ${key}`);
-            const prior = new Uint8Array(bytes.length);
-            let offset = 0;
-            while (offset < prior.length) {
-              const count = access.read(prior.subarray(offset), { at: offset });
-              if (!(count > 0)) throw new Error(`Short filesystem payload: ${key}`);
-              offset += count;
-            }
-            if (prior.some((byte, i) => byte !== bytes[i]))
-              throw new Error(`Cannot overwrite immutable filesystem payload: ${key}`);
+            this.verifyPayload(access, bytes, key);
           } finally {
             this.closeAccess(access);
           }
@@ -778,6 +799,15 @@ export class OpfsStorage implements StorageBackend {
         this.garbage.add(payloadName(key));
         this.garbagePayloads.set(payloadName(key), key);
       }
+  }
+  private verifyPayload(access: SyncAccess, bytes: Uint8Array, key: string): void {
+    const scratch = new Uint8Array(Math.min(bytes.length, 64 * 1024));
+    for (let offset = 0; offset < bytes.length; offset += scratch.length) {
+      const part = scratch.subarray(0, Math.min(scratch.length, bytes.length - offset));
+      this.readPayloadRange(access, part, offset);
+      if (part.some((byte, i) => byte !== bytes[offset + i]))
+        throw new Error(`Cannot overwrite immutable filesystem payload: ${key}`);
+    }
   }
   private async write(
     handle: FileSystemFileHandle,
