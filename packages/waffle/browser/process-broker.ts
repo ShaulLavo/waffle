@@ -194,6 +194,8 @@ export interface RootMemoryGroupMember {
   /** Broker-owned request field for the root worker; transfer `transfer` with it. */
   readonly request: MemoryGroupMemberRequest;
   readonly transfer: readonly Transferable[];
+  /** Call in finally after this root's native terminate attempt, before awaiting its end. */
+  terminating(): void;
   /** The embedder proved its root worker physically stopped. Idempotent. */
   stopped(): void;
 }
@@ -281,6 +283,7 @@ interface DescendantHook {
 interface PendingPreparation {
   readonly pid: number;
   readonly rootPid: number;
+  readonly observation: ProcessObservationTransfer;
   readonly controller: AbortController;
   readonly settled: Promise<void>;
   phase: "preparing" | "handed-off" | "settling" | "settled";
@@ -299,9 +302,15 @@ export interface WorkerMemoryObservation {
   /** null until actual memory becomes visible; may be stale between host boundaries. */
   readonly bytes: number | null;
 }
+interface PendingLaunch {
+  readonly observation: ProcessObservationTransfer;
+  acquiring: boolean;
+  readonly acquired: Promise<void>;
+  readonly settled: Promise<void>;
+}
 interface RuntimeLaunch {
   active: boolean;
-  pending?: { acquired: Promise<void>; settled: Promise<void> };
+  pending?: PendingLaunch;
 }
 interface RuntimeChild {
   readonly generation: number;
@@ -385,7 +394,9 @@ export class BrowserProcessBroker {
   private quiescedControllers = new Set<number>();
   private controllerStops?: Map<number, { pending: Promise<void>; controllerStop: boolean }>;
   private launches?: Set<number>;
-  private pendingLaunches?: Map<number, { acquired: Promise<void>; settled: Promise<void> }>;
+  private pendingLaunches?: Map<number, PendingLaunch>;
+  private readonly settledGroupAcquisitions = new Set<string>();
+  private readonly groupAdmissionWatches = new Map<SharedArrayBuffer, Int32Array>();
   private readonly descendantHooks = new Map<number, DescendantHook>();
   private readonly outputs = new Map<number, TerminalOutputDelivery | undefined>();
   /** Each root's terminal output: live writers and stopped writers' accepted bytes. */
@@ -450,9 +461,11 @@ export class BrowserProcessBroker {
         this.options.filesystem.reap(filesystem);
       },
     });
-    this.stopTrackingConsumers = options.table.onRemove((record) =>
-      this.releaseAcquiredProcess(record.pid),
-    );
+    this.stopTrackingConsumers = options.table.onRemove((record) => {
+      this.releaseAcquiredProcess(record.pid);
+      this.settledGroupAcquisitions.delete(observationKey(record.observation));
+      this.groups?.settleStopping();
+    });
   }
   ready(): Promise<ProcessSupervisor> {
     return (this.activation ??= (this.options.activate?.() ?? import("../proc/index.js")).then(
@@ -509,6 +522,7 @@ export class BrowserProcessBroker {
         supervisor.onProcessQuiescent((event) => {
           this.fences.delete(event.pid);
           this.releaseAcquiredProcess(event.pid);
+          this.groups?.settleStopping();
         });
         supervisor.onJobReap(() => this.retireRoots());
         for (const root of this.reservedRoots.values())
@@ -570,6 +584,7 @@ export class BrowserProcessBroker {
     const record: PendingPreparation = {
       pid: context.pid,
       rootPid,
+      observation: context.observation,
       controller,
       settled,
       phase: "preparing",
@@ -595,6 +610,7 @@ export class BrowserProcessBroker {
           record.phase = "settled";
           settle();
           release();
+          this.groups?.settleStopping();
         }
       },
     };
@@ -727,6 +743,8 @@ export class BrowserProcessBroker {
     // A launcher may select an outcome synchronously before returning its handle.
     // Retain its cleanup authority before invoking any adapter code.
     const pendingLaunch = {
+      observation: context.observation,
+      acquiring: true,
       acquired: new Promise<void>((resolve) => {
         acquireLaunch = resolve;
       }),
@@ -735,14 +753,18 @@ export class BrowserProcessBroker {
       }),
     };
     launch.pending = pendingLaunch;
+    this.settledGroupAcquisitions.delete(observationKey(context.observation));
     (this.pendingLaunches ??= new Map()).set(context.pid, pendingLaunch);
     const settled = () => {
+      pendingLaunch.acquiring = false;
+      this.settledGroupAcquisitions.add(observationKey(context.observation));
       launch.pending = undefined;
       if (this.pendingLaunches?.get(context.pid) === pendingLaunch)
         this.pendingLaunches.delete(context.pid);
       this.releaseAcquiredProcess(context.pid);
       acquireLaunch();
       settleLaunch();
+      this.groups?.settleStopping();
     };
     let launched: ProcessHandle | Promise<ProcessHandle>;
     try {
@@ -755,6 +777,8 @@ export class BrowserProcessBroker {
       throw error;
     }
     const track = (handle: ProcessHandle): ProcessHandle => {
+      pendingLaunch.acquiring = false;
+      this.settledGroupAcquisitions.add(observationKey(context.observation));
       // Worker acquisition already clears the previous image's stop. A late handle
       // must retain the stop started while its adapter acquisition was pending.
       this.traceProcess(context, "launched");
@@ -770,22 +794,29 @@ export class BrowserProcessBroker {
         settled();
         return this.children.has(context.pid)
           ? (adapter ?? handle)
-          : nativeStopHandle(
-              handle,
-              terminal,
-              nativeReturned,
-              () => observation?.close(),
-              (error) => observation?.fail(error),
+          : this.bindRootGroup(
+              context.pid,
+              nativeStopHandle(
+                handle,
+                terminal,
+                nativeReturned,
+                () => observation?.close(),
+                (error) => observation?.fail(error),
+              ),
             );
       }
       acquireLaunch();
-      const ownedHandle = nativeStopHandle(
-        handle,
-        terminal,
-        nativeReturned,
-        () => observation?.close(),
-        (error) => observation?.fail(error),
+      const ownedHandle = this.bindRootGroup(
+        context.pid,
+        nativeStopHandle(
+          handle,
+          terminal,
+          nativeReturned,
+          () => observation?.close(),
+          (error) => observation?.fail(error),
+        ),
       );
+      this.groups?.settleStopping();
       // External launchers own their physical handle. Keep controller authority until
       // that handle's asynchronous cleanup settles, not merely its child-exit event.
       return {
@@ -1352,6 +1383,7 @@ export class BrowserProcessBroker {
     } else {
       this.controllerNativeReturns.set(pid, returned);
       this.controllerNativeStops.set(pid, captured);
+      this.bindRootGroup(pid, captured);
     }
   }
   private acquireObservation(transfer: ProcessObservationTransfer, execution = false): void {
@@ -1760,6 +1792,12 @@ export class BrowserProcessBroker {
   captureRootStop(pid: number, stop: () => void | Promise<void>): () => void | Promise<void> {
     const captured = this.captureConsumerStop(pid, stop);
     return () => captured.terminate();
+  }
+  /** Only the native root consumer is bound. Independent captureRootStop helpers are excluded. */
+  private bindRootGroup(pid: number, handle: NativeStopHandle): NativeStopHandle {
+    const group = this.rootGroups?.get(pid);
+    if (group) handle.bindGroup(group);
+    return handle;
   }
   private captureConsumerStop(
     pid: number,
@@ -2199,21 +2237,26 @@ export class BrowserProcessBroker {
       controls: false,
     });
     let lease: MemberLease | undefined;
+    let bootstrap: ReturnType<MemberLease["launch"]> | undefined;
     try {
       const admitted = (lease = this.admitGroupMember(pid, transport, join, ticket.group));
       // Finish bootstrap preparation before committing ownership of the external member.
       admitted.group.buffer();
-      const { request, transfer } = admitted.launch();
+      const { request, transfer } = (bootstrap = admitted.launch());
       ticket.launched();
+      this.controllerNativeStopFor(pid)?.bindGroup(admitted);
       (this.rootGroups ??= new Map()).set(pid, admitted);
       return Object.freeze({
         group: admitted.group,
         request,
         transfer: Object.freeze(transfer),
+        terminating: () => admitted.stopRequested(),
         stopped: () => this.settleRootGroup(pid, admitted),
       });
     } catch (error) {
-      lease?.abort();
+      // No bootstrap request escaped, so no external agent can hold this incarnation.
+      bootstrap?.request.port.close();
+      lease?.stopped();
       ticket.abort();
       throw error;
     }
@@ -2221,7 +2264,7 @@ export class BrowserProcessBroker {
   /** A settled root lease must not keep its group's backing reachable; debt stays tracked. */
   private settleRootGroup(pid: number, lease: MemberLease): void {
     lease.stopped();
-    if (!lease.settled()) return;
+    if (!lease.settled() || this.rootGroups?.get(pid) !== lease) return;
     this.rootStopped(pid);
     if (this.rootGroups?.get(pid) === lease) this.rootGroups.delete(pid);
   }
@@ -2388,7 +2431,94 @@ export class BrowserProcessBroker {
     const target =
       join === "inherit" ? groups.groupOf(workerProcessState(transport).parentPid) : join;
     if (!target) throw new ProcessError(ProcessErrno.SRCH, "parent has no memory group");
-    return groups.admit(pid, workerProcessDirectoryId(transport), target, headroom);
+    const directory = transport.directory;
+    return groups.admit(pid, workerProcessDirectoryId(transport), target, headroom, () =>
+      this.terminalGroupAdmission(directory),
+    );
+  }
+
+  private terminalGroupAdmission(directory: SharedArrayBuffer): boolean {
+    const wake = new Int32Array(directory, 4, 1);
+    const seen = Atomics.load(wake, 0);
+    try {
+      const version = directoryAdmissionVersion(directory);
+      if (!this.groupIntentsSettled(directory)) {
+        this.deferGroupAdmission(directory, wake, seen);
+        return false;
+      }
+      commitDirectoryAdmission(directory, version);
+      this.cancelGroupAdmissionWatch(directory);
+      return true;
+    } catch (error) {
+      if (
+        !(error instanceof ProcessError) ||
+        (error.errno !== ProcessErrno.NOTSUP && !isCollectedProcess(error))
+      )
+        throw error;
+      this.deferGroupAdmission(directory, wake, seen);
+      return false;
+    }
+  }
+
+  private groupIntentsSettled(directory: SharedArrayBuffer): boolean {
+    const domain = atomicsLoad(new BigInt64ArrayConstructor(directory, 8, 1), 0);
+    const domainWords = new Uint32Array(directory, 8, 2);
+    const lifetimeDomain = `${domainWords[0]}:${domainWords[1]}`;
+    const sameDirectory = (source: ProcessObservationTransfer) =>
+      source.kind === "directory" &&
+      atomicsLoad(new BigInt64ArrayConstructor(source.directory, 8, 1), 0) === domain;
+    for (const launch of this.pendingLaunches?.values() ?? [])
+      if (launch.acquiring && sameDirectory(launch.observation)) return false;
+    for (const preparation of this.pendingPreparations)
+      if (sameDirectory(preparation.observation)) return false;
+    for (const state of directoryProcesses(directory)) {
+      const key = `directory:${domain}:${state.slot}:${state.pid}`;
+      const root = this.roots.get(state.pid);
+      if (root && observationKey(root) === key) continue;
+      const child = this.children.get(state.pid);
+      if (child && observationKey(child.transport) === key && this.currentChild(child)) {
+        if (child.launch.pending?.acquiring) return false;
+        continue;
+      }
+      if (this.settledGroupAcquisitions.has(key)) continue;
+      if (this.settledGroupRecord(state.pid, key)) continue;
+      if (
+        controlLoad(state.confirmed) &&
+        this.acquiredProcesses.get(state.pid) !== `${lifetimeDomain}:${state.slot}:${state.pid}`
+      )
+        continue;
+      return false;
+    }
+    return true;
+  }
+
+  private settledGroupRecord(pid: number, key: string): boolean {
+    const record = this.options.table.get(pid);
+    if (!record || observationKey(record.observation) !== key) return false;
+    // A selected outcome prevents the not-yet-invoked adapter from ever acquiring a member.
+    return (
+      record.image.execution?.kind === "host" ||
+      (record.image.nativeAcquisition.kind === "not-invoked" && !!readOutcome(record.outcome))
+    );
+  }
+
+  private deferGroupAdmission(directory: SharedArrayBuffer, wake: Int32Array, seen: number): void {
+    if (this.groupAdmissionWatches.has(directory)) return;
+    this.groupAdmissionWatches.set(directory, wake);
+    const waiting = atomicsWaitAsync(wake, 0, seen);
+    void Promise.resolve(waiting.value)
+      .then(() => {
+        if (this.groupAdmissionWatches.get(directory) !== wake) return;
+        this.groupAdmissionWatches.delete(directory);
+        this.groups?.settleStopping();
+      })
+      .catch((error) => this.report(error));
+  }
+  private cancelGroupAdmissionWatch(directory: SharedArrayBuffer): void {
+    const wake = this.groupAdmissionWatches.get(directory);
+    if (!wake) return;
+    this.groupAdmissionWatches.delete(directory);
+    Atomics.notify(wake, 0);
   }
   private writeStartupDiagnostic(
     pid: number,
@@ -2866,7 +2996,13 @@ export class BrowserProcessBroker {
   private async terminateWorker(child: RuntimeChild): Promise<void> {
     const worker = child.worker;
     if (!worker) return;
-    await worker.terminate();
+    let ended: void | Promise<void>;
+    try {
+      ended = worker.terminate();
+    } finally {
+      child.group?.stopRequested();
+    }
+    await ended;
     worker.onmessage = null;
     worker.onerror = null;
     child.worker = undefined;
@@ -2894,13 +3030,15 @@ export class BrowserProcessBroker {
     if (pending) return pending.pending;
     const controller = this.controllerFor(pid);
     if (!controller) return;
-    const capturedStop =
-      this.controllerNativeStopFor(pid)?.terminate ?? this.capturedControllerStopFor(pid);
+    const nativeStop = this.controllerNativeStopFor(pid);
+    const capturedStop = nativeStop?.terminate ?? this.capturedControllerStopFor(pid);
     const terminal = capturedStop ? this.terminalLifetimes.get(pid) : undefined;
+    const group = nativeStop?.membership();
     const stopping = Promise.resolve(this.quiesceProcess(pid))
       .then(() => capturedStop?.())
       .then(() => {
         terminal?.stopped();
+        if (group) this.settleRootGroup(pid, group);
         this.controllerStops?.delete(pid);
         this.retireChildController(pid);
       });
@@ -3136,14 +3274,14 @@ export class BrowserProcessBroker {
     const stopping = this.controllerStops?.get(pid);
     // A controller's auxiliary cleanup cannot certify a separately owned launch handle
     // or generic Worker, especially when that consumer's stop has failed.
-    const capturedStop =
-      this.controllerNativeStopFor(pid)?.terminate ?? this.capturedControllerStopFor(pid);
+    const nativeStop = this.controllerNativeStopFor(pid);
+    const capturedStop = nativeStop?.terminate ?? this.capturedControllerStopFor(pid);
     const ownsConsumer = capturedStop && !this.launches?.has(pid) && !this.children.has(pid);
     const terminal = ownsConsumer ? this.terminalLifetimes.get(pid) : undefined;
     const pending = stopping?.controllerStop
       ? stopping.pending
       : Promise.resolve().then(() => capturedStop?.());
-    const group = ownsConsumer ? this.rootGroups?.get(pid) : undefined;
+    const group = ownsConsumer ? nativeStop?.membership() : undefined;
     return pending
       .then(() => {
         terminal?.stopped();
@@ -3287,6 +3425,9 @@ export class BrowserProcessBroker {
       this.pendingLaunches?.clear();
       this.fences.clear();
       this.acquiredProcesses.clear();
+      this.settledGroupAcquisitions.clear();
+      for (const directory of this.groupAdmissionWatches.keys())
+        this.cancelGroupAdmissionWatch(directory);
       for (const owner of this.observationOwners.values()) owner.close();
       this.terminalLifetimes.clear();
       this.stopTrackingConsumers();
@@ -3435,6 +3576,8 @@ class NativeObservationOwner {
   }
 }
 interface NativeStopHandle extends ProcessHandle {
+  bindGroup(lease: MemberLease): void;
+  membership(): MemberLease | undefined;
   imageReturned(): void;
   acknowledgeReturn(): void;
 }
@@ -3451,11 +3594,30 @@ function nativeStopHandle(
 ): NativeStopHandle {
   const terminate = handle.terminate;
   let state: NativeStopState | undefined;
+  let group: MemberLease | undefined;
+  let groupBound = false;
+  let attempted = false;
+  const invoke = (): void | Promise<void> => {
+    try {
+      return reflectApply(terminate, handle, []) as void | Promise<void>;
+    } finally {
+      attempted = true;
+      group?.stopRequested();
+    }
+  };
   return {
+    membership: () => group,
+    bindGroup(lease) {
+      if (groupBound) throw new Error("native consumer already has a memory group binding");
+      groupBound = true;
+      group = lease;
+      if (attempted) group.stopRequested();
+    },
     imageReturned() {
       if (state) return;
       state = { kind: "returned", result: undefined };
       returned?.();
+      group = undefined;
     },
     acknowledgeReturn() {
       // A reentrant acknowledgement cannot erase a stop still invoking, pending or failed.
@@ -3464,6 +3626,7 @@ function nativeStopHandle(
       closeAdmission?.();
       returned?.();
       terminal?.stopped();
+      group = undefined;
     },
     terminate() {
       if (state?.kind === "returned") return state.result;
@@ -3478,15 +3641,17 @@ function nativeStopHandle(
         returned?.();
         terminal?.stopped();
         invoking.reentrant?.resolve();
+        group = undefined;
       };
       const reject = (error: unknown): never => {
+        group?.failed();
         failed?.(error);
         invoking.reentrant?.reject(error);
         throw error;
       };
       try {
         closeAdmission?.();
-        const result = reflectApply(terminate, handle, []) as void | Promise<void>;
+        const result = invoke();
         if (result)
           return (state = {
             kind: "returned",
@@ -3495,6 +3660,7 @@ function nativeStopHandle(
         complete();
         state = { kind: "returned", result: undefined };
       } catch (error) {
+        group?.failed();
         failed?.(error);
         invoking.reentrant?.reject(error);
         const result = Promise.reject(error);

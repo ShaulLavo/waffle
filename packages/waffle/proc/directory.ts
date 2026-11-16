@@ -56,6 +56,7 @@ export function beginDirectoryAdmission(directory: SharedArrayBuffer): () => voi
       if (!active) return;
       active = false;
       atomicsAdd(word, 0, -1n);
+      wakeDirectory(directory);
     };
   }
 }

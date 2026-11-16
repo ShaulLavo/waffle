@@ -38,6 +38,14 @@ export interface GroupRequestMessage {
 /** Reply cells: [seq, status, r0..r6]. The owner stores results before publishing seq. */
 export const REPLY_WORDS = 9;
 
+/** Private to one incarnation: pending epoch, unsigned byte address, width, closed. */
+export const WAIT_EPOCH = 9;
+export const WAIT_ADDR = REPLY_WORDS + 1;
+export const WAIT_WIDTH = REPLY_WORDS + 2;
+export const WAIT_CLOSED = REPLY_WORDS + 3;
+const WAIT_RECORD_WORDS = 4;
+export const MEMBER_CELL_WORDS = REPLY_WORDS + WAIT_RECORD_WORDS;
+
 /**
  * Watch table in the control buffer. Owned by the group owner, never guest memory.
  * Header word 0 is the registration sequence. Each slot is four i32 words:

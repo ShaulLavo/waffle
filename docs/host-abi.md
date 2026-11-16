@@ -854,8 +854,25 @@ group ends. Fixed backing is reserved separately at group creation. See
 profile's bounds and their limits.
 
 `group_grow` chunks need not be contiguous with earlier ones. A negative `timeout_ns` waits
-forever; `count` `0xffffffff` wakes every waiter. Waits must be 4- or 8-byte aligned. Hard
-termination of the member's worker is the cancellation path for a blocked wait.
+forever; `count` `0xffffffff` wakes every waiter. Waits must be 4- or 8-byte aligned.
+Both widths wait natively on the guest address. Raw JavaScript `Atomics.notify` and Wasm
+`memory.atomic.notify` interoperate with them; `futex_wake` also wakes raw waiters.
+
+After every admitted agent has had native termination attempted, with no reserved member
+or earlier unresolved admission, the owner irreversibly seals the group to new members.
+Only then it closes each current or retired incarnation's private wait record and notifies
+every waiter on each recorded pending address. A raw non-member waiter on that same cell may
+receive a teardown-only spurious `ok`; callers must recheck their condition. Normal operation
+and stopping one member with live siblings add no wakes or deadline changes. On WebKit,
+an individually terminated worker can stay parked until a normal notify reaches it.
+
+An external root's embedder calls its exact `RootMemoryGroupMember.terminating()` in
+`finally` immediately after invoking native terminate, before awaiting its result, including
+when invocation throws. `stopped()` remains the assertion after successful physical stop
+and cleanup. Broker-owned native stops perform the same ordering. A failed stop retains
+capacity and backing debt. Neither cancellation nor a native terminate return proves memory
+reclamation. Raw Wasm `memory.atomic.wait32/64`, guest busy loops and other service waits
+are outside this cancellation path and can keep a stopped group's backing reserved on WebKit.
 
 `shm_route_group` converts the current launched caller's own member pin to a group pin in
 one owner step. It keeps the same unsigned 32-bit pin ID and changes no hold, pin count,

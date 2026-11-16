@@ -28,6 +28,8 @@ import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { readOutcome } from "../proc/outcome.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { requestSignal } from "../proc/signals.js";
+import { groupLinkProgram } from "./fixtures/group-link-program.js";
+import { WAIT_CLOSED } from "../group/protocol.js";
 import { ProcessTable } from "../proc/table.js";
 import type { ProcessContext, ProcessHandle } from "../proc/types.js";
 import {
@@ -106,7 +108,9 @@ function fixture(
     await broker.dispose();
   });
   async function adopt(
-    options: (root: WorkerProcessTransport) => Omit<RuntimeRootOptions, "memory"> = () => ({}),
+    options: (root: WorkerProcessTransport) => Omit<RuntimeRootOptions, "memory"> & {
+      memory?: RuntimeRootOptions["memory"];
+    } = () => ({}),
   ) {
     const root = createWorkerProcessTransport({
       pid: identities.pid(),
@@ -162,6 +166,7 @@ async function shellTerminal(
   extra: Omit<RuntimeRootOptions, "prepareDescendant" | "memory"> & {
     run?: RootDescendantPreparation["run"];
     settled?: RootDescendantPreparation["settled"];
+    memory?: RuntimeRootOptions["memory"];
   } = {},
 ) {
   const input = createTerminalInput();
@@ -245,6 +250,27 @@ async function shellTerminal(
     admitRootJob,
   };
 }
+
+test("a real descendant preparation defers terminal futex sealing and retries on settlement", async () => {
+  const f = fixture();
+  const t = await shellTerminal(f, {
+    memory: "group",
+    stop() {},
+    run() {
+      group.terminating();
+      expect(Atomics.load(new Int32Array(group.request.reply), WAIT_CLOSED)).toBe(0);
+      return { kind: "ok", value: undefined };
+    },
+  });
+  const group = f.broker.admitRootMemoryGroup(t.root.pid, await groupLinkProgram());
+  try {
+    await f.spawn(t.root);
+    expect(Atomics.load(new Int32Array(group.request.reply), WAIT_CLOSED)).toBe(1);
+  } finally {
+    group.request.port.close();
+    group.stopped();
+  }
+});
 
 test("a same-job grandchild admitted by the root reads its inherited terminal", async () => {
   const f = fixture({ launch: (context) => void context.started() });

@@ -1,8 +1,16 @@
 import { expect, test, spyOn } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { MemoryGroups } from "../group/state.js";
-import { GroupOp, PAGE_BYTES } from "../group/protocol.js";
+import {
+  GroupOp,
+  PAGE_BYTES,
+  WAIT_CLOSED,
+  WAIT_ADDR,
+  WAIT_WIDTH,
+  WAIT_EPOCH,
+} from "../group/protocol.js";
 import { groupLinkProgram } from "./fixtures/group-link-program.js";
+import type { LinkedWorkerRequest } from "../link/index.js";
 import type { RuntimeWorkerRequest } from "../browser/worker.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import {
@@ -65,6 +73,7 @@ async function until(check: () => boolean): Promise<void> {
 async function fixture(
   options: {
     stop?: () => void | Promise<void>;
+    quiesce?: () => void | Promise<void>;
     construct?: () => void;
     launch?: (
       context: ProcessContext,
@@ -149,7 +158,9 @@ async function fixture(
       reap: (identity) => {
         reaped.push(identity.owner);
       },
-      async quiesce() {},
+      async quiesce() {
+        await options.quiesce?.();
+      },
     },
     launch(context) {
       if (context.execution?.kind === "host") return context.execution.launch(context);
@@ -290,6 +301,216 @@ async function fixture(
     close,
   };
 }
+
+test("an unresolved real adapter defers the stopped group's seal and settles it on acquisition rejection", async () => {
+  const pending = Promise.withResolvers<import("../proc/types.js").ProcessHandle>();
+  const entered = deferred(),
+    stopped = deferred();
+  const failure = new Error("earlier acquisition rejected");
+  const f = await fixture({
+    shared: true,
+    stop: () => stopped.promise,
+    launch: (context) => {
+      if (context.pid !== 2) {
+        entered.resolve();
+        return pending.promise;
+      }
+    },
+  });
+  let starting: Promise<void> | undefined;
+  const cells = new Int32Array(f.workers[0]!.request.memoryGroup!.reply);
+  const sibling = f.parent.service.spawn(f.root.pid, { ...request({ cwd: "/" }), job: -1 });
+  try {
+    await f.flush(f.root.pid);
+    starting = f.supervisor.start(sibling).catch(() => {});
+    await entered.promise;
+    f.supervisor.kill(f.pid, 9);
+    await until(() => f.workers[0]!.stops === 1);
+    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(0);
+    const group = f.broker.memoryGroupOf(f.pid)!;
+    const reserved = f.groups().admit(90, workerProcessDirectoryId(f.root), group);
+    reserved.abort();
+    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(0);
+    pending.reject(failure);
+    await starting;
+    // The retry comes from acquisition settlement, not another lease transition or a pump.
+    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(1);
+    expect(() => f.groups().owner(group)!.reserve(91)).toThrow("admission is closed");
+  } finally {
+    pending.resolve({ terminate() {} });
+    stopped.resolve();
+    await starting;
+    await f.close().catch((error) => {
+      expect(error).toBeInstanceOf(AggregateError);
+    });
+  }
+});
+
+test("a pending adapter can still join before the terminal seal, and live siblings receive no stop wake", async () => {
+  const pending = Promise.withResolvers<import("../proc/types.js").ProcessHandle>();
+  const entered = Promise.withResolvers<ProcessContext>(),
+    stopped = deferred();
+  const f = await fixture({
+    shared: true,
+    stop: () => stopped.promise,
+    launch: (context) => {
+      if (context.pid !== 2) {
+        entered.resolve(context);
+        return pending.promise;
+      }
+    },
+  });
+  const group = f.broker.memoryGroupOf(f.pid)!;
+  const cells = new Int32Array(f.workers[0]!.request.memoryGroup!.reply);
+  let starting: Promise<void> | undefined;
+  try {
+    const sibling = f.parent.service.spawn(f.root.pid, { ...request({ cwd: "/" }), job: -1 });
+    await f.flush(f.root.pid);
+    starting = f.supervisor.start(sibling);
+    const context = await entered.promise;
+    f.supervisor.kill(f.pid, 9);
+    await until(() => f.workers[0]!.stops === 1);
+    const handle = f.broker.launchWorker<LinkedWorkerRequest>(context, {
+      workerUrl: "http://localhost/later-group.ts",
+      memoryGroup: group,
+      request: {
+        module: context.module,
+        args: context.request.argv,
+        env: context.request.env,
+        linkPlan: Reflect.get(f.workers[0]!.request, "linkPlan"),
+      },
+    });
+    pending.resolve(handle);
+    await starting;
+    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(0);
+    const next = new Int32Array(f.workers[1]!.request.memoryGroup!.reply);
+    expect(Atomics.load(next, WAIT_CLOSED)).toBe(0);
+    f.supervisor.kill(sibling, 9);
+    await until(() => f.workers[1]!.stops === 1);
+    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(1);
+    expect(Atomics.load(next, WAIT_CLOSED)).toBe(1);
+    const unrelated = f.groups().admit(92, workerProcessDirectoryId(f.root), "new");
+    const extra = f.groups().admit(93, workerProcessDirectoryId(f.root), unrelated.group);
+    extra.abort();
+    unrelated.abort();
+  } finally {
+    pending.resolve({ terminate() {} });
+    stopped.resolve();
+    await starting;
+    await f.close();
+  }
+});
+
+for (const mode of ["loader-rejection", "cancel-before-adapter"] as const) {
+  test(`${mode} settles an exact earlier acquisition without waiting for its row to be consumed`, async () => {
+    const loading = Promise.withResolvers<WebAssembly.Module>();
+    const entered = deferred(),
+      stopping = deferred(),
+      quiescent = deferred();
+    const f = await fixture({ shared: true, stop: () => stopping.promise });
+    f.registry.register("earlier", {
+      adapter: "fixture",
+      module: () => {
+        entered.resolve();
+        return loading.promise;
+      },
+    });
+    const sibling = f.parent.service.spawn(f.root.pid, {
+      ...request({ executable: "earlier", cwd: "/" }),
+      job: -1,
+    });
+    const cells = new Int32Array(f.workers[0]!.request.memoryGroup!.reply);
+    let starting: Promise<void> | undefined;
+    try {
+      await f.flush(f.root.pid);
+      f.supervisor.onProcessQuiescent((event) => {
+        if (event.pid === sibling) quiescent.resolve();
+      });
+      starting = f.supervisor.start(sibling);
+      await entered.promise;
+      f.supervisor.kill(f.pid, 9);
+      await until(() => f.workers[0]!.stops === 1);
+      expect(Atomics.load(cells, WAIT_CLOSED)).toBe(0);
+      if (mode === "loader-rejection") loading.reject(new Error("registry load rejected"));
+      else f.supervisor.kill(sibling, 9);
+      await quiescent.promise;
+      expect(Atomics.load(cells, WAIT_CLOSED)).toBe(1);
+      expect(f.table.get(sibling)).toBeDefined();
+      expect(f.contexts).toHaveLength(1);
+    } finally {
+      loading.resolve(module);
+      stopping.resolve();
+      await starting;
+      await f.close();
+    }
+  });
+}
+
+for (const mode of ["throw", "reject"] as const) {
+  test(`owned child native ${mode} closes before await and preserves backing, holds and capacity debt`, async () => {
+    const failure = new Error("native stop failure");
+    const f = await fixture({
+      shared: true,
+      stop: () => {
+        if (mode === "throw") throw failure;
+        return Promise.reject(failure);
+      },
+    });
+    const request = f.workers[0]!.request.memoryGroup!;
+    const cells = new Int32Array(request.reply);
+    const words = new Int32Array(request.memory.buffer);
+    Atomics.store(cells, WAIT_ADDR, 64);
+    Atomics.store(cells, WAIT_WIDTH, 4);
+    Atomics.store(cells, WAIT_EPOCH, 1);
+    const waiting = Atomics.waitAsync(words, 16, 0);
+    const group = f.broker.memoryGroupOf(f.pid)!;
+    const owner = f.groups().owner(group)!;
+    const lease = f.groups().admit(90, workerProcessDirectoryId(f.root), group);
+    lease.abort();
+    try {
+      f.supervisor.kill(f.pid, 9);
+      expect(await waiting.value).toBe("ok");
+      await until(() => f.broker.memoryGroups()[0]?.retained === 1);
+      expect(Atomics.load(cells, WAIT_CLOSED)).toBe(1);
+      expect(owner.snapshot().committedBytes).toBeGreaterThan(0);
+      expect(() => owner.reserve(91)).toThrow("admission is closed");
+      await expect(f.broker.dispose()).rejects.toBeInstanceOf(AggregateError);
+    } finally {
+      await f.close().catch(() => {});
+    }
+  });
+}
+
+test("an owned child fence failure retains an unattempted blocker without a cancellation wake", async () => {
+  const failure = new Error("filesystem fence failed");
+  const f = await fixture({
+    shared: true,
+    quiesce: () => {
+      throw failure;
+    },
+  });
+  const request = f.workers[0]!.request.memoryGroup!;
+  const cells = new Int32Array(request.reply);
+  const group = f.broker.memoryGroupOf(f.pid)!;
+  const sibling = f.groups().admit(90, workerProcessDirectoryId(f.root), group);
+  const launched = sibling.launch();
+  try {
+    const children: unknown = Reflect.get(f.broker, "children");
+    if (!(children instanceof Map)) throw new Error("missing child ownership map");
+    const stop: unknown = Reflect.get(f.broker, "stopPhysical");
+    if (typeof stop !== "function") throw new Error("missing physical stop path");
+    await expect(Reflect.apply(stop, f.broker, [children.get(f.pid)])).rejects.toBeDefined();
+    expect(f.broker.memoryGroups()[0]?.retained).toBe(1);
+    sibling.stopRequested();
+    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(0);
+    expect(f.workers[0]!.stops).toBe(0);
+    expect(Atomics.load(new Int32Array(launched.request.reply), WAIT_CLOSED)).toBe(0);
+  } finally {
+    launched.request.port.close();
+    sibling.stopped();
+    await f.close().catch(() => {});
+  }
+});
 
 test("two execs keep PID, parent, waiters, observation and terminal lifetime until final exit", async () => {
   const f = await fixture();

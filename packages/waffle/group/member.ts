@@ -21,11 +21,17 @@ import {
 import {
   GroupErrno,
   GroupOp,
+  MEMBER_CELL_WORDS,
   PAGE_BYTES,
+  WAIT_ADDR,
+  WAIT_CLOSED,
+  WAIT_EPOCH,
+  WAIT_WIDTH,
   WATCH_HEADER_WORDS,
   WATCH_SLOT_WORDS,
   type MemoryGroupMemberRequest,
 } from "./protocol.js";
+import { ProcessError } from "../proc/errors.js";
 
 // Captured before any guest code runs in this worker.
 const postPort = MessagePort.prototype.postMessage;
@@ -108,11 +114,14 @@ export function createGroupMember(
   hooks: GroupMemberHooks,
 ): GroupMember {
   const { memory, port } = request;
+  if (sharedArrayBufferByteLength(request.reply) !== MEMBER_CELL_WORDS * 4)
+    throw new TypeError("invalid memory group member cells");
   const reply = new Int32ArrayConstructor(request.reply);
   const table = new Int32ArrayConstructor(request.control);
   const watches = new Map<number, Watch>();
   let seq = 0;
   let disposed = false;
+  let epoch = atomicsLoad(reply, WAIT_EPOCH);
 
   const buffer = (): SharedArrayBuffer => reflectApply(memoryBuffer, memory, []);
   const bytes = () => sharedArrayBufferByteLength(buffer());
@@ -168,6 +177,35 @@ export function createGroupMember(
   const chunk = (pages: number): number => call(GroupOp.GROW, pages)[0]!;
   const timeout = (ns: bigint): number => (ns < 0n ? Infinity : toNumber(ns) / 1e6);
   const status = (value: string): number => (value === "ok" ? 0 : value === "not-equal" ? 1 : 2);
+  const stopped = (): never => {
+    hooks.checkActive();
+    throw new ProcessError(GroupErrno.SRCH, "memory group member stopped");
+  };
+  const wait = (addr: number, width: 4 | 8, expected: number | bigint, ns: bigint): number => {
+    hooks.checkActive();
+    addr >>>= 0;
+    if (!inBounds(addr, width)) return -GroupErrno.INVAL;
+    atomicsStore(reply, WAIT_ADDR, addr);
+    atomicsStore(reply, WAIT_WIDTH, width);
+    atomicsStore(reply, WAIT_EPOCH, (epoch = (epoch + 1) | 0));
+    let result: string;
+    try {
+      if (atomicsLoad(reply, WAIT_CLOSED) !== 0) stopped();
+      result = nativeWait(addr, width, expected, ns);
+    } finally {
+      atomicsStore(reply, WAIT_EPOCH, (epoch = (epoch + 1) | 0));
+    }
+    if (atomicsLoad(reply, WAIT_CLOSED) !== 0) stopped();
+    return status(result);
+  };
+  const nativeWait = (addr: number, width: 4 | 8, expected: number | bigint, ns: bigint) => {
+    if (width === 4 && typeof expected === "number")
+      return atomicsWait(words(), addr / 4, expected | 0, timeout(ns));
+    if (typeof expected !== "bigint" || width !== 8)
+      throw new TypeError("invalid futex expected value");
+    const cells = new BigInt64ArrayConstructor(buffer());
+    return atomicsWait(cells as never, addr / 8, asIntN(64, expected) as never, timeout(ns));
+  };
 
   /** The oldest still-pending live watch on addr, or -1. A hit watch is never reselected. */
   const nextWatch = (addr: number): number => {
@@ -245,20 +283,10 @@ export function createGroupMember(
       return call(GroupOp.WITHDRAW, token)[0]!;
     },
     futex_wait32(addr: number, expected: number, ns: bigint): number {
-      hooks.checkActive();
-      addr >>>= 0;
-      if (!inBounds(addr, 4)) return -GroupErrno.INVAL;
-      // A hard stop of this agent is the cancellation path: V8 drops the waiter with the agent.
-      return status(atomicsWait(words(), addr / 4, expected | 0, timeout(ns)));
+      return wait(addr, 4, expected, ns);
     },
     futex_wait64(addr: number, expected: bigint, ns: bigint): number {
-      hooks.checkActive();
-      addr >>>= 0;
-      if (!inBounds(addr, 8)) return -GroupErrno.INVAL;
-      const cells = new BigInt64ArrayConstructor(buffer());
-      return status(
-        atomicsWait(cells as never, addr / 8, asIntN(64, expected) as never, timeout(ns)),
-      );
+      return wait(addr, 8, expected, ns);
     },
     futex_wake(addr: number, count: number): number {
       hooks.checkActive();
