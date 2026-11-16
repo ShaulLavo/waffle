@@ -1,9 +1,12 @@
 import { join } from "node:path";
 import { runBrowserSuite } from "../scripts/browser-command.js";
+import { runOwned } from "../scripts/owned-command.js";
 
 if (process.argv.slice(2).join(" ") !== "webkit")
   throw new Error("Bootstrap arrival controls require webkit");
-await runBrowserSuite(
+// The matrix supervisor already owns detached descendants and its shared-memory scratch.
+const run = process.env.WAFFLE_BROWSER_SHM_ROOT ? runOwned : runBrowserSuite;
+await run(
   [
     process.execPath,
     "test",
