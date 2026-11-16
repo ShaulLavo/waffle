@@ -28,6 +28,8 @@ const viewports = [
 type Viewport = (typeof viewports)[number];
 /** Generous cap for something that should happen within a few seconds. */
 const HANG = 30_000;
+// Source files and the landing site link to these docs; AGENTS.md asks that they keep working.
+const requiredDocs = ["docs/getting-started.md", "docs/architecture.md", "docs/host-abi.md"];
 
 interface Watch {
   errors: string[];
@@ -129,6 +131,16 @@ async function sessionState(page: Page) {
   );
 }
 
+/** Waits until the session changes; a session that stays frozen fails with the message. */
+async function sessionMoves(page: Page, message: string) {
+  const before = await sessionState(page);
+  for (let attempt = 0; attempt < HANG / 250; attempt++) {
+    await page.waitForTimeout(250);
+    if ((await sessionState(page)) !== before) return;
+  }
+  assert.fail(message);
+}
+
 async function stillFor(page: Page, ms: number) {
   const before = await sessionState(page);
   await page.waitForTimeout(ms);
@@ -223,6 +235,10 @@ async function checkHome(browser: Browser, engine: string, viewport: Viewport) {
       );
     }
     assert.ok(!links.some((href) => href.includes("/old")), `${label}: links to the old page`);
+    // The session is scripted, and the page has to say so at every width.
+    const note = page.locator(".term__note");
+    assert.equal(await note.textContent(), "demo session", `${label}: the session is not labelled`);
+    assert.ok(await note.isVisible(), `${label}: the demo label is hidden`);
     const short = await page.evaluate(() =>
       Array.from(document.querySelectorAll<HTMLElement>(".footer__meta a"))
         .filter((link) => link.getBoundingClientRect().height < 44)
@@ -269,6 +285,7 @@ async function checkLive(page: Page, label: string, desktop: boolean) {
   await page.waitForTimeout(1500);
   assert.ok(await stillFor(page, 2000), `${label}: the session kept running while paused`);
   await page.locator("#pause").click();
+  await sessionMoves(page, `${label}: the session did not resume after the pause`);
   if (!desktop) return;
 
   await page.locator("footer").scrollIntoViewIfNeeded();
@@ -294,6 +311,7 @@ async function checkLive(page: Page, label: string, desktop: boolean) {
     { timeout: HANG },
   );
   await page.evaluate(() => window.scrollTo(0, 0));
+  await sessionMoves(page, `${label}: the session did not resume back on screen`);
 }
 
 async function checkOld(browser: Browser, engine: string, viewport: Viewport) {
@@ -323,6 +341,13 @@ async function checkOld(browser: Browser, engine: string, viewport: Viewport) {
     );
     assert.deepEqual(await overflowingText(page), [], `${label}: text spills past the right edge`);
     assert.deepEqual(await brokenLinks(page), [], `${label}: links without a target`);
+    const oldLinks = await hrefs(page);
+    for (const doc of requiredDocs) {
+      assert.ok(
+        oldLinks.some((href) => href.endsWith(doc)),
+        `${label}: missing link to ${doc}`,
+      );
+    }
     const robots = await page.evaluate(() =>
       document.querySelector('meta[name="robots"]')?.getAttribute("content"),
     );
@@ -366,6 +391,9 @@ async function checkMissing(browser: Browser, engine: string, viewport: Viewport
     const unexpected = watch.errors.filter((text) => !text.includes("status of 404"));
     assert.deepEqual(unexpected, [], `${label}: browser errors`);
     assert.deepEqual(watch.foreign, [], `${label}: requests to another origin`);
+    // The missing document's own 404 is the point; nothing the 404 page loads may fail.
+    const broken = watch.failed.filter((entry) => !entry.includes("no-such-page/"));
+    assert.deepEqual(broken, [], `${label}: failed requests`);
     console.log(`${label}: ok`);
   } finally {
     await context.close();

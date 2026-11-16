@@ -53,7 +53,7 @@ const codeTheme = {
   colors: { "editor.background": "#111319", "editor.foreground": "#DCDFEA" },
   settings: [
     { settings: { foreground: "#DCDFEA", background: "#111319" } },
-    { scope: ["comment"], settings: { foreground: "#6E7183" } },
+    { scope: ["comment"], settings: { foreground: "#7C7F92" } },
     {
       scope: ["keyword", "storage", "storage.type", "keyword.control", "keyword.operator.new"],
       settings: { foreground: "#9DB4FF" },
@@ -163,18 +163,20 @@ const detailLetters = ["A", "B", "C", "D"];
     <a class="logo" href="#top" aria-label="Waffle, back to top">
       waffle
     </a>
-    <a class="nav__link nav__link--wide" href="#how">
-      How it works
-    </a>
-    <a class="nav__link nav__link--wide" href="#api">
-      The API
-    </a>
-    <a class="nav__link nav__link--wide" href="#parts">
-      Parts list
-    </a>
-    <a class="nav__link" href={GITHUB}>
-      GitHub
-    </a>
+    <nav class="nav__links" aria-label="Main">
+      <a class="nav__link nav__link--wide" href="#how">
+        How it works
+      </a>
+      <a class="nav__link nav__link--wide" href="#api">
+        The API
+      </a>
+      <a class="nav__link nav__link--wide" href="#parts">
+        Parts list
+      </a>
+      <a class="nav__link" href={GITHUB}>
+        GitHub
+      </a>
+    </nav>
     <a class="btn btn--small" href={START}>
       Get started
     </a>
@@ -235,9 +237,9 @@ const detailLetters = ["A", "B", "C", "D"];
               </svg>
             </button>
           </div>
-          <div class="tty">
+          <div class="tty" role="group" aria-label="Demo shell session">
             <div class="tty__view">
-              <pre id="tty" aria-label="Shell session"></pre>
+              <pre id="tty"></pre>
             </div>
           </div>
         </div>

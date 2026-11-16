@@ -161,6 +161,11 @@ class Session {
     shellTag?.querySelector("line")?.setAttribute("y2", String(stemEnd));
   }
 
+  /** The view never shows more than ROWS lines, so older ones are dropped as new ones arrive. */
+  append(more: readonly string[]): void {
+    this.lines = this.lines.concat(more).slice(-ROWS);
+  }
+
   /** Always the last ROWS lines, so the view is full from its first row. */
   render(current: string | string[]): void {
     this.tty.innerHTML = this.lines.concat(current).slice(-ROWS).join("\n");
@@ -221,7 +226,7 @@ class Session {
 
   async runStep(step: Step): Promise<void> {
     await this.type(step);
-    this.lines.push(commandLine(step));
+    this.append([commandLine(step)]);
     this.render([]);
     await Promise.all(step.procs.map((proc, n) => this.launch(proc, n * 70)));
     for (const cell of step.pipes) setPipe("h", cell, true);
@@ -229,7 +234,7 @@ class Session {
     await this.sleep(step.pipes.length ? 1200 : step.procs.length ? 640 : 160);
     if (step.files !== undefined) this.files(step.files);
     await this.answer(step);
-    this.lines = this.lines.concat(output(step));
+    this.append(output(step));
     this.render([]);
     if (step.procs.length) await this.reap(step);
     this.render(promptFor(step.next ?? step.cwd) + CURSOR);
@@ -273,7 +278,6 @@ function bindPause(button: HTMLButtonElement, gate: Gate): void {
     const paused = button.getAttribute("aria-pressed") !== "true";
     gate.set("paused", paused);
     button.setAttribute("aria-pressed", String(paused));
-    button.setAttribute("aria-label", paused ? "Resume the session" : "Pause the session");
     icon?.setAttribute("d", paused ? PLAY_ICON : PAUSE_ICON);
   });
 }
@@ -282,11 +286,14 @@ export function startSession(reduced: boolean): void {
   const plate = element("plate", HTMLElement);
   const stage = element("stage", HTMLElement);
   const session = new Session(plate);
-  bindPause(element("pause", HTMLButtonElement), session.gate);
+  const pause = element("pause", HTMLButtonElement);
   if (reduced) {
+    // Nothing runs with reduced motion, so there is nothing to pause.
+    pause.hidden = true;
     session.still();
     return;
   }
+  bindPause(pause, session.gate);
   // CSS loops (the caret and the pipe dots) stop whenever the session does.
   session.gate.onChange((open) => stage.classList.toggle("paused", !open));
   gateOnView(session.gate, stage, 0);

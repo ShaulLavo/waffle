@@ -29,7 +29,8 @@ missing URL (`not_found_handling: "404-page"` in `wrangler.jsonc`).
 - `/old/`: `src/pages/old/index.astro` emits its head; `src/components/old/Landing.astro` and
   `src/styles/old.css` render it; `src/scripts/old/landing.ts` maps native scroll to scene
   progress; `src/scripts/old/waffle-scene.ts` is the Three.js scene, loaded after first paint.
-  Three.js is bundled only into `/old/`.
+  Three.js is bundled only into `/old/`. Append `?full-quality` to the `/old/` URL to turn off the
+  scene's adaptive pixel density, for screenshots on slow machines.
 - Fonts live in `src/assets/` as instanced Latin subsets (sources and sizes in
   `docs/bun-patches.md`). The new page uses `bricolage-grotesque-text.woff2`,
   `bricolage-grotesque-display.woff2`, `martian-mono.woff2` and the inlined

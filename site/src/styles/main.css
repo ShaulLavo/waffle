@@ -4,7 +4,7 @@
   --panel: #111319;
   --text: #f0f1f5;
   --text-2: #a5a8b8;
-  --text-3: #6e7183;
+  --text-3: #7c7f92;
   --rule: rgb(255 255 255 / 0.12);
   --line: rgb(255 255 255 / 0.86);
   --butter: #ffc53d;
@@ -62,7 +62,9 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .term__bar { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 6px 0 14px; border-bottom: 1px solid var(--rule); font: 400 11px/1 var(--mono); color: var(--text-3); }
 .term__bar b { color: var(--text-2); font-weight: 600; }
 .live { width: 8px; height: 8px; border-radius: 50%; background: var(--mint); }
-.term__note { margin-left: auto; }
+.term__note { margin-left: auto; color: var(--text-2); white-space: nowrap; }
+.pause[hidden] { display: none; }
+.nav__links { display: contents; }
 .pause { display: grid; place-items: center; width: 34px; height: 30px; border-radius: 7px; color: var(--text-2); transition: background-color 160ms ease, color 160ms ease; }
 /* The terminal clips its contents, so the ring sits on the button's edge rather than outside it. */
 .pause:focus-visible { outline-offset: 0; }
@@ -81,7 +83,6 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .draw svg, .detail svg { display: block; width: 100%; height: auto; overflow: visible; }
 .st { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
 .thin { stroke-width: 1; stroke: rgb(255 255 255 / 0.5); }
-.dash { stroke-dasharray: 4 5; stroke-width: 1; stroke: rgb(255 255 255 / 0.6); }
 .top { fill: #14161d; }
 .side { fill: #0e0f15; }
 .floor { fill: #050609; }
@@ -221,8 +222,6 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   .gauges dt { font-size: 9px; letter-spacing: 0.04em; }
   .head, .two { grid-template-columns: minmax(0, 1fr); }
   .tty pre { font-size: 11.5px; }
-  .term__note { display: none; }
-  .pause { margin-left: auto; }
   .details { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .detail { padding: 14px 14px 22px; }
   .detail:nth-child(odd) { border-left: 0; }
