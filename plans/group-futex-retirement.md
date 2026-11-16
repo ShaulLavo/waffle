@@ -293,6 +293,10 @@ full bun-wasm SpiderMonkey shared Browser runs on 28 cores. Report:
 
 ### Gap 1: a member running guest code when terminated
 
+Status: reproduction first. This is the first Waffle item for Sol when ChatGPT returns. If it
+reproduces, bring the managing chat the choice between a per-worker Web Lock and delayed reuse or
+interrupt-word revocation, with numbers.
+
 Evidence. Not observed, reasoned from the release path: `release()` (`group/state.ts:802-834`) runs
 after `terminateWorker` (`browser/process-broker.ts:3001`, `ended = worker.terminate()`), and
 `terminate()` returning proves neither thread exit nor that guest code stopped. A member computing
@@ -320,6 +324,9 @@ Design options and costs:
   poll. Narrows the window for interruptible guests only; still not a proof.
 
 ### Gap 2: a stale waiter can absorb a counted wake meant for a live one
+
+Status: accepted (managing, 2026-11-16). Keep the "individual stops add no wakes" contract unless
+this shows up in a real failure.
 
 Evidence. A killed member parked on a cell in a region that live siblings still hold (held regions
 are not freed) stays in that cell's native FIFO. A sibling's `futex_wake(cell, 1)` wakes the stale
