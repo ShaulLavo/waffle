@@ -494,18 +494,23 @@ async function finishInterrupted(
     expect(controlLoad(f.state.terminalStopped)).toBe(0);
     whileFenced();
     holder.release();
-    const message = await holder.next();
-    const receipt = new Int32Array(holder.readReceipt);
-    expect(Atomics.load(receipt, 0)).toBe(1);
-    expect(Atomics.load(receipt, 1)).toBe(1);
-    expect(Atomics.load(receipt, 2)).toBe(65);
-    if (message && typeof message === "object" && "phase" in message && message.phase === "done")
-      expect(message).toMatchObject({ phase: "done", count: 1 });
-    else expect(message).toEqual({ phase: "exit", code: 1 });
+    await completedProtectedRead(holder);
     await bounded(retired.promise);
   } finally {
     unsubscribe();
   }
+}
+
+async function completedProtectedRead(holder: ReturnType<typeof start>): Promise<void> {
+  const message = await holder.next();
+  const receipt = new Int32Array(holder.readReceipt);
+  expect(Atomics.load(receipt, 0)).toBe(1);
+  expect(Atomics.load(receipt, 1)).toBe(1);
+  expect(Atomics.load(receipt, 2)).toBe(65);
+  // Native stop may win after leaving the protected read and before its final message.
+  if (message && typeof message === "object" && "phase" in message && message.phase === "done")
+    expect(message).toMatchObject({ phase: "done", count: 1 });
+  else expect(message).toEqual({ phase: "exit", code: 1 });
 }
 
 for (const controller of [false, true])
@@ -611,7 +616,7 @@ test("failed launch joins a live terminal holder before its controller stops the
     expect(stops).toBe(0);
     expect(controlLoad(f.state.terminalAdmission)).toBe(TERMINAL_FINAL_QUIET + 1);
     holder.release();
-    expect(await holder.next()).toMatchObject({ phase: "done", count: 1 });
+    await completedProtectedRead(holder);
     await bounded(retired.promise);
     expect(stops).toBe(1);
     expect(controlLoad(f.state.terminalStopped)).toBe(1);
