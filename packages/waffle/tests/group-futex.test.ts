@@ -24,13 +24,15 @@ interface Message {
   epoch?: number;
   closed?: number;
   closedReads?: number;
+  addr?: number;
+  width?: number;
   timeout?: number;
 }
 const workers: { worker: Worker; closed: Promise<void>; lease: MemberLease }[] = [];
 const leases: MemberLease[] = [];
 const gates: Int32Array[] = [];
 const ports: MessagePort[] = [];
-const nativeWaitCells: Int32Array[] = [];
+const nativeWaitCells: { cells: Int32Array; index: number }[] = [];
 afterEach(async () => {
   for (const { worker, lease } of workers) {
     try {
@@ -43,7 +45,7 @@ afterEach(async () => {
     Atomics.store(gate, 0, 1);
     Atomics.notify(gate, 0);
   }
-  for (const cells of nativeWaitCells) Atomics.notify(cells, 16, Infinity);
+  for (const { cells, index } of nativeWaitCells) Atomics.notify(cells, index, Infinity);
   for (const lease of leases) lease.abort();
   await Promise.all(workers.map(({ closed }) => closed));
   for (const lease of leases) lease.stopped();
@@ -72,6 +74,9 @@ function setup() {
 
 function launch(lease: MemberLease, options: Partial<Omit<FutexFixtureRequest, "request">> = {}) {
   const launched = lease.launch();
+  const addr = options.addr ?? 64;
+  const width = options.width ?? 4;
+  trackWait(launched.request.memory.buffer, addr);
   ports.push(launched.request.port);
   const cells = new Int32Array(launched.request.reply);
   const worker = new Worker(new URL("./fixtures/group-futex-worker.ts", import.meta.url).href);
@@ -90,10 +95,11 @@ function launch(lease: MemberLease, options: Partial<Omit<FutexFixtureRequest, "
     failure = error;
     notify?.();
   };
-  const next = async (event: string): Promise<Message> => {
+  const next = async (event: string | readonly string[]): Promise<Message> => {
+    const wanted = typeof event === "string" ? [event] : event;
     for (;;) {
       if (failure) throw failure;
-      const index = queue.findIndex((message) => message.event === event);
+      const index = queue.findIndex((message) => wanted.includes(message.event));
       if (index !== -1) return queue.splice(index, 1)[0]!;
       await new Promise<void>((resolve) => {
         notify = resolve;
@@ -101,11 +107,68 @@ function launch(lease: MemberLease, options: Partial<Omit<FutexFixtureRequest, "
     }
   };
   const start = () =>
-    worker.postMessage(
-      { request: launched.request, addr: 64, width: 4, ...options },
-      launched.transfer,
-    );
-  return { cells, worker, request: launched.request, next, start };
+    worker.postMessage({ request: launched.request, ...options, addr, width }, launched.transfer);
+  return { cells, worker, closed, request: launched.request, next, start, addr, width };
+}
+
+function trackWait(buffer: ArrayBufferLike, addr = 64): Int32Array {
+  const cells = new Int32Array(buffer);
+  nativeWaitCells.push({ cells, index: addr / 4 });
+  return cells;
+}
+
+function rawWait(buffer: SharedArrayBuffer, addr: number, width: 4 | 8 = 4) {
+  const cells = trackWait(buffer, addr);
+  const waiting =
+    width === 4
+      ? Atomics.waitAsync(cells, addr / 4, 0)
+      : Atomics.waitAsync(new BigInt64Array(buffer), addr / 8, 0n);
+  if (!waiting.async) throw new Error("raw waiter did not register in the native queue");
+  return waiting.value;
+}
+
+function observeNotifications(buffer: SharedArrayBuffer) {
+  const native = Atomics.notify;
+  const calls: { addr: number; count: number | undefined; woken: number }[] = [];
+  Atomics.notify = (cells, index, count) => {
+    const woken =
+      cells instanceof Int32Array ? native(cells, index, count) : native(cells, index, count);
+    if (cells.buffer === buffer)
+      calls.push({ addr: cells.byteOffset + index * cells.BYTES_PER_ELEMENT, count, woken });
+    return woken;
+  };
+  return {
+    calls,
+    native,
+    restore() {
+      Atomics.notify = native;
+    },
+  };
+}
+
+async function enteredGap(f: ReturnType<typeof launch>): Promise<void> {
+  await f.next("native-entry");
+  const receipt = await f.next("gate");
+  expect(receipt).toMatchObject({
+    stage: "after-entry",
+    addr: f.addr,
+    width: f.width,
+    closed: 0,
+    closedReads: 1,
+    epoch: 1,
+  });
+}
+
+async function stoppedOutcome(f: ReturnType<typeof launch>): Promise<void> {
+  const outcome = await f.next(["result", "stopped"]);
+  expect(outcome.event).toBe("stopped");
+  expect(outcome.error).toContain("memory group member stopped");
+}
+
+async function injectedCompletion(f: ReturnType<typeof launch>): Promise<void> {
+  expect((await f.next("injected-wait-completion")).closed).toBe(1);
+  await stoppedOutcome(f);
+  expect(Atomics.load(f.cells, WAIT_EPOCH)).toBe(2);
 }
 
 function gate() {
@@ -183,36 +246,101 @@ for (const width of [4, 8] as const) {
     expect(Atomics.load(f.cells, WAIT_EPOCH)).toBe(4);
   });
 
-  test(`whole-group close wakes wait${width * 8}, with D1 limited to the exact address`, async () => {
-    const { groups, reserve } = setup();
-    const a = reserve(),
-      b = reserve(a);
-    const f = launch(a, { width });
-    const other = launch(b, { width, addr: 80 });
-    f.start();
-    other.start();
-    await f.next("ready");
-    await other.next("ready");
-    await f.next("pending");
-    await other.next("pending");
-    await f.next("native-entry");
-    await other.next("native-entry");
-    // These raw async registrations are synchronous. Teardown may wake a non-member here.
-    const words = new Int32Array(f.request.memory.buffer);
-    const raw = Atomics.waitAsync(words, 16, 0);
-    const unrelated = Atomics.waitAsync(words, 24, 0);
-    expect(raw.async && unrelated.async).toBe(true);
-    a.stopRequested();
-    expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
-    b.stopRequested();
-    expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(1);
-    expect(await raw.value).toBe("ok");
-    expect((await f.next("stopped")).error).toContain("memory group member stopped");
-    expect((await other.next("stopped")).error).toContain("memory group member stopped");
-    expect(Atomics.notify(words, 24)).toBe(1);
-    expect(await unrelated.value).toBe("ok");
-    expect(() => groups.admit(99, "futex", a.group)).toThrow("admission is closed");
+  test(`source protocol with injected completion: wait${width * 8} seal and exact D1 notifications`, async () => {
+    await wholeGroupSeal(width, "source");
   }, 10_000);
+  test(`diagnostic without native termination: wait${width * 8} can park after a lease-only seal`, async () => {
+    await wholeGroupSeal(width, "diagnostic");
+  }, 10_000);
+  test(`Bun native termination before marking joins wait${width * 8} at the before-park gate`, async () => {
+    const { groups, reserve } = setup();
+    const lease = reserve(),
+      pause = gate();
+    const f = launch(lease, { width, stage: "after-entry", gate: pause.buffer });
+    f.start();
+    await enteredGap(f);
+    const ended = nativeStop(f.worker, lease);
+    expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(1);
+    expect(() => groups.admit(99, "futex", lease.group)).toThrow("admission is closed");
+    pause.release();
+    await ended;
+    await f.closed;
+    lease.stopped();
+    expect(groups.snapshot()).toEqual([]);
+  }, 10_000);
+}
+
+function nativeStop(worker: Worker, lease: MemberLease): void | Promise<void> {
+  try {
+    return worker.terminate();
+  } finally {
+    lease.stopRequested();
+  }
+}
+
+async function completionAfterSeal(
+  f: ReturnType<typeof launch>,
+  kind: "source" | "diagnostic",
+  notify: typeof Atomics.notify,
+): Promise<void> {
+  if (kind === "source") {
+    await injectedCompletion(f);
+    return;
+  }
+  // Destructive diagnostic, deliberately after sealing without a native termination flag.
+  // A positive count proves the later native park; it is not passive release evidence.
+  expect(
+    await notifyWaiter(() => notify(new Int32Array(f.request.memory.buffer), f.addr / 4, 1)),
+  ).toBe(1);
+  await stoppedOutcome(f);
+  expect(Atomics.load(f.cells, WAIT_EPOCH)).toBe(2);
+}
+
+async function wholeGroupSeal(width: 4 | 8, kind: "source" | "diagnostic"): Promise<void> {
+  const { groups, reserve } = setup();
+  const a = reserve(),
+    b = reserve(a),
+    pause = gate();
+  const waitControl = kind === "source" ? "injected-ok" : undefined;
+  const f = launch(a, { width, stage: "after-entry", gate: pause.buffer, waitControl });
+  const g = launch(b, { width, addr: 80, stage: "after-entry", gate: pause.buffer, waitControl });
+  const buffer = a.group.buffer();
+  f.start();
+  g.start();
+  await enteredGap(f);
+  await enteredGap(g);
+  const first = rawWait(buffer, 64, width),
+    second = rawWait(buffer, 80, width);
+  const unrelated = rawWait(buffer, 96);
+  const observed = observeNotifications(buffer);
+  try {
+    a.stopRequested();
+    expect(observed.calls).toEqual([]);
+    expect([Atomics.load(f.cells, WAIT_CLOSED), Atomics.load(g.cells, WAIT_CLOSED)]).toEqual([
+      0, 0,
+    ]);
+    b.stopRequested();
+    expect(observed.calls).toEqual([
+      { addr: 64, count: Infinity, woken: 1 },
+      { addr: 80, count: Infinity, woken: 1 },
+    ]);
+    expect(await Promise.all([first, second])).toEqual(["ok", "ok"]);
+    expect(() => groups.admit(99, "futex", a.group)).toThrow("admission is closed");
+    a.stopRequested();
+    b.stopRequested();
+    expect(observed.calls).toHaveLength(2);
+    pause.release();
+    await completionAfterSeal(f, kind, observed.native);
+    await completionAfterSeal(g, kind, observed.native);
+    a.stopped();
+    b.stopped();
+    expect(observed.calls).toHaveLength(2);
+    expect(groups.snapshot()).toEqual([]);
+    expect(observed.native(new Int32Array(buffer), 24, 1)).toBe(1);
+    expect(await unrelated).toBe("ok");
+  } finally {
+    observed.restore();
+  }
 }
 
 /** waitAsync's async return establishes registration before any tested wake runs. */
@@ -220,8 +348,7 @@ async function nativeWakeBudgets(
   member: ReturnType<typeof createGroupMember>,
   buffer: SharedArrayBuffer,
 ): Promise<void> {
-  const words = new Int32Array(buffer);
-  nativeWaitCells.push(words);
+  const words = trackWait(buffer);
   const raw32 = Atomics.waitAsync(words, 16, 0);
   const raw64 = Atomics.waitAsync(new BigInt64Array(buffer), 8, 0n);
   expect([raw32.async, raw64.async]).toEqual([true, true]);
@@ -279,8 +406,7 @@ async function beforeParkWake(
   expect(receipt.closed).toBe(0);
   expect(receipt.closedReads).toBe(1);
   expect(receipt.epoch).toBe(1);
-  const cells = new Int32Array(f.request.memory.buffer);
-  nativeWaitCells.push(cells);
+  const cells = trackWait(f.request.memory.buffer);
   const raw = Atomics.waitAsync(cells, 16, 0);
   expect(raw.async).toBe(true);
   expect(member.imports.futex_watch!(64, 0, 0)).toBe(0);
@@ -295,33 +421,45 @@ async function beforeParkWake(
 }
 
 for (const width of [4, 8] as const) {
-  test(`a real individual wait${width * 8} stop adds no wake to a live same-cell sibling`, async () => {
-    const { reserve } = setup();
-    const a = reserve(),
-      b = reserve(a);
-    const f = launch(a, { width }),
-      g = launch(b, { width });
-    const waker = createGroupMember(f.request, { checkActive() {} });
-    try {
-      f.start();
-      g.start();
-      await f.next("native-entry");
-      await g.next("native-entry");
-      const exited = new Promise<void>((resolve) =>
-        f.worker.addEventListener("close", () => resolve(), { once: true }),
-      );
-      const ended = f.worker.terminate();
-      a.stopRequested();
-      await ended;
-      await exited;
-      a.stopped();
-      expect(Atomics.load(g.cells, WAIT_EPOCH) & 1).toBe(1);
-      expect(waker.imports.futex_wake!(64, 1)).toBe(1);
-      expect((await g.next("result")).result).toBe(0);
-    } finally {
-      waker.dispose();
-    }
-  });
+  for (const forced of [false, true]) {
+    test(`Bun individual wait${width * 8} stop adds no owner wake; positive sibling wake, gated=${forced}`, async () => {
+      const { reserve } = setup();
+      const a = reserve(),
+        b = reserve(a);
+      const pause = forced ? gate() : undefined;
+      const f = launch(a, {
+          width,
+          ...(pause ? { stage: "after-entry", gate: pause.buffer } : {}),
+        }),
+        g = launch(b, { width, ...(pause ? { stage: "after-entry", gate: pause.buffer } : {}) });
+      const waker = createGroupMember(f.request, { checkActive() {} });
+      const observed = observeNotifications(a.group.buffer());
+      try {
+        f.start();
+        g.start();
+        if (pause) {
+          await enteredGap(f);
+          await enteredGap(g);
+        } else {
+          await f.next("native-entry");
+          await g.next("native-entry");
+        }
+        const ended = nativeStop(f.worker, a);
+        pause?.release();
+        await ended;
+        await f.closed;
+        a.stopped();
+        expect(observed.calls).toEqual([]);
+        expect(Atomics.load(g.cells, WAIT_CLOSED)).toBe(0);
+        // The entry receipt selected a stop phase, not parking. This positive count consumes B's wake.
+        expect(await notifyWaiter(() => waker.imports.futex_wake!(64, 1))).toBe(1);
+        expect((await g.next("result")).result).toBe(0);
+      } finally {
+        observed.restore();
+        waker.dispose();
+      }
+    });
+  }
   test(`close before wait${width * 8} registration refuses native parking`, async () => {
     const { reserve } = setup();
     const lease = reserve(),
@@ -382,60 +520,124 @@ test("an exact exec rollback never reopens a terminal seal", () => {
   expect(() => groups.admit(99, "futex", a.group)).toThrow("admission is closed");
 });
 
-test("staggered release preserves A's private record across slot reuse C and late old lease calls", async () => {
+for (const width of [4, 8] as const) {
+  test(`source protocol with injected completion: wait${width * 8} staggered A/B/C reuse and exact retired notifications`, async () => {
+    await staggeredSeal(width, "source");
+  }, 10_000);
+  test(`diagnostic without native termination: wait${width * 8} retired and current workers can park after sealing`, async () => {
+    await staggeredSeal(width, "diagnostic");
+  }, 10_000);
+}
+
+async function staggeredSeal(width: 4 | 8, kind: "source" | "diagnostic"): Promise<void> {
   const { groups, reserve } = setup();
   const a = reserve(),
-    b = reserve(a);
-  const f = launch(a),
-    g = launch(b, { addr: 80 });
+    b = reserve(a),
+    pause = gate();
+  const waitControl = kind === "source" ? "injected-ok" : undefined;
+  const f = launch(a, { width, stage: "after-entry", gate: pause.buffer, waitControl });
+  const g = launch(b, { width, addr: 80, stage: "after-entry", gate: pause.buffer, waitControl });
+  const buffer = a.group.buffer(),
+    owner = groups.owner(a.group)!;
   f.start();
   g.start();
-  await f.next("ready");
-  await g.next("ready");
-  await f.next("pending");
-  await g.next("pending");
-  await f.next("native-entry");
-  await g.next("native-entry");
-  a.stopRequested();
-  a.stopped();
-  expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
-  const c = reserve(b),
-    h = launch(c, { addr: 96 });
-  expect(c.index).toBe(a.index);
-  expect(h.cells.buffer).not.toBe(f.cells.buffer);
-  a.stopRequested();
-  a.failed();
-  a.stopped();
-  h.start();
-  await h.next("ready");
-  await h.next("pending");
-  await h.next("native-entry");
-  b.stopRequested();
-  b.stopped();
-  expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
-  c.stopRequested();
-  await Promise.all([f.next("stopped"), g.next("stopped"), h.next("stopped")]);
-  c.stopped();
-  expect(groups.snapshot()).toEqual([]);
-  expect(Reflect.get(groups.owner(c.group)!, "retiredWaits")).toEqual([]);
-}, 10_000);
+  await enteredGap(f);
+  await enteredGap(g);
+  const first = rawWait(buffer, 64, width),
+    second = rawWait(buffer, 80, width);
+  const third = rawWait(buffer, 96, width);
+  const observed = observeNotifications(buffer);
+  try {
+    a.stopRequested();
+    a.stopped();
+    expect(observed.calls).toEqual([]);
+    expect(Reflect.get(owner, "retiredWaits")).toHaveLength(1);
+    expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
+    const c = reserve(b),
+      h = launch(c, { width, addr: 96, stage: "after-entry", gate: pause.buffer, waitControl });
+    expect(c.index).toBe(a.index);
+    expect(h.cells.buffer).not.toBe(f.cells.buffer);
+    a.stopRequested();
+    a.failed();
+    a.stopped();
+    expect(Atomics.load(h.cells, WAIT_CLOSED)).toBe(0);
+    expect(Reflect.get(owner, "retiredWaits")).toHaveLength(1);
+    h.start();
+    await enteredGap(h);
+    b.stopRequested();
+    b.stopped();
+    expect(observed.calls).toEqual([]);
+    expect(Reflect.get(owner, "retiredWaits")).toHaveLength(2);
+    expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
+    c.stopRequested();
+    expect(observed.calls.toSorted((a, b) => a.addr - b.addr)).toEqual([
+      { addr: 64, count: Infinity, woken: 1 },
+      { addr: 80, count: Infinity, woken: 1 },
+      { addr: 96, count: Infinity, woken: 1 },
+    ]);
+    expect(await Promise.all([first, second, third])).toEqual(["ok", "ok", "ok"]);
+    expect([f, g, h].map(({ cells }) => Atomics.load(cells, WAIT_CLOSED))).toEqual([1, 1, 1]);
+    expect(Reflect.get(owner, "retiredWaits")).toEqual([]);
+    expect(() => groups.admit(99, "futex", c.group)).toThrow("admission is closed");
+    pause.release();
+    await completionAfterSeal(f, kind, observed.native);
+    await completionAfterSeal(g, kind, observed.native);
+    await completionAfterSeal(h, kind, observed.native);
+    a.stopRequested();
+    a.failed();
+    a.stopped();
+    c.stopped();
+    expect(observed.calls).toHaveLength(3);
+    expect(groups.snapshot()).toEqual([]);
+    expect(Reflect.get(owner, "retiredWaits")).toEqual([]);
+  } finally {
+    observed.restore();
+  }
+}
 
 for (const stage of ["address", "width", "epoch", "exit", "post-closed"] as const) {
-  test(`retired pre-publication and repeat-wait race at ${stage}`, async () => {
-    const { reserve } = setup();
+  test(`source protocol: retired pre-publication and repeat-wait race at ${stage}`, async () => {
+    const { groups, reserve } = setup();
     const a = reserve(),
       b = reserve(a);
     const pause = gate();
     const f = launch(a, { stage, gate: pause.buffer, repeat: stage === "post-closed" ? 2 : 1 });
     launch(b);
+    const buffer = a.group.buffer();
     f.start();
-    await f.next("gate");
-    a.stopped();
-    expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
-    b.stopRequested();
-    expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(1);
-    pause.release();
-    expect((await f.next("stopped")).error).toContain("memory group member stopped");
+    expect((await f.next("gate")).stage).toBe(stage);
+    const witness = rawWait(buffer, 64);
+    const observed = observeNotifications(buffer);
+    try {
+      a.stopped();
+      expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
+      expect(Reflect.get(groups.owner(a.group)!, "retiredWaits")).toHaveLength(1);
+      const c = reserve(b),
+        fresh = launch(c);
+      expect(c.index).toBe(a.index);
+      expect(fresh.cells.buffer).not.toBe(f.cells.buffer);
+      a.stopRequested();
+      a.failed();
+      a.stopped();
+      expect(Atomics.load(fresh.cells, WAIT_CLOSED)).toBe(0);
+      b.stopRequested();
+      expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
+      c.stopRequested();
+      expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(1);
+      if (stage === "epoch")
+        expect(observed.calls).toEqual([{ addr: 64, count: Infinity, woken: 1 }]);
+      else {
+        expect(observed.calls).toEqual([]);
+        expect(observed.native(new Int32Array(buffer), 16, 1)).toBe(1);
+      }
+      expect(await witness).toBe("ok");
+      pause.release();
+      if (stage === "post-closed") expect((await f.next("result")).result).toBe(2);
+      await stoppedOutcome(f);
+      expect(Atomics.load(f.cells, WAIT_EPOCH)).toBe(stage === "post-closed" ? 4 : 2);
+    } finally {
+      observed.restore();
+    }
   }, 10_000);
 }
 
