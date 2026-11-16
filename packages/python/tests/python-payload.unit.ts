@@ -471,6 +471,39 @@ test("an unsafe declared aggregate fails before any payload download", async (co
   assert.equal(state.calls.length, 0);
 });
 
+test("a same-turn hash mismatch stops peers before a ninth download", async (context) => {
+  const state = fixture(context);
+  const hash = await crypto.subtle.digest("SHA-256", new Uint8Array());
+  const emptyHash = createHash("sha256").update(new Uint8Array()).digest("hex");
+  const files = Array.from({ length: 12 }, (_, index) => ({
+    path: metadata.files[index]?.path ?? `/Lib/extra-${index}.py`,
+    url: `https://assets.test/files/empty-${index}`,
+    bytes: 0,
+    sha256: index === 0 ? "1".repeat(64) : emptyHash,
+  }));
+  state.manifest({ ...metadata, files });
+  state.fetch(async (url) => {
+    if (!url.endsWith("manifest.json")) return new Response(null);
+  });
+  const pending: PromiseWithResolvers<ArrayBuffer>[] = [];
+  const release = () => {
+    for (const gate of pending) gate.resolve(hash);
+  };
+  context.mock.method(crypto.subtle, "digest", () => {
+    const gate = Promise.withResolvers<ArrayBuffer>();
+    pending.push(gate);
+    if (pending.length === 8) release();
+    if (pending.length > 8) gate.resolve(hash);
+    return gate.promise;
+  });
+  await assert.rejects(
+    state.payload.load(async () => wasm),
+    /hash mismatch/,
+  );
+  assert.equal(state.fetched.length, 9);
+  assert.equal(state.calls.length, 0);
+});
+
 test("valid binary chunks use only their views and never collect a whole response", async (context) => {
   const state = fixture(context);
   const expected = Uint8Array.of(0, 255, 128, 13, 10);

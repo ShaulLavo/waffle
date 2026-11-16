@@ -242,15 +242,20 @@ async function fetchFile(
   base: URL,
   attempt: Preparation,
 ): Promise<PayloadFile> {
-  const bytes = await fileBytes(await response(new URL(file.url, base), attempt), file, attempt);
-  attempt.controller.signal.throwIfAborted();
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
-  attempt.controller.signal.throwIfAborted();
-  const sha256 = Array.from(new Uint8Array(hash), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-  if (sha256 !== file.sha256) throw new Error(`Python payload hash mismatch: ${file.path}`);
-  return { path: file.path, bytes };
+  try {
+    const bytes = await fileBytes(await response(new URL(file.url, base), attempt), file, attempt);
+    attempt.controller.signal.throwIfAborted();
+    const hash = await crypto.subtle.digest("SHA-256", bytes);
+    attempt.controller.signal.throwIfAborted();
+    const sha256 = Array.from(new Uint8Array(hash), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    if (sha256 !== file.sha256) throw new Error(`Python payload hash mismatch: ${file.path}`);
+    return { path: file.path, bytes };
+  } catch (error) {
+    attempt.stop(error);
+    throw error;
+  }
 }
 
 /** Python-only payload ownership; the family entry owns raw-source caching. */
