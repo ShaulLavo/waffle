@@ -112,7 +112,7 @@ export function serveCollector(
           if (!token || !configurations.has(token))
             return new Response("Unbound bootstrap", { status: 404, headers });
           return new Response(
-            `<!doctype html><html data-waffle-observation="${token}"><meta charset="utf-8"><title>Observation bootstrap</title><script>fetch(${JSON.stringify(`/_waffle_observation_arrival?token=${encodeURIComponent(token)}`)})</script></html>`,
+            `<!doctype html><html data-waffle-observation="${token}"><meta charset="utf-8"><title>Observation bootstrap</title><script>globalThis.__waffleObservationArrival = fetch(${JSON.stringify(`/_waffle_observation_arrival?token=${encodeURIComponent(token)}`)}).then(response => ({status: response.status}), error => ({error: String(error)}))</script></html>`,
             { headers: { ...headers, "Content-Type": "text/html" } },
           );
         }

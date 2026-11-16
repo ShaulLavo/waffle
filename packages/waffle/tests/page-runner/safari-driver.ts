@@ -1,4 +1,5 @@
 import { inspectorEndpoint } from "./inspector-endpoint.js";
+import { settleBootstrapNavigation } from "./bootstrap-navigation.js";
 import { SafariObserver, observationIdentityExpression } from "./safari-observer.js";
 import { bootstrapIdentityClasses, bootstrapURLClass } from "./bootstrap-diagnostics.js";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -641,6 +642,7 @@ export class SafariDriver implements Driver {
   }
   async navigate(url: string, signal: AbortSignal): Promise<void> {
     await this.command("POST", "/url", { url }, signal, navigationTimeoutMs);
+    await settleBootstrapNavigation(this, url, signal);
   }
   async handle(signal: AbortSignal): Promise<string> {
     const value = await this.command("GET", "/window", undefined, signal);
