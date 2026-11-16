@@ -44,6 +44,23 @@ test("a successful guest result is not a load failure", async () => {
   expect(await recovery.reload()).toBe("blocked");
 });
 
+test("a throwing presenter cannot replace the original load rejection", async () => {
+  const { recovery, options, failure } = fixture();
+  const displayError = new Error("failure display failed");
+  options.showFailure.mockImplementation(() => {
+    throw displayError;
+  });
+  const load = mock(async () => {
+    throw failure.cause;
+  });
+  await expect(recovery.load("network", load)).rejects.toBe(failure.cause);
+  recovery.report(failure);
+  expect(options.showFailure).toHaveBeenCalledTimes(1);
+  expect(load).toHaveBeenCalledTimes(1);
+  expect(options.navigate).not.toHaveBeenCalled();
+  expect(options.preserve).not.toHaveBeenCalled();
+});
+
 test("duplicate recovery requests preserve once and persist the guard before navigation", async () => {
   const { recovery, options, failure, storage } = fixture();
   let release!: () => void;

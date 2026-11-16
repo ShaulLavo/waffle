@@ -56,7 +56,11 @@ export function createLoadRecovery(options: RecoveryOptions) {
       try {
         return await load();
       } catch (cause) {
-        report({ kind: "lazy-service", resource, cause });
+        try {
+          report({ kind: "lazy-service", resource, cause });
+        } catch {
+          // A presentation failure must not replace the original load failure.
+        }
         throw cause;
       }
     },
