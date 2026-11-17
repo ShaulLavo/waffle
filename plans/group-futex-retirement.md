@@ -313,16 +313,35 @@ stop receipt. Pages then take one of two paths:
   `exiting` and `quarantinedBytes` in the group snapshot show the withheld memory. Bun has no Web
   Locks: there the owner issues no exit lock and keeps the old behavior.
 
-Cost. A busy member terminated on WebKit (desktop and iOS) keeps its chunks and held regions
-withheld until its group ends (for a group that never ends, until the page closes). Chromium
-withholds them about 2 s, Firefox about 1 ms. Sleepers cost nothing extra on any engine. A guest
-that makes a host call after its outcome is selected, or reaches a link-loader checkpoint after a
-signal, throws there (`checkActive`, `__waffle_fatal` in `browser/worker.ts`); this PR adds no
-new test for that cooperative path.
+Cooperative stop. `terminateWorker` (`browser/process-broker.ts`) now selects SIGKILL for the
+process before every child `worker.terminate()` (publication only, no change once an outcome is
+settled, skipped for exec replacement); the contract is in `docs/host-abi.md`, "Stop polling". A guest that reaches a link-loader checkpoint (`__waffle_fatal`, which
+bun-wasm's QuickJS interrupt handler polls through `core_checkpoint`) or makes any host call
+(`checkActive`) then throws, its thread returns to the event loop and exits, and the lock frees.
+Measured with the polling variant of the regression test (checkpoint import called each pass, stop
+word set right before `terminate()`): exit proven 1.2 ms after terminate (median) on Chromium,
+Firefox and Linux WebKit, max 5 ms, against about 2 s on Chromium and never on WebKit without it.
+
+Cost (known and accepted, correctness over memory). A busy guest that never polls keeps its chunks
+and held regions withheld until its group ends (for a group that never ends, until the page
+closes): forever on WebKit, about 2 s on Chromium, about 1 ms on Firefox. On iOS Safari 26.5 such a
+guest also keeps a CPU core: on the C4D2 iPhone (report
+`/work/reports/waffle-gap1-running-member-20261117/IOS.md`) a terminated busy member was still
+writing at 60 s in 4 of 4 runs, its lock was never granted within 60 s (0 of 4), and the tab stayed
+at 400 to 730% CPU until it was closed (a same-origin navigation did not end it). Without the gate
+24 of 24 iOS runs wrote into the handed-over chunk (first stray write median 0.15 ms after
+terminate). `exiting` and `quarantinedBytes` in the group snapshot make the withheld memory visible.
+
+Later product decision (not part of this fix): when a killed busy guest does not stop (its exit
+stays unproven), the product could tell the user "a stuck program is still running; reload to stop
+it". The signal is already there for group members: a group snapshot whose `exiting` stays above
+zero after the stop. Check the wording on iOS first: there a same-origin navigation did not end the
+thread in the C4D2 runs, only closing the tab did.
 
 Why not gate every release on the lock: real iOS Safari 26.5 (C4D2) kept a terminated sleeper
 parked in an untimed `Atomics.wait` holding its Web Lock past 30 s in 3 of 3 runs (Playwright
-WebKit released it in 0.4 ms), so gating sleepers would strand their pages on iPhone.
+WebKit released it in 0.4 ms), so gating sleepers would strand their pages and 1 MiB stack on
+iPhone. Sleepers cost nothing extra on any engine.
 
 Kernel comparison. Linux frees a dying task's memory only after the task can no longer run: the
 exiting thread drops its own `mm` in `exit_mm()`, and pages return to the allocator when the last
@@ -336,8 +355,9 @@ Regression test (in `scripts/test-browser.ts`):
 `bun packages/waffle/tests/running-member-reuse-browser-runner.ts [chromium|firefox|webkit]`. Busy
 case: right after release a keeper grows and must not get the terminated member's chunk (the group
 has a spare chunk); on Chromium and Firefox the exit must then be proven and the chunk reused with
-no write from the old thread; on WebKit it must stay quarantined. Parked case: a member parked in
-the real `futex_wait32` is reused at once. WebKit runs 2 busy repetitions per chunk size with a
+no write from the old thread; on WebKit it must stay quarantined. Polling case: the same with a
+guest that polls a checkpoint; the exit must be proven on every engine, WebKit included. Parked
+case: a member parked in the real `futex_wait32` is reused at once. WebKit runs 2 busy repetitions per chunk size with a
 1 s proof cap, because each leaves a thread spinning until page close. Red without the gate: 3 of
 3 Chromium busy runs reused before proof and saw the old thread's writes.
 

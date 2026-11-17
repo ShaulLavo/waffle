@@ -3033,9 +3033,11 @@ export class BrowserProcessBroker {
     if (!worker) return;
     let ended: void | Promise<void>;
     // terminate() never stops a busy Wasm thread on iOS Safari and takes about 2 s on Chromium.
-    // Select SIGKILL first (no change once an outcome is settled) so a guest polling its fatal
-    // checkpoint unwinds, its thread exits and the group owner can reuse its pages.
-    if (child.group && !child.replacing) this.publishStopSignal(child.context.pid);
+    // Select SIGKILL first (no change once an outcome is settled) so a guest polling
+    // runtime_proc.signal(0, 4) or its fatal checkpoint unwinds and its thread exits; a group
+    // owner can then reuse its pages (docs/host-abi.md, "Stop polling"). Exec replacement
+    // stops an old image inside its exec call and must not end the process.
+    if (!child.replacing) this.publishStopSignal(child.context.pid);
     try {
       ended = worker.terminate();
     } finally {
