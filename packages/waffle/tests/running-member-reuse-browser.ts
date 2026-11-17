@@ -26,6 +26,11 @@ export interface RunningMemberOptions {
   readonly quietMs: number;
   /** Hang cap while waiting for the owner to prove a busy member's exit. */
   readonly proofCapMs: number;
+  /**
+   * The guest calls a checkpoint each pass and returns once it reports a stop, which the
+   * page sets right before terminate(), as the broker selects SIGKILL first.
+   */
+  readonly polling?: boolean;
 }
 
 interface BusyRepetition {
@@ -209,6 +214,7 @@ async function busyRepetition(
   try {
     const page = busy.grow(pages);
     const beat = new Int32Array(group.memory.buffer, page * PAGE_BYTES, 1);
+    const interrupt = options.polling ? new SharedArrayBuffer(4) : undefined;
     const started = startWorker({
       module,
       memory: group.memory,
@@ -216,12 +222,14 @@ async function busyRepetition(
       words: pages * WORDS_PER_PAGE,
       marker: (0x5a000000 | index) >>> 0,
       lock: exitLockOf(busy.request),
+      interrupt,
     });
     worker = started.worker;
     await started.running;
     awaitBeats(beat);
     stagger(index);
     const start = now();
+    if (interrupt) Atomics.store(new Int32Array(interrupt), 0, 9);
     worker.terminate();
     busy.lease.stopRequested();
     await releaseAfter(timing);
@@ -316,7 +324,7 @@ const count = <T>(results: readonly T[], test: (result: T) => boolean) =>
  * reuse was written by the terminated member. Returns only scalars.
  */
 export async function runningMemberReuse(options: RunningMemberOptions) {
-  const module = new WebAssembly.Module(runningMemberModule());
+  const module = new WebAssembly.Module(runningMemberModule(options.polling));
   const results: BusyRepetition[] = [];
   for (let index = 0; index < options.repetitions; index++)
     results.push(await busyRepetition(module, options, index));
@@ -325,6 +333,7 @@ export async function runningMemberReuse(options: RunningMemberOptions) {
   );
   return {
     pages: options.pages,
+    polling: !!options.polling,
     runs: results.length,
     reusedBeforeProof: count(results, (result) => result.reusedBeforeProof),
     notQuarantined: count(results, (result) => !result.quarantined),

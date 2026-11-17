@@ -172,7 +172,7 @@ Keep collection-based ledger charges until actual collection, without a new cap 
 refund. Constructor failure still refunds only its provisional reservation.
 
 `release` also stores CLOSED=1 in the released record, without a notify, before its chunks return
-to the free list (PR 544, `group/state.ts:810`). A stale thread woken later then throws instead of
+to the free list (PR 544, `group/state.ts:842`). A stale thread woken later then throws instead of
 resuming guest code on pages another member now owns. Final sealing still notifies the record.
 
 `release` first sets `stopRequested` on the releasing member, so an embedder that only calls
@@ -277,7 +277,7 @@ supervised waits keep their own paths. None of these was pending at stop in the 
 except notification helpers, which hold small fixed buffers. Record each as a follow-up item here when
 it is designed; no broad notification is added in this PR.
 
-## Remaining gaps after PR 544 (Approved follow-up, needs a design decision first)
+## Remaining gaps after PR 544 (Approved follow-up; gap 1 fixed, gap 2 accepted)
 
 Background. bun-wasm's "Shared Browser (spidermonkey)" check (`tests/fixtures/shared-wasm-memory/
 group-lane-lifetime.ts`, `churn()`: 200 workers in turn, every second one killed while parked)
@@ -285,7 +285,7 @@ crashed the Chromium 156 renderer on every run on a 28-core PC. A killed member 
 `futex_wait` after `Worker.terminate()` returned, its data and stack chunks went to the free list,
 the next member got the same pages, and its `futex_wake` on the same cell woke the stale thread,
 which returned `ok` into its guest on a shared stack. Instrumented, six such wakes appeared in one
-run. PR 544 closes the record at release (`group/state.ts:810`), so that wake now throws
+run. PR 544 closes the record at release (`group/state.ts:842`), so that wake now throws
 (`group/member.ts:198`). Test: `a released wait32/64 woken by the reusing member stops instead of
 resuming` (`tests/group-futex.test.ts:477`), red without the store. After the fix, 0 crashes in 3
 full bun-wasm SpiderMonkey shared Browser runs on 28 cores. Report:
@@ -293,19 +293,62 @@ full bun-wasm SpiderMonkey shared Browser runs on 28 cores. Report:
 
 ### Gap 1: a member running guest code when terminated
 
-Status: reproduced on all three engines (2026-11-17): every run on Chromium and WebKit, 1 in 500
-on Firefox. Needs the managing chat's
-choice of fix; numbers below. The reproduction is
-`bun packages/waffle/tests/running-member-reuse-browser-runner.ts [chromium|firefox|webkit]`, which
-fails while the gap is open. The fix PR adds it to `scripts/test-browser.ts`.
+Status: fixed (2026-11-17), with the managing chat's choice of the per-incarnation Web Lock,
+split in two paths after the iOS sleeper measurement below. Reproduced first on all three engines:
+every run on Chromium and WebKit, 1 in 500 on Firefox.
 
-Evidence. `release()` (`group/state.ts:823`) runs a few microtasks after `terminateWorker`
+Fix. `release()` (`group/state.ts:834`) still returns slot, holds, pins, watches and capacity at the
+stop receipt. Pages then take one of two paths:
+
+- Parked and closed (`parkedAndClosed`, `group/state.ts:894`): after the CLOSED store the owner reads
+  the wait record's epoch. Odd means the member published a wait and its read of CLOSED on the way
+  out still lies ahead (all four accesses are sequentially consistent), so it can only throw. Its
+  chunks go to the free list at once, as after PR 544.
+- Otherwise the member may be executing. Its chunks and every region it held stay off the free list
+  until the owner acquires the incarnation's exit lock (`awaitExit`), which the worker took with
+  `ifAvailable` before any guest code (`holdExitLock`, `group/member.ts`, called from
+  `browser/worker.ts` before `createGroupMember`). The owner keeps granted locks until group end,
+  so an agent that never took its lock refuses to start. Group end aborts pending requests and
+  marks the backing exposed, so an unproven exit never sends a fixed backing back to the pool.
+  `exiting` and `quarantinedBytes` in the group snapshot show the withheld memory. Bun has no Web
+  Locks: there the owner issues no exit lock and keeps the old behavior.
+
+Cost. A busy member terminated on WebKit (desktop and iOS) keeps its chunks and held regions
+withheld until its group ends (for a group that never ends, until the page closes). Chromium
+withholds them about 2 s, Firefox about 1 ms. Sleepers cost nothing extra on any engine. A guest
+that makes a host call after its outcome is selected, or reaches a link-loader checkpoint after a
+signal, throws there (`checkActive`, `__waffle_fatal` in `browser/worker.ts`); this PR adds no
+new test for that cooperative path.
+
+Why not gate every release on the lock: real iOS Safari 26.5 (C4D2) kept a terminated sleeper
+parked in an untimed `Atomics.wait` holding its Web Lock past 30 s in 3 of 3 runs (Playwright
+WebKit released it in 0.4 ms), so gating sleepers would strand their pages on iPhone.
+
+Kernel comparison. Linux frees a dying task's memory only after the task can no longer run: the
+exiting thread drops its own `mm` in `exit_mm()`, and pages return to the allocator when the last
+user of the `mm` drops it (`mmput()`), never when a kill is merely requested. A process killed
+while blocked in `futex_wait` is woken, returns through the signal path and never re-enters user
+code. Waffle cannot make a browser thread exit, so the exit lock is its stand-in for the last
+`mmput()`, and the closed wait record is its stand-in for "blocked in the kernel, cannot return to
+user code".
+
+Regression test (in `scripts/test-browser.ts`):
+`bun packages/waffle/tests/running-member-reuse-browser-runner.ts [chromium|firefox|webkit]`. Busy
+case: right after release a keeper grows and must not get the terminated member's chunk (the group
+has a spare chunk); on Chromium and Firefox the exit must then be proven and the chunk reused with
+no write from the old thread; on WebKit it must stay quarantined. Parked case: a member parked in
+the real `futex_wait32` is reused at once. WebKit runs 2 busy repetitions per chunk size with a
+1 s proof cap, because each leaves a thread spinning until page close. Red without the gate: 3 of
+3 Chromium busy runs reused before proof and saw the old thread's writes.
+
+Evidence (measured with PR 547's version of the test, commit 56152047, whose measurement knobs
+are gone). `release()` runs a few microtasks after `terminateWorker`
 (`browser/process-broker.ts:3031`, `ended = worker.terminate()`, then `stopRequested()`, `await`,
 `stopped()`), and `terminate()` returning proves neither thread exit nor that guest code stopped. The
 tightest window is a live sibling growing right after release, not a new Worker booting. The test
 admits an anchor, a busy member and a keeper in a fresh group per repetition, runs the busy
 member's guest in a pure Wasm loop on its chunk (heartbeat word plus a per-repetition marker, no host
-calls), terminates it, releases it (synchronously, after 4 microtasks as the broker does, or after
+calls), terminates it, releases it (synchronously, after a few microtasks as the broker does, or after
 one task), then grows the keeper into the same chunk. `takePages` zero-fills a reused chunk, so any
 non-zero word after the grow was written by the terminated member. Playwright 156.0.8078.4
 (Chromium), 157.0 (Firefox) and WebKit 27.2 on the 28-core PC, 1 and 4 page chunks:

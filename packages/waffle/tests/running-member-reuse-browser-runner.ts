@@ -72,14 +72,26 @@ await runIsolatedPages({
         return fixture.parkedMemberReuse(options);
       }, options);
       console.log(JSON.stringify({ engine, parkedMemberReuse: parked }));
+      // A guest that polls its checkpoint unwinds and frees its lock on every engine, WebKit too.
+      const polling = await page.evaluate(
+        async (options) => {
+          const path = "/tests.js";
+          const fixture: typeof import("./running-member-reuse-browser.js") = await import(path);
+          return fixture.runningMemberReuse(options);
+        },
+        { ...options, repetitions, proofCapMs: 10_000, polling: true },
+      );
+      console.log(JSON.stringify({ engine, runningMemberReuse: polling }));
       for (const report of [busy, parked])
         if (report.runs !== options.repetitions)
           found.push(`ran ${report.runs} of ${options.repetitions}`);
+      if (polling.runs !== repetitions) found.push(`ran ${polling.runs} of ${repetitions}`);
       found = found.concat(
         failures(`busy ${pages}`, busy, !webkit),
         failures(`parked ${pages}`, parked, false),
+        failures(`polling ${pages}`, polling, true),
       );
-      reports.push({ pages, busy: busy.runs, parked: parked.runs });
+      reports.push({ pages, busy: busy.runs, parked: parked.runs, polling: polling.runs });
     }
     if (found.length) throw new Error(found.join("; "));
     return reports;

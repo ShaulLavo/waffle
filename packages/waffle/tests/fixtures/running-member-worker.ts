@@ -12,10 +12,15 @@ export interface RunningMemberRequest {
   readonly lock: string;
   /** Park through the real member's untimed futex_wait32 on `base` instead of spinning. */
   readonly member?: MemoryGroupMemberRequest;
+  /** The polling guest's checkpoint returns this word; the page sets it before terminate(). */
+  readonly interrupt?: SharedArrayBuffer;
 }
 
 function spin(data: RunningMemberRequest): void {
-  const instance = new WebAssembly.Instance(data.module!, { env: { memory: data.memory } });
+  const word = data.interrupt && new Int32Array(data.interrupt);
+  const env: WebAssembly.ModuleImports = { memory: data.memory };
+  if (word) env.checkpoint = () => Atomics.load(word, 0);
+  const instance = new WebAssembly.Instance(data.module!, { env });
   postMessage({ event: "running" });
   (instance.exports.spin as (base: number, words: number, marker: number) => void)(
     data.base,
