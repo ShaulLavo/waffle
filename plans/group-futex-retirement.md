@@ -317,8 +317,19 @@ stop receipt. Pages then take one of two paths:
   (rejected lock requests, withheld for the page's life) and `quarantinedBytes` in the group
   snapshot show the withheld memory; a group that ended with an unproven exit stays in
   `memoryGroups()` as `ended: true` with its whole backing as `quarantinedBytes`, so a 1 GiB
-  bounded backing held for a killed iOS busy guest is visible. Bun has no Web Locks: there the
-  owner issues no exit lock and keeps the old behavior.
+  bounded backing held for a killed iOS busy guest is visible. That entry reads 0 for
+  `committedBytes` and `freeBytes`, and the owner leaves `MemoryGroups` through its `onRetired`
+  callback as soon as the last proof retires the backing, so no `snapshot()` call is needed to
+  release it. Bun has no Web Locks: there the owner issues no exit lock and keeps the old
+  behavior.
+
+Follow-up for bun-wasm's Waffle pin bump (bun-wasm PR 900, not part of this fix):
+`web/tests/shared-wasm-memory-browser-main.ts:249` waits only while a group has `members > 0` or
+`retained > 0`, and `web/tests/shared-wasm-memory-browser.ts` then asserts `groups` is `[]`; the
+wait must also cover `ended` entries, or those asserts become timing-dependent (most at risk: a
+supported stop on Chromium). The `launch-failure` fixture typed as
+`ReturnType<ProcessService["memoryGroups"]>` needs the new `exitFailures` and `ended` fields, or
+`tsc` fails at the bump.
 
 Cooperative stop. `terminateWorker` (`browser/process-broker.ts`) now selects SIGKILL for the
 process before every child `worker.terminate()` (publication only, no change once an outcome is

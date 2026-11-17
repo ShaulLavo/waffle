@@ -141,8 +141,33 @@ function fixedSource() {
   return { groups, retired };
 }
 
-/** An ended group still holding its whole 16-page fixed backing for an unproven exit. */
-const draining = { ended: true, members: 0, exiting: 1, quarantinedBytes: 16 * PAGE_BYTES };
+/**
+ * An ended group still holding its whole 16-page fixed backing for an unproven exit. Its
+ * budget charge was returned, so it reports no committed or free bytes.
+ */
+const draining = {
+  ended: true,
+  members: 0,
+  exiting: 1,
+  quarantinedBytes: 16 * PAGE_BYTES,
+  committedBytes: 0,
+  freeBytes: 0,
+};
+
+test("the last exit proof releases a drained group without any snapshot() call", () => {
+  const { groups, retired } = fixedSource();
+  const only = groups.admit(1, "d", "new");
+  const { request } = only.launch();
+  request.port.close();
+  only.stopRequested();
+  only.stopped();
+  // Private on purpose: production may never call snapshot(), so nothing may depend on it.
+  const held = Reflect.get(groups, "draining") as Set<unknown>;
+  expect(held.size).toBe(1);
+  locks.grant(request.exitLock!);
+  expect(held.size).toBe(0);
+  expect(retired).toEqual([{ exposed: false }]);
+});
 
 test("a group whose last member stops busy returns its fixed backing once the exit is proven", () => {
   const { groups, retired } = fixedSource();
