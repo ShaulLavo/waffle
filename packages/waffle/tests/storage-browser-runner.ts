@@ -147,10 +147,13 @@ async function runBrowser(name: string, failures: string[]): Promise<void> {
       ({ label }) =>
         !process.env.STORAGE_TEST_FILTER || label.includes(process.env.STORAGE_TEST_FILTER),
     );
-    for (const { backend, label } of cases) {
-      selected++;
-      await runCase(browser, name, backend, label, passed, failures);
-    }
+    // STORAGE_TEST_REPEAT reruns the selected cases in one browser to reproduce intermittents.
+    const repeat = Math.max(1, Number(process.env.STORAGE_TEST_REPEAT ?? 1));
+    for (let round = 0; round < repeat; round++)
+      for (const { backend, label } of cases) {
+        selected++;
+        await runCase(browser, name, backend, label, passed, failures);
+      }
     if (!selected)
       throw new Error(`No storage cases match ${JSON.stringify(process.env.STORAGE_TEST_FILTER)}`);
     console.log(
