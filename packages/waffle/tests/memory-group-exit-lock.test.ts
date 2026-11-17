@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GroupMemorySource, ReservationSizing, WasmPages } from "../memory/reservations.js";
-import { GroupOp, PAGE_BYTES, WAIT_EPOCH } from "../group/protocol.js";
+import { GroupErrno, GroupOp, PAGE_BYTES, WAIT_EPOCH } from "../group/protocol.js";
 import { MemoryGroups, type MemberLease } from "../group/state.js";
 
 // Plan group-futex-retirement, gap 1. Bun has no Web Locks, so these tests install a manual
@@ -101,7 +101,7 @@ test("a member parked in a closed futex wait is reused at once, with no lock req
   end();
 });
 
-test("a region an exiting member held stays allocated after its last live holder leaves", () => {
+test("a region an exiting member held keeps its memory after its last live holder leaves", () => {
   const { owner, join, op, stop, end } = group();
   const busy = join(),
     keeper = join();
@@ -109,11 +109,36 @@ test("a region an exiting member held stays allocated after its last live holder
   expect(op(keeper.lease, GroupOp.ATTACH, handle!)[0]).toBe(0);
   stop(busy.lease);
   expect(op(keeper.lease, GroupOp.DETACH, handle!)[0]).toBe(0);
-  expect(owner.snapshot()).toMatchObject({ regions: 1, exiting: 1 });
+  // Its handle is dead, but its memory waits for the busy member's exit proof.
+  expect(owner.snapshot()).toMatchObject({ regions: 0, exiting: 1 });
   const free = owner.snapshot().freeBytes;
   locks.grant(busy.request.exitLock!);
   expect(owner.snapshot()).toMatchObject({ regions: 0, exiting: 0 });
   expect(owner.snapshot().freeBytes).toBe(free + 2 * PAGE_BYTES);
+  stop(keeper.lease);
+  locks.grant(keeper.request.exitLock!);
+  end();
+});
+
+// bun-wasm PR 900: a live member re-attached the stopped member's last-held region by its
+// handle while the exit was unproven, gaining memory a still-running thread could write and a
+// hold the stop should have ended. Before PR 548 the region was freed at release (BADF).
+test("a region whose last holder is an exiting member cannot be attached again", () => {
+  const { owner, join, op, stop, end } = group();
+  const busy = join(),
+    keeper = join();
+  const [, handle] = op(busy.lease, GroupOp.CREATE, 2 * PAGE_BYTES, PAGE_BYTES);
+  const holds = owner.snapshot().holds;
+  stop(busy.lease);
+  expect(owner.snapshot()).toMatchObject({ holds: holds - 1, regions: 0, exiting: 1 });
+  expect(op(keeper.lease, GroupOp.ATTACH, handle!)[0]).toBe(-GroupErrno.BADF);
+  expect(op(keeper.lease, GroupOp.PIN, handle!)[0]).toBe(-GroupErrno.BADF);
+  expect(owner.snapshot()).toMatchObject({ holds: holds - 1, regions: 0 });
+  // Its memory still comes back only with the proof, and only once.
+  const free = owner.snapshot().freeBytes;
+  locks.grant(busy.request.exitLock!);
+  expect(owner.snapshot().freeBytes).toBe(free + 2 * PAGE_BYTES);
+  expect(op(keeper.lease, GroupOp.ATTACH, handle!)[0]).toBe(-GroupErrno.BADF);
   stop(keeper.lease);
   locks.grant(keeper.request.exitLock!);
   end();

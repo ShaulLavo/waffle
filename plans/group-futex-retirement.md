@@ -322,6 +322,15 @@ stop receipt. Pages then take one of two paths:
   callback as soon as the last proof retires the backing, so no `snapshot()` call is needed to
   release it. Bun has no Web Locks: there the owner issues no exit lock and keeps the old
   behavior.
+- Dead handles (fixed 2026-11-17, after bun-wasm PR 900's flake). A region whose last live
+  holder, pin and publication are gone loses its handle at once (`maybeFree`), as before PR 548;
+  only its memory waits for the exit proof (`reuse` calls `releaseMemory`). In 0.0.141 such a
+  region stayed in the handle table until the proof, so a live member could `ATTACH` the stale
+  handle and get memory the stopped thread might still write. bun-wasm's QuickJS main thread did
+  exactly that after a receiver was stopped mid-attach: it re-attached and detached the region
+  about 40 times until the proof, which is what made `worker-transport.ts` "every hold the
+  member took came back" fail 2 of 6 on Chromium. Test: `a region whose last holder is an exiting
+  member cannot be attached again` (`tests/memory-group-exit-lock.test.ts`), red on 0.0.141.
 
 Follow-up for bun-wasm's Waffle pin bump (bun-wasm PR 900, not part of this fix):
 `web/tests/shared-wasm-memory-browser-main.ts:249` waits only while a group has `members > 0` or

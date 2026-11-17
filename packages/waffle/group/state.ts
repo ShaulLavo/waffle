@@ -794,9 +794,20 @@ export class MemoryGroupOwner {
     this.maybeFree(region);
   }
 
+  /**
+   * With no holder, pin or publication left, nothing may reach the region again: its handle
+   * dies now, so a stale handle is refused. Its memory returns only once every former holder's
+   * exit is proven (`exiting`); handing it to a new holder first would let a still-running
+   * thread write into it.
+   */
   private maybeFree(region: Region): void {
-    if (region.holders.size || region.pins || region.published || region.exiting) return;
+    if (this.regions.get(region.handle) !== region) return;
+    if (region.holders.size || region.pins || region.published) return;
     this.regions.delete(region.handle);
+    if (!region.exiting) this.releaseMemory(region);
+  }
+
+  private releaseMemory(region: Region): void {
     if (region.chunk) {
       this.free.give(region.chunk.page, region.chunk.pages);
       return;
@@ -960,7 +971,9 @@ export class MemoryGroupOwner {
     for (const chunk of exit.chunks) this.free.give(chunk.page, chunk.pages);
     for (const region of exit.regions) {
       region.exiting--;
-      this.maybeFree(region);
+      // A dead handle's memory waited only for these proofs; a live region frees normally.
+      if (this.regions.get(region.handle) === region) this.maybeFree(region);
+      else if (!region.exiting) this.releaseMemory(region);
     }
   }
 
