@@ -20,6 +20,8 @@ import {
 } from "../fs/protocol.js";
 import { enterTerminalSection, leaveTerminalSection } from "../proc/terminal-lifetime.js";
 import { controlLoad } from "../proc/control.js";
+import { beginDirectoryAdmission } from "../proc/directory.js";
+import type { SupervisorOptions } from "../proc/supervisor.js";
 import { readExecCompletion } from "../proc/exec.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { captureProcessObserver } from "../proc/observation.js";
@@ -84,6 +86,7 @@ async function fixture(
     hostOnly?: boolean;
     shared?: boolean;
     typed?: boolean;
+    processKind?: "process" | "thread";
     acquired?: (context: ProcessContext) => Promise<void>;
     wrap?: (
       handle: import("../proc/types.js").ProcessHandle,
@@ -239,6 +242,7 @@ async function fixture(
   const pid = parent.service.spawn(root.pid, {
     ...request({ cwd: "/" }),
     job: -1,
+    processKind: options.processKind,
     ...(options.typed ? { worker: { type: "fixture" } } : {}),
   });
   await flush(root.pid);
@@ -527,6 +531,12 @@ test("two execs keep PID, parent, waiters, observation and terminal lifetime unt
     expect(f.table.require(f.pid)).toBe(original);
     expect(original.image.generation).toBe(3);
     expect(original.parentPid).toBe(f.root.pid);
+    expect(original.processIdentity).toEqual({ pid: f.pid, parentPid: f.root.pid });
+    expect(f.contexts.map((context) => context.processIdentity)).toEqual([
+      original.processIdentity,
+      original.processIdentity,
+      original.processIdentity,
+    ]);
     expect(f.caller.service.cwd(f.pid)).toBe("/third");
     expect(f.contexts[2]!.request.argv).toEqual(["third"]);
     expect(f.contexts[2]!.request.env).toEqual({ NEW: "value" });
@@ -1416,6 +1426,309 @@ test("a direct broker joins its exact accepted wrapper once through fatal pre-ac
   } finally {
     released.resolve();
     await disposing;
+    await f.close();
+  }
+});
+
+test("a thread-kind caller cannot exec even without opaque worker metadata", async () => {
+  const f = await fixture({ processKind: "thread" });
+  try {
+    expect(f.table.require(f.pid).processIdentity).toEqual({ pid: f.root.pid, parentPid: 0 });
+    expect(() => f.caller.service.exec(f.pid, request())).toThrow(
+      expect.objectContaining({ errno: ProcessErrno.NOTSUP }),
+    );
+    expect(f.table.require(f.pid).image.phase).toBe("current");
+    expect(f.caller.service.cwd(f.pid)).toBe("/");
+  } finally {
+    await f.close();
+  }
+});
+
+test("an undelivered logical thread blocks exec until owned no-consumer rollback", async () => {
+  const f = await fixture();
+  try {
+    const tid = f.caller.service.spawn(f.pid, {
+      ...request({ cwd: "/" }),
+      job: -1,
+      processKind: "thread",
+    });
+    const thread = f.notices.shift()!;
+    expect(thread.operation).toBe("spawn");
+    expect(f.table.get(tid)).toBeUndefined();
+    const completion = f.caller.service.exec(f.pid, request());
+    await f.flush(f.pid);
+    await until(() => readExecCompletion(completion) !== null);
+    expect(readExecCompletion(completion)!.result).toBe(-ProcessErrno.NOTSUP);
+    if (thread.operation !== "spawn") throw new Error("expected spawn");
+    thread.request.processKind = "process";
+    await expect(f.broker.runtimeMessage(thread, f.pid)).rejects.toMatchObject({
+      errno: ProcessErrno.INVAL,
+    });
+    expect(f.table.get(tid)).toBeUndefined();
+    expect((await f.stage()).result).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("collected logical siblings block exec through adapter stop and release unconsumed results", async () => {
+  const stopping = deferred();
+  const f = await fixture({ stop: () => stopping.promise });
+  try {
+    const tid = f.caller.service.spawn(f.pid, {
+      ...request({ cwd: "/" }),
+      job: -1,
+      processKind: "thread",
+    });
+    await f.flush(f.pid);
+    await f.supervisor.start(tid);
+    const threadJob = f.supervisor.jobOf(tid);
+    expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
+    const worker = f.workers.find((w) => w.request.runtimeProcess?.pid === tid)!;
+    worker.emit({ type: "exit", code: 0 });
+    await until(() => f.supervisor.childExited(f.pid, tid));
+    expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
+    expect(f.supervisor.wait(f.pid, tid)?.code).toBe(0);
+    expect(f.table.get(tid)).toBeUndefined();
+    expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
+    stopping.resolve();
+    await until(() => f.supervisor.jobRetired(threadJob));
+    const completed = f.caller.service.spawn(f.pid, {
+      ...request({ cwd: "/" }),
+      job: -1,
+      processKind: "thread",
+    });
+    await f.flush(f.pid);
+    await f.supervisor.start(completed);
+    const completedJob = f.supervisor.jobOf(completed);
+    f.workers
+      .find((w) => w.request.runtimeProcess?.pid === completed)!
+      .emit({ type: "exit", code: 0 });
+    await until(() => f.supervisor.jobRetired(completedJob));
+    expect(f.table.get(completed)!.result?.code).toBe(0);
+    expect((await f.stage()).result).toBe(0);
+  } finally {
+    stopping.resolve();
+    await f.close();
+  }
+});
+
+test("pending thread acquisition and cancellation retain exec blockers until native cleanup", async () => {
+  const acquiring = Promise.withResolvers<import("../proc/types.js").ProcessHandle>();
+  const stopped = deferred();
+  const f = await fixture();
+  let starting: Promise<void> | undefined;
+  try {
+    f.registry.register("thread-pending", {
+      module,
+      adapter: "thread-pending",
+      execution: { kind: "host", launch: () => acquiring.promise },
+    });
+    const tid = f.caller.service.spawn(f.pid, {
+      ...request({ executable: "thread-pending", cwd: "/" }),
+      job: -1,
+      processKind: "thread",
+    });
+    await f.flush(f.pid);
+    starting = f.supervisor.start(tid);
+    const threadJob = f.supervisor.jobOf(tid);
+    await until(() => f.table.require(tid).image.nativeAcquisition.kind === "invoked");
+    expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
+    f.supervisor.kill(tid, 9);
+    expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
+    acquiring.resolve({ terminate: () => stopped.promise });
+    await starting;
+    expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
+    stopped.resolve();
+    await until(() => f.supervisor.jobRetired(threadJob));
+    expect((await f.stage()).result).toBe(0);
+  } finally {
+    acquiring.resolve({ terminate() {} });
+    stopped.resolve();
+    await starting;
+    await f.close();
+  }
+});
+
+test("postcommit old-image threads are rejected and successor admission reopens", async () => {
+  const f = await fixture();
+  try {
+    const old = f.caller.service;
+    expect((await f.stage()).result).toBe(0);
+    const rollback = f.table.require(f.pid).replacement!.admission!.rollback;
+    rollback();
+    expect(controlLoad(workerProcessState(f.broker.transportFor(f.pid)!).imageAdmission)).toBe(-1);
+    expect(() => old.spawn(f.pid, { ...request(), job: -1, processKind: "thread" })).toThrow(
+      expect.objectContaining({ errno: ProcessErrno.SRCH }),
+    );
+    expect(() =>
+      f.supervisor.reserveSpawn(f.pid, { ...request(), job: -1, processKind: "thread" }),
+    ).toThrow(expect.objectContaining({ errno: ProcessErrno.SRCH }));
+    f.workers[0]!.emit({ type: "replaced" });
+    await until(() => f.workers.length === 2);
+    const successor = f.client(f.workers[1]!.request.runtimeProcess!);
+    rollback();
+    expect(
+      controlLoad(workerProcessState(f.workers[1]!.request.runtimeProcess!).imageAdmission),
+    ).toBe(2);
+    expect(() => old.spawn(f.pid, { ...request(), job: -1, processKind: "thread" })).toThrow(
+      expect.objectContaining({ errno: ProcessErrno.SRCH }),
+    );
+    const tid = successor.service.spawn(f.pid, { ...request(), job: -1, processKind: "thread" });
+    await f.flush(f.pid);
+    expect(f.table.require(tid).processIdentity).toEqual({ pid: f.pid, parentPid: f.root.pid });
+  } finally {
+    await f.close();
+  }
+});
+
+async function rollbackThreadNotice(f: Awaited<ReturnType<typeof fixture>>, pid: number) {
+  const index = f.notices.findIndex((message) => message.transport.pid === pid);
+  const notice = f.notices.splice(index, 1)[0];
+  if (notice?.operation !== "spawn") throw new Error("expected undelivered thread reservation");
+  await expect(
+    f.broker.runtimeMessage(
+      { ...notice, request: { ...notice.request, processKind: "process" } },
+      f.pid,
+    ),
+  ).rejects.toMatchObject({ errno: ProcessErrno.INVAL });
+  expect(f.table.get(pid)).toBeUndefined();
+}
+
+for (const generation of [1, 2]) {
+  test(`exec commit closes admission before its final sibling scan in generation ${generation}`, async () => {
+    const f = await fixture();
+    try {
+      if (generation === 2) await f.replace();
+      const options: SupervisorOptions = Reflect.get(f.supervisor, "options");
+      const commit = options.commitReplacement!;
+      const admission = workerProcessState(f.broker.transportFor(f.pid)!).imageAdmission;
+      let sibling = 0;
+      options.commitReplacement = (...args) => {
+        options.commitReplacement = commit;
+        expect(controlLoad(admission)).toBe(generation);
+        sibling = f.caller.service.spawn(f.pid, {
+          ...request({ cwd: "/" }),
+          job: -1,
+          processKind: "thread",
+        });
+        const notice = f.notices.find((message) => message.transport.pid === sibling)!;
+        expect(workerProcessState(notice.transport).processIdentity).toEqual({
+          pid: f.pid,
+          parentPid: f.root.pid,
+        });
+        const closed = commit(...args);
+        expect(controlLoad(admission)).toBe(-generation);
+        return closed;
+      };
+      expect((await f.stage()).result).toBe(-ProcessErrno.NOTSUP);
+      expect(sibling).toBeGreaterThan(f.pid);
+      expect(f.table.require(f.pid).image.phase).toBe("current");
+      expect(controlLoad(admission)).toBe(generation);
+      expect(f.caller.service.cwd(f.pid)).toBe(generation === 1 ? "/" : "/next");
+      const admittedAfterRollback = f.caller.service.spawn(f.pid, {
+        ...request({ cwd: "/" }),
+        job: -1,
+        processKind: "thread",
+      });
+      await rollbackThreadNotice(f, sibling);
+      await rollbackThreadNotice(f, admittedAfterRollback);
+      expect((await f.stage()).result).toBe(0);
+      expect(controlLoad(admission)).toBe(-generation);
+    } finally {
+      await f.close();
+    }
+  });
+}
+
+test("plain singleton exec ignores an unrelated pending directory admission", async () => {
+  const f = await fixture();
+  const release = beginDirectoryAdmission(f.root.directory);
+  try {
+    expect((await f.stage()).result).toBe(0);
+    expect(f.table.require(f.pid).image.phase).toBe("retiring");
+  } finally {
+    release();
+    await f.close();
+  }
+});
+
+test("shared caller exec preserves its directory-wide admission guard and rollback", async () => {
+  const f = await fixture({ shared: true });
+  const admission = workerProcessState(f.broker.transportFor(f.pid)!).imageAdmission;
+  const release = beginDirectoryAdmission(f.root.directory);
+  try {
+    expect((await f.stage(request({ executable: "host" }))).result).toBe(-ProcessErrno.NOTSUP);
+    expect(controlLoad(admission)).toBe(1);
+    expect(f.table.require(f.pid).image.phase).toBe("current");
+    expect(f.caller.service.cwd(f.pid)).toBe("/");
+    release();
+    expect((await f.stage(request({ executable: "host" }))).result).toBe(0);
+  } finally {
+    release();
+    await f.close();
+  }
+});
+
+function closeExecDuringThreadPreparation(f: Awaited<ReturnType<typeof fixture>>) {
+  const options: SupervisorOptions = Reflect.get(f.supervisor, "options");
+  const commit = options.commitReplacement!;
+  const clientOptions = f.caller.service.options;
+  const prepare = clientOptions.prepareSpawn!;
+  const admission = workerProcessState(f.broker.transportFor(f.pid)!).imageAdmission;
+  options.commitReplacement = (...args) => {
+    options.commitReplacement = commit;
+    let closed: ReturnType<typeof commit>;
+    let entered = false;
+    clientOptions.prepareSpawn = (pid) => {
+      entered = true;
+      expect(controlLoad(admission)).toBe(1);
+      closed = commit(...args);
+      expect(controlLoad(admission)).toBe(-1);
+      return prepare(pid);
+    };
+    try {
+      expect(() =>
+        f.caller.service.spawn(f.pid, {
+          ...request({ cwd: "/" }),
+          job: -1,
+          processKind: "thread",
+        }),
+      ).toThrow(expect.objectContaining({ errno: ProcessErrno.SRCH }));
+    } finally {
+      clientOptions.prepareSpawn = prepare;
+    }
+    expect(entered).toBe(true);
+    expect(f.notices).toHaveLength(0);
+    return closed;
+  };
+}
+
+test("exec closes an in-flight thread before publication and admits only the successor generation", async () => {
+  const f = await fixture();
+  try {
+    closeExecDuringThreadPreparation(f);
+    const admission = workerProcessState(f.broker.transportFor(f.pid)!).imageAdmission;
+    expect((await f.stage()).result).toBe(0);
+    expect(controlLoad(admission)).toBe(-1);
+    const old = f.caller.service;
+    f.workers[0]!.emit({ type: "replaced" });
+    await until(() => f.workers.length === 2);
+    const transport = f.workers[1]!.request.runtimeProcess!;
+    expect(transport.generation).toBe(2);
+    expect(controlLoad(admission)).toBe(2);
+    expect(() => old.spawn(f.pid, { ...request(), job: -1, processKind: "thread" })).toThrow(
+      expect.objectContaining({ errno: ProcessErrno.SRCH }),
+    );
+    const successor = f.client(transport);
+    const tid = successor.service.spawn(f.pid, {
+      ...request({ cwd: "/" }),
+      job: -1,
+      processKind: "thread",
+    });
+    await f.flush(f.pid);
+    expect(f.table.require(tid).processIdentity).toEqual({ pid: f.pid, parentPid: f.root.pid });
+  } finally {
     await f.close();
   }
 });

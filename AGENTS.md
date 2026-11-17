@@ -15,6 +15,23 @@ source-only consumers and the generated Node exports working together.
 - `plans/` holds owned follow-up work. `.internal/` holds working notes. Neither is user
   documentation, and public docs never link to them.
 
+## Kernel scope
+
+Waffle is a full kernel that a whole operating system can be built on (owner, 2026-11-16). It
+provides processes, threads, pipes, the filesystem, the network, and the other operating-system
+primitives programs need.
+
+- Application protocols and tool integrations (LSP, editors, MCP and the like) live outside
+  Waffle, as Waffle programs or packages in their own repositories, using only Waffle's public APIs.
+- Issues for such programs may still be filed on Waffle, but must say the code goes in another
+  repository (example: #283, LSP transport).
+- Reviewers flag any change that crosses this line.
+- For hard questions about how the kernel should behave (process and thread lifecycle, memory
+  reuse, waits and wakes, signals, file descriptors), check how two or three established kernels
+  handle it before designing: Linux, macOS/XNU or FreeBSD, OpenBSD, Fuchsia (Zircon), and gVisor,
+  which like Waffle runs on top of a host that hides the hardware. Pick the best fit for the
+  browser and record why in the design or PR. Not for everyday changes.
+
 ## Rules
 
 - Work in an exclusive worktree. Never edit, build or test the shared checkout. Each run

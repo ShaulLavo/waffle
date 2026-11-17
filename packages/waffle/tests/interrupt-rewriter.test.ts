@@ -433,6 +433,8 @@ test("rejects a spawn_error import with the wrong signature", () => {
 
 test("admits exact runtime_proc imports and rejects forged or malformed imports", () => {
   const imports = [
+    ["process_id", type([], [0x7f])],
+    ["parent_process_id", type([], [0x7f])],
     ["spawn", type([0x7f, 0x7f], [0x7f])],
     ["exec", type([0x7f, 0x7f], [0x7f])],
     ["spawn_error", type([0x7f, 0x7f, 0x7f], [0x7f])],
@@ -724,3 +726,15 @@ test("rejects an exec import with the wrong signature", () => {
   );
   expect(() => rewriteInterrupts(input)).toThrow("invalid runtime_proc.exec signature");
 });
+
+for (const field of ["process_id", "parent_process_id"]) {
+  test(`rejects malformed scalar signature for ${field}`, () => {
+    validRefused(
+      binary(
+        types(type([0x7f], [0x7f])),
+        section(2, vec([name("runtime_proc").concat(name(field), [0, 0])])),
+      ),
+      /signature/i,
+    );
+  });
+}

@@ -33,6 +33,7 @@ const service: ProcessService = {
   defaultSignal: unused,
 };
 const abi = new ProcessABI({
+  processIdentity: { pid, parentPid: 0 },
   memory,
   descriptors,
   fs: new MemFS(),

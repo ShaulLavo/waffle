@@ -32,6 +32,7 @@ const memoryGroup = "memory-group";
 const chromiumOnly = [continuity, rootContinuity, rootControls, networkControls, memoryGroup];
 const socket = "fs-socket";
 const notification = "notification";
+const assetRecovery = "asset-load-recovery";
 const notificationFairness = "notification-fairness";
 const reporterPrepare = "reporter-controls-prepare";
 const reporterChromium = "reporter-controls-chromium";
@@ -43,10 +44,12 @@ const isolatedRunners = chromiumOnly.concat([socket], reporterControls, [
   processControls,
   gpuAsyncControls,
   notification,
+  assetRecovery,
   notificationFairness,
 ]);
 function isolatedEngines(runner: string): string {
-  if (runner === notification || runner === notificationFairness) return "";
+  if (runner === notification || runner === assetRecovery || runner === notificationFairness)
+    return "";
   if (runner === reporterPrepare) return "--prepare";
   if (runner === reporterChromium) return "chromium,--prepared";
   if (runner === reporterWebkit) return "webkit,--prepared";
@@ -199,7 +202,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
       await copyFile(join(import.meta.dir, "../scripts", name), join(root, "scripts", name));
     await writeFile(join(root, "scripts/matrix-entry.ts"), matrixEntry);
     for (const runner of runners
-      .concat(chromiumOnly, [socket, notification, notificationFairness])
+      .concat(chromiumOnly, [socket, notification, assetRecovery, notificationFairness])
       .filter((name) => name !== rootControls && name !== networkControls))
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
     await writeFile(join(root, "tests/recovery-r42-browser-runner.ts"), recoveryFixture);
@@ -273,6 +276,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
           `${processControls}:--page-controls,chromium`,
           `${gpuAsyncControls}:--ci,chromium,webkit`,
           `${notification}:`,
+          `${assetRecovery}:`,
           `${notificationFairness}:`,
         ],
       );
@@ -389,6 +393,7 @@ async function nativeDiscovery(
     | "gpu-async"
     | "gpu-async-controls"
     | "notification"
+    | "asset-load-recovery"
     | "notification-fairness"
     | "threads-runtime"
     | undefined,
@@ -456,6 +461,9 @@ export async function runBrowserSuite(command) {
     expect(
       commands.filter((command) => command[0] === "tests/notification-browser-runner.ts"),
     ).toEqual(group === "serial" ? [["tests/notification-browser-runner.ts"]] : []);
+    expect(
+      commands.filter((command) => command[0] === "tests/asset-load-recovery-browser-runner.ts"),
+    ).toEqual(group === "serial" ? [["tests/asset-load-recovery-browser-runner.ts"]] : []);
     expect(
       commands.filter((command) => command[0] === "tests/notification-fairness-browser-runner.ts"),
     ).toEqual(group === "serial" ? [["tests/notification-fairness-browser-runner.ts"]] : []);
@@ -530,11 +538,16 @@ test("notification stock command failure remains blocking after the other comman
 test("notification failure exits only its designated serial CI group nonzero", () =>
   nativeDiscovery("serial", "notification"));
 
-test(
-  "notification fairness failure remains blocking in its single serial invocation",
-  () => matrix([`${notificationFairness}:`]),
-  15_000,
-);
+test("asset recovery failure remains blocking in its single serial invocation", async () => {
+  await matrix([`${assetRecovery}:`]);
+}, 30_000);
+
+test("asset recovery failure exits its designated serial CI group nonzero", () =>
+  nativeDiscovery("serial", "asset-load-recovery"));
+
+test("notification fairness failure remains blocking in its single serial invocation", async () => {
+  await matrix([`${notificationFairness}:`]);
+}, 30_000);
 
 test("notification fairness failure exits its designated serial CI group nonzero", () =>
   nativeDiscovery("serial", "notification-fairness"));

@@ -723,6 +723,7 @@ for (const pollFirst of [false, true]) {
     const signals = supervisor.get(pid)!;
     const memory = new WebAssembly.Memory({ initial: 1 });
     const abi = new ProcessABI({
+      processIdentity: supervisor.get(pid)!.processIdentity,
       memory,
       descriptors,
       fs: client,

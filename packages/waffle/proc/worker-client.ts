@@ -70,6 +70,9 @@ import {
   type JobLifetime,
   checkedProcessCwd,
   snapshotSpawnWorker,
+  checkedProcessKind,
+  type ProcessKind,
+  type LogicalProcessIdentity,
   type ProcessExit,
   type SpawnRequest,
   type ExecRequest,
@@ -189,6 +192,7 @@ function reserveRecord(
   foreground = true,
   jobLifetime: JobLifetime = "independent",
   cwd = "/",
+  processKind: ProcessKind = "process",
 ): WorkerProcessTransport {
   return {
     ...reserveDirectoryProcess(
@@ -200,6 +204,7 @@ function reserveRecord(
       jobSlot,
       foreground,
       jobLifetime,
+      processKind,
     ),
     generation: 1,
     identity: transport.identity,
@@ -222,14 +227,14 @@ export function createWorkerProcessTransport(
     cwd?: string;
   } = {},
 ): WorkerProcessTransport {
-  const pid = options.pid ?? 1,
-    job = options.job ?? 1,
-    capacity = options.capacity ?? 1024;
+  const capacity = options.capacity ?? 1024;
   const initialCwd = options.cwd;
   const cwd = checkedProcessCwd(initialCwd === undefined ? "/" : initialCwd);
   if (!Number.isInteger(capacity) || capacity < 1 || capacity > 65536)
     throw new RangeError("invalid process directory capacity");
   const identities = new ProcessIdentityAllocator(options.identity);
+  const pid = options.pid ?? identities.pid(),
+    job = options.job ?? identities.job();
   identities.observePid(pid);
   identities.observeJob(job);
   const transport = {
@@ -295,6 +300,7 @@ function snapshotSpawnRequest(
 ): SpawnRequest {
   return {
     executable: request.executable,
+    processKind: checkedProcessKind(request.processKind),
     argv: request.argv.slice(),
     env: { ...request.env },
     cwd,
@@ -306,6 +312,7 @@ function snapshotSpawnRequest(
 }
 /** Synchronous guest-side process service; only notifications cross the message boundary. */
 export class WorkerProcessClient {
+  readonly processIdentity: LogicalProcessIdentity;
   readonly pid: number;
   readonly job: number;
   readonly signals: SignalTransport;
@@ -318,6 +325,7 @@ export class WorkerProcessClient {
   constructor(readonly options: WorkerProcessClientOptions) {
     const state = workerProcessState(options.transport);
     this.pid = state.pid;
+    this.processIdentity = state.processIdentity;
     this.job = state.job;
     this.signals = state.signals;
     this.wake = state.wake;
@@ -347,6 +355,10 @@ export class WorkerProcessClient {
   }
   exec(pid: number, request: ExecRequest): SharedArrayBuffer {
     this.admit();
+    if (workerProcessState(this.options.transport).processKind === "thread")
+      throw new ProcessError(ProcessErrno.NOTSUP, "thread members cannot exec");
+    if ("processKind" in request)
+      throw new ProcessError(ProcessErrno.INVAL, "exec cannot select a process kind");
     if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid process");
     if (!this.options.prepareExec || !this.options.registerRevocation)
       throw new ProcessError(ProcessErrno.NOTSUP, "process does not support exec staging");
@@ -554,6 +566,16 @@ export class WorkerProcessClient {
   }
   private reserveSpawnIntent(parentPid: number, request: SpawnRequest): number {
     this.admit();
+    const processKind = checkedProcessKind(request.processKind);
+    const checkImage = () => {
+      const state = workerProcessState(this.options.transport);
+      if (
+        processKind === "thread" &&
+        controlLoad(state.imageAdmission) !== this.options.transport.generation
+      )
+        throw new ProcessError(ProcessErrno.SRCH, "spawning image is no longer current");
+    };
+    checkImage();
     const selector = request.job;
     const requestedLifetime = request.jobLifetime;
     const jobLifetime = checkedJobLifetime(selector, requestedLifetime);
@@ -591,12 +613,19 @@ export class WorkerProcessClient {
         selector === 0,
         jobLifetime,
         cwd,
+        processKind,
       );
       child.data = transfer?.data;
       this.exportBindings(child, request, sources, references, codec);
       // The worker may immediately mutate the original request or close its source fds.
-      const snapshot = snapshotSpawnRequest(request, selector, requestedLifetime, cwd);
+      const snapshot = snapshotSpawnRequest(
+        { ...request, processKind },
+        selector,
+        requestedLifetime,
+        cwd,
+      );
       this.admit();
+      checkImage();
       const group = directoryJob(child.directory, workerProcessState(child).jobSlot);
       checkDirectoryJobAdmission(child.directory, group);
       publishing = true;

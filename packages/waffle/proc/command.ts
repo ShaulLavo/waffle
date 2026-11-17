@@ -5,6 +5,7 @@ export interface HostCommandDefinition {
   readonly signals?: "delegated";
 }
 export interface HostCommandContext {
+  readonly processIdentity: import("./types.js").LogicalProcessIdentity;
   readonly pid: number;
   readonly parentPid: number;
   readonly request: Readonly<{

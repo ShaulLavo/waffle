@@ -364,6 +364,10 @@ test("explicit lazy root identities advance the shared allocator before activati
     expect(supervisor.get(1)?.job).toBe(1);
     expect(supervisor.get(2)?.job).toBe(2);
     expect(supervisor.get(40)?.job).toBe(70);
+    for (const pid of [1, 2, 40]) {
+      expect(supervisor.get(pid)!.processIdentity).toEqual({ pid, parentPid: 0 });
+      expect(Object.isFrozen(supervisor.get(pid)!.processIdentity)).toBe(true);
+    }
   } finally {
     await broker.dispose();
   }
@@ -2768,6 +2772,7 @@ for (const activation of ["lazy", "eager"] as const)
           }),
         });
         const abi = new ProcessABI({
+          processIdentity: client.processIdentity,
           memory: new WebAssembly.Memory({ initial: 1 }),
           descriptors,
           fs: new MemFS(),

@@ -53,3 +53,6 @@ stage names and finite numeric timestamps before delivering the two scalar argum
 
 This is measurement, not a fix for startup stalls. Application leases, shell worker
 creation and shell readiness belong in the embedding application's own instrumentation.
+
+[Handle asset and worker startup failures](asset-load-recovery.md) describes consumer
+error handling and preservation of unsaved work before explicit recovery.

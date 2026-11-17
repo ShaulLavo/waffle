@@ -232,6 +232,9 @@ function workerCompletionMessage(
   return { type: "exit", code, signal, sleep: state.sleep, ...diagnostics };
 }
 export type RuntimeWorkerState = ReturnType<typeof workerProcessState>;
+function logicalProcessIdentity(state: RuntimeWorkerState | null) {
+  return state?.processIdentity ?? null;
+}
 
 export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   request: R;
@@ -243,6 +246,7 @@ export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWork
   interrupt?: ControlCells;
   runtimeState: RuntimeWorkerState | null;
   identity: RuntimeProcessIdentity | null;
+  readonly processIdentity: import("../proc/types.js").LogicalProcessIdentity | null;
   checkActive(): void;
   defaultSignal(signal: number): void;
   post(type: "stdout" | "stderr", data: Uint8Array): boolean;
@@ -1055,6 +1059,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     const identity = createProcessIdentity(runtimeState, req.hostIdentity);
     const context: WorkerSetupContext<R> = {
       identity,
+      processIdentity: logicalProcessIdentity(runtimeState),
       request: req,
       notifications,
       signal: cancellation.signal,
@@ -1302,6 +1307,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         descriptors: wasi.descriptors,
         fs,
         pid: runtimeProcess.pid,
+        processIdentity: runtimeProcess.processIdentity,
         service: runtimeProcess,
         signals: runtimeProcess.signals,
         wake: runtimeProcess.wake,

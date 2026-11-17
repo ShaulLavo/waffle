@@ -11,6 +11,8 @@ const { controlLoad, controlStore, controlExchange } =
 const {
   ExecutableRegistry,
   FirstSpawnStub,
+  createWorkerProcessTransport,
+  workerProcessState,
   ProcessIdentityAllocator,
   ProcessSupervisor,
   Signal,
@@ -25,6 +27,9 @@ const {
   outcomeWord,
   claimOutcome,
 } = isolated.load<typeof import("../proc/index.js")>("index");
+
+const { reserveDirectoryProcess } =
+  isolated.load<typeof import("../proc/directory.js")>("directory");
 
 const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 function deferred<T>() {
@@ -1216,19 +1221,52 @@ for (const finalizeParent of [false, true]) {
   test(`previously admitted foreground and background spawns survive lazy registration (parent finalized=${finalizeParent})`, async () => {
     const { supervisor, root, contexts } = fixture();
     const parent = supervisor.get(root)!;
-    const foregroundOutcome = outcomeWord();
+    const rootTransport = createWorkerProcessTransport({
+      pid: root,
+      job: parent.job,
+      identity: supervisor.table.identities.buffer,
+    });
+    const foregroundPid = supervisor.table.identities.pid();
+    const foregroundTransport = reserveDirectoryProcess(
+      rootTransport,
+      foregroundPid,
+      root,
+      parent.job,
+      root,
+      workerProcessState(rootTransport).jobSlot,
+    );
+    const foregroundState = workerProcessState(foregroundTransport);
+    const foregroundOutcome = foregroundState.signals.outcome;
+    const state = foregroundState.signals.signalState;
+    const backgroundPid = supervisor.table.identities.pid();
+    const backgroundJob = supervisor.table.identities.job();
+    const backgroundTransport = reserveDirectoryProcess(
+      rootTransport,
+      backgroundPid,
+      root,
+      backgroundJob,
+      root,
+    );
+    const backgroundState = workerProcessState(backgroundTransport);
     claimOutcome(foregroundOutcome, { kind: "signaled", code: 2 });
     claimOutcome(parent.outcome, { kind: "signaled", code: 2 });
     if (finalizeParent) supervisor.observeSignal(root, 2);
     expect(() => supervisor.reserveSpawn(root, request())).toThrow();
-    const state = createSignalState();
     setSignalDisposition(state, 15, SignalDisposition.HANDLE);
     const foreground = supervisor.reserveAdmittedSpawn(root, request({ job: parent.job }), {
+      pid: foregroundPid,
+      processIdentity: foregroundState.processIdentity,
+      observation: foregroundTransport,
       job: parent.job,
-      signalState: state,
-      outcome: foregroundOutcome,
+      ...foregroundState.signals,
     });
-    const background = supervisor.reserveAdmittedSpawn(root, request({ job: -1 }), {});
+    const background = supervisor.reserveAdmittedSpawn(root, request({ job: -1 }), {
+      pid: backgroundPid,
+      processIdentity: backgroundState.processIdentity,
+      observation: backgroundTransport,
+      job: backgroundJob,
+      ...backgroundState.signals,
+    });
     expect(supervisor.get(foreground)!.signalState).toBe(state);
     expect(signalDisposition(state, 15)).toBe(SignalDisposition.HANDLE);
     expect(supervisor.get(foreground)!.outcome).toBe(foregroundOutcome);
@@ -1272,14 +1310,33 @@ for (const finalizeParent of [false, true]) {
 test("admitted registration still validates identities, descriptors and supervisor lifetime", () => {
   const { supervisor, root } = fixture();
   claimOutcome(supervisor.get(root)!.outcome, { kind: "signaled", code: 2 });
-  expect(() => supervisor.reserveAdmittedSpawn(root, request(), { pid: root })).toThrow();
   expect(() =>
-    supervisor.reserveAdmittedSpawn(root, request({ fds: [{ child: 0, parent: 99 }] }), {}),
+    supervisor.reserveAdmittedSpawn(root, request(), {
+      pid: root,
+      processIdentity: { pid: root, parentPid: 0 },
+    }),
   ).toThrow();
-  expect(() => supervisor.reserveAdmittedSpawn(root, request({ job: -2 }), {})).toThrow();
-  expect(() => supervisor.reserveAdmittedSpawn(999999, request(), {})).toThrow();
+  expect(() =>
+    supervisor.reserveAdmittedSpawn(root, request({ fds: [{ child: 0, parent: 99 }] }), {
+      processIdentity: { pid: root + 1, parentPid: root },
+    }),
+  ).toThrow();
+  expect(() =>
+    supervisor.reserveAdmittedSpawn(root, request({ job: -2 }), {
+      processIdentity: { pid: root + 1, parentPid: root },
+    }),
+  ).toThrow();
+  expect(() =>
+    supervisor.reserveAdmittedSpawn(999999, request(), {
+      processIdentity: { pid: root + 1, parentPid: root },
+    }),
+  ).toThrow();
   supervisor.dispose();
-  expect(() => supervisor.reserveAdmittedSpawn(root, request(), {})).toThrow();
+  expect(() =>
+    supervisor.reserveAdmittedSpawn(root, request(), {
+      processIdentity: { pid: root + 1, parentPid: root },
+    }),
+  ).toThrow();
 });
 
 test("spawn forks process-owned streams once and revokes before releasing inherited dups", () => {

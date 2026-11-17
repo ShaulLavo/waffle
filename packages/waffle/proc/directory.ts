@@ -9,7 +9,15 @@ import {
 } from "./control.js";
 import { OutcomeCell, claimOutcome, readOutcome } from "./outcome.js";
 import { START_DIAGNOSTIC_WORDS } from "./start-diagnostic.ts";
-import { ProcessErrno, ProcessError, type ProcessExit, type JobLifetime } from "./types.js";
+import {
+  checkedProcessKind,
+  snapshotLogicalProcessIdentity,
+  type ProcessKind,
+  ProcessErrno,
+  ProcessError,
+  type ProcessExit,
+  type JobLifetime,
+} from "./types.js";
 import { requestSignal, type SignalTransport } from "./signals.js";
 import {
   arrayAppend,
@@ -39,7 +47,11 @@ import {
 } from "./intrinsics.ts";
 
 const HEADER_BYTES = 32;
-const PROCESS_WORDS = 79 + START_DIAGNOSTIC_WORDS;
+const PROCESS_ID = 79 + START_DIAGNOSTIC_WORDS;
+const PROCESS_PARENT = PROCESS_ID + 1;
+const PROCESS_KIND = PROCESS_ID + 2;
+const IMAGE_ADMISSION = PROCESS_ID + 3;
+const PROCESS_WORDS = PROCESS_ID + 4;
 const JOB_WORDS = 10;
 const INTENT_STEP = 0x100000000n;
 
@@ -191,10 +203,28 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
     job = data.load(2),
     jobSlot = data.load(75);
   const group = directoryJob(handle.directory, jobSlot, job);
+  const logicalPid = data.load(PROCESS_ID),
+    logicalParent = data.load(PROCESS_PARENT),
+    kind = data.load(PROCESS_KIND);
+  const processIdentity = snapshotLogicalProcessIdentity({
+    pid: logicalPid,
+    parentPid: logicalParent,
+  });
   const state = {
     slot,
     pid,
     parentPid: data.load(1),
+    processIdentity,
+    processKind:
+      kind === 1
+        ? ("thread" as const)
+        : kind === 0
+          ? ("process" as const)
+          : checkedProcessKind(kind),
+    // Spawn/exec alone need this view; ordinary lookup keeps its existing construction bound.
+    get imageAdmission() {
+      return liveCells(raw, pid, IMAGE_ADMISSION);
+    },
     job,
     jobSlot,
     rootPid: data.load(74),
@@ -226,6 +256,23 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
   if (!valid(raw, pid))
     throw new ProcessError(ProcessErrno.SRCH, "process incarnation was collected");
   return state;
+}
+/** Collected incarnations retain their metadata until both cleanup and native return. */
+export function directoryHasProcessSibling(handle: DirectoryHandle, processPid: number): boolean {
+  directoryState(handle);
+  for (let slot = 0; slot < directoryCapacity(handle.directory); slot++) {
+    const raw = row(handle.directory, slot);
+    const token = atomicsLoad(raw, 0),
+      pid = Number(token >> 32n);
+    const phase = token & 0xffffffffn;
+    if (pid === handle.pid || (phase !== 1n && phase !== 3n && phase !== 4n)) continue;
+    if (atomicsLoad(raw, PROCESS_ID) !== packedControl(pid, processPid)) continue;
+    const complete =
+      atomicsLoad(raw, 71) === packedControl(pid, 1) &&
+      atomicsLoad(raw, 78) === packedControl(pid, 1);
+    if (!complete && atomicsLoad(raw, 0) === token) return true;
+  }
+  return false;
 }
 /** Scan live identities without constructing state for unrelated process rows. */
 export function findDirectoryProcess(handle: DirectoryHandle, pid: number) {
@@ -375,6 +422,7 @@ export function reserveDirectoryProcess(
   jobSlot?: number,
   foreground = true,
   jobLifetime: JobLifetime = "independent",
+  processKind: ProcessKind = "process",
 ): ReturnType<typeof reserveDirectoryProcessIntent> {
   // Root bootstrap starts with a fresh directory. Descendants must own a live caller row
   // before even the admission stamp may change this shared directory.
@@ -390,6 +438,7 @@ export function reserveDirectoryProcess(
       jobSlot,
       foreground,
       jobLifetime,
+      processKind,
     );
   } finally {
     release();
@@ -405,7 +454,16 @@ function reserveDirectoryProcessIntent(
   jobSlot?: number,
   foreground = true,
   jobLifetime: JobLifetime = "independent",
+  processKind: ProcessKind = "process",
 ): DirectoryHandle & { readonly kind: "directory"; readonly lifetime: SharedArrayBuffer } {
+  const kind = checkedProcessKind(processKind);
+  const parent = parentPid === 0 ? undefined : directoryState(handle);
+  if (parentPid === 0 && kind === "thread")
+    throw new ProcessError(ProcessErrno.INVAL, "root cannot be a thread");
+  const processIdentity =
+    kind === "thread"
+      ? parent!.processIdentity
+      : { pid, parentPid: parent?.processIdentity.pid ?? 0 };
   const lifetime = allocateSharedControl(16);
   const observation = new BigInt64ArrayConstructor(lifetime);
   atomicsStore(
@@ -453,6 +511,10 @@ function reserveDirectoryProcessIntent(
     atomicsStore(raw, 73, packedControl(pid, parentPid));
     atomicsStore(raw, 74, packedControl(pid, group.rootPid));
     atomicsStore(raw, 75, packedControl(pid, group.slot));
+    atomicsStore(raw, PROCESS_ID, packedControl(pid, processIdentity.pid));
+    atomicsStore(raw, PROCESS_PARENT, packedControl(pid, processIdentity.parentPid));
+    atomicsStore(raw, PROCESS_KIND, packedControl(pid, kind === "thread" ? 1 : 0));
+    atomicsStore(raw, IMAGE_ADMISSION, packedControl(pid, 1));
     atomicsStore(raw, 5, BigInt(pid) << 3n);
     // A new job stays private until its leader owns an initialized process row.
     // No fallible allocation remains once other workers can join the published job.

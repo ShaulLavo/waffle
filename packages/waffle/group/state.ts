@@ -803,6 +803,11 @@ export class MemoryGroupOwner {
     if (this.members[member.index] !== member) return;
     member.stopRequested = true;
     member.phase = "released";
+    // terminate() returning does not stop the thread: it can still be parked in futex_wait on
+    // a cell in the pages released below. Close its record first, without a wake, so a notify
+    // from the member that reuses those pages makes it throw instead of resuming guest code
+    // on a stack it would then share.
+    if (member.reply) Atomics.store(member.reply, WAIT_CLOSED, 1);
     this.settleStopping();
     if (member.reply && !member.waitsClosed) this.retiredWaits.push(member.reply);
     // Pins whose delivery this member owned have no remaining consumer.

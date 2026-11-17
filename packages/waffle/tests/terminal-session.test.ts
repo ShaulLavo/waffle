@@ -400,6 +400,7 @@ test("geometry revision and real handled SIGWINCH interrupt runtime poll without
     let now = 0,
       waits = 0;
     const abi = new ProcessABI({
+      processIdentity: f.client.processIdentity,
       memory,
       descriptors: table,
       fs: new MemFS(),

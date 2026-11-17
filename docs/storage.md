@@ -37,6 +37,12 @@ selects isolated storage for tests/workspaces. The worker is not a power-loss-sa
 filesystem beyond the browser's storage guarantees; closing a page without a completed flush
 may lose its uncommitted edits.
 
+Flush does not protect against origin eviction, user-cleared site data or loss of the
+browser profile. An embedding page may request `navigator.storage.persist()` after
+startup and report granted, denied or unavailable; Waffle does not request it on the
+startup path. A grant is browser policy, not universal protection against data loss.
+[Internal OPFS qualification](opfs-qualification.md) records backend-specific controls.
+
 ## Ordinary ready shutdown
 
 A ready ordinary persistent `SharedFilesystem` revokes new work immediately when

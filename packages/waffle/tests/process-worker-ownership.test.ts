@@ -1806,12 +1806,14 @@ test("numeric admitted identities cannot reuse collected rows but captured out-o
   await f.flush();
   expect(() =>
     f.supervisor.reserveAdmittedSpawn(1, request({ job: f.root.job }), {
+      processIdentity: old.processIdentity,
       pid: later,
       job: f.root.job,
     }),
   ).toThrow();
   expect(() =>
     f.supervisor.reserveAdmittedSpawn(1, request({ job: f.root.job }), {
+      processIdentity: old.processIdentity,
       pid: later,
       job: f.root.job,
       outcome: old.signals.outcome,
@@ -2531,6 +2533,7 @@ for (const completion of ["exit", "kill"] as const) {
     const f = fixture({ capacity: 3 });
     const memory = new WebAssembly.Memory({ initial: 1 });
     const abi = new ProcessABI({
+      processIdentity: f.root.processIdentity,
       memory,
       descriptors: f.root.options.descriptors,
       fs: new MemFS(),
@@ -2574,6 +2577,7 @@ test("worker child polling is observational and the consuming wait releases capa
   const f = fixture({ capacity: 2 });
   const memory = new WebAssembly.Memory({ initial: 1 });
   const abi = new ProcessABI({
+    processIdentity: f.root.processIdentity,
     memory,
     descriptors: f.root.options.descriptors,
     fs: new MemFS(),
@@ -2774,6 +2778,7 @@ for (const ordering of ["before-claim", "after-claim", "helper-header"] as const
       const f = fixture({ capacity: 2 });
       const memory = new WebAssembly.Memory({ initial: 1 });
       const abi = new ProcessABI({
+        processIdentity: f.root.processIdentity,
         memory,
         descriptors: f.root.options.descriptors,
         fs: new MemFS(),
@@ -2908,6 +2913,7 @@ test("a sealed pending job reports ECHILD while its header remains live", async 
   view.setInt32(64, -99, true);
   view.setInt32(68, -99, true);
   const abi = new ProcessABI({
+    processIdentity: f.root.processIdentity,
     memory,
     descriptors: f.root.options.descriptors,
     fs: new MemFS(),
