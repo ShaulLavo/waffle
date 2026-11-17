@@ -1,10 +1,5 @@
 import { createRuntime, type RuntimeSupervisor } from "../runtime.js";
-import { DescriptorTable } from "../core/descriptors.js";
-import {
-  createWorkerProcessTransport,
-  WorkerProcessClient,
-  type WorkerProcessMessage,
-} from "../proc/worker-client.js";
+import { pageRootClient } from "./fixtures/page-root-client.js";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -50,9 +45,8 @@ export async function browserStartupPool(): Promise<void> {
     filesystem: { workerURL: "/cell-fs-worker.js", mode: "memory" },
   });
   const reports: string[] = [],
-    modules: WebAssembly.Module[] = [],
-    notices: WorkerProcessMessage[] = [];
-  const descriptors = new DescriptorTable();
+    modules: WebAssembly.Module[] = [];
+  const { root, client, descriptors, notices } = pageRootClient(runtime);
   const demandConstructions: number[] = [];
   let loads = 0;
   runtime.registerAdapter("fixture", (context, service) => {
@@ -88,22 +82,6 @@ export async function browserStartupPool(): Promise<void> {
     },
   });
   runtime.registerProgram("/loop", { adapter: "fixture", source: program(true) });
-  const root = createWorkerProcessTransport({
-    pid: runtime.identities.pid(),
-    job: runtime.identities.job(),
-    identity: runtime.identities.buffer,
-  });
-  root.data = { filesystem: runtime.filesystem.createIdentity() };
-  const unused = (): never => {
-    throw new Error("unexpected descriptor transfer");
-  };
-  const client = new WorkerProcessClient({
-    transport: root,
-    descriptors,
-    codec: { export: unused, import: unused, discard: unused },
-    postMessage: (message) => notices.push(message),
-    prepareSpawn: () => ({ data: { filesystem: runtime.filesystem.createIdentity() } }),
-  });
   const service = await runtime.processes();
   const flush = async () => {
     while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);

@@ -1,10 +1,5 @@
 import { createRuntime, type RuntimeSupervisor } from "../runtime.js";
-import { DescriptorTable } from "../core/descriptors.js";
-import {
-  createWorkerProcessTransport,
-  WorkerProcessClient,
-  type WorkerProcessMessage,
-} from "../proc/worker-client.js";
+import { pageRootClient } from "./fixtures/page-root-client.js";
 import { stopOrderModule } from "./fixtures/stop-order-wasm.js";
 
 // docs/host-abi.md, "Stop polling": the broker selects SIGKILL, waits a bounded time for the
@@ -80,6 +75,10 @@ function observeWorkers(): { byPid: Map<number, Observed>; restore(): void } {
   return { byPid, restore: () => (globalThis.Worker = NativeWorker) };
 }
 
+/**
+ * @browserEntry Stops `repetitions` guests through the real runtime and broker and reports, per
+ * stop, whether terminate() came after the worker posted its exit.
+ */
 export async function stopOrder(options: StopOrderOptions): Promise<StopOrderReport> {
   const workers = observeWorkers();
   const runtime = createRuntime({ filesystem: { workerURL: "/fs-worker.js", mode: "memory" } });
@@ -103,24 +102,7 @@ export async function stopOrder(options: StopOrderOptions): Promise<StopOrderRep
   // the busy guest must make no host call at all.
   const module = await WebAssembly.compile(source);
   runtime.registerProgram("/spin", { adapter: "stop-order", module, cooperative: true });
-  const root = createWorkerProcessTransport({
-    pid: runtime.identities.pid(),
-    job: runtime.identities.job(),
-    identity: runtime.identities.buffer,
-  });
-  root.data = { filesystem: runtime.filesystem.createIdentity() };
-  const descriptors = new DescriptorTable();
-  const notices: WorkerProcessMessage[] = [];
-  const unused = (): never => {
-    throw new Error("unexpected descriptor transfer");
-  };
-  const client = new WorkerProcessClient({
-    transport: root,
-    descriptors,
-    codec: { export: unused, import: unused, discard: unused },
-    postMessage: (message) => notices.push(message),
-    prepareSpawn: () => ({ data: { filesystem: runtime.filesystem.createIdentity() } }),
-  });
+  const { root, client, descriptors, notices } = pageRootClient(runtime);
   const service = await runtime.processes();
   const flush = async () => {
     while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);

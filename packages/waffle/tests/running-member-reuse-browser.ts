@@ -116,8 +116,8 @@ function startWorker(request: RunningMemberRequest, transfer: Transferable[] = [
  * The broker's stop order (browser/process-broker.ts, terminateWorker): after the stop, wait
  * up to 1 s for the worker to report that its guest left, then terminate().
  */
-function guestLeft(left: Promise<void>): Promise<void> {
-  return Promise.race([left, pause(1000)]);
+async function guestLeft(left: Promise<void>): Promise<void> {
+  await Promise.race([left, pause(1000)]);
 }
 
 /** Busy-waits until the guest's heartbeat moved twice: it is executing its loop, not booting. */
