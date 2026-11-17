@@ -1,17 +1,21 @@
+import { createGroupMember, holdExitLock } from "../../group/member.ts";
+import type { MemoryGroupMemberRequest } from "../../group/protocol.ts";
+
 export interface RunningMemberRequest {
-  readonly module: WebAssembly.Module;
+  /** The busy guest; absent when the member parks instead. */
+  readonly module?: WebAssembly.Module;
   readonly memory: WebAssembly.Memory;
   readonly base: number;
   readonly words: number;
   readonly marker: number;
-  /** Held for the life of the thread; the page measures when it becomes available again. */
-  readonly lock?: string;
-  /** Park in an untimed wait on the first word instead of spinning in guest code. */
-  readonly sleep?: boolean;
+  /** The incarnation's exit lock, held for the life of the thread. */
+  readonly lock: string;
+  /** Park through the real member's untimed futex_wait32 on `base` instead of spinning. */
+  readonly member?: MemoryGroupMemberRequest;
 }
 
 function spin(data: RunningMemberRequest): void {
-  const instance = new WebAssembly.Instance(data.module, { env: { memory: data.memory } });
+  const instance = new WebAssembly.Instance(data.module!, { env: { memory: data.memory } });
   postMessage({ event: "running" });
   (instance.exports.spin as (base: number, words: number, marker: number) => void)(
     data.base,
@@ -20,16 +24,20 @@ function spin(data: RunningMemberRequest): void {
   );
 }
 
-function sleep(data: RunningMemberRequest): void {
+function park(request: MemoryGroupMemberRequest, base: number): void {
+  const member = createGroupMember(request, { checkActive() {} });
   postMessage({ event: "running" });
-  Atomics.wait(new Int32Array(data.memory.buffer), data.base / 4, 0);
+  try {
+    member.imports.futex_wait32!(base, 0, -1n);
+  } finally {
+    member.dispose();
+  }
 }
 
+// Same order as the runtime worker: exit lock first, then guest code.
 onmessage = ({ data }: MessageEvent<RunningMemberRequest>) => {
-  const run = data.sleep ? sleep : spin;
-  if (!data.lock) return run(data);
-  void navigator.locks.request(data.lock, { ifAvailable: true }, (lock) => {
-    if (!lock) return postMessage({ event: "lock-unavailable" });
-    run(data);
-  });
+  holdExitLock(data.lock).then(
+    () => (data.member ? park(data.member, data.base) : spin(data)),
+    (error: unknown) => postMessage({ event: `exit lock refused: ${String(error)}` }),
+  );
 };

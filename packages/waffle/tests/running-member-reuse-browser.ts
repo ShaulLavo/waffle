@@ -1,47 +1,54 @@
 import { MemoryGroups, type MemberLease, type MemoryGroupOwner } from "../group/state.ts";
-import { GroupOp, PAGE_BYTES } from "../group/protocol.ts";
+import {
+  GroupOp,
+  PAGE_BYTES,
+  WAIT_EPOCH,
+  type MemoryGroupMemberRequest,
+} from "../group/protocol.ts";
 import { runningMemberModule } from "./fixtures/running-member-wasm.ts";
 import type { RunningMemberRequest } from "./fixtures/running-member-worker.ts";
 
 /**
- * When the owner returns a terminated member's chunks, relative to `worker.terminate()`:
- * `sync` is tighter than production, `microtask` matches the broker's
- * terminateWorker -> await -> stopped() path, and `task` waits one macrotask.
+ * When the owner releases a terminated member, relative to `worker.terminate()`: `sync` is
+ * tighter than production, `microtask` is close to the broker's terminateWorker -> await ->
+ * stopped() path (a few microtasks), and `task` waits one macrotask.
  */
 type ReleaseTiming = "sync" | "microtask" | "task";
 const timings: readonly ReleaseTiming[] = ["sync", "microtask", "task"];
 
 export interface RunningMemberOptions {
   readonly repetitions: number;
-  /** Chunk size of the busy member and of the keeper's reusing grow. */
+  /** Chunk size of the terminated member and of each keeper grow. */
   readonly pages: number;
   /** Tight scan of the reused chunk right after the owner's zero-fill. */
   readonly scanMs: number;
-  /** The terminated thread counts as stopped once its heartbeat is unchanged this long. */
+  /** The terminated thread counts as still running if its heartbeat moves within this long. */
   readonly quietMs: number;
-  /** How long to watch one terminated thread before recording it as still running. */
-  readonly stopCapMs: number;
-  /** Extra delay between stopRequested() and stopped(), for the quarantine measurement. */
-  readonly holdMs?: number;
-  /** Worker holds this Web Lock while it runs; the page records when it is granted again. */
-  readonly lock?: boolean;
+  /** Hang cap while waiting for the owner to prove a busy member's exit. */
+  readonly proofCapMs: number;
 }
 
-interface Repetition {
+interface BusyRepetition {
   readonly timing: ReleaseTiming;
-  readonly releasedAfterMs: number;
+  /** The keeper got the terminated member's chunk before its exit was proven. */
+  readonly reusedBeforeProof: boolean;
+  /** The owner reported the chunk as quarantined right after release. */
+  readonly quarantined: boolean;
+  /** Owner proved exit (acquired the exit lock), ms after terminate(); absent by the cap. */
+  readonly provenMs?: number;
+  /** After proof the keeper got the chunk back. */
+  readonly reusedAfterProof: boolean;
   /** First non-zero word in the reused chunk after its zero-fill, ms after terminate(). */
   readonly hitAtMs?: number;
-  /** The chunk holds this repetition's own marker: the write came from this member. */
-  readonly ownMarker: boolean;
-  /** Last heartbeat change seen after terminate(), polled without blocking the page. */
-  readonly lastWriteMs: number;
-  /** Still writing when the stop cap ran out. */
+  /** The heartbeat still moved at the end of the repetition. */
   readonly running: boolean;
-  /** Web Lock granted to the page again, ms after terminate(); absent if not by the cap. */
-  readonly lockGrantedMs?: number;
-  /** The heartbeat still moved after the page was granted the worker's lock. */
-  readonly writesAfterLock: boolean;
+}
+
+interface ParkedRepetition {
+  readonly timing: ReleaseTiming;
+  /** The keeper got the parked member's chunk at once, with no exit proof. */
+  readonly reusedAtOnce: boolean;
+  readonly hitAtMs?: number;
 }
 
 const WORDS_PER_PAGE = PAGE_BYTES / 4;
@@ -60,44 +67,37 @@ function scan(view: Int32Array, start: number, ms: number): number | undefined {
   return undefined;
 }
 
-/** Polls the heartbeat while yielding to the event loop, so termination is never starved. */
-async function lastWrite(beat: Int32Array, start: number, quietMs: number, capMs: number) {
-  const until = now() + capMs;
-  let last = Atomics.load(beat, 0),
-    changedAt = now(),
-    lastWriteMs = 0;
-  while (now() - changedAt < quietMs) {
-    if (now() > until) return { lastWriteMs, running: true };
-    await pause(1);
-    const value = Atomics.load(beat, 0);
-    if (value === last) continue;
-    last = value;
-    changedAt = now();
-    lastWriteMs = changedAt - start;
-  }
-  return { lastWriteMs, running: false };
+/** Scans tightly, then once more after the guest had `quietMs` of page idle time to write. */
+async function reusedHit(view: Int32Array, start: number, options: RunningMemberOptions) {
+  const hit = scan(view, start, options.scanMs);
+  if (hit !== undefined) return hit;
+  await pause(options.quietMs);
+  return nonZero(view) ? now() - start : undefined;
 }
 
-async function releaseAfter(timing: ReleaseTiming, holdMs: number): Promise<void> {
+async function releaseAfter(timing: ReleaseTiming): Promise<void> {
   if (timing === "microtask") for (let step = 0; step < 4; step++) await Promise.resolve();
   if (timing === "task") await pause(0);
-  if (holdMs) await pause(holdMs);
+}
+
+function tryGrow(owner: MemoryGroupOwner, lease: MemberLease, pages: number): number {
+  return owner.request(lease, GroupOp.GROW, pages)[0] ?? -1;
 }
 
 function grow(owner: MemoryGroupOwner, lease: MemberLease, pages: number): number {
-  const [page] = owner.request(lease, GroupOp.GROW, pages);
-  if (page === undefined || page <= 0) throw new Error(`group grow failed: ${page}`);
+  const page = tryGrow(owner, lease, pages);
+  if (page <= 0) throw new Error(`group grow failed: ${page}`);
   return page;
 }
 
-function startBusy(request: RunningMemberRequest): { worker: Worker; running: Promise<void> } {
+function startWorker(request: RunningMemberRequest, transfer: Transferable[] = []) {
   const worker = new Worker("/worker.js", { type: "module" });
   const running = new Promise<void>((resolve, reject) => {
     worker.onmessage = ({ data }) =>
       data.event === "running" ? resolve() : reject(new Error(String(data.event)));
     worker.onerror = (event) => reject(new Error(event.message));
   });
-  worker.postMessage(request);
+  worker.postMessage(request, transfer);
   return { worker, running };
 }
 
@@ -108,36 +108,33 @@ function awaitBeats(beat: Int32Array): void {
     if (now() > until) throw new Error("timed out waiting for the busy member's heartbeat");
 }
 
-/**
- * Resolves with the grant time and the heartbeat at grant, or undefined if the lock is still
- * held when `cap` settles.
- */
-function lockGranted(name: string, start: number, beat: Int32Array, cap: Promise<unknown>) {
-  const abort = new AbortController();
-  void cap.then(() => abort.abort());
-  return navigator.locks
-    .request(name, { signal: abort.signal }, async () => ({
-      ms: now() - start,
-      beat: Atomics.load(beat, 0),
-    }))
-    .catch(() => undefined);
+/** Yields until the member published its futex wait record (odd epoch). */
+async function awaitParked(reply: SharedArrayBuffer): Promise<void> {
+  const cells = new Int32Array(reply);
+  const until = now() + 10_000;
+  while ((Atomics.load(cells, WAIT_EPOCH) & 1) === 0) {
+    if (now() > until) throw new Error("timed out waiting for the member to park");
+    await pause(1);
+  }
+  // The record is published just before the native wait; let the thread enter it.
+  await pause(20);
 }
 
 /**
- * One group per repetition: an anchor keeps it alive, a busy member spins on its chunk, and a
- * keeper grows into that chunk once the owner returned it. A terminated thread that never
- * stops keeps writing only into its own repetition's memory.
+ * One group per repetition: an anchor keeps it alive, the terminated member works on its
+ * chunk, and a keeper grows. The group has room for one spare chunk, so a correct owner can
+ * serve the keeper without reusing the terminated member's chunk.
  */
 class Repeat {
   private readonly groups: MemoryGroups;
   private readonly anchor: MemberLease;
-  private readonly owner: MemoryGroupOwner;
+  readonly owner: MemoryGroupOwner;
   readonly memory: WebAssembly.Memory;
   private pid = 2;
 
   constructor(pages: number) {
     // WebKit reserves the declared maximum up front, so keep it small.
-    this.groups = new MemoryGroups({ maximumPages: 1 + pages, members: 3 });
+    this.groups = new MemoryGroups({ maximumPages: 1 + 2 * pages, members: 3 });
     this.anchor = this.groups.admit(1, "running-member", "new");
     const launched = this.anchor.launch();
     launched.request.port.close();
@@ -145,18 +142,39 @@ class Repeat {
     this.owner = this.groups.owner(this.anchor.group)!;
   }
 
-  admit(): { lease: MemberLease; grow(pages: number): number; close(): void } {
+  admit() {
     const lease = this.groups.admit(this.pid++, "running-member", this.anchor.group);
-    const { request } = lease.launch();
+    const { request, transfer } = lease.launch();
+    let sent = false;
     return {
       lease,
-      grow: (pages) => grow(this.owner, lease, pages),
+      request,
+      /** Hands the request port to a worker; the page then must not close it. */
+      send(): { request: MemoryGroupMemberRequest; transfer: Transferable[] } {
+        sent = true;
+        return { request, transfer };
+      },
+      grow: (pages: number) => grow(this.owner, lease, pages),
       close() {
-        request.port.close();
+        if (!sent) request.port.close();
         lease.stopRequested();
         lease.stopped();
       },
     };
+  }
+
+  exiting() {
+    const { exiting, quarantinedBytes } = this.owner.snapshot();
+    return { exiting, quarantinedBytes };
+  }
+
+  /** Yields until the owner reports no unproven exit, or the cap runs out. */
+  async proven(start: number, capMs: number): Promise<number | undefined> {
+    while (this.exiting().exiting) {
+      if (now() - start > capMs) return undefined;
+      await pause(1);
+    }
+    return now() - start;
   }
 
   end(): void {
@@ -166,15 +184,24 @@ class Repeat {
   }
 }
 
-async function repetition(
+function exitLockOf(request: MemoryGroupMemberRequest): string {
+  if (request.exitLock === undefined) throw new Error("the owner issued no exit lock");
+  return request.exitLock;
+}
+
+/** Vary where in its loop the guest is when terminate() lands. */
+function stagger(index: number): void {
+  const offset = now() + (index % 7) * 0.13;
+  while (now() < offset);
+}
+
+async function busyRepetition(
   module: WebAssembly.Module,
   options: RunningMemberOptions,
   index: number,
-): Promise<Repetition> {
-  const { pages, scanMs, quietMs, stopCapMs, holdMs = 0 } = options;
+): Promise<BusyRepetition> {
+  const { pages } = options;
   const timing = timings[index % timings.length]!;
-  const marker = (0x5a000000 | index) >>> 0;
-  const lock = options.lock ? `waffle-running-member-${crypto.randomUUID()}` : undefined;
   const group = new Repeat(pages);
   const busy = group.admit(),
     keeper = group.admit();
@@ -182,43 +209,41 @@ async function repetition(
   try {
     const page = busy.grow(pages);
     const beat = new Int32Array(group.memory.buffer, page * PAGE_BYTES, 1);
-    const started = startBusy({
+    const started = startWorker({
       module,
       memory: group.memory,
       base: page * PAGE_BYTES,
       words: pages * WORDS_PER_PAGE,
-      marker,
-      lock,
+      marker: (0x5a000000 | index) >>> 0,
+      lock: exitLockOf(busy.request),
     });
     worker = started.worker;
     await started.running;
     awaitBeats(beat);
-    // Vary where in its loop the guest is when terminate() lands.
-    const offset = now() + (index % 7) * 0.13;
-    while (now() < offset);
+    stagger(index);
     const start = now();
     worker.terminate();
     busy.lease.stopRequested();
-    const watched = Promise.withResolvers<void>();
-    const granted = lock ? lockGranted(lock, start, beat, watched.promise) : undefined;
-    await releaseAfter(timing, holdMs);
+    await releaseAfter(timing);
     busy.lease.stopped();
-    const releasedAfterMs = now() - start;
-    const reused = keeper.grow(pages);
-    if (reused !== page) throw new Error(`keeper took page ${reused}, not ${page}`);
+    // A sibling growing at once is the tightest reuse window.
+    const early = keeper.grow(pages);
+    const held = group.exiting();
+    const provenMs = await group.proven(start, options.proofCapMs);
+    const late = tryGrow(group.owner, keeper.lease, pages);
     const view = new Int32Array(group.memory.buffer, page * PAGE_BYTES, pages * WORDS_PER_PAGE);
-    const hitAtMs = scan(view, start, scanMs);
-    const write = await lastWrite(beat, start, quietMs, stopCapMs);
-    watched.resolve();
-    const lockAt = await granted;
+    const hitAtMs =
+      early === page || late === page ? await reusedHit(view, start, options) : undefined;
+    const before = Atomics.load(beat, 0);
+    await pause(options.quietMs);
     return {
       timing,
-      releasedAfterMs,
-      hitAtMs: hitAtMs ?? (nonZero(view) ? write.lastWriteMs : undefined),
-      ownMarker: view.includes(marker | 0),
-      ...write,
-      lockGrantedMs: lockAt?.ms,
-      writesAfterLock: !!lockAt && Atomics.load(beat, 0) !== lockAt.beat,
+      reusedBeforeProof: early === page || (provenMs === undefined && late === page),
+      quarantined: held.exiting === 1 && held.quarantinedBytes === pages * PAGE_BYTES,
+      provenMs,
+      reusedAfterProof: provenMs !== undefined && late === page,
+      hitAtMs,
+      running: late !== page && Atomics.load(beat, 0) !== before,
     };
   } finally {
     worker?.terminate();
@@ -228,106 +253,103 @@ async function repetition(
   }
 }
 
-const maximum = (values: readonly number[]) => Math.max(0, ...values);
-function median(values: readonly number[]): number {
-  if (!values.length) return 0;
-  const sorted = values.toSorted((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)]!;
+async function parkedRepetition(
+  options: RunningMemberOptions,
+  index: number,
+): Promise<ParkedRepetition> {
+  const { pages } = options;
+  const timing = timings[index % timings.length]!;
+  const group = new Repeat(pages);
+  const sleeper = group.admit(),
+    keeper = group.admit();
+  let worker: Worker | undefined;
+  try {
+    const page = sleeper.grow(pages);
+    const { request, transfer } = sleeper.send();
+    const started = startWorker(
+      {
+        memory: group.memory,
+        base: page * PAGE_BYTES,
+        words: pages * WORDS_PER_PAGE,
+        marker: 0,
+        lock: exitLockOf(request),
+        member: request,
+      },
+      transfer,
+    );
+    worker = started.worker;
+    await started.running;
+    await awaitParked(request.reply);
+    const start = now();
+    worker.terminate();
+    sleeper.lease.stopRequested();
+    await releaseAfter(timing);
+    sleeper.lease.stopped();
+    const reused = keeper.grow(pages);
+    const view = new Int32Array(group.memory.buffer, page * PAGE_BYTES, pages * WORDS_PER_PAGE);
+    return {
+      timing,
+      reusedAtOnce: reused === page && group.exiting().exiting === 0,
+      hitAtMs: reused === page ? await reusedHit(view, start, options) : undefined,
+    };
+  } finally {
+    worker?.terminate();
+    sleeper.close();
+    keeper.close();
+    group.end();
+  }
 }
-const round = (value: number) => Math.round(value * 100) / 100;
-const spread = (values: readonly number[]) => ({
-  median: round(median(values)),
-  max: round(maximum(values)),
-});
 
-function summarize(results: readonly Repetition[]) {
-  const byTiming = Object.fromEntries(
-    timings.map((timing) => {
-      const runs = results.filter((result) => result.timing === timing);
-      return [
-        timing,
-        {
-          runs: runs.length,
-          hits: runs.filter((result) => result.hitAtMs !== undefined).length,
-          maxReleasedAfterMs: round(maximum(runs.map((result) => result.releasedAfterMs))),
-        },
-      ];
-    }),
-  );
-  const hits = results.flatMap((result) => (result.hitAtMs === undefined ? [] : [result.hitAtMs]));
-  const stopped = results.filter((result) => !result.running);
-  const locks = results.flatMap((result) =>
-    result.lockGrantedMs === undefined ? [] : [result.lockGrantedMs],
+const round = (value: number) => Math.round(value * 100) / 100;
+function spread(values: readonly number[]) {
+  if (!values.length) return { median: 0, max: 0 };
+  const sorted = values.toSorted((a, b) => a - b);
+  return { median: round(sorted[Math.floor(sorted.length / 2)]!), max: round(sorted.at(-1)!) };
+}
+const count = <T>(results: readonly T[], test: (result: T) => boolean) =>
+  results.filter(test).length;
+
+/**
+ * @browserEntry A member terminated while its guest spins in a pure Wasm loop (no host
+ * calls) on group memory must not have its chunk handed to a live sibling until the owner
+ * holds its exit lock. The owner zero-fills a reused chunk, so any non-zero word seen after
+ * reuse was written by the terminated member. Returns only scalars.
+ */
+export async function runningMemberReuse(options: RunningMemberOptions) {
+  const module = new WebAssembly.Module(runningMemberModule());
+  const results: BusyRepetition[] = [];
+  for (let index = 0; index < options.repetitions; index++)
+    results.push(await busyRepetition(module, options, index));
+  const proven = results.flatMap((result) =>
+    result.provenMs === undefined ? [] : [result.provenMs],
   );
   return {
+    pages: options.pages,
     runs: results.length,
-    hits: hits.length,
-    /** Hits whose chunk also held the member's own marker word. */
-    attributed: results.filter((result) => result.hitAtMs !== undefined && result.ownMarker).length,
-    byTiming,
-    hitAtMs: spread(hits),
-    /** Terminated threads still writing when the stop cap ran out. */
-    stillRunningAtCap: results.length - stopped.length,
-    lastWriteAfterTerminateMs: spread(stopped.map((result) => result.lastWriteMs)),
-    locksGranted: locks.length,
-    writesAfterLock: results.filter((result) => result.writesAfterLock).length,
-    lockGrantedAfterTerminateMs: spread(locks),
+    reusedBeforeProof: count(results, (result) => result.reusedBeforeProof),
+    notQuarantined: count(results, (result) => !result.quarantined),
+    hits: count(results, (result) => result.hitAtMs !== undefined),
+    proven: proven.length,
+    reusedAfterProof: count(results, (result) => result.reusedAfterProof),
+    provenAfterTerminateMs: spread(proven),
+    /** Unproven members still writing their own quarantined chunk at the end. */
+    stillRunning: count(results, (result) => result.running),
   };
 }
 
 /**
- * @browserEntry Measurement for the Web Lock design option: how long a terminated member
- * parked in an untimed wait keeps the lock it took before guest code. Returns only scalars.
+ * @browserEntry A member terminated while parked in the group's futex_wait32 has a closed
+ * wait record, so the owner reuses its chunk at once without an exit proof. iOS Safari keeps
+ * such a thread and its Web Lock alive, so gating it on the lock would strand its pages.
  */
-export async function sleeperLockHold(repetitions: number, capMs: number) {
-  const module = new WebAssembly.Module(runningMemberModule());
-  const granted: number[] = [];
-  for (let index = 0; index < repetitions; index++) {
-    const group = new Repeat(1);
-    const sleeper = group.admit();
-    const name = `waffle-sleeping-member-${crypto.randomUUID()}`;
-    const page = sleeper.grow(1);
-    const started = startBusy({
-      module,
-      memory: group.memory,
-      base: page * PAGE_BYTES,
-      words: WORDS_PER_PAGE,
-      marker: 0,
-      lock: name,
-      sleep: true,
-    });
-    try {
-      await started.running;
-      // The running message precedes Atomics.wait; give the thread time to park.
-      await pause(20);
-      const start = now();
-      started.worker.terminate();
-      const cap = pause(capMs);
-      const at = await lockGranted(name, start, new Int32Array(1), cap);
-      if (at) granted.push(at.ms);
-    } finally {
-      sleeper.close();
-      group.end();
-    }
-  }
-  return { runs: repetitions, granted: granted.length, grantedAfterMs: spread(granted), capMs };
-}
-
-/**
- * @browserEntry Terminates a member while its guest spins in a pure Wasm loop on group
- * memory, returns its chunk, and has a live sibling grow into that chunk at once. The owner
- * zero-fills the chunk on reuse, so any non-zero word seen afterwards was written by the
- * terminated member after its pages changed hands. Returns only scalars.
- */
-export async function runningMemberReuse(options: RunningMemberOptions) {
-  const module = new WebAssembly.Module(runningMemberModule());
-  const results: Repetition[] = [];
+export async function parkedMemberReuse(options: RunningMemberOptions) {
+  const results: ParkedRepetition[] = [];
   for (let index = 0; index < options.repetitions; index++)
-    results.push(await repetition(module, options, index));
+    results.push(await parkedRepetition(options, index));
   return {
     pages: options.pages,
-    holdMs: options.holdMs ?? 0,
-    lock: !!options.lock,
-    ...summarize(results),
+    runs: results.length,
+    reusedAtOnce: count(results, (result) => result.reusedAtOnce),
+    hits: count(results, (result) => result.hitAtMs !== undefined),
   };
 }

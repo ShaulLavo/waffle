@@ -139,6 +139,19 @@ export interface MemoryGroupSnapshot {
   readonly bypassed: boolean;
   /** Committed pages on the free list, reusable by later members and regions. */
   readonly freeBytes: number;
+  /** Released incarnations whose thread exit is not proven yet (see `exitLock`). */
+  readonly exiting: number;
+  /**
+   * Member chunks of `exiting` incarnations, withheld from the free list until exit is proven.
+   * On WebKit a terminated worker that never makes a host call is never proven to exit, so its
+   * chunks stay here until the group ends. Regions it held stay allocated the same way.
+   */
+  readonly quarantinedBytes: number;
+}
+
+/** Web Locks prove that a terminated agent's thread exited. Bun has none. */
+function exitLocks(): LockManager | undefined {
+  return (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks;
 }
 
 type Phase = "reserved" | "launched" | "released" | "retained";
@@ -157,6 +170,14 @@ interface Member {
   reply?: Int32Array;
   stopRequested: boolean;
   waitsClosed: boolean;
+  /** Held by the launched agent until its thread exits; see MemoryGroupMemberRequest. */
+  exitLock?: string;
+}
+/** A released incarnation whose agent may still be running guest code on what it held. */
+interface Exit {
+  readonly chunks: Chunk[];
+  readonly regions: Region[];
+  readonly abort: AbortController;
 }
 interface Arena {
   readonly page: number;
@@ -175,6 +196,8 @@ interface Region {
   pins: number;
   /** Publications that reference this region. */
   published: number;
+  /** Former holders whose thread exit is not proven yet. */
+  exiting: number;
 }
 /** A pin belongs to one member incarnation or to this containing group. */
 interface Pin {
@@ -242,6 +265,10 @@ export class MemoryGroupOwner {
   private admission: "open" | "sealed" | { readonly member: Member } = "open";
   /** Only private incarnation records survive reusable slot release. No guest memory aliases. */
   private readonly retiredWaits: Int32Array[] = [];
+  private readonly exits = new Set<Exit>();
+  /** Acquired exit locks, held until group end so an agent that never started cannot start. */
+  private readonly heldExits: (() => void)[] = [];
+  private quarantinedPages = 0;
   /** Bytes charged to the page budget for this group's backing. */
   private charged = PAGE_BYTES;
   private memberPages = 0;
@@ -358,6 +385,8 @@ export class MemoryGroupOwner {
       memberPages: this.memberPages,
       bypassed: this.bypassed,
       freeBytes: this.free.available * PAGE_BYTES,
+      exiting: this.exits.size,
+      quarantinedBytes: this.quarantinedPages * PAGE_BYTES,
     });
   }
 
@@ -423,6 +452,7 @@ export class MemoryGroupOwner {
     member.port = channel.port1;
     member.reply = new Int32Array(reply);
     member.phase = "launched";
+    if (exitLocks()) member.exitLock = `waffle-group-exit-${crypto.randomUUID()}`;
     channel.port1.onmessage = ({ data }: MessageEvent<GroupRequestMessage>) =>
       this.answer(member, data);
     const request: MemoryGroupMemberRequest = {
@@ -434,6 +464,7 @@ export class MemoryGroupOwner {
       watches: this.policy.watches,
       parallelism: this.policy.parallelism,
       stackBytes: this.policy.stackBytes,
+      exitLock: member.exitLock,
     };
     return { request, transfer: [channel.port2] };
   }
@@ -561,6 +592,7 @@ export class MemoryGroupOwner {
       holders: new Map([[member, 1]]),
       pins: 0,
       published: 0,
+      exiting: 0,
     };
     // Large placements are already zeroed by takePages, including recycled and fixed backing.
     if (region.arena) new Uint8Array(this.memory.buffer, region.addr, len).fill(0);
@@ -736,7 +768,7 @@ export class MemoryGroupOwner {
   }
 
   private maybeFree(region: Region): void {
-    if (region.holders.size || region.pins || region.published) return;
+    if (region.holders.size || region.pins || region.published || region.exiting) return;
     this.regions.delete(region.handle);
     if (region.chunk) {
       this.free.give(region.chunk.page, region.chunk.pages);
@@ -810,6 +842,15 @@ export class MemoryGroupOwner {
     if (member.reply) Atomics.store(member.reply, WAIT_CLOSED, 1);
     this.settleStopping();
     if (member.reply && !member.waitsClosed) this.retiredWaits.push(member.reply);
+    // terminate() returning does not stop guest code either: Chromium runs a busy guest for
+    // about 2 s more and WebKit may never stop one that makes no host call. Whatever this
+    // incarnation could address stays off the free list until its exit lock proves the thread
+    // exited (plans/group-futex-retirement.md, gap 1). A member parked in futex_wait needs no
+    // proof: see parkedAndClosed.
+    const exit: Exit | undefined =
+      member.exitLock && !this.parkedAndClosed(member.reply!)
+        ? { chunks: [], regions: [], abort: new AbortController() }
+        : undefined;
     // Pins whose delivery this member owned have no remaining consumer.
     for (const pin of Array.from(this.pins.values())) {
       if (pin.owner.kind === "member" && pin.owner.member === member) this.dropPin(pin);
@@ -817,14 +858,20 @@ export class MemoryGroupOwner {
     for (const handle of member.holds.keys()) {
       const region = this.regions.get(handle)!;
       region.holders.delete(member);
+      if (exit) {
+        region.exiting++;
+        exit.regions.push(region);
+      }
       this.maybeFree(region);
     }
     member.holds.clear();
     for (const chunk of member.chunks) {
-      this.free.give(chunk.page, chunk.pages);
       this.memberPages -= chunk.pages;
+      if (exit) exit.chunks.push(chunk);
+      else this.free.give(chunk.page, chunk.pages);
     }
     member.chunks.length = 0;
+    if (exit) this.awaitExit(member.exitLock!, exit);
     this.clearWatches(member.index);
     member.port?.close();
     member.port = undefined;
@@ -833,10 +880,63 @@ export class MemoryGroupOwner {
     this.settleStopping();
   }
 
+  /**
+   * True when the incarnation can never run guest code again, without waiting for its thread.
+   * The caller already stored WAIT_CLOSED. The member publishes an odd WAIT_EPOCH before it
+   * reads WAIT_CLOSED and parks, and stores the even epoch before it reads WAIT_CLOSED again
+   * on the way out (group/member.ts, `wait`). All four accesses are sequentially consistent,
+   * so an odd epoch read after the CLOSED store means the member's read on the way out still
+   * lies ahead: it is parked or about to park, and any return throws the stop instead of
+   * resuming guest code. Guest code that catches that throw (Wasm `catch_all`) is the residual
+   * recorded in the plan. An even epoch proves nothing. iOS Safari keeps a terminated
+   * parked thread (and its Web Lock) alive, so this path keeps sleepers' pages reusable there.
+   */
+  private parkedAndClosed(cells: Int32Array): boolean {
+    return (Atomics.load(cells, WAIT_EPOCH) & 1) === 1;
+  }
+
+  /**
+   * The agent took this lock before guest code and holds it until its thread exits, so the
+   * grant is the proof. The owner then keeps it: an agent that never took it refuses to start.
+   */
+  private awaitExit(name: string, exit: Exit): void {
+    this.exits.add(exit);
+    for (const chunk of exit.chunks) this.quarantinedPages += chunk.pages;
+    exitLocks()!
+      .request(name, { signal: exit.abort.signal }, () => this.exited(exit))
+      .catch(() => {
+        // Aborted at group end, or the lock manager refused: the pages stay withheld.
+      });
+  }
+
+  private exited(exit: Exit): Promise<void> | undefined {
+    if (this.ended || !this.exits.delete(exit)) return undefined;
+    for (const chunk of exit.chunks) {
+      this.quarantinedPages -= chunk.pages;
+      this.free.give(chunk.page, chunk.pages);
+    }
+    for (const region of exit.regions) {
+      region.exiting--;
+      this.maybeFree(region);
+    }
+    const held = Promise.withResolvers<void>();
+    this.heldExits.push(held.resolve);
+    return held.promise;
+  }
+
+  /** Unproven exits keep the backing from being pooled for another group. */
+  private endExits(): void {
+    if (this.exits.size && this.backing) this.backing.exposed = true;
+    for (const exit of this.exits) exit.abort.abort();
+    for (const release of this.heldExits) release();
+    this.heldExits.length = 0;
+  }
+
   private end(): void {
     if (this.ended) return;
     this.ended = true;
     this.reconcile();
+    this.endExits();
     this.published.clear();
     this.regions.clear();
     this.pins.clear();

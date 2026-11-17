@@ -74,4 +74,10 @@ export interface MemoryGroupMemberRequest {
   readonly parallelism: number;
   /** Bytes of private stack carved for a PIE image. */
   readonly stackBytes: number;
+  /**
+   * Web Lock this incarnation's agent holds from before guest code until its thread exits.
+   * The owner returns the member's pages only once it acquires the lock itself. Absent where
+   * the owner has no Web Locks API (Bun), which keeps release at the stop receipt.
+   */
+  readonly exitLock?: string;
 }
