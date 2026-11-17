@@ -74,8 +74,25 @@ async function polling(page: Page, stop: StopOrderOptions["stop"]): Promise<stri
   }
 }
 
-/** WebKit never stops the terminated busy thread; closing its browser ends it. */
+async function busyIn(page: Page): Promise<string[]> {
+  const report = await call(page, {
+    repetitions: busyRepetitions,
+    pages: 4,
+    polling: false,
+    stop: "physical",
+  });
+  const found = failures("busy", report, busyRepetitions, "physical");
+  const hurried = report.killToTerminateMs.filter((ms) => ms < busyWaitFloorMs).length;
+  if (hurried) found.push(`busy: ${hurried} terminated without the bounded wait`);
+  return found;
+}
+
+/**
+ * Chromium and Firefox stop the terminated thread (Chromium about 2 s later), so the busy case
+ * shares the page. WebKit never stops it; closing its own browser ends it.
+ */
 async function busy(page: Page): Promise<string[]> {
+  if (engineOf(page) !== "webkit") return busyIn(page);
   const type = page.context().browser()?.browserType();
   if (!type) throw new Error("page has no browser");
   const browser = await type.launch({ headless: true });
@@ -83,16 +100,7 @@ async function busy(page: Page): Promise<string[]> {
     const fresh = await (await browser.newContext()).newPage();
     watchCrash(fresh);
     await navigateTestPage(fresh, page.url());
-    const report = await call(fresh, {
-      repetitions: busyRepetitions,
-      pages: 4,
-      polling: false,
-      stop: "physical",
-    });
-    const found = failures("busy", report, busyRepetitions, "physical");
-    const hurried = report.killToTerminateMs.filter((ms) => ms < busyWaitFloorMs).length;
-    if (hurried) found.push(`busy: ${hurried} terminated without the bounded wait`);
-    return found;
+    return await busyIn(fresh);
   } finally {
     await browser.close();
   }

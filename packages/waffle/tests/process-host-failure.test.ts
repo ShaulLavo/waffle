@@ -21,13 +21,15 @@ import { WorkerPipeHost } from "../proc/worker-pipes.js";
 import { controlLoad } from "../proc/control.js";
 import type { ProcessContext } from "../proc/types.js";
 
+// A hang cap only. The worker stays blocked in a host call that SIGKILL does not wake, so the
+// broker waits its bounded 1 s for the guest to unwind before terminate().
 async function bounded<T>(pending: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       pending,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("host failure did not settle")), 1000);
+        timer = setTimeout(() => reject(new Error("host failure did not settle")), 10_000);
       }),
     ]);
   } finally {

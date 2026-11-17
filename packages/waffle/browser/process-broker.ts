@@ -3087,7 +3087,9 @@ export class BrowserProcessBroker {
     // old image inside its exec call and must not end the process.
     if (!child.replacing) {
       this.publishStopSignal(child.context.pid);
-      await guestUnwound(child);
+      // Await only a real wait: without one, terminate() stays in this synchronous step.
+      const unwinding = guestUnwound(child);
+      if (unwinding) await unwinding;
     }
     try {
       ended = worker.terminate();
