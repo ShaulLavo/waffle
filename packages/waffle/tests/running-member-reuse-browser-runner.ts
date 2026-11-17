@@ -7,9 +7,9 @@ import type { RunningMemberOptions } from "./running-member-reuse-browser.js";
 // Plan group-futex-retirement, gap 1: a member terminated while running guest code must not
 // write into pages the owner already handed to a live sibling, and a member terminated while
 // parked in futex_wait is reused at once. RUNNING_MEMBER_REPETITIONS sets runs per engine and
-// chunk size. WebKit never stops a terminated busy guest that does not poll, so its threads
-// spin until their page goes away: every busy case runs last for its chunk size, in a fresh
-// browser context that is closed right after, and WebKit runs fewer of them with a short cap.
+// chunk size. WebKit never stops a terminated busy guest that does not poll, and its threads
+// outlive their page and context: every busy case runs after all other cases, each in its own
+// freshly launched browser closed right after, and WebKit runs fewer of them with a short cap.
 const repetitions = Number(process.env.RUNNING_MEMBER_REPETITIONS ?? 6);
 const pageSizes = [1, 4];
 
@@ -58,41 +58,50 @@ function engineOf(page: Page): string | undefined {
   return page.context().browser()?.browserType().name();
 }
 
-/** Spinning threads of a terminated busy guest go away with this context's page. */
-async function inFreshContext(page: Page, run: (fresh: Page) => Promise<Report>) {
-  const browser = page.context().browser();
-  if (!browser) throw new Error("page has no browser");
-  const context = await browser.newContext();
+/**
+ * WebKit keeps a terminated busy guest's thread spinning after its page and context close, and
+ * such threads can get later pages closed. Closing the whole browser ends its processes.
+ */
+async function inFreshBrowser(page: Page, run: (fresh: Page) => Promise<Report>) {
+  const type = page.context().browser()?.browserType();
+  if (!type) throw new Error("page has no browser");
+  const browser = await type.launch({ headless: true });
   try {
-    const fresh = await context.newPage();
+    const fresh = await (await browser.newContext()).newPage();
     await navigateTestPage(fresh, page.url());
     return await run(fresh);
   } finally {
-    await context.close();
+    await browser.close();
   }
 }
 
-async function chunkSize(page: Page, pages: number): Promise<string[]> {
-  const webkit = engineOf(page) === "webkit";
-  const options: RunningMemberOptions = {
-    repetitions,
-    pages,
-    scanMs: 5,
-    quietMs: 50,
-    // Chromium proves a busy member's exit about 2 s after terminate(); this is a hang cap.
-    proofCapMs: 10_000,
-  };
+function optionsFor(pages: number): RunningMemberOptions {
+  // Chromium proves a busy member's exit about 2 s after terminate(); the cap is a hang cap.
+  return { repetitions, pages, scanMs: 5, quietMs: 50, proofCapMs: 10_000 };
+}
+
+/** Parked and polling guests stop, so they share the runner's page. */
+async function stoppingCases(page: Page, pages: number): Promise<string[]> {
+  const options = optionsFor(pages);
   const parked = await call(page, "parkedMemberReuse", options);
   // A guest that polls its checkpoint unwinds and frees its lock on every engine, WebKit too.
-  const polling = await call(page, "runningMemberReuse", { ...options, polling: true });
-  const busyOptions = webkit ? { ...options, repetitions: 2, proofCapMs: 1_000 } : options;
-  const busy = await inFreshContext(page, (fresh) =>
-    call(fresh, "runningMemberReuse", busyOptions),
-  );
+  // WebKit sometimes crashes the page when terminate() races that unwinding, so there the
+  // page terminates once the guest left its loop.
+  const graceful = engineOf(page) === "webkit";
+  const polling = await call(page, "runningMemberReuse", { ...options, polling: true, graceful });
   return failures(`parked ${pages}`, parked, repetitions, false).concat(
     failures(`polling ${pages}`, polling, repetitions, true),
-    failures(`busy ${pages}`, busy, busyOptions.repetitions, !webkit),
   );
+}
+
+async function busyCase(page: Page, pages: number): Promise<string[]> {
+  const webkit = engineOf(page) === "webkit";
+  const options = optionsFor(pages);
+  const busyOptions = webkit ? { ...options, repetitions: 2, proofCapMs: 1_000 } : options;
+  const busy = await inFreshBrowser(page, (fresh) =>
+    call(fresh, "runningMemberReuse", busyOptions),
+  );
+  return failures(`busy ${pages}`, busy, busyOptions.repetitions, !webkit);
 }
 
 await runIsolatedPages({
@@ -106,8 +115,10 @@ await runIsolatedPages({
   },
   names: process.argv.length > 2 ? process.argv.slice(2) : Object.keys(engines),
   async evaluate(page) {
+    page.on("crash", () => console.error(JSON.stringify({ engine: engineOf(page), crash: true })));
     let found: string[] = [];
-    for (const pages of pageSizes) found = found.concat(await chunkSize(page, pages));
+    for (const pages of pageSizes) found = found.concat(await stoppingCases(page, pages));
+    for (const pages of pageSizes) found = found.concat(await busyCase(page, pages));
     if (found.length) throw new Error(found.join("; "));
     return pageSizes.map((pages) => ({ pages, repetitions }));
   },

@@ -31,6 +31,12 @@ export interface RunningMemberOptions {
    * page sets right before terminate(), as the broker selects SIGKILL first.
    */
   readonly polling?: boolean;
+  /**
+   * With `polling`: terminate() only once the heartbeat stopped, after the guest left its loop.
+   * WebKit crashes the page now and then when terminate() lands while a guest that calls JS
+   * imports is still running (plans/group-futex-retirement.md, gap 1).
+   */
+  readonly graceful?: boolean;
 }
 
 interface BusyRepetition {
@@ -111,6 +117,21 @@ function awaitBeats(beat: Int32Array): void {
   const until = now() + 10_000;
   while (Atomics.load(beat, 0) < 2)
     if (now() > until) throw new Error("timed out waiting for the busy member's heartbeat");
+}
+
+/** Yields until the heartbeat stays unchanged for 5 ms: the guest left its loop. */
+async function awaitQuiet(beat: Int32Array): Promise<void> {
+  const until = now() + 5_000;
+  let last = Atomics.load(beat, 0),
+    since = now();
+  while (now() - since < 5) {
+    if (now() > until) throw new Error("the polling guest did not stop at its checkpoint");
+    await pause(1);
+    const value = Atomics.load(beat, 0);
+    if (value === last) continue;
+    last = value;
+    since = now();
+  }
 }
 
 /** Yields until the member published its futex wait record (odd epoch). */
@@ -232,6 +253,7 @@ async function busyRepetition(
     stagger(index);
     const start = now();
     if (interrupt) Atomics.store(new Int32Array(interrupt), 0, 9);
+    if (options.graceful) await awaitQuiet(beat);
     worker.terminate();
     busy.lease.stopRequested();
     await releaseAfter(timing);

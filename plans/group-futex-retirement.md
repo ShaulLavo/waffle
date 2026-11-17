@@ -329,15 +329,27 @@ Measured with the polling variant of the regression test (checkpoint import call
 word set right before `terminate()`): exit proven 1.2 ms after terminate (median) on Chromium,
 Firefox and Linux WebKit, max 5 ms, against about 2 s on Chromium and never on WebKit without it.
 
+WebKit crash found by that case (2026-11-17, open, owner decision needed). On Playwright WebKit,
+`worker.terminate()` that lands while the guest is still running its loop of JS import calls
+crashes the page (`crash` event) now and then: every stressed run at 4-page chunks (5 of 5, 30 or
+60 repetitions), 2 of 10 ordinary runs, never when the page waited for the guest to leave its loop
+first (120 of 120). The worker's Web Lock is not the cause (it still crashes with none taken).
+This predates this fix: the broker always terminated busy guests that make host calls. Candidate
+follow-up: the broker selects SIGKILL, waits a bounded time for the exit lock (a polling guest
+frees it within milliseconds), and calls `terminate()` only if the lock is still held. iOS is not
+measured. Record: `/work/reports/upstream-bugs/README.md`. The regression test's WebKit polling
+case terminates only after the heartbeat stops (`graceful`) until then.
+
 Cost (known and accepted, correctness over memory). A busy guest that never polls keeps its chunks
 and held regions withheld until its group ends (for a group that never ends, until the page
 closes): forever on WebKit, about 2 s on Chromium, about 1 ms on Firefox. On iOS Safari 26.5 such a
 guest also keeps a CPU core: on the C4D2 iPhone (report
 `/work/reports/waffle-gap1-running-member-20261117/IOS.md`) a terminated busy member was still
 writing at 60 s in 4 of 4 runs, its lock was never granted within 60 s (0 of 4), and the tab stayed
-at 400 to 730% CPU until it was closed (a same-origin navigation did not end it). A few such
-threads can also get the page closed: Playwright WebKit closed the regression test's shared page
-about 1 run in 3 with four of them left spinning, which is why the test now isolates busy cases. Without the gate
+at 400 to 730% CPU until it was closed (a same-origin navigation did not end it). The page
+closes first blamed on leftover spinning threads in the regression test all came at the 4-page
+polling case, so they were most likely the terminate() crash described above; the test still
+runs busy cases last, each in its own browser, so their threads cannot affect other cases. Without the gate
 24 of 24 iOS runs wrote into the handed-over chunk (first stray write median 0.15 ms after
 terminate). `exiting` and `quarantinedBytes` in the group snapshot make the withheld memory visible.
 
@@ -366,11 +378,11 @@ case: right after release a keeper grows and must not get the terminated member'
 has a spare chunk); on Chromium and Firefox the exit must then be proven and the chunk reused with
 no write from the old thread; on WebKit it must stay quarantined. Polling case: the same with a
 guest that polls a checkpoint; the exit must be proven on every engine, WebKit included. Parked
-case: a member parked in the real `futex_wait32` is reused at once. Each busy case runs last for
-its chunk size, in a fresh browser context closed right after, because its WebKit threads spin
-until their page goes away (with them left in the shared page, WebKit closed it about 1 run in
-3); WebKit runs 2 busy repetitions per chunk size with a 1 s proof cap. 10 of 10 WebKit runs
-passed after that change. Red without the gate: 3 of 3 Chromium busy runs reused before proof and
+case: a member parked in the real `futex_wait32` is reused at once. Busy cases run after all
+others, each in its own launched browser closed right after, because WebKit keeps their threads
+spinning even after their page and context close; WebKit runs 2 busy repetitions per chunk size
+with a 1 s proof cap. On WebKit the polling case terminates only after the guest's heartbeat stops
+(`graceful`), because of the terminate() crash above. Red without the gate: 3 of 3 Chromium busy runs reused before proof and
 saw the old thread's writes. The polling fixture uses its own stop word as the checkpoint, so the
 real path (broker SIGKILL, then `signal(0, 4)` or `__waffle_fatal`) has no end-to-end browser
 test yet; `process-replacement.test.ts` checks the broker half ("SIGKILL is selected before
