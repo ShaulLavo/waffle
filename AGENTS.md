@@ -6,15 +6,6 @@ instance and guests borrow its capabilities; never create a second runtime. `bun
 `trustedDependencies`, so installation runs `prepare` and emits the Node entry points. Keep
 source-only consumers and the generated Node exports working together.
 
-## Kernel scope
-
-Waffle is a full kernel that a whole OS can be built on, providing processes, pipes,
-filesystem, network and other OS primitives programs need. Application protocols and
-tool integrations, including LSP, editors and MCP, belong in Waffle programs/packages
-in their own repositories and use only Waffle public APIs. Their issues may be tracked
-here but must name the implementation repository, as with #283's LSP transport.
-Reviewers must flag code crossing this boundary. Owner decision: 2026-11-16.
-
 ## Where things live
 
 - Read `docs/development.md` for the layout and `docs/concepts.md` before changing ownership,
