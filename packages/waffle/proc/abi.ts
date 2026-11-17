@@ -57,6 +57,9 @@ import {
   Signal,
   checkedJobLifetime,
   checkedProcessCwd,
+  checkedProcessKind,
+  snapshotLogicalProcessIdentity,
+  type LogicalProcessIdentity,
   type ProcessExit,
   type SpawnRequest,
   type ExecRequest,
@@ -114,6 +117,7 @@ interface NonblockingStream extends Stream {
   registerWake?(wake: Int32Array): (() => void) | void;
 }
 export interface ProcessABIOptions {
+  processIdentity: LogicalProcessIdentity;
   memory: WebAssembly.Memory | (() => WebAssembly.Memory);
   descriptors: DescriptorTable;
   fs: FileSystem;
@@ -215,8 +219,11 @@ export class ProcessABI {
       throw new TypeError("poll wake must be one shared int32");
     }
     this.now = options.now ?? clock;
+    const processIdentity = snapshotLogicalProcessIdentity(options.processIdentity);
     this.imports = {
       getpid: () => options.pid,
+      process_id: () => processIdentity.pid,
+      parent_process_id: () => processIdentity.parentPid,
       cwd: (ptr, capacity) => this.result(() => this.cwd(ptr!, capacity!)),
       access_start: (ptr, length, cwdPtr, cwdLength, mode) =>
         this.result(() => this.accessStart(ptr!, length!, cwdPtr!, cwdLength!, mode!)),
@@ -397,7 +404,12 @@ export class ProcessABI {
       throw new ProcessError(ProcessErrno.INVAL, "invalid spawn JSON");
     }
     if (replacing && request && typeof request === "object") {
-      if ("job" in request || "jobLifetime" in request || "worker" in request)
+      if (
+        "job" in request ||
+        "jobLifetime" in request ||
+        "worker" in request ||
+        "processKind" in request
+      )
         throw new ProcessError(ProcessErrno.INVAL, "exec cannot select a job or worker");
       request = { ...request, job: 0 };
     }
@@ -429,6 +441,7 @@ export class ProcessABI {
     }
     checkedJobLifetime(object.job!, object.jobLifetime);
     checkedProcessCwd(object.cwd);
+    checkedProcessKind(object.processKind);
     return object as SpawnRequest;
   }
   private exec(ptr: number, length: number): number {

@@ -40,6 +40,9 @@ export type { FirstSpawnOptions, ProcessStarter } from "./stub.js";
 export { Signal, ProcessError, ProcessErrno } from "./types.js";
 export type {
   ProcessSignal,
+  ProcessKind,
+  LogicalProcessIdentity,
+  AdmittedSpawnReservation,
   ProcessExit,
   ProcessContext,
   ProcessHandle,

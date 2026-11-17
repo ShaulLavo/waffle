@@ -36,6 +36,7 @@ function fixture(fs = new MemFS(), reservedFds: number[] = []) {
   });
   const pid = supervisor.createRoot({ descriptors: wasi.descriptors });
   const abi = new ProcessABI({
+    processIdentity: supervisor.get(pid)!.processIdentity,
     memory,
     descriptors: wasi.descriptors,
     fs,

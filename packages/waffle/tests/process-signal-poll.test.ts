@@ -25,6 +25,7 @@ function fixture() {
     throw new Error("unexpected service operation");
   };
   const abi = new ProcessABI({
+    processIdentity: { pid: 1, parentPid: 0 },
     memory: new WebAssembly.Memory({ initial: 1 }),
     descriptors,
     fs: new MemFS(),

@@ -17,6 +17,7 @@ export function fileOnlyABI(options: {
     throw new Error("unexpected process service call");
   };
   return new ProcessABI({
+    processIdentity: { pid: 1, parentPid: 0 },
     memory: options.memory,
     descriptors: options.descriptors,
     fs: options.fs,

@@ -41,6 +41,7 @@ function fixture(cwd = "/tmp/spec") {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
   function abi(caller = pid, getMemory: WebAssembly.Memory | (() => WebAssembly.Memory) = memory) {
     return new ProcessABI({
+      processIdentity: supervisor.get(caller)!.processIdentity,
       memory: getMemory,
       fs: new MemFS(),
       descriptors: supervisor.get(caller)!.image.descriptors,
@@ -158,6 +159,7 @@ test("shared worker root and spawned child retain their own cwd through broker a
   expect(child.cwd(pid)).toBe("/worker/child");
   expect(f.supervisor.cwd(pid)).toBe("/worker/child");
   const childABI = new ProcessABI({
+    processIdentity: child.processIdentity,
     memory: f.memory,
     fs: new MemFS(),
     descriptors,
@@ -168,6 +170,7 @@ test("shared worker root and spawned child retain their own cwd through broker a
   expect(childABI.imports.cwd!(0, 32)).toBe(13);
   expect(new TextDecoder().decode(new Uint8Array(f.memory.buffer, 0, 13))).toBe("/worker/child");
   const foreignABI = new ProcessABI({
+    processIdentity: child.processIdentity,
     memory: f.memory,
     fs: new MemFS(),
     descriptors,

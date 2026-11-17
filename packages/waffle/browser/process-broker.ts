@@ -68,7 +68,13 @@ import {
   isCollectedProcess,
   wakeDirectory,
 } from "../proc/directory.js";
-import { type ControlCells, TaggedCells, controlLoad, controlStore } from "../proc/control.js";
+import {
+  type ControlCells,
+  TaggedCells,
+  controlLoad,
+  controlStore,
+  controlCas,
+} from "../proc/control.js";
 import { type FilesystemConnection, type FilesystemIdentity, isRevoked } from "../fs/protocol.js";
 
 import type { ProcessSupervisor, RootProcessOptions } from "../proc/supervisor.js";
@@ -83,6 +89,8 @@ import {
   type ProcessHandle,
   checkedSignal,
   checkedProcessCwd,
+  snapshotLogicalProcessIdentity,
+  type LogicalProcessIdentity,
   ProcessErrno,
   ProcessError,
 } from "../proc/types.js";
@@ -381,7 +389,12 @@ export class BrowserProcessBroker {
   private readonly reservedRoots = new Map<
     number,
     RootProcessOptions &
-      SignalTransport & { pid: number; job: number; observation: ProcessObservationTransfer }
+      SignalTransport & {
+        pid: number;
+        job: number;
+        observation: ProcessObservationTransfer;
+        processIdentity: LogicalProcessIdentity;
+      }
   >();
   private readonly completedRoots = new Set<number>();
   private readonly rootLeases = new Map<number, number>();
@@ -1018,6 +1031,7 @@ export class BrowserProcessBroker {
       outcome: outcomeWord(root.outcome),
       interrupt: word(root.interrupt),
       requestedSignal: word(root.requestedSignal),
+      processIdentity: snapshotLogicalProcessIdentity({ pid, parentPid: 0 }),
     };
     const observation = admitProcessObservation(pid, reserved.outcome, root.observation);
     const admitted = { ...reserved, observation };
@@ -1153,6 +1167,15 @@ export class BrowserProcessBroker {
     if (this.controllerFor(state.pid))
       throw new Error(`Process ${state.pid} already has a controller`);
     if (state.parentPid !== 0) throw new TypeError("root process has a parent");
+    if (
+      state.processKind !== "process" ||
+      state.processIdentity.pid !== state.pid ||
+      state.processIdentity.parentPid !== 0
+    )
+      throw new ProcessError(
+        ProcessErrno.INVAL,
+        "root process identity conflicts with reservation",
+      );
     const existing = this.transport.get(state.pid);
     if (existing && workerProcessDirectoryId(existing) !== workerProcessDirectoryId(transport))
       throw new TypeError("process identity is already registered");
@@ -2769,6 +2792,7 @@ export class BrowserProcessBroker {
     const child = this.children.get(transport.pid);
     return (
       !!child?.worker &&
+      this.options.table.get(transport.pid)?.processKind === "process" &&
       this.currentChild(child) &&
       !child.threads &&
       !child.stopped &&
@@ -2801,15 +2825,26 @@ export class BrowserProcessBroker {
     const child = this.children.get(pid);
     if (!child || child.generation !== generation || !this.canExec(child.transport))
       throw new ProcessError(ProcessErrno.NOTSUP, "replacement lost its owned source image");
-    const membership = this.closeReplacementGroup(child, resolved);
-    child.replacing = true;
-    return {
-      rollback: () => {
-        membership?.rollback();
-        // A fatal winner still joins the accepted handle before releasing this source.
-        if (!readOutcome(child.context.outcome)) child.replacing = false;
-      },
+    const image = this.options.table.require(pid).image;
+    const admission = workerProcessState(child.transport).imageAdmission;
+    if (controlCas(admission, 0, generation, -generation) !== generation)
+      throw new ProcessError(ProcessErrno.NOTSUP, "replacement source image admission is closed");
+    const current = () => this.options.table.get(pid)?.image === image && image.phase === "current";
+    let membership: { rollback(): void } | undefined;
+    const rollback = () => {
+      if (!current()) return;
+      membership?.rollback();
+      controlCas(admission, 0, -generation, generation);
+      if (!readOutcome(child.context.outcome)) child.replacing = false;
     };
+    try {
+      membership = this.closeReplacementGroup(child, resolved);
+    } catch (error) {
+      rollback();
+      throw error;
+    }
+    child.replacing = true;
+    return { rollback };
   }
   private closeReplacementGroup(
     child: RuntimeChild,

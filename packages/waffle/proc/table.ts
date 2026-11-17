@@ -19,6 +19,8 @@ import {
   type SpawnRequest,
   type SharedJobIdentity,
   type JobLifetime,
+  type LogicalProcessIdentity,
+  type ProcessKind,
 } from "./types.js";
 
 export interface ProcessImage {
@@ -59,6 +61,8 @@ export function createProcessImage(
 }
 
 export interface ProcessRecord {
+  readonly processIdentity: LogicalProcessIdentity;
+  readonly processKind: ProcessKind;
   readonly observation: ProcessObservationTransfer;
   readonly pid: number;
   readonly parentPid: number;

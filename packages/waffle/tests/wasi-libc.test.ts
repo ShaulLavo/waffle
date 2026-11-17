@@ -129,6 +129,7 @@ describe.skipIf(!fixtures)("real wasi-sdk 34 libc preopen discovery (bun run tes
         const memory = new WebAssembly.Memory({ initial: 1 });
         const pid = supervisor.createRoot({ descriptors: parents });
         const abi = new ProcessABI({
+          processIdentity: supervisor.get(pid)!.processIdentity,
           memory,
           descriptors: parents,
           fs,

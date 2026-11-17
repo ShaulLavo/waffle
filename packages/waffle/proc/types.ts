@@ -54,6 +54,33 @@ export interface DescriptorBinding {
   parent: number;
 }
 export type JobLifetime = "independent" | "caller-fatal";
+export type ProcessKind = "process" | "thread";
+export interface LogicalProcessIdentity {
+  readonly pid: number;
+  readonly parentPid: number;
+}
+export function checkedProcessKind(value: unknown): ProcessKind {
+  if (value === undefined || value === "process") return "process";
+  if (value === "thread") return "thread";
+  throw new ProcessError(ProcessErrno.INVAL, "invalid process kind");
+}
+export function snapshotLogicalProcessIdentity(
+  value: LogicalProcessIdentity,
+): LogicalProcessIdentity {
+  const pid = value?.pid,
+    parentPid = value?.parentPid;
+  if (
+    !Number.isInteger(pid) ||
+    pid <= 0 ||
+    pid > 0x7fffffff ||
+    !Number.isInteger(parentPid) ||
+    parentPid < 0 ||
+    parentPid > 0x7fffffff ||
+    parentPid === pid
+  )
+    throw new ProcessError(ProcessErrno.INVAL, "invalid logical process identity");
+  return objectFreeze({ pid, parentPid });
+}
 export function checkedJobLifetime(job: number, value: unknown): JobLifetime {
   if (value === undefined) return "independent";
   if (job !== 0 && job !== -1)
@@ -73,6 +100,7 @@ export function checkedProcessCwd(value: unknown): string {
   return value;
 }
 export interface SpawnRequest {
+  processKind?: ProcessKind;
   executable: string;
   argv: string[];
   env: Record<string, string>;
@@ -85,7 +113,7 @@ export interface SpawnRequest {
   /** A guest thread started as a process. Waffle gives its contents no meaning. */
   worker?: Readonly<Record<string, unknown>>;
 }
-export type ExecRequest = Omit<SpawnRequest, "job" | "jobLifetime" | "worker">;
+export type ExecRequest = Omit<SpawnRequest, "job" | "jobLifetime" | "worker" | "processKind">;
 /** Owned copy of the guest-supplied Worker field. A non-object value is not a Worker. */
 export function snapshotSpawnWorker(worker: unknown): Pick<SpawnRequest, "worker"> {
   return worker !== null && typeof worker === "object" ? { worker: { ...worker } } : {};
@@ -100,6 +128,7 @@ export interface SharedJobIdentity {
   readonly jobLifetime?: JobLifetime;
 }
 export interface SpawnReservation {
+  readonly processIdentity?: LogicalProcessIdentity;
   readonly observation?: ProcessObservationTransfer;
   /** Captured owner callback, invoked only at successful native return or proved no-agent rollback. */
   nativeReturn?(): void;
@@ -112,11 +141,15 @@ export interface SpawnReservation {
   signalState?: ControlCells | SharedArrayBuffer;
   outcome?: OutcomeWord | SharedArrayBuffer;
 }
+export interface AdmittedSpawnReservation extends SpawnReservation {
+  readonly processIdentity: LogicalProcessIdentity;
+}
 export interface ProcessHandle {
   /** Physical teardown only: revoked shared buffers are never reused, even after this returns. */
   terminate(): void | Promise<void>;
 }
 export interface ProcessLifecycle {
+  readonly processIdentity: LogicalProcessIdentity;
   readonly generation: number;
   readonly observation: ProcessObservationTransfer;
   readonly pid: number;

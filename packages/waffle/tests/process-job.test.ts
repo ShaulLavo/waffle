@@ -1,3 +1,5 @@
+import { createWorkerProcessTransport, workerProcessState } from "../proc/worker-client.js";
+import { reserveDirectoryProcess } from "../proc/directory.js";
 import { controlLoad } from "../proc/control.js";
 import { expect, test } from "bun:test";
 import { ProcessABI } from "../proc/abi.js";
@@ -27,6 +29,7 @@ function fixture(wait?: (milliseconds: number, word: Int32Array, expected: numbe
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
   const wake = new Int32Array(new SharedArrayBuffer(4));
   const abi = new ProcessABI({
+    processIdentity: supervisor.get(shell)!.processIdentity,
     memory,
     descriptors,
     fs: new MemFS(),
@@ -260,14 +263,43 @@ test("an accepted independent spawn can arrive after its parent's job was reaped
       64n,
       0n,
     );
+    const parentTransport = createWorkerProcessTransport({
+      pid: f.child,
+      identity: f.supervisor.table.identities.buffer,
+    });
+    const acceptedPid = f.supervisor.table.identities.pid();
+    const acceptedJob = f.supervisor.table.identities.job();
+    const transport = reserveDirectoryProcess(
+      parentTransport,
+      acceptedPid,
+      f.child,
+      acceptedJob,
+      f.child,
+    );
+    const state = workerProcessState(transport);
     f.supervisor.exit(f.leader, 0);
     f.supervisor.exit(f.child, 0);
     expect(f.supervisor.waitJob(f.shell, f.job)?.status).toBe(0);
     const accepted = f.supervisor.reserveAdmittedSpawn(
       f.child,
       { ...request(-1), fds: [{ child: 19, parent: source }] },
-      { controlParent: f.shell, rootPid: f.shell },
+      {
+        pid: acceptedPid,
+        processIdentity: state.processIdentity,
+        observation: transport,
+        job: acceptedJob,
+        ...state.signals,
+        controlParent: f.shell,
+        rootPid: f.shell,
+      },
       retained,
+      {
+        ownerPid: f.child,
+        controlParent: f.shell,
+        leaderPid: acceptedPid,
+        outcome: state.jobOutcome,
+        foreground: false,
+      },
     );
     expect(f.supervisor.get(accepted)!.parentPid).toBe(f.child);
     expect(f.supervisor.get(accepted)!.image.descriptors.get(19)).toBeDefined();
@@ -393,6 +425,7 @@ test("Bun-like nested spawns join job_of(0), and shell kill_job/wait_job collect
     memory = new WebAssembly.Memory({ initial: 1 });
   const abiFor = (pid: number) =>
     new ProcessABI({
+      processIdentity: supervisor.get(pid)!.processIdentity,
       memory,
       descriptors: supervisor.get(pid)!.image.descriptors,
       fs: new MemFS(),

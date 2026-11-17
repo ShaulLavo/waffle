@@ -27,6 +27,7 @@ for (const [name, error, errno] of [
       },
     } as unknown as ProcessService;
     const abi = new ProcessABI({
+      processIdentity: { pid: 1, parentPid: 0 },
       memory,
       descriptors,
       fs: new MemFS(),
@@ -51,6 +52,7 @@ for (const [name, error, errno] of [
 test("other ABI calls preserve filesystem errno rather than remapping spawn capacity", () => {
   const descriptors = new DescriptorTable();
   const abi = new ProcessABI({
+    processIdentity: { pid: 1, parentPid: 0 },
     memory: new WebAssembly.Memory({ initial: 1 }),
     descriptors,
     fs: new MemFS(),
@@ -118,6 +120,7 @@ for (const [name, error, errno] of [
     });
     const memory = new WebAssembly.Memory({ initial: 1 });
     const abi = new ProcessABI({
+      processIdentity: service.processIdentity,
       memory,
       descriptors,
       fs: new MemFS(),
@@ -181,6 +184,7 @@ for (const kind of ["exit", "worker signal", "process signal"] as const)
     });
     const memory = new WebAssembly.Memory({ initial: 1 });
     const abi = new ProcessABI({
+      processIdentity: service.processIdentity,
       memory,
       descriptors,
       fs: new MemFS(),

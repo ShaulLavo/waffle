@@ -63,6 +63,7 @@ export async function browserPipeFilestat(workerUrl = "/pipe-filestat-worker.js"
     },
   });
   const abi = new ProcessABI({
+    processIdentity: service.processIdentity,
     memory: () => guest.memory,
     descriptors: wasi.descriptors,
     fs,

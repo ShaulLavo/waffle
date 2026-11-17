@@ -24,6 +24,7 @@ const client = new WorkerProcessClient({
 });
 const memory = new WebAssembly.Memory({ initial: 1 });
 const abi = new ProcessABI({
+  processIdentity: client.processIdentity,
   memory,
   descriptors,
   fs: new MemFS(),

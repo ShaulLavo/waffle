@@ -286,6 +286,7 @@ test("worker bootstrap and broker preserve nested original errors through a real
   const memory = new WebAssembly.Memory({ initial: 1 });
   const descriptors = new DescriptorTable();
   const abi = new ProcessABI({
+    processIdentity: f.parent.processIdentity,
     memory,
     pid: f.parent.pid,
     service: f.parent,

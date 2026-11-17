@@ -610,6 +610,7 @@ test("a scoped runtime wait is rejected without blocking while a nonblocking job
   const { client, pid } = reserveChild(f, descriptors);
   const job = client.jobOf(pid);
   const abi = new ProcessABI({
+    processIdentity: client.processIdentity,
     memory: new WebAssembly.Memory({ initial: 1 }),
     descriptors,
     fs: new MemFS(),

@@ -85,6 +85,7 @@ function fixture() {
     bytes = new Uint8Array(memory.buffer),
     encode = new TextEncoder();
   const abi = new ProcessABI({
+    processIdentity: client.processIdentity,
     memory,
     fs,
     descriptors,

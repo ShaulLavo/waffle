@@ -55,5 +55,5 @@
     "bun-wasm",
     "esbuild"
   ],
-  "waffleHostInterface": 2
+  "waffleHostInterface": 3
 }

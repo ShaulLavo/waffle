@@ -121,6 +121,7 @@ test("Node process hosts expose fd_kind against their current descriptor binding
     const inaccessible = new Proxy({}, { get: unused });
     const abi = new ProcessABI({
       memory: unused, descriptors, fs: inaccessible, pid: 1,
+      processIdentity: { pid: 1, parentPid: 0 },
       service: inaccessible, signals: inaccessible, wait: unused,
     });
     try {
