@@ -337,7 +337,7 @@ worker's Web Lock is not the cause (it still crashes with none taken). This pred
 the broker always terminated busy guests that make host calls. Record:
 `/work/reports/upstream-bugs/README.md`.
 
-Fixed by stopping in order (managing chat's decision, 2026-11-17): `terminateWorker` selects
+Mitigated by stopping in order (managing chat's decision, 2026-11-17): `terminateWorker` selects
 SIGKILL, waits up to 1 s (`STOP_UNWIND_MS`, a hang cap) for the worker to report that its guest
 finished (`exit`, `error` or `cleanup-error` message, or a worker error), then calls
 `terminate()`. It does not wait when the guest never entered (no STARTED bit), already
@@ -358,7 +358,16 @@ instead, which is what the host does on SIGKILL, 0 of 2 stressed runs crashed (2
 through the real broker, which terminated each polling guest 0 to 2 ms after selecting SIGKILL,
 no run crashed (12 runs of 60 stops, with physical stops and kills, with a 4 GiB maximum memory
 and with a page-side grow after the stop). So the ordinary kill path was rarely if ever exposed;
-the order still removes the race for any guest that polls. iOS Safari is not measured.
+the order still removes the race for any guest that polls.
+
+With the new order the direct-worker crash case is rarer but not gone: 1 of 10 stressed WebKit
+runs still crashed the page in the 4-page polling case (600 stops; 5 of 5 crashed with
+`terminate()` right after the stop word). There `terminate()` lands after the worker posted that
+its guest left, so the remaining crash is not a racing guest loop; its cause is open. The broker
+test (real runtime, throwing stop) passed 13 of 13 stressed WebKit runs. iOS Safari 26.5 (C4D2
+simulator, 2026-11-17): the direct-worker case passed 60 of 60 polling stops at 4 pages (every
+exit proven, median 1.48 ms after `terminate()`), and the broker test passed 120 of 120
+(`terminate()` always after the exit report, 2 to 9 ms after the stop); no page crash.
 
 Cost (known and accepted, correctness over memory). A busy guest that never polls keeps its chunks
 and held regions withheld until its group ends (for a group that never ends, until the page
