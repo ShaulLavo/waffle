@@ -239,9 +239,9 @@ export class NetHost {
     for (;;) {
       const sample = notifications.set.sample();
       if (this.ready() || notifications.watches()?.pending()) return 1;
-      if (timeoutMs === 0) return 0;
+      if (timeoutMs === 0 || now() >= deadline) return 0;
       const result = notifications.set.wait(sample, deadline);
-      if (result === "closed" || (result === "timed-out" && now() >= deadline)) return 0;
+      if (result === "closed") return 0;
     }
   }
 

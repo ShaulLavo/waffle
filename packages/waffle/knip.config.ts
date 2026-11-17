@@ -96,7 +96,9 @@ export default {
         "scripts/c-threads-fixture-producer.test.ts",
         "tests/c-threads-packet-runner.ts",
         "tooling/check-network-rust.ts",
-        "tests/{browser-navigation,storage,storage-lock,process-recycling,network,notification,notification-race,publication,publication-cross-tab,filesystem-transport,search-executor,search-program,guest-watch}-browser-runner.ts",
+        "tests/{browser-navigation,storage,storage-lock,process-recycling,network,notification,notification-race,notification-fairness,publication,publication-cross-tab,filesystem-transport,search-executor,search-program,guest-watch}-browser-runner.ts",
+        // The fairness runner bundles real traffic and relay-probe Worker entries.
+        "tests/fixtures/notification-{traffic,probed,deadline}-worker.ts",
         "tests/search-executor-browser.ts",
         "tests/search-program-browser.ts",
         "search/{search,shard}-worker.ts",

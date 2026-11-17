@@ -51,6 +51,38 @@ async function restoreSnapshot(handle: SyncFile, contents: Uint8Array): Promise<
   }
 }
 
+// Each engine invalidates an earlier File snapshot through a different native write.
+// Chromium and Firefox detect only a committed createWritable() stream; their sync access
+// handle writes leave the snapshot readable. WebKit detects a sync access handle append, but
+// a stale File read after its createWritable() commit can return zero-filled bytes without
+// an error (upstream WebKit entry, plans/001-vfs-family.md), so WebKit uses the sync handle.
+const webkit = !/Chrome|Firefox/.test(navigator.userAgent);
+
+async function appendNativeByte(
+  handle: SyncFile,
+  contents: Uint8Array<ArrayBuffer>,
+): Promise<void> {
+  const appended = new Uint8Array([99]);
+  if (webkit) {
+    const access = await handle.createSyncAccessHandle();
+    try {
+      assert(access.write(appended, { at: contents.length }) === 1, "append native byte");
+    } finally {
+      access.close();
+    }
+    return;
+  }
+  const writable = await handle.createWritable();
+  try {
+    await writable.write(contents);
+    await writable.write(appended);
+    await writable.close();
+  } catch (error) {
+    await writable.abort().catch(() => {});
+    throw error;
+  }
+}
+
 async function invalidatedSnapshot(open: Open): Promise<void> {
   const seed = await open();
   await seed.persist(batch(1, "native snapshot bytes"));
@@ -68,15 +100,7 @@ async function invalidatedSnapshot(open: Open): Promise<void> {
     if (!this.name.startsWith("p-") || ++acquisitions !== 1) return file;
     const contents = new Uint8Array(await file.arrayBuffer());
     const handle = this as SyncFile;
-    const writable = await this.createWritable();
-    try {
-      await writable.write(contents);
-      await writable.write(new Uint8Array([99]));
-      await writable.close();
-    } catch (error) {
-      await writable.abort().catch(() => {});
-      throw error;
-    }
+    await appendNativeByte(handle, contents);
     return observeSnapshot(
       file,
       (error) => {
@@ -102,7 +126,13 @@ async function invalidatedSnapshot(open: Open): Promise<void> {
       assert(acquisitions === 1, "unrelated native error does not retry");
       result = await read();
     }
-    assert(new TextDecoder().decode(result) === "snapshot", "read exact bytes after modification");
+    const decoded = new TextDecoder().decode(result);
+    assert(
+      decoded === "snapshot",
+      `read exact bytes after modification: read ${JSON.stringify(decoded)} (${result.length} bytes, ` +
+        `[${Array.from(result).join(",")}]), acquisitions=${acquisitions}, ` +
+        `native error=${String(nativeFailure?.error)}`,
+    );
     assert(acquisitions === (nativeFailure ? 2 : 1), "reacquire only an invalidated native File");
     console.log(
       `OPFS qualification native error=${String(nativeFailure?.error)} acquisitions=${acquisitions}`,

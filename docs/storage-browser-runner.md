@@ -24,7 +24,9 @@ removing retained scratch or deleting the listed storage entries. Do not delete
 storage by prefix or signal Safari, Simulator, or launchd's HTTPService.
 
 Set `STORAGE_TEST_FILTER` to select labels during diagnosis. A filtered run preserves
-the complete required inventory and cannot report complete suite success.
+the complete required inventory and cannot report complete suite success. On desktop
+engines, `STORAGE_TEST_REPEAT=<n>` runs the selected cases `n` times in one browser to
+reproduce intermittent failures; pin the run to one or two cores with `taskset` for races.
 
 The native command exits with these codes:
 

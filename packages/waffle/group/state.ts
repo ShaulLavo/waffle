@@ -305,6 +305,8 @@ export class MemoryGroupOwner {
     /** Page-wide, so a token from another group is absent from this group's directory. */
     private readonly tokens: IdentityCounter,
     private readonly onEnd: (group: MemoryGroupOwner) => void,
+    /** The backing was retired, at group end or after the last exit proof that outlived it. */
+    private readonly onRetired: (group: MemoryGroupOwner) => void,
     private readonly source?: GroupMemorySource,
     private readonly backing?: GroupBacking,
     private readonly terminalAdmission?: () => boolean,
@@ -943,12 +945,17 @@ export class MemoryGroupOwner {
   private awaitExit(name: string, exit: Exit): void {
     this.exits.add(exit);
     for (const chunk of exit.chunks) this.quarantinedPages += chunk.pages;
+    let granted = false;
     exitLocks()!
-      .request(name, () => this.exited(exit))
+      .request(name, () => {
+        granted = true;
+        return this.exited(exit);
+      })
       .catch(() => {
         // The lock manager refused: no proof will come, so the pages and the backing stay
-        // withheld for the page's life. The snapshot counts it in `exitFailures`.
-        this.exitFailures++;
+        // withheld for the page's life. The snapshot counts it in `exitFailures`. A throw
+        // from a granted callback is not a refusal: that exit was already proven.
+        if (!granted) this.exitFailures++;
       });
   }
 
@@ -976,6 +983,7 @@ export class MemoryGroupOwner {
   /** Pooled backing goes to another group, so it waits until every exit is proven. */
   private retire(): void {
     if (this.backing) this.source?.retire(this.backing);
+    this.onRetired(this);
   }
 
   private end(): void {
@@ -1038,6 +1046,7 @@ export class MemoryGroups {
           this.groups.delete(ended.id);
           if (ended.draining()) this.draining.add(ended);
         },
+        (retired) => this.draining.delete(retired),
         this.memories,
         backing,
         terminalAdmission,
@@ -1068,11 +1077,16 @@ export class MemoryGroups {
   owner(handle: MemoryGroupHandle): MemoryGroupOwner | undefined {
     return this.owners.get(handle);
   }
-  /** Live groups, then ended groups still holding their backing for an unproven exit. */
+  /**
+   * Live groups, then ended groups still holding their backing for an unproven exit. Those
+   * report `committedBytes` and `freeBytes` as 0 here: their budget charge was returned and
+   * nothing can be admitted into them, so sums across this list match `budget.committed`.
+   */
   snapshot(): readonly MemoryGroupSnapshot[] {
-    for (const group of this.draining) if (!group.draining()) this.draining.delete(group);
     return Array.from(this.groups.values(), (group) => group.snapshot()).concat(
-      Array.from(this.draining, (group) => group.snapshot()),
+      Array.from(this.draining, (group) =>
+        Object.freeze({ ...group.snapshot(), committedBytes: 0, freeBytes: 0 }),
+      ),
     );
   }
   unsettled(): number {

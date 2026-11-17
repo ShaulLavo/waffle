@@ -30,7 +30,11 @@ export interface PythonPayloadFilesystem {
   lookup(path: string): Promise<{ readonly kind: string } | undefined>;
   readFile(path: string): Promise<Uint8Array | undefined>;
   mkdirp(path: string): Promise<void>;
-  writeFile(path: string, bytes: string | Uint8Array, mode: { readonly exclusive: true }): Promise<void>;
+  writeFile(
+    path: string,
+    bytes: string | Uint8Array,
+    mode: { readonly exclusive: true },
+  ): Promise<void>;
   remove(path: string): Promise<unknown>;
   drain(): Promise<void>;
 }
@@ -41,6 +45,36 @@ export interface PythonPayloadRuntime {
 }
 
 type PayloadFile = { readonly path: string; readonly bytes: Uint8Array<ArrayBuffer> };
+
+class Preparation {
+  readonly controller = new AbortController();
+  private failure: { readonly error: unknown } | undefined;
+  private readonly cleanupErrors: unknown[] = [];
+
+  stop(error: unknown): void {
+    if (this.failure) return;
+    this.failure = { error };
+    this.controller.abort(error);
+  }
+
+  cleanup(error: unknown): void {
+    if (!this.failure) this.stop(error);
+    else if (error !== this.failure.error) this.cleanupErrors.push(error);
+  }
+
+  errors(): unknown[] {
+    return this.failure ? [this.failure.error].concat(this.cleanupErrors) : [];
+  }
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      this.stop(error);
+      throw error;
+    }
+  }
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -87,7 +121,11 @@ export function parsePythonPayloadManifest(value: unknown): PythonPayloadManifes
   const input: unknown[] = value.files;
   const files = input.map(parseFile);
   const paths = new Set<string>();
+  let totalBytes = 0;
   for (const file of files) {
+    if (file.bytes > Number.MAX_SAFE_INTEGER - totalBytes)
+      throw new TypeError("Invalid Python payload aggregate byte count");
+    totalBytes += file.bytes;
     if (paths.has(file.path)) throw new TypeError(`Duplicate Python payload path: ${file.path}`);
     paths.add(file.path);
   }
@@ -109,33 +147,115 @@ function sameBytes(left: Uint8Array | undefined, right: Uint8Array): boolean {
   return left?.length === right.length && left.every((byte, index) => byte === right[index]);
 }
 
-async function response(url: URL): Promise<Response> {
-  const result = await fetch(url);
-  if (!result.ok) throw new Error(`Python payload fetch failed: ${url} (${result.status})`);
+async function response(url: URL, attempt: Preparation): Promise<Response> {
+  const result = await fetch(url, { signal: attempt.controller.signal });
+  if (!result.ok) {
+    const error = new Error(`Python payload fetch failed: ${url} (${result.status})`);
+    attempt.stop(error);
+    await result.body?.cancel(error).catch((failure: unknown) => attempt.cleanup(failure));
+    throw error;
+  }
   return result;
 }
 
-async function manifest(options: PythonPayloadOptions, url: URL): Promise<PythonPayloadManifest> {
+async function manifest(
+  options: PythonPayloadOptions,
+  url: URL,
+  attempt: Preparation,
+): Promise<PythonPayloadManifest> {
   const source = options.payload;
-  if (source) return parsePythonPayloadManifest(typeof source === "function" ? await source() : source);
-  const value: unknown = await (await response(url)).json();
+  if (source)
+    return parsePythonPayloadManifest(typeof source === "function" ? await source() : source);
+  const value: unknown = await (await response(url, attempt)).json();
   return parsePythonPayloadManifest(value);
 }
 
-async function fetchFile(file: PythonPayloadFile, base: URL): Promise<PayloadFile> {
-  const bytes = new Uint8Array(await (await response(new URL(file.url, base))).arrayBuffer());
-  if (bytes.byteLength !== file.bytes)
-    throw new Error(`Python payload byte count mismatch: ${file.path}`);
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
-  const sha256 = Array.from(new Uint8Array(hash), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-  if (sha256 !== file.sha256) throw new Error(`Python payload hash mismatch: ${file.path}`);
-  return { path: file.path, bytes };
+function byteCountMismatch(file: PythonPayloadFile): Error {
+  return new Error(`Python payload byte count mismatch: ${file.path}`);
 }
 
-function failures(results: readonly PromiseSettledResult<unknown>[]): unknown[] {
-  return results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+async function cancelReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  attempt: Preparation,
+): Promise<void> {
+  try {
+    await reader.cancel(attempt.controller.signal.reason);
+  } catch (error) {
+    attempt.cleanup(error);
+  }
+}
+
+async function fileBytes(
+  result: Response,
+  file: PythonPayloadFile,
+  attempt: Preparation,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const reader = result.body?.getReader();
+  if (!reader) {
+    if (file.bytes !== 0) throw byteCountMismatch(file);
+    return new Uint8Array();
+  }
+  const signal = attempt.controller.signal;
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => {
+    cancellation ??= cancelReader(reader, attempt);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+  if (signal.aborted) cancel();
+  try {
+    signal.throwIfAborted();
+    // The manifest owns this bound. Transport chunks never determine the allocation size.
+    const bytes = new Uint8Array(file.bytes);
+    await readBytes(reader, bytes, signal, file);
+    return bytes;
+  } catch (error) {
+    attempt.stop(error);
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    await (cancellation ?? cancelReader(reader, attempt));
+    reader.releaseLock();
+  }
+}
+
+async function readBytes(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  bytes: Uint8Array,
+  signal: AbortSignal,
+  file: PythonPayloadFile,
+): Promise<void> {
+  let offset = 0;
+  for (;;) {
+    signal.throwIfAborted();
+    const part = await reader.read();
+    signal.throwIfAborted();
+    if (part.done) break;
+    if (part.value.byteLength > bytes.byteLength - offset) throw byteCountMismatch(file);
+    bytes.set(part.value, offset);
+    offset += part.value.byteLength;
+  }
+  if (offset !== bytes.byteLength) throw byteCountMismatch(file);
+}
+
+async function fetchFile(
+  file: PythonPayloadFile,
+  base: URL,
+  attempt: Preparation,
+): Promise<PayloadFile> {
+  try {
+    const bytes = await fileBytes(await response(new URL(file.url, base), attempt), file, attempt);
+    attempt.controller.signal.throwIfAborted();
+    const hash = await crypto.subtle.digest("SHA-256", bytes);
+    attempt.controller.signal.throwIfAborted();
+    const sha256 = Array.from(new Uint8Array(hash), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    if (sha256 !== file.sha256) throw new Error(`Python payload hash mismatch: ${file.path}`);
+    return { path: file.path, bytes };
+  } catch (error) {
+    attempt.stop(error);
+    throw error;
+  }
 }
 
 /** Python-only payload ownership; the family entry owns raw-source caching. */
@@ -148,6 +268,7 @@ class PythonPayload {
   private readonly owned = new Map<string, PayloadFile>();
   private closed = false;
   private active: Promise<Uint8Array> | undefined;
+  private preparation: Preparation | undefined;
   private disposal: Promise<void> | undefined;
 
   private readonly runtime: PythonPayloadRuntime;
@@ -162,51 +283,59 @@ class PythonPayload {
     );
   }
 
-  private live(): void {
+  private live(attempt?: Preparation): void {
     if (this.closed || this.runtime.disposed) throw new Error("Python installation is disposed");
+    attempt?.controller.signal.throwIfAborted();
   }
 
-  private async fetchWorker(entries: IterableIterator<PythonPayloadFile>, loaded: PayloadFile[]) {
+  private async fetchWorker(
+    entries: IterableIterator<PythonPayloadFile>,
+    loaded: PayloadFile[],
+    attempt: Preparation,
+  ) {
     for (const file of entries) {
-      this.live();
-      loaded.push(await fetchFile(file, this.url));
+      this.live(attempt);
+      loaded.push(await fetchFile(file, this.url, attempt));
     }
   }
 
-  private async fetchFiles(files: readonly PythonPayloadFile[]): Promise<PayloadFile[]> {
+  private async fetchFiles(
+    files: readonly PythonPayloadFile[],
+    attempt: Preparation,
+  ): Promise<PayloadFile[]> {
     const entries = files.values();
     const loaded: PayloadFile[] = [];
     const workers = Array.from({ length: Math.min(8, files.length) }, () =>
-      this.fetchWorker(entries, loaded),
+      attempt.run(() => this.fetchWorker(entries, loaded, attempt)),
     );
-    const errors = failures(await Promise.allSettled(workers));
-    if (errors.length) throw new AggregateError(errors, "Python payload loading failed");
+    await Promise.allSettled(workers);
+    attempt.controller.signal.throwIfAborted();
     return loaded;
   }
 
-  private async prepareDirectories(path: string): Promise<void> {
+  private async prepareDirectories(path: string, attempt: Preparation): Promise<void> {
     for (const parent of parents(path)) {
-      this.live();
+      this.live(attempt);
       const entry = await this.runtime.filesystem.lookup(parent);
       if (entry && entry.kind !== "dir")
         throw new Error(`Python payload directory collision: ${parent}`);
     }
-    this.live();
+    this.live(attempt);
     await this.runtime.filesystem.mkdirp(path.slice(0, path.lastIndexOf("/")));
   }
 
-  private async populate(file: PayloadFile): Promise<void> {
-    await this.prepareDirectories(file.path);
-    this.live();
+  private async populate(file: PayloadFile, attempt: Preparation): Promise<void> {
+    await this.prepareDirectories(file.path, attempt);
+    this.live(attempt);
     const entry = await this.runtime.filesystem.lookup(file.path);
     if (entry) {
       if (entry.kind !== "file") throw new Error(`Python payload collision: ${file.path}`);
-      this.live();
+      this.live(attempt);
       if (!sameBytes(await this.runtime.filesystem.readFile(file.path), file.bytes))
         throw new Error(`Python payload collision: ${file.path}`);
       return;
     }
-    this.live();
+    this.live(attempt);
     await this.runtime.filesystem.writeFile(file.path, file.bytes, { exclusive: true });
     this.owned.set(file.path, file);
   }
@@ -236,20 +365,28 @@ class PythonPayload {
     if (errors.length) throw new AggregateError(errors, "Python payload cleanup failed");
   }
 
-  private async populatePayload(): Promise<void> {
-    const metadata = await manifest(this.options, this.url);
-    this.live();
-    const files = await this.fetchFiles(metadata.files);
-    for (const file of files) await this.populate(file);
-    this.live();
+  private async populatePayload(attempt: Preparation): Promise<void> {
+    this.live(attempt);
+    const metadata = await manifest(this.options, this.url, attempt);
+    this.live(attempt);
+    const files = await this.fetchFiles(metadata.files, attempt);
+    for (const file of files) await this.populate(file, attempt);
+    this.live(attempt);
     await this.runtime.filesystem.drain();
-    this.live();
+    this.live(attempt);
   }
 
-  private async prepare(source: () => Promise<Uint8Array>): Promise<Uint8Array> {
-    const [interpreter, tree] = await Promise.allSettled([source(), this.populatePayload()]);
-    const errors = failures([interpreter, tree]);
+  private async prepare(
+    source: () => Promise<Uint8Array>,
+    attempt: Preparation,
+  ): Promise<Uint8Array> {
+    const [interpreter, tree] = await Promise.allSettled([
+      attempt.run(source),
+      attempt.run(() => this.populatePayload(attempt)),
+    ]);
+    const errors = attempt.errors();
     if (
+      !errors.length &&
       !this.closed &&
       !this.runtime.disposed &&
       interpreter.status === "fulfilled" &&
@@ -269,10 +406,14 @@ class PythonPayload {
       return Promise.reject(error);
     }
     if (this.active) return this.active;
-    const attempt = this.prepare(source);
+    const preparation = new Preparation();
+    this.preparation = preparation;
+    const attempt = this.prepare(source, preparation);
     this.active = attempt;
     const clear = () => {
-      if (this.active === attempt) this.active = undefined;
+      if (this.active !== attempt) return;
+      this.active = undefined;
+      this.preparation = undefined;
     };
     void attempt.then(clear, clear);
     return attempt;
@@ -280,6 +421,7 @@ class PythonPayload {
 
   dispose(): Promise<void> {
     this.closed = true;
+    this.preparation?.stop(new Error("Python installation is disposed"));
     this.disposal ??= this.finishDisposal();
     return this.disposal;
   }

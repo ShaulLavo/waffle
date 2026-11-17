@@ -43,6 +43,11 @@ async function arrivalControl(control: Control): Promise<void> {
       if (url.pathname !== "/_waffle_observation_arrival")
         return fetch(fixture.origin + url.pathname + url.search);
       if (control === "missing") {
+        // Answer from a later task. A reply written in the same tick the request arrives,
+        // on the keep-alive connection that just served the bootstrap page, can fail to
+        // reach the WebKit page (on one core, about 1 in 5 runs) until the server's idle
+        // close makes WebKit retry, so the arrival probe would time out instead.
+        await Bun.sleep(1);
         received.resolve();
         return new Response("Missing arrival", { status: 410 });
       }

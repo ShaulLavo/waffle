@@ -317,10 +317,23 @@ job of main CI run 43976877773, attempt 1, on `8e86a2a0`, with "read exact bytes
 modification". Attempt 2 passed. The test checks bytes, not time, so this is a real
 intermittent failure, not runner noise.
 
-First step: make the assertion at `packages/waffle/tests/opfs-qualification-browser.ts:105`
-print what it read (the decoded result, its length, and the acquisition count), so the next
-failure shows whether the read returned stale bytes, partial bytes or nothing. Then reproduce
-with repeated WebKit runs of that case before choosing a fix. Do not add retries to the test.
+Resolved 2026-11-17: the failure came from WebKit and the test's own setup, not from Waffle's
+OPFS read path. The assertion now prints the bytes it read, the acquisition count and the
+native error, and `STORAGE_TEST_REPEAT` reruns the selected cases in one browser. Pinned to two
+cores (`taskset -c 2,3`), the case failed 5 times in 317 WebKit 27.2 runs. Every failure read 8
+zero bytes with no error and a single File acquisition. Reading the same stale File again a
+moment later returned the right bytes, and adding a fresh `getFile()` read after
+`writable.close()` removed the failure (0 in 120).
+
+The test changed the payload with `createWritable()`. WebKit commits that stream by copying its
+temporary file over the original path in place (`std::filesystem::copy_file` with
+`overwrite_existing`), and an earlier File snapshot read after the commit can return zero-filled
+bytes instead of the data or an error. Waffle never writes payloads that way: payloads are
+immutable and written through sync access handles. On WebKit the test now appends the
+invalidating byte through a sync access handle. That still invalidates the File (WebKit reports
+NotFoundError in about a third of runs) and passed 300 of 300 pinned runs. Chromium and Firefox
+invalidate the File only on a committed `createWritable()` stream (NotReadableError and
+AbortError), so they keep it. Recorded as a WebKit entry in the owner's upstream list.
 
 ### Scheduled later: compact storage follow-ons
 
