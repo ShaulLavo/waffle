@@ -329,16 +329,36 @@ Measured with the polling variant of the regression test (checkpoint import call
 word set right before `terminate()`): exit proven 1.2 ms after terminate (median) on Chromium,
 Firefox and Linux WebKit, max 5 ms, against about 2 s on Chromium and never on WebKit without it.
 
-WebKit crash found by that case (2026-11-17, open, owner decision needed). On Playwright WebKit,
-`worker.terminate()` that lands while the guest is still running its loop of JS import calls
-crashes the page (`crash` event) now and then: every stressed run at 4-page chunks (5 of 5, 30 or
-60 repetitions), 2 of 10 ordinary runs, never when the page waited for the guest to leave its loop
-first (120 of 120). The worker's Web Lock is not the cause (it still crashes with none taken).
-This predates this fix: the broker always terminated busy guests that make host calls. Candidate
-follow-up: the broker selects SIGKILL, waits a bounded time for the exit lock (a polling guest
-frees it within milliseconds), and calls `terminate()` only if the lock is still held. iOS is not
-measured. Record: `/work/reports/upstream-bugs/README.md`. The regression test's WebKit polling
-case terminates only after the heartbeat stops (`graceful`) until then.
+WebKit crash found by that case (2026-11-17). On Playwright WebKit, `worker.terminate()` that
+lands while the guest is still running its loop of JS import calls crashes the page (`crash`
+event) now and then: every stressed run at 4-page chunks (5 of 5, 30 or 60 repetitions), 2 of 10
+ordinary runs, never when the page waited for the guest to leave its loop first (120 of 120). The
+worker's Web Lock is not the cause (it still crashes with none taken). This predates this fix:
+the broker always terminated busy guests that make host calls. Record:
+`/work/reports/upstream-bugs/README.md`.
+
+Fixed by stopping in order (managing chat's decision, 2026-11-17): `terminateWorker` selects
+SIGKILL, waits up to 1 s (`STOP_UNWIND_MS`, a hang cap) for the worker to report that its guest
+finished (`exit`, `error` or `cleanup-error` message, or a worker error), then calls
+`terminate()`. It does not wait when the guest never entered (no STARTED bit), already
+finished, or is a group member parked in its futex wait (`MemberLease.parked()`, odd
+`WAIT_EPOCH`), which SIGKILL does not wake and which keeps PR 548's parked fast path. The wait is
+on the worker's report, not the exit lock: a worker never ends its own thread, so its lock frees
+only at `terminate()`, and waiting for the lock first would always run out the cap.
+`terminate()` therefore still runs for every stopped worker, but on an idle one for a guest that
+polls. Measured on Linux (Playwright WebKit 27.2, 60 stops of a 4-page polling guest through the
+real broker): `terminate()` 3 to 4 ms after the stop (median, max 7 ms), always after the
+worker's report; a non-polling guest is terminated 1004 ms after the stop. Cost: a guest that
+never polls is terminated after the wait, and on WebKit that can still crash the page, so the
+user may lose the tab in that rare case; stopping such a guest also takes about a second longer.
+
+What the crash needs (measured 2026-11-17 on 548's head): in the direct-worker case it needs the
+guest to return normally from Wasm while `terminate()` is pending. With a checkpoint that throws
+instead, which is what the host does on SIGKILL, 0 of 2 stressed runs crashed (240 stops), and
+through the real broker, which terminated each polling guest 0 to 2 ms after selecting SIGKILL,
+no run crashed (12 runs of 60 stops, with physical stops and kills, with a 4 GiB maximum memory
+and with a page-side grow after the stop). So the ordinary kill path was rarely if ever exposed;
+the order still removes the race for any guest that polls. iOS Safari is not measured.
 
 Cost (known and accepted, correctness over memory). A busy guest that never polls keeps its chunks
 and held regions withheld until its group ends (for a group that never ends, until the page
@@ -381,12 +401,22 @@ guest that polls a checkpoint; the exit must be proven on every engine, WebKit i
 case: a member parked in the real `futex_wait32` is reused at once. Busy cases run after all
 others, each in its own launched browser closed right after, because WebKit keeps their threads
 spinning even after their page and context close; WebKit runs 2 busy repetitions per chunk size
-with a 1 s proof cap. On WebKit the polling case terminates only after the guest's heartbeat stops
-(`graceful`), because of the terminate() crash above. Red without the gate: 3 of 3 Chromium busy runs reused before proof and
-saw the old thread's writes. The polling fixture uses its own stop word as the checkpoint, so the
-real path (broker SIGKILL, then `signal(0, 4)` or `__waffle_fatal`) has no end-to-end browser
-test yet; `process-replacement.test.ts` checks the broker half ("SIGKILL is selected before
-terminate()").
+with a 1 s proof cap. The polling case follows the broker's order on every engine: the page sets
+the stop word, waits up to 1 s for the worker to report that the guest left (`guestLeft`), then
+calls `terminate()`; terminating right after the stop word crashed WebKit's page in that case
+(see above). Red without the gate: 3 of 3 Chromium busy runs reused before proof and
+saw the old thread's writes. The polling fixture uses its own stop word as the checkpoint.
+
+Broker stop order test: `bun packages/waffle/tests/stop-order-browser-runner.ts
+[chromium|firefox|webkit]` runs the real path through the runtime and broker. A guest polling
+`runtime_proc.signal(0, 4)` on each pass over 4 pages is stopped 60 times by a physical stop
+(the broker selects SIGKILL) and 60 times by kill; every `terminate()` must come after the
+worker's exit report, and the page must not crash. A busy guest that never polls must still be
+terminated, after the wait (it runs last, in its own browser). Red on 548's head on every engine
+(all 120 polling stops terminated before the report, both busy stops terminated at once).
+`process-replacement.test.ts` checks the broker in Bun: SIGKILL before `terminate()`,
+`terminate()` only after the exit report, after the cap without one, and none for a parked
+member.
 
 Exec out of a group (recorded, not implemented). An acknowledged exec replacement is provably out
 of guest code before its worker is terminated: the old thread throws `ProcessReplaced` out of

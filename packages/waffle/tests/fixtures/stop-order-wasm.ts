@@ -41,10 +41,10 @@ export function stopOrderModule(pages: number, polling: boolean): Uint8Array<Arr
     [0x49, 0x0d, 0, 0x0b],
   );
   const body = [1, 1, 0x7f].concat([0x03, 0x40], poll, heartbeat, fill, [0x0c, 0, 0x0b, 0x0b]);
-  const types = polling
-    ? [2, 0x60, 2, 0x7f, 0x7f, 1, 0x7f, 0x60, 0, 0]
-    : [1, 0x60, 0, 0];
-  const imports = polling ? section(2, [1].concat(text("runtime_proc"), text("signal"), [0, 0])) : [];
+  const types = polling ? [2, 0x60, 2, 0x7f, 0x7f, 1, 0x7f, 0x60, 0, 0] : [1, 0x60, 0, 0];
+  const imports = polling
+    ? section(2, [1].concat(text("runtime_proc"), text("signal"), [0, 0]))
+    : [];
   const start = polling ? 1 : 0;
   const size = unsigned(pages + 1);
   return new Uint8Array(

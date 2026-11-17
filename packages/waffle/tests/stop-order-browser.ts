@@ -91,7 +91,8 @@ export async function stopOrder(options: StopOrderOptions): Promise<StopOrderRep
       request: { module: context.module, args: context.request.argv, env: {} },
       onMessage(message) {
         const data = message as { type?: string; memory?: WebAssembly.Memory };
-        if (data.type === "stop-order-memory" && data.memory) memories.set(context.pid, data.memory);
+        if (data.type === "stop-order-memory" && data.memory)
+          memories.set(context.pid, data.memory);
       },
     });
     handles.set(context.pid, handle);
@@ -148,7 +149,8 @@ export async function stopOrder(options: StopOrderOptions): Promise<StopOrderRep
         return !!memory && Atomics.load(new Int32Array(memory.buffer), 0) > 2;
       }, `heartbeat of ${pid}`);
       const killAt = performance.now();
-      const stopped = options.stop === "kill" ? supervisor.kill(pid, 9) : handles.get(pid)!.terminate();
+      const stopped =
+        options.stop === "kill" ? supervisor.kill(pid, 9) : handles.get(pid)!.terminate();
       const result = await supervisor.waitForExit(root.pid, pid);
       await stopped;
       if (result.code === 9) killed++;

@@ -611,6 +611,17 @@ therefore asks guests to stop through the process outcome, which they poll:
   selected earlier stays (an exit code is not rewritten), and every host call also throws once
   any outcome is selected. Exec replacement is the exception: the old image is stopped inside
   its exec call, which never returns into guest code once the replacement is committed.
+- Then the broker waits, up to about a second, for the worker to report that its guest finished
+  (its `exit` or `error` message, or a worker error), and only then calls `terminate()`. A
+  polling guest reports within a few milliseconds, so `terminate()` lands on an idle worker. It
+  does not wait when no guest code can be running: the guest never entered, already finished,
+  or is a memory group member parked in its futex wait, which `SIGKILL` does not wake. The second
+  is a hang cap, not a speed promise.
+- A guest that never polls still gets `terminate()`, after that wait. On WebKit, `terminate()`
+  landing while a guest is still running can crash the page (Playwright WebKit crashed it when a
+  guest was returning from a loop of host import calls), so in that rare case the user may lose
+  the tab. On WebKit, including iOS Safari, `terminate()` also never stops such a guest's Wasm
+  loop: it keeps a CPU core busy until the tab closes.
 - An external root embedder that terminates its own worker kills the process through the
   runtime first, or disposes the runtime, which selects `SIGKILL` for every process.
 
