@@ -238,6 +238,9 @@ and guest paths. The owner closes image admission before its final logical-sibli
 check. Plain singleton exec ignores unrelated directory intents; shared-memory group
 exec retains its directory-wide intent guard. Successful replacement admits threads
 only from its successor image.
+A thread spawn whose row is already published, but whose second admission check has
+not yet run when exec closes image admission, returns `-ESRCH` even though the
+caller's image stays current.
 
 Validation, descriptor staging, executable lookup, and module loading or compilation
 failures return negative WASI errno before commit. The caller remains usable, and

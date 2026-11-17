@@ -120,6 +120,27 @@ PR41 merged as `7be9014cac046daf9c6ab06e367a8c4e03e0521f`. Exact-main CI run
 `39519747254` passed all five jobs. These admission repairs do not accept the
 remaining storage requirements.
 
+### Logical process identity and exec follow-ups
+
+Status: Approved follow-up, non-blocking notes from the independent review of
+[PR 542](https://github.com/ShaulLavo/waffle/pull/542) (merged at `6815eca7`, released in 0.0.140).
+Owner: process-lifecycle track.
+
+- Missing test: no test yet covers the interleaving where a spawning thread's row is
+  published but its second admission check has not run when exec closes image admission.
+  In that case the spawn returns `-ESRCH` even though the caller's image stays current
+  (`docs/host-abi.md` says so). Add a deterministic control that pauses the spawn between
+  row publication and the second check, runs exec, and asserts `-ESRCH`, an unchanged image
+  and no leaked reservation.
+- The supervisor option `commitReplacement` (`packages/waffle/proc/supervisor.ts`) is typed
+  optional, but it is required for safety whenever the process has a directory row: without
+  it, exec does not close directory admission. Either make it required for directory-backed
+  processes or assert its presence when the row exists.
+- Deliberate difference from Linux, FreeBSD and XNU: those kernels kill sibling threads when
+  one thread calls exec. Waffle refuses exec with `-ENOTSUP` while a sibling thread lives and
+  neither waits for nor terminates siblings. Keep this unless a consumer needs POSIX
+  semantics; changing it needs a design for sibling termination and cleanup ordering.
+
 ## Storage and networking
 
 The shared filesystem supports memory, IndexedDB and OPFS backends behind the same capability
