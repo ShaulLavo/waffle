@@ -312,9 +312,13 @@ stop receipt. Pages then take one of two paths:
   not have taken it yet, so the owner keeps it for the page's life and that agent refuses to
   start. Pending requests outlive group end: the owner retires the backing (to the fixed-backing
   pool in bounded mode) only once every exit is proven, so pooled memory never reaches another
-  group while an old thread may still write it, and ordinary group ends still pool it a few ms
-  later. `exiting` and `quarantinedBytes` in the group snapshot show the withheld memory. Bun has
-  no Web Locks: there the owner issues no exit lock and keeps the old behavior.
+  group while an old busy thread may still write it, and ordinary group ends still pool it a few ms later (parked threads
+  can stay alive on pooled memory; see the `catch_all` residual below). `exiting`, `exitFailures`
+  (rejected lock requests, withheld for the page's life) and `quarantinedBytes` in the group
+  snapshot show the withheld memory; a group that ended with an unproven exit stays in
+  `memoryGroups()` as `ended: true` with its whole backing as `quarantinedBytes`, so a 1 GiB
+  bounded backing held for a killed iOS busy guest is visible. Bun has no Web Locks: there the
+  owner issues no exit lock and keeps the old behavior.
 
 Cooperative stop. `terminateWorker` (`browser/process-broker.ts`) now selects SIGKILL for the
 process before every child `worker.terminate()` (publication only, no change once an outcome is
@@ -331,7 +335,9 @@ closes): forever on WebKit, about 2 s on Chromium, about 1 ms on Firefox. On iOS
 guest also keeps a CPU core: on the C4D2 iPhone (report
 `/work/reports/waffle-gap1-running-member-20261117/IOS.md`) a terminated busy member was still
 writing at 60 s in 4 of 4 runs, its lock was never granted within 60 s (0 of 4), and the tab stayed
-at 400 to 730% CPU until it was closed (a same-origin navigation did not end it). Without the gate
+at 400 to 730% CPU until it was closed (a same-origin navigation did not end it). A few such
+threads can also get the page closed: Playwright WebKit closed the regression test's shared page
+about 1 run in 3 with four of them left spinning, which is why the test now isolates busy cases. Without the gate
 24 of 24 iOS runs wrote into the handed-over chunk (first stray write median 0.15 ms after
 terminate). `exiting` and `quarantinedBytes` in the group snapshot make the withheld memory visible.
 

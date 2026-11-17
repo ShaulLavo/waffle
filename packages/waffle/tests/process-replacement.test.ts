@@ -1750,9 +1750,12 @@ test("SIGKILL is selected before terminate(), except for an exec-replaced image"
   });
   outcome = () => readOutcome(f.table.require(f.pid).outcome);
   try {
-    await f.replace();
-    // The old image left guest code through its exec call; the process lives on.
+    const replaced = f.replace();
+    // The old image left guest code through its exec call; the process lives on. Checked at
+    // the old worker's terminate(), before the replacement could stall on a wrong outcome.
+    await until(() => atTerminate.length > 0);
     expect(atTerminate).toEqual([null]);
+    await replaced;
     expect(outcome()).toBeNull();
     // A direct physical stop of the live replacement, with no outcome selected yet.
     await handles.at(-1)!.terminate();

@@ -185,7 +185,9 @@ class Repeat {
   end(): void {
     this.anchor.stopRequested();
     this.anchor.stopped();
-    if (this.groups.snapshot().length) throw new Error("memory group still live after its run");
+    // An unproven busy exit leaves the ended group in the snapshot, draining; nothing live.
+    if (this.groups.snapshot().some((group) => !group.ended))
+      throw new Error("memory group still live after its run");
   }
 }
 

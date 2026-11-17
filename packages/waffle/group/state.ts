@@ -141,12 +141,20 @@ export interface MemoryGroupSnapshot {
   readonly freeBytes: number;
   /** Released incarnations whose thread exit is not proven yet (see `exitLock`). */
   readonly exiting: number;
+  /** Of those, the ones whose lock request the browser rejected: never proven, never freed. */
+  readonly exitFailures: number;
   /**
-   * Member chunks of `exiting` incarnations, withheld from the free list until exit is proven.
-   * On WebKit a terminated worker that never makes a host call is never proven to exit, so its
-   * chunks stay here until the group ends. Regions it held stay allocated the same way.
+   * Bytes withheld until exits are proven. A live group counts the member chunks of `exiting`
+   * incarnations (regions they held stay allocated and are counted in `regions`). An ended
+   * group counts its whole backing, which waits for the last proof before it is retired.
+   * On WebKit a terminated worker that never makes a host call is never proven to exit.
    */
   readonly quarantinedBytes: number;
+  /**
+   * The group ended but still waits for an exit proof; it admits nothing. It stays in the
+   * snapshot until its backing is retired.
+   */
+  readonly ended: boolean;
 }
 
 /**
@@ -274,6 +282,7 @@ export class MemoryGroupOwner {
   /** Unproven exits. They outlive group end: the backing is retired once they drain. */
   private readonly exits = new Set<Exit>();
   private quarantinedPages = 0;
+  private exitFailures = 0;
   /** Bytes charged to the page budget for this group's backing. */
   private charged = PAGE_BYTES;
   private memberPages = 0;
@@ -366,8 +375,14 @@ export class MemoryGroupOwner {
     return this.members.some((member) => member?.pid === pid && this.receives(member));
   }
 
+  /** Ended, but its backing still waits for an exit proof before it is retired. */
+  draining(): boolean {
+    return this.ended && this.exits.size > 0;
+  }
+
   snapshot(): MemoryGroupSnapshot {
-    this.reconcile();
+    // An ended group's budget charge is already returned; never charge it again.
+    if (!this.ended) this.reconcile();
     const live = this.members.filter((member): member is Member => !!member);
     let holds = 0;
     for (const region of this.regions.values())
@@ -391,7 +406,11 @@ export class MemoryGroupOwner {
       bypassed: this.bypassed,
       freeBytes: this.free.available * PAGE_BYTES,
       exiting: this.exits.size,
-      quarantinedBytes: this.quarantinedPages * PAGE_BYTES,
+      exitFailures: this.exitFailures,
+      quarantinedBytes: this.ended
+        ? this.memory.buffer.byteLength
+        : this.quarantinedPages * PAGE_BYTES,
+      ended: this.ended,
     });
   }
 
@@ -911,7 +930,9 @@ export class MemoryGroupOwner {
     exitLocks()!
       .request(name, () => this.exited(exit))
       .catch(() => {
-        // The lock manager refused: the pages, and the backing, stay withheld.
+        // The lock manager refused: no proof will come, so the pages and the backing stay
+        // withheld for the page's life. The snapshot counts it in `exitFailures`.
+        this.exitFailures++;
       });
   }
 
@@ -961,6 +982,8 @@ export class MemoryGroups {
   readonly budget: GroupBackingBudget;
   private readonly tokens = new IdentityCounter();
   private readonly groups = new Map<string, MemoryGroupOwner>();
+  /** Ended groups whose backing still waits for an exit proof; reported, never joinable. */
+  private readonly draining = new Set<MemoryGroupOwner>();
   private readonly owners = new WeakMap<MemoryGroupHandle, MemoryGroupOwner>();
   private nextId = 1;
   private readonly explicitMaximum: number | undefined;
@@ -997,6 +1020,7 @@ export class MemoryGroups {
         this.tokens,
         (ended) => {
           this.groups.delete(ended.id);
+          if (ended.draining()) this.draining.add(ended);
         },
         this.memories,
         backing,
@@ -1028,8 +1052,12 @@ export class MemoryGroups {
   owner(handle: MemoryGroupHandle): MemoryGroupOwner | undefined {
     return this.owners.get(handle);
   }
+  /** Live groups, then ended groups still holding their backing for an unproven exit. */
   snapshot(): readonly MemoryGroupSnapshot[] {
-    return Array.from(this.groups.values(), (group) => group.snapshot());
+    for (const group of this.draining) if (!group.draining()) this.draining.delete(group);
+    return Array.from(this.groups.values(), (group) => group.snapshot()).concat(
+      Array.from(this.draining, (group) => group.snapshot()),
+    );
   }
   unsettled(): number {
     let count = 0;

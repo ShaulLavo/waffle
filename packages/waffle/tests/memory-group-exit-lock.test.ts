@@ -9,12 +9,21 @@ import { MemoryGroups, type MemberLease } from "../group/state.js";
 interface Pending {
   readonly callback: (lock: Lock | null) => unknown;
   readonly resolve: (value: unknown) => void;
+  readonly reject: (reason: unknown) => void;
 }
 
 class ManualLocks {
   readonly pending = new Map<string, Pending>();
   request(name: string, callback: (lock: Lock | null) => unknown) {
-    return new Promise((resolve) => this.pending.set(name, { callback, resolve }));
+    return new Promise((resolve, reject) => this.pending.set(name, { callback, resolve, reject }));
+  }
+  /** The lock manager fails the owner's request: no proof can ever come. */
+  async refuse(name: string): Promise<void> {
+    const entry = this.pending.get(name);
+    if (!entry) throw new Error(`no pending request for ${name}`);
+    this.pending.delete(name);
+    entry.reject(new DOMException("refused", "InvalidStateError"));
+    await Promise.resolve();
   }
   /** The agent's thread exited: the owner's request is granted. Returns what it holds. */
   grant(name: string): unknown {
@@ -132,6 +141,9 @@ function fixedSource() {
   return { groups, retired };
 }
 
+/** An ended group still holding its whole 16-page fixed backing for an unproven exit. */
+const draining = { ended: true, members: 0, exiting: 1, quarantinedBytes: 16 * PAGE_BYTES };
+
 test("a group whose last member stops busy returns its fixed backing once the exit is proven", () => {
   const { groups, retired } = fixedSource();
   const only = groups.admit(1, "d", "new");
@@ -140,20 +152,34 @@ test("a group whose last member stops busy returns its fixed backing once the ex
   expect(groups.owner(only.group)!.request(only, GroupOp.GROW, 1)[0]).toBeGreaterThan(0);
   only.stopRequested();
   only.stopped();
-  expect(groups.snapshot()).toEqual([]);
+  expect(groups.snapshot()).toMatchObject([draining]);
   expect(retired).toEqual([]);
   locks.grant(request.exitLock!);
   expect(retired).toEqual([{ exposed: false }]);
+  expect(groups.snapshot()).toEqual([]);
 });
 
-test("a group whose last member never proves its exit keeps its backing out of the pool", () => {
+test("a group whose last member never proves its exit keeps reporting its held backing", () => {
   const { groups, retired } = fixedSource();
   const only = groups.admit(1, "d", "new");
   only.launch().request.port.close();
   only.stopRequested();
   only.stopped();
-  expect(groups.snapshot()).toEqual([]);
+  expect(groups.snapshot()).toMatchObject([{ ...draining, exitFailures: 0 }]);
   expect(retired).toEqual([]);
+});
+
+test("a refused exit-lock request is counted and keeps its pages withheld", async () => {
+  const { owner, join, op, stop } = group();
+  const busy = join();
+  op(busy.lease, GroupOp.GROW, 1);
+  stop(busy.lease);
+  await locks.refuse(busy.request.exitLock!);
+  expect(owner.snapshot()).toMatchObject({
+    exiting: 1,
+    exitFailures: 1,
+    quarantinedBytes: PAGE_BYTES,
+  });
 });
 
 test("a granted exit lock is released at once only when the agent provably took it", async () => {
