@@ -2826,8 +2826,6 @@ export class BrowserProcessBroker {
     if (!child || child.generation !== generation || !this.canExec(child.transport))
       throw new ProcessError(ProcessErrno.NOTSUP, "replacement lost its owned source image");
     const image = this.options.table.require(pid).image;
-    const directory = child.transport.directory;
-    const version = directoryAdmissionVersion(directory);
     const admission = workerProcessState(child.transport).imageAdmission;
     if (controlCas(admission, 0, generation, -generation) !== generation)
       throw new ProcessError(ProcessErrno.NOTSUP, "replacement source image admission is closed");
@@ -2841,7 +2839,6 @@ export class BrowserProcessBroker {
     };
     try {
       membership = this.closeReplacementGroup(child, resolved);
-      commitDirectoryAdmission(directory, version);
     } catch (error) {
       rollback();
       throw error;
@@ -2859,7 +2856,10 @@ export class BrowserProcessBroker {
         ProcessErrno.NOTSUP,
         "shared caller requires a bound host-only target",
       );
+    const directory = child.transport.directory;
+    const version = directoryAdmissionVersion(directory);
     this.checkGroupIntents(child);
+    commitDirectoryAdmission(directory, version);
     return child.group.closeAdmission();
   }
   private checkGroupIntents(source: RuntimeChild): void {

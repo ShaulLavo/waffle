@@ -234,7 +234,10 @@ membership; owned no-consumer rollback or full cleanup including native return d
 A completed member's unconsumed result alone does not block exec. The owner neither
 waits for nor terminates siblings to make exec eligible. Thread publication checks
 the caller's current image and retirement before exposing its handle, on both host
-and guest paths. Successful replacement admits threads only from its successor image.
+and guest paths. The owner closes image admission before its final logical-sibling
+check. Plain singleton exec ignores unrelated directory intents; shared-memory group
+exec retains its directory-wide intent guard. Successful replacement admits threads
+only from its successor image.
 
 Validation, descriptor staging, executable lookup, and module loading or compilation
 failures return negative WASI errno before commit. The caller remains usable, and

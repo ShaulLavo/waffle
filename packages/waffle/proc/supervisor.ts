@@ -1009,13 +1009,17 @@ export class ProcessSupervisor {
         replacement.request.argv,
       );
       active();
-      if (record.processKind === "thread" || this.hasProcessSibling(record.pid))
+      if (record.processKind === "thread")
         throw new ProcessError(ProcessErrno.NOTSUP, "exec requires a sole process leader");
       replacement.admission = this.options.commitReplacement?.(
         record.pid,
         replacement.image.generation,
         resolved,
       );
+      // The owner closes this generation first. Earlier thread intents have published
+      // their row; later intents cannot pass their final image-admission check.
+      if (this.hasProcessSibling(record.pid))
+        throw new ProcessError(ProcessErrno.NOTSUP, "exec requires a sole process leader");
       const signal = resetImageSignals(record.signalState, record.interrupt);
       if (signal) this.defaultSignal(record.pid, signal);
       active();
