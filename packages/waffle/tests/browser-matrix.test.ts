@@ -18,6 +18,7 @@ const runners = [
   "guest-watch",
   "filesystem-transport",
   "threads-runtime",
+  "running-member-reuse",
   "gpu",
 ];
 const continuity = "workspace-continuity";

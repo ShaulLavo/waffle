@@ -21,6 +21,7 @@ const runners = [
   "tests/guest-watch-browser-runner.ts",
   "tests/filesystem-transport-browser-runner.ts",
   "tests/threads-runtime-browser-runner.ts",
+  "tests/running-member-reuse-browser-runner.ts",
   gpuRunner,
 ];
 const parallel = [

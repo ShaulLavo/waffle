@@ -1538,7 +1538,9 @@ async function attachGroupMember(
   // so every byte of group backing is charged by the owner (W3).
   if (!("linkPlan" in req))
     throw new ExecutableFormatError("memory group members load through waffle/link plans");
-  const { createGroupMember } = await import("../group/member.js");
+  const { createGroupMember, holdExitLock } = await import("../group/member.js");
+  // Before any guest code: the owner reuses this member's pages only after taking the lock.
+  await holdExitLock(req.memoryGroup.exitLock);
   const transport = req.runtimeProcess;
   return createGroupMember(req.memoryGroup, {
     checkActive,

@@ -1732,3 +1732,35 @@ test("exec closes an in-flight thread before publication and admits only the suc
     await f.close();
   }
 });
+
+// docs/host-abi.md, "Stop polling": a guest polling signal(0, 4) must see a stop before its
+// worker is terminated, because terminate() alone never stops a busy Wasm thread on iOS.
+test("SIGKILL is selected before terminate(), except for an exec-replaced image", async () => {
+  const handles: import("../proc/types.js").ProcessHandle[] = [];
+  const atTerminate: unknown[] = [];
+  let outcome = (): unknown => undefined;
+  const f = await fixture({
+    stop: () => {
+      atTerminate.push(outcome());
+    },
+    wrap: (handle) => {
+      handles.push(handle);
+      return handle;
+    },
+  });
+  outcome = () => readOutcome(f.table.require(f.pid).outcome);
+  try {
+    const replaced = f.replace();
+    // The old image left guest code through its exec call; the process lives on. Checked at
+    // the old worker's terminate(), before the replacement could stall on a wrong outcome.
+    await until(() => atTerminate.length > 0);
+    expect(atTerminate).toEqual([null]);
+    await replaced;
+    expect(outcome()).toBeNull();
+    // A direct physical stop of the live replacement, with no outcome selected yet.
+    await handles.at(-1)!.terminate();
+    expect(atTerminate[1]).toMatchObject({ kind: "signaled", code: 9 });
+  } finally {
+    await f.close();
+  }
+});

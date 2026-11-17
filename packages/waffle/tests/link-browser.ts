@@ -51,6 +51,11 @@ export async function sharedLinkBrowser() {
       "independent marks",
     );
   });
+  // A member stopped while not parked keeps the ended group draining until its exit lock is
+  // granted, a task later; the hang cap only catches a proof that never comes.
+  const until = performance.now() + 10_000;
+  while (groups.snapshot().length && performance.now() < until)
+    await new Promise((resolve) => setTimeout(resolve, 1));
   assert(groups.snapshot().length === 0 && groups.budget.committed === 0, "group cleanup");
   return { observations, relay: await linkedRelayBrowser(), cleanup: true };
 }

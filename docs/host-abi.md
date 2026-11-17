@@ -585,6 +585,35 @@ signal, but selects terminal default action for a pending terminating signal.
 handlers; ignored defaults return zero without revocation or terminal unwind.
 An already-selected `SIGKILL` remains authoritative across all these paths.
 
+### Stop polling
+
+`Worker.terminate()` does not stop guest code that is running: Chromium lets it run about 2 s
+more, and Safari (including iOS) never stops a Wasm loop that makes no host call. The host
+therefore asks guests to stop through the process outcome, which they poll:
+
+- What to poll: `runtime_proc.signal(0, 4)` (or the link loader's injected fatal checkpoint,
+  which reads the same state). Poll it periodically while running guest code with no host
+  calls, such as from a JavaScript engine's interrupt handler.
+- What means stop: the call throws instead of returning `0` once the process outcome is
+  `signaled`. It never consumes a handled signal, and it ignores the interrupt cell.
+- The interrupt cell is not a stop flag. It is one Int32 word in the process's shared control
+  block (`SignalTransport.interrupt` in `proc/signals.ts`, outside guest memory), so Wasm guest
+  code cannot read it. A publisher stores the signal number there and notifies it, and a
+  dequeue may clear it. Nonzero means only "something was published, look again": waits
+  use it to wake, and an executor's JavaScript may read it, or `WorkerExecutor.interruptPending()`,
+  to decide when to poll sooner. Only `signal(0, 4)` decides whether to stop.
+- What the guest must do: let that throw unwind. Do not catch it or run more guest code. The
+  worker thread then returns to its event loop and ends, which is what frees a memory group
+  member's pages for reuse ([Memory groups](memory-groups.md#exit-proof)).
+- What the host guarantees: before the broker terminates a process's worker (kill, runtime
+  disposal, a failed or abandoned launch, or any other physical stop), it selects `SIGKILL` as
+  the outcome if none is selected yet, so `signal(0, 4)` throws before `terminate()`. An outcome
+  selected earlier stays (an exit code is not rewritten), and every host call also throws once
+  any outcome is selected. Exec replacement is the exception: the old image is stopped inside
+  its exec call, which never returns into guest code once the replacement is committed.
+- An external root embedder that terminates its own worker kills the process through the
+  runtime first, or disposes the runtime, which selects `SIGKILL` for every process.
+
 The interrupt cell is an advisory wake hint, not signal readiness. Process poll and
 job wait consult the authoritative handled-pending table and fatal outcome without
 consuming either. Preview1 polling uses the same readiness through the worker

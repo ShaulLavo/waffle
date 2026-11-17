@@ -3032,6 +3032,12 @@ export class BrowserProcessBroker {
     const worker = child.worker;
     if (!worker) return;
     let ended: void | Promise<void>;
+    // terminate() never stops a busy Wasm thread on iOS Safari and takes about 2 s on Chromium.
+    // Select SIGKILL first (no change once an outcome is settled) so a guest polling
+    // runtime_proc.signal(0, 4) or its fatal checkpoint unwinds and its thread exits; a group
+    // owner can then reuse its pages (docs/host-abi.md, "Stop polling"). Exec replacement
+    // stops an old image inside its exec call and must not end the process.
+    if (!child.replacing) this.publishStopSignal(child.context.pid);
     try {
       ended = worker.terminate();
     } finally {
@@ -3130,6 +3136,14 @@ export class BrowserProcessBroker {
     if (captured && this.supervisor?.get(pid) === captured)
       this.supervisor.observeSignal(pid, signal);
     return true;
+  }
+  /** Publication only, as at disposal: no revocation, supervisor callback or wake. */
+  private publishStopSignal(pid: number): void {
+    const target =
+      this.states().find((state) => state.pid === pid)?.signals ??
+      this.options.table.get(pid) ??
+      this.reservedRoots.get(pid);
+    if (target) this.requestSignalIfPresent(target, 9);
   }
   private requestSignalIfPresent(target: SignalTransport, signal: number): void {
     try {

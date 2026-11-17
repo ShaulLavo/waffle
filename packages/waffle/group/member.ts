@@ -108,6 +108,27 @@ interface Watch {
   readonly tag: number;
 }
 
+/**
+ * Takes this incarnation's exit lock before any guest code runs and holds it until the thread
+ * exits, which is the owner's proof that the agent stopped writing group memory. The owner
+ * takes the lock when it retires an incarnation, so an agent that arrives later refuses to run.
+ */
+export function holdExitLock(name: string | undefined): Promise<void> {
+  if (name === undefined) return Promise.resolve();
+  const held = Promise.withResolvers<void>();
+  navigator.locks
+    .request(name, { ifAvailable: true }, (lock) => {
+      if (!lock) {
+        held.reject(new ProcessError(GroupErrno.SRCH, "memory group member was already retired"));
+        return undefined;
+      }
+      held.resolve();
+      return new Promise<never>(() => {});
+    })
+    .catch(held.reject);
+  return held.promise;
+}
+
 /** Worker side of one member incarnation. Owner state stays on the page; see group/state.ts. */
 export function createGroupMember(
   request: MemoryGroupMemberRequest,
