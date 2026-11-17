@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import type { GroupMemorySource, ReservationSizing, WasmPages } from "../memory/reservations.js";
 import { GroupOp, PAGE_BYTES, WAIT_EPOCH } from "../group/protocol.js";
 import { MemoryGroups, type MemberLease } from "../group/state.js";
 
@@ -8,29 +9,21 @@ import { MemoryGroups, type MemberLease } from "../group/state.js";
 interface Pending {
   readonly callback: (lock: Lock | null) => unknown;
   readonly resolve: (value: unknown) => void;
-  readonly reject: (reason: unknown) => void;
-  aborted: boolean;
 }
 
 class ManualLocks {
   readonly pending = new Map<string, Pending>();
-  request(name: string, options: LockOptions, callback: (lock: Lock | null) => unknown) {
-    return new Promise((resolve, reject) => {
-      const entry: Pending = { callback, resolve, reject, aborted: false };
-      options.signal?.addEventListener("abort", () => {
-        entry.aborted = true;
-        this.pending.delete(name);
-        reject(new DOMException("aborted", "AbortError"));
-      });
-      this.pending.set(name, entry);
-    });
+  request(name: string, callback: (lock: Lock | null) => unknown) {
+    return new Promise((resolve) => this.pending.set(name, { callback, resolve }));
   }
-  /** The agent's thread exited: the owner's request is granted. */
-  grant(name: string): void {
+  /** The agent's thread exited: the owner's request is granted. Returns what it holds. */
+  grant(name: string): unknown {
     const entry = this.pending.get(name);
     if (!entry) throw new Error(`no pending request for ${name}`);
     this.pending.delete(name);
-    entry.resolve(entry.callback({ name, mode: "exclusive" } as Lock));
+    const held = entry.callback({ name, mode: "exclusive" } as Lock);
+    entry.resolve(held);
+    return held;
   }
 }
 
@@ -49,10 +42,10 @@ function group() {
   anchor.launch().request.port.close();
   const owner = groups.owner(anchor.group)!;
   let pid = 2;
-  const join = () => {
+  const join = (keepPort = false) => {
     const lease = groups.admit(pid++, "d", anchor.group);
     const { request } = lease.launch();
-    request.port.close();
+    if (!keepPort) request.port.close();
     return { lease, request };
   };
   const op = (lease: MemberLease, code: number, a = 0, b = 0) => owner.request(lease, code, a, b);
@@ -117,17 +110,67 @@ test("a region an exiting member held stays allocated after its last live holder
   end();
 });
 
-test("group end abandons unproven exits, and a late grant changes nothing", () => {
-  const { groups, join, op, stop, end } = group();
-  const busy = join();
-  op(busy.lease, GroupOp.GROW, 1);
-  stop(busy.lease);
-  const name = busy.request.exitLock!;
-  const pending = locks.pending.get(name)!;
-  end();
+/** A bounded-mode source: one fixed backing, recording what is retired and how. */
+function fixedSource() {
+  const retired: { exposed: boolean }[] = [];
+  const source: GroupMemorySource = {
+    control: (length) => new SharedArrayBuffer(length),
+    create: () => ({
+      kind: "fixed",
+      memory: new WebAssembly.Memory({ initial: 16, maximum: 16, shared: true }),
+      pages: 16 as WasmPages,
+      exposed: false,
+    }),
+    retire: (backing) => retired.push({ exposed: backing.exposed }),
+    failed() {},
+  };
+  const sizing = {
+    arena: { bytes: 0, fallback: null },
+    groupShape: () => ({ kind: "fixed", pages: 16 }),
+  } as unknown as ReservationSizing;
+  const groups = new MemoryGroups({ stackBytes: 64 * 1024, maximumPages: 16 }, source, sizing);
+  return { groups, retired };
+}
+
+test("a group whose last member stops busy returns its fixed backing once the exit is proven", () => {
+  const { groups, retired } = fixedSource();
+  const only = groups.admit(1, "d", "new");
+  const { request } = only.launch();
+  request.port.close();
+  expect(groups.owner(only.group)!.request(only, GroupOp.GROW, 1)[0]).toBeGreaterThan(0);
+  only.stopRequested();
+  only.stopped();
   expect(groups.snapshot()).toEqual([]);
-  expect(pending.aborted).toBe(true);
-  expect(pending.callback({ name, mode: "exclusive" } as Lock)).toBeUndefined();
+  expect(retired).toEqual([]);
+  locks.grant(request.exitLock!);
+  expect(retired).toEqual([{ exposed: false }]);
+});
+
+test("a group whose last member never proves its exit keeps its backing out of the pool", () => {
+  const { groups, retired } = fixedSource();
+  const only = groups.admit(1, "d", "new");
+  only.launch().request.port.close();
+  only.stopRequested();
+  only.stopped();
+  expect(groups.snapshot()).toEqual([]);
+  expect(retired).toEqual([]);
+});
+
+test("a granted exit lock is released at once only when the agent provably took it", async () => {
+  const { join, stop, end } = group();
+  const quiet = join(),
+    started = join(true);
+  // The agent's first request: browser/worker.ts sends none before taking its exit lock.
+  started.request.port.postMessage({ seq: 1, op: GroupOp.GROW, args: [1, 0, 0, 0] });
+  const reply = new Int32Array(started.request.reply);
+  while (Atomics.load(reply, 0) !== 1) await Bun.sleep(1);
+  started.request.port.close();
+  stop(quiet.lease);
+  stop(started.lease);
+  // No request arrived from `quiet`: it may not have taken its lock yet, so the owner keeps it.
+  expect(locks.grant(quiet.request.exitLock!)).toBeInstanceOf(Promise);
+  expect(locks.grant(started.request.exitLock!)).toBeUndefined();
+  end();
 });
 
 test("without a lock manager the owner issues no exit lock and reuses at stop", () => {

@@ -307,11 +307,14 @@ stop receipt. Pages then take one of two paths:
 - Otherwise the member may be executing. Its chunks and every region it held stay off the free list
   until the owner acquires the incarnation's exit lock (`awaitExit`), which the worker took with
   `ifAvailable` before any guest code (`holdExitLock`, `group/member.ts`, called from
-  `browser/worker.ts` before `createGroupMember`). The owner keeps granted locks until group end,
-  so an agent that never took its lock refuses to start. Group end aborts pending requests and
-  marks the backing exposed, so an unproven exit never sends a fixed backing back to the pool.
-  `exiting` and `quarantinedBytes` in the group snapshot show the withheld memory. Bun has no Web
-  Locks: there the owner issues no exit lock and keeps the old behavior.
+  `browser/worker.ts` before `createGroupMember`). On grant the owner releases the lock at once
+  when the agent sent it a request (so it held the lock and has exited); otherwise the agent may
+  not have taken it yet, so the owner keeps it for the page's life and that agent refuses to
+  start. Pending requests outlive group end: the owner retires the backing (to the fixed-backing
+  pool in bounded mode) only once every exit is proven, so pooled memory never reaches another
+  group while an old thread may still write it, and ordinary group ends still pool it a few ms
+  later. `exiting` and `quarantinedBytes` in the group snapshot show the withheld memory. Bun has
+  no Web Locks: there the owner issues no exit lock and keeps the old behavior.
 
 Cooperative stop. `terminateWorker` (`browser/process-broker.ts`) now selects SIGKILL for the
 process before every child `worker.terminate()` (publication only, no change once an outcome is
@@ -357,9 +360,25 @@ case: right after release a keeper grows and must not get the terminated member'
 has a spare chunk); on Chromium and Firefox the exit must then be proven and the chunk reused with
 no write from the old thread; on WebKit it must stay quarantined. Polling case: the same with a
 guest that polls a checkpoint; the exit must be proven on every engine, WebKit included. Parked
-case: a member parked in the real `futex_wait32` is reused at once. WebKit runs 2 busy repetitions per chunk size with a
-1 s proof cap, because each leaves a thread spinning until page close. Red without the gate: 3 of
-3 Chromium busy runs reused before proof and saw the old thread's writes.
+case: a member parked in the real `futex_wait32` is reused at once. Each busy case runs last for
+its chunk size, in a fresh browser context closed right after, because its WebKit threads spin
+until their page goes away (with them left in the shared page, WebKit closed it about 1 run in
+3); WebKit runs 2 busy repetitions per chunk size with a 1 s proof cap. 10 of 10 WebKit runs
+passed after that change. Red without the gate: 3 of 3 Chromium busy runs reused before proof and
+saw the old thread's writes. The polling fixture uses its own stop word as the checkpoint, so the
+real path (broker SIGKILL, then `signal(0, 4)` or `__waffle_fatal`) has no end-to-end browser
+test yet; `process-replacement.test.ts` checks the broker half ("SIGKILL is selected before
+terminate()").
+
+Exec out of a group (recorded, not implemented). An acknowledged exec replacement is provably out
+of guest code before its worker is terminated: the old thread throws `ProcessReplaced` out of
+`waitExec` (`proc/abi.ts`), unwinds to the worker's top level, disposes its member and posts
+`replaced`, and only then does `acknowledgeReplacement` reach `terminate()`. A lease flag such as
+`stopped({ unwound: true })` could skip the lock for it. The payoff is small: exec needs the sole
+member, so the group ends at that release anyway, and with pending exits now outliving group end
+the backing is still pooled once the lock frees. The accepted cost is waiting on that idle
+worker's lock (not measured on iOS). Unacknowledged exec stops (kill or cancel during exec) are
+not provably out of guest code and must keep the lock path.
 
 Evidence (measured with PR 547's version of the test, commit 56152047, whose measurement knobs
 are gone). `release()` runs a few microtasks after `terminateWorker`
@@ -435,7 +454,9 @@ The stop is a JavaScript throw from the import. The link loader admits `try_tabl
 (`interrupt/rewriter-internal.ts:291`), and a `catch_all` handler (C++ `catch (...)` or a destructor
 cleanup pad) catches JavaScript exceptions, so it would run guest code on reused pages before
 rethrowing or resuming. bun-wasm's guests have no exception section today. The group-end seal path
-has the same property. Parking the stale thread forever instead would bring back the WebKit
+has the same property, and so does gap 1's parked fast path: C++ built with `-fwasm-exceptions`
+runs destructors in `catch_all` plus `rethrow` cleanup pads as the stop unwinds, so a WebKit
+sleeper woken later (by a notify or its own timeout) would write its old stack in reused pages. Parking the stale thread forever instead would bring back the WebKit
 reservation leak.
 
 ## Tests

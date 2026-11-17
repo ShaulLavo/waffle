@@ -149,7 +149,11 @@ export interface MemoryGroupSnapshot {
   readonly quarantinedBytes: number;
 }
 
-/** Web Locks prove that a terminated agent's thread exited. Bun has none. */
+/**
+ * Web Locks prove that a terminated agent's thread exited. Bun has none. The owner and its
+ * member workers must share one LockManager (same origin); a member worker from another origin
+ * would let the owner's request succeed at once.
+ */
 function exitLocks(): LockManager | undefined {
   return (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks;
 }
@@ -172,12 +176,14 @@ interface Member {
   waitsClosed: boolean;
   /** Held by the launched agent until its thread exits; see MemoryGroupMemberRequest. */
   exitLock?: string;
+  /** The agent sent a request, so it took its exit lock first (browser/worker.ts). */
+  started?: boolean;
 }
 /** A released incarnation whose agent may still be running guest code on what it held. */
 interface Exit {
   readonly chunks: Chunk[];
   readonly regions: Region[];
-  readonly abort: AbortController;
+  readonly started: boolean;
 }
 interface Arena {
   readonly page: number;
@@ -265,9 +271,8 @@ export class MemoryGroupOwner {
   private admission: "open" | "sealed" | { readonly member: Member } = "open";
   /** Only private incarnation records survive reusable slot release. No guest memory aliases. */
   private readonly retiredWaits: Int32Array[] = [];
+  /** Unproven exits. They outlive group end: the backing is retired once they drain. */
   private readonly exits = new Set<Exit>();
-  /** Acquired exit locks, held until group end so an agent that never started cannot start. */
-  private readonly heldExits: (() => void)[] = [];
   private quarantinedPages = 0;
   /** Bytes charged to the page budget for this group's backing. */
   private charged = PAGE_BYTES;
@@ -476,6 +481,7 @@ export class MemoryGroupOwner {
 
   private answer(member: Member, data: GroupRequestMessage): void {
     if (!this.receives(member) || !member.reply) return;
+    member.started = true;
     if (
       typeof data !== "object" ||
       data === null ||
@@ -849,7 +855,7 @@ export class MemoryGroupOwner {
     // proof: see parkedAndClosed.
     const exit: Exit | undefined =
       member.exitLock && !this.parkedAndClosed(member.reply!)
-        ? { chunks: [], regions: [], abort: new AbortController() }
+        ? { chunks: [], regions: [], started: !!member.started }
         : undefined;
     // Pins whose delivery this member owned have no remaining consumer.
     for (const pin of Array.from(this.pins.values())) {
@@ -897,52 +903,54 @@ export class MemoryGroupOwner {
 
   /**
    * The agent took this lock before guest code and holds it until its thread exits, so the
-   * grant is the proof. The owner then keeps it: an agent that never took it refuses to start.
+   * grant is the proof. The request outlives group end: the backing waits for it.
    */
   private awaitExit(name: string, exit: Exit): void {
     this.exits.add(exit);
     for (const chunk of exit.chunks) this.quarantinedPages += chunk.pages;
     exitLocks()!
-      .request(name, { signal: exit.abort.signal }, () => this.exited(exit))
+      .request(name, () => this.exited(exit))
       .catch(() => {
-        // Aborted at group end, or the lock manager refused: the pages stay withheld.
+        // The lock manager refused: the pages, and the backing, stay withheld.
       });
   }
 
-  private exited(exit: Exit): Promise<void> | undefined {
-    if (this.ended || !this.exits.delete(exit)) return undefined;
-    for (const chunk of exit.chunks) {
-      this.quarantinedPages -= chunk.pages;
-      this.free.give(chunk.page, chunk.pages);
-    }
+  /**
+   * An agent that sent a request held the lock and has exited, so the lock is released at once.
+   * One that never did may not have taken it yet: the owner keeps the lock for the page's life,
+   * and that agent refuses to start (rare: a launch stopped before its worker ran).
+   */
+  private exited(exit: Exit): Promise<never> | undefined {
+    if (!this.exits.delete(exit)) return undefined;
+    for (const chunk of exit.chunks) this.quarantinedPages -= chunk.pages;
+    if (!this.ended) this.reuse(exit);
+    else if (!this.exits.size) this.retire();
+    return exit.started ? undefined : new Promise<never>(() => {});
+  }
+
+  private reuse(exit: Exit): void {
+    for (const chunk of exit.chunks) this.free.give(chunk.page, chunk.pages);
     for (const region of exit.regions) {
       region.exiting--;
       this.maybeFree(region);
     }
-    const held = Promise.withResolvers<void>();
-    this.heldExits.push(held.resolve);
-    return held.promise;
   }
 
-  /** Unproven exits keep the backing from being pooled for another group. */
-  private endExits(): void {
-    if (this.exits.size && this.backing) this.backing.exposed = true;
-    for (const exit of this.exits) exit.abort.abort();
-    for (const release of this.heldExits) release();
-    this.heldExits.length = 0;
+  /** Pooled backing goes to another group, so it waits until every exit is proven. */
+  private retire(): void {
+    if (this.backing) this.source?.retire(this.backing);
   }
 
   private end(): void {
     if (this.ended) return;
     this.ended = true;
     this.reconcile();
-    this.endExits();
     this.published.clear();
     this.regions.clear();
     this.pins.clear();
     this.arenas.length = 0;
     this.budget.release(this.charged);
-    if (this.backing) this.source?.retire(this.backing);
+    if (!this.exits.size) this.retire();
     this.onEnd(this);
   }
 }
