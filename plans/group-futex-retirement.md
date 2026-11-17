@@ -341,8 +341,14 @@ Mitigated by stopping in order (managing chat's decision, 2026-11-17): `terminat
 SIGKILL, waits up to 1 s (`STOP_UNWIND_MS`, a hang cap) for the worker to report that its guest
 finished (`exit`, `error` or `cleanup-error` message, or a worker error), then calls
 `terminate()`. It does not wait when the guest never entered (no STARTED bit), already
-finished, or is a group member parked in its futex wait (`MemberLease.parked()`, odd
-`WAIT_EPOCH`), which SIGKILL does not wake and which keeps PR 548's parked fast path. The wait is
+finished, or is a group member parked in its futex wait (`MemberLease.closeParked()`: for a published wait it
+stores `WAIT_CLOSED` without a wake, then reads an odd `WAIT_EPOCH` again, the same order as
+`release()`, so a
+timed wait or a sibling's wake before `terminate()` makes the member throw instead of returning to
+guest code). SIGKILL does not wake such a member, and skipping the wait keeps PR 548's parked fast
+path. Kernel analogue: init systems stop a service the same way, SIGTERM, a grace period, then
+SIGKILL (systemd's `TimeoutStopSec`, then `SIGKILL`); here the grace period ends early once the
+guest reports that it finished. The wait is
 on the worker's report, not the exit lock: a worker never ends its own thread, so its lock frees
 only at `terminate()`, and waiting for the lock first would always run out the cap.
 `terminate()` therefore still runs for every stopped worker, but on an idle one for a guest that

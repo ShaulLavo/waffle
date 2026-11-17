@@ -1770,7 +1770,7 @@ test("SIGKILL is selected before terminate(), except for an exec-replaced image"
 
 // docs/host-abi.md, "Stop polling": terminate() landing while a guest still calls host imports
 // in a loop can crash a WebKit page, so a started guest gets a bounded time to unwind first.
-async function stopTimed(options: { shared?: boolean } = {}) {
+async function stopTimed(options: { shared?: boolean; stop?: () => void } = {}) {
   const handles: import("../proc/types.js").ProcessHandle[] = [];
   const f = await fixture({
     ...options,
@@ -1816,14 +1816,24 @@ test("a started guest that never reports exit is still terminated after the boun
 });
 
 test("a group member parked in its futex wait is terminated without the wait", async () => {
-  const { f, worker, stop } = await stopTimed({ shared: true });
+  const closedAtTerminate: number[] = [];
+  let cells: Int32Array | undefined;
+  const { f, worker, stop } = await stopTimed({
+    shared: true,
+    stop: () => {
+      if (cells) closedAtTerminate.push(Atomics.load(cells, WAIT_CLOSED));
+    },
+  });
   try {
-    // A published wait record (odd epoch): SIGKILL does not wake it and terminate() cannot
-    // race guest code, so the stop goes straight to terminate().
-    Atomics.store(new Int32Array(worker.request.memoryGroup!.reply), WAIT_EPOCH, 1);
+    // A published wait record (odd epoch): SIGKILL does not wake it, so the stop goes straight
+    // to terminate(). The record must already be closed then, so a timed or sibling wake before
+    // terminate() takes effect throws instead of resuming guest code.
+    cells = new Int32Array(worker.request.memoryGroup!.reply);
+    Atomics.store(cells, WAIT_EPOCH, 1);
     const stopping = stop();
     await until(() => worker.stops === 1);
     await stopping;
+    expect(closedAtTerminate).toEqual([1]);
   } finally {
     await f.close();
   }

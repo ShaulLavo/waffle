@@ -395,10 +395,12 @@ function guestEntered(child: RuntimeChild): boolean {
 /**
  * Waits until the worker reports that its guest finished, or STOP_UNWIND_MS. No wait when no
  * guest code can be running: it never entered, already finished, or is parked in a group
- * futex wait, which SIGKILL does not wake and terminate() does not race.
+ * futex wait, which SIGKILL does not wake. closeParked() closes that wait record first, so a
+ * timed or sibling wake before terminate() throws instead of resuming guest code.
  */
 function guestUnwound(child: RuntimeChild): Promise<void> | undefined {
-  if (child.guestEnded || !guestEntered(child) || child.group?.parked()) return;
+  if (child.guestEnded || !guestEntered(child)) return;
+  if (child.group?.closeParked()) return;
   const unwound = Promise.withResolvers<void>();
   const cap = setTimeout(unwound.resolve, STOP_UNWIND_MS);
   child.endGuest = unwound.resolve;

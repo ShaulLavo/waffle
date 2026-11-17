@@ -255,8 +255,13 @@ export interface MemberLease {
   failed(): void;
   /** Native termination was attempted, including throw/rejection. This is not a stop receipt. */
   stopRequested(): void;
-  /** The launched agent has a futex wait published: it is parked, or about to park or leave. */
-  parked(): boolean;
+  /**
+   * Stop-time only: if its agent has a futex wait published, closes the wait record without a
+   * wake and reports whether the wait is still published. True means it is parked or about to
+   * park, and any way out of the wait now throws instead of returning to guest code (see
+   * parkedAndClosed). A record with no published wait is left open.
+   */
+  closeParked(): boolean;
   /** True once this incarnation's memory and capacity were returned. */
   settled(): boolean;
   /** Close this exact sole launched incarnation to new joins until physical stop. */
@@ -445,10 +450,15 @@ export class MemoryGroupOwner {
         member.stopRequested = true;
         this.settleStopping();
       },
-      parked: () =>
-        this.members[member.index] === member &&
-        member.reply !== undefined &&
-        (Atomics.load(member.reply, WAIT_EPOCH) & 1) === 1,
+      closeParked: () => {
+        if (this.members[member.index] !== member || !member.reply) return false;
+        // Not parked: leave the record open; the stop waits for the guest's exit report.
+        if (!this.parkedAndClosed(member.reply)) return false;
+        // Same order as release(): CLOSED first, then only an odd epoch read after it counts,
+        // so a timed or sibling wake before terminate() throws instead of resuming guest code.
+        Atomics.store(member.reply, WAIT_CLOSED, 1);
+        return this.parkedAndClosed(member.reply);
+      },
       settled: () => member.phase === "released",
       closeAdmission: () => this.closeAdmission(member),
     });
