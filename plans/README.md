@@ -18,3 +18,5 @@ The WebGPU bridge is active since 2026-11-06; its [implementation design](gpu-br
 holds the slices. Windows and the wgpu backend stay scheduled later.
 
 Approved, preserved for later (owner, 2026-11-04): [Vite 8 in the playground](vite8-playground.md).
+
+Approved, scheduled later (owner, 2026-11-16): [A live shell on the landing page](site-live-shell.md).

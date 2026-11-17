@@ -14,8 +14,9 @@ const hash = (value: string) => createHash("sha256").update(value).digest("hex")
 const originalHashes = {
   "publication-browser.ts": "c60aefc6a26039f0fbd341b7ee4ef7ba5d2c766abb27f1a78a02f7fa2eca1ea5",
   "workspace-browser.ts": "17204218d2e58ff679edfab982741501e7322195ff947e31ec430ef0e2d82392",
+  // File-only fixture supplies the required bound logical pair; its publication body is unchanged.
   "fixtures/publication-guest.ts":
-    "d2807693b52691ef1b8e5a6ef309db2dd59d9ee3305d963f1cfcff77095e6505",
+    "78619558fa3965ebad62b27063be171cb560a37e6cee4446e7f01ea2e98bd06f",
   "workspace-vfs-read-browser.ts":
     "43d27744b1824a829b865f6c3403e09f234a9699da7a140428436a0ed380441c",
   "fixtures/publication-channel-observer.ts":

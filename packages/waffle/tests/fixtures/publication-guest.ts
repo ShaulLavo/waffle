@@ -86,6 +86,7 @@ function setup({ connection, mode }: Setup) {
   const descriptors = new DescriptorTable();
   const fd = descriptors.open(resource, rights, 0n);
   const abi = new ProcessABI({
+    processIdentity: { pid: 7, parentPid: 0 },
     memory,
     descriptors,
     fs: client,

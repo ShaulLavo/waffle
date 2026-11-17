@@ -124,6 +124,7 @@ try {
     port.postMessage({ kind: "waiting", children, job });
     const memory = new WebAssembly.Memory({ initial: 1 });
     const abi = new ProcessABI({
+      processIdentity: client.processIdentity,
       memory,
       descriptors,
       fs: new MemFS(),

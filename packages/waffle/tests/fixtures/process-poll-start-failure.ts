@@ -29,6 +29,7 @@ const memory = new WebAssembly.Memory({ initial: 1 });
 const waits: number[] = [];
 const nativeWaits: string[] = [];
 const abi = new ProcessABI({
+  processIdentity: service.processIdentity,
   memory,
   descriptors,
   fs: new MemFS(),

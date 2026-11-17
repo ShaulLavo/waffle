@@ -133,7 +133,7 @@ test("archive tuple checks real source and rejects mismatched bytes, versions an
     const input = await fixture(directory);
     expect(await verifyPairedReleaseArchives(input)).toMatchObject({
       source: input.source,
-      hostInterface: 2,
+      hostInterface: 3,
     });
     await expect(
       verifyPairedReleaseArchives({
@@ -225,7 +225,7 @@ test("archive host interfaces must match each other and the selected source", as
     await expect(verifyPairedReleaseArchives(peerMismatch)).rejects.toThrow(
       "Runtime and relay host interfaces differ",
     );
-    const sourceMismatch = await fixture(join(directory, "source"), { runtime: 3, relay: 3 });
+    const sourceMismatch = await fixture(join(directory, "source"), { runtime: 2, relay: 2 });
     await expect(verifyPairedReleaseArchives(sourceMismatch)).rejects.toThrow(
       "Archive host interface differs from source",
     );

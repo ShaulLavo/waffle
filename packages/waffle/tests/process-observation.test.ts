@@ -98,8 +98,8 @@ test("each admitted execution costs sixteen control bytes and successful churn h
   }
 });
 
-test("directory backing includes bounded tagged startup diagnostics at both supported bounds", () => {
-  const expected = (capacity: number) => 32 + capacity * (89 + START_DIAGNOSTIC_WORDS) * 8;
+test("directory backing includes tagged diagnostics, logical identity and image admission at both bounds", () => {
+  const expected = (capacity: number) => 32 + capacity * (93 + START_DIAGNOSTIC_WORDS) * 8;
   expect(createWorkerProcessTransport({ capacity: 1 }).directory.byteLength).toBe(expected(1));
   expect(createWorkerProcessTransport().directory.byteLength).toBe(expected(1024));
   expect(createWorkerProcessTransport({ capacity: 65536 }).directory.byteLength).toBe(

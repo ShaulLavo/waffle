@@ -40,6 +40,35 @@ A family installs all of its programs. A pick installs only the named programs a
 
 The default launcher uses Waffle's preview1 worker. Set `programs.launcher` when your embedder supplies its own launcher. No worker starts during preload.
 
+## Bound URL downloads and cancel loading
+
+A program declared with `wasm: URL` has a default download limit of 256 MiB. Set
+`maxDownloadBytes` on that program to a positive safe integer to choose another limit.
+Waffle rejects an advertised `Content-Length` above the limit before reading the body.
+It also counts actual streamed bytes, including when the header is missing or inaccurate,
+and cancels the unread body on overflow or HTTP failure. The limit bounds accepted response
+bytes, not peak memory during download, rewriting or compilation. Stream chunks, buffer
+growth and the runtime's source snapshot can add memory above that limit. Custom `source()` and
+`script.source()` loaders own their resource limits.
+
+The installation owns a URL download's abort signal. Concurrent preload, execution and
+aliases share the existing module load. Canceling one execution does not abort a load
+another consumer needs. Removing the program, disposing its installation or disposing the
+runtime aborts its URL fetch, including while waiting for headers or body bytes. An
+`installPrograms` caller can also abort its installation with `options.signal`.
+
+Removal waits for the fetch and body cancellation to settle before releasing ownership.
+A custom fetch or loader that ignores cancellation, or a body whose cancellation never
+settles, keeps removal pending. Custom loader signatures and physical-settlement holds
+are unchanged. Cleanup errors do not replace a download's primary failure.
+
+There are no automatic retries, including for HTTP errors, network errors and aborts
+wrapped in a `TypeError` cause. After a failed attempt settles, an explicit preload or
+execution can try again while the installation remains live. An aborted installation
+cannot restart a fetch. Oversized or failed downloads never reach compilation or the
+admitted-byte cache. Invalid Wasm still fails normal admission, and the existing admitted
+cache verification and repair policy is unchanged.
+
 ## Inspect and remove programs
 
 ```ts

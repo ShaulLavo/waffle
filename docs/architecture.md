@@ -140,7 +140,33 @@ adapter instead. Handled signals dispatch during cooperative event-loop turns; u
 actions select their outcomes immediately. See [the host ABI](host-abi.md) for executable-entry
 and interrupt contracts.
 
-The same bounded module-promise cache also reuses admitted byte output across pages through
+The loader keeps active producers separate from completed module retention. A source hash and
+rewrite profile identify one producer until it settles, even when completed entries are evicted.
+Failures reach all joined callers unchanged and release the producer before an explicit retry.
+Process cancellation does not cancel shared compilation. Registrations and preloads retain their
+own module references independently of this cache, and every instance gets fresh state.
+
+Completed retention uses least-recently-used order, up to 16 modules and 192 MiB of original
+source bytes. Entries idle for five minutes expire on the next lookup or settlement, without
+timers. A module larger than the retention budget can still compile and serve concurrent callers,
+but is not retained. An unavailable diagnostic clock skips retention. Count and byte limits still
+apply without a clock.
+
+Active producers have a separate admission limit of 32 hashes and 192 MiB of source bytes.
+Existing producers and completed hits remain joinable at that limit; a new distinct load fails
+with `RangeError` and may be explicitly retried after settlement. A single source over the active
+byte limit is rejected before copying or hashing. These starting byte and active-count limits
+reuse the existing admitted-store budgets, rather than another runtime's defaults. The existing
+empty, tick and loop admission fixtures check reuse and accounting; they do not establish optimal
+limits for large applications. `waffle:program:cache` measures report producer, join, hit, refusal
+and settlement decisions with active and retained source-byte counts.
+
+These source-byte counts are policy weights, not engine or JIT memory measurements. They exclude
+temporary per-caller hashing snapshots, rewritten output, pending persistence and module references
+held by registrations. Hashing must finish before a caller can join a producer at the admission
+limit. The cache does not bound total page memory or revoke modules held by consumers.
+
+The loader also reuses admitted byte output across pages through
 an optional Cache Storage store. Keys bind the source hash, rewriter revision and admission
 policy. A hit streams the stored response while verifying its body; a miss uses the normal
 rewrite and compile path. Stored bytes contain no instance or runtime authority. This trusts
@@ -152,7 +178,7 @@ source errors or the lazy compiler import.
 The store trims writes to 32 entries, at most 48 MiB per entry and 192 MiB total. This realm
 serializes writes and eviction; independent tabs may trim concurrently. These storage limits
 are not a whole-process memory bound. Clearing admitted entries forces later pages to repeat
-admission. Existing in-memory modules remain until their page closes. Between runs, clear
+admission. Clearing storage does not revoke existing in-memory modules. Between runs, clear
 only Waffle's admitted-byte caches:
 
 ```ts

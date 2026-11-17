@@ -9,21 +9,41 @@ candidate build.
 
 ## Architecture
 
-- `src/pages/index.astro` emits the document head and preloads the three local fonts.
-- `src/components/Landing.astro` renders the page as static HTML; `src/styles/site.css` holds
-  every style.
-- `src/scripts/landing.ts` maps native scroll to scene progress, frames the waffle and sizes the
-  step-card deck. It writes no layout styles during scroll.
-- `src/scripts/waffle-scene.ts` is the adapted interactive Three.js scene; Astro bundles it with
-  the pinned `three` dependency and the page loads it after first paint.
-- Fonts live in `src/assets/` as instanced Latin subsets. Scripts and fonts receive
+The site has three pages. `/` is the process-table design (2026-11-16), `/old/` keeps the
+2026-10-30 Three.js design with `noindex`, and `404.html` is served with a 404 status for any
+missing URL (`not_found_handling: "404-page"` in `wrangler.jsonc`).
+
+- `src/layouts/Page.astro` is the head for `/` and the 404 page: title, description, canonical,
+  `theme-color`, the font rules and the first-screen font preloads. It imports
+  `src/styles/main.css`, which holds every style of the new design.
+- `src/pages/index.astro` and `src/components/Home.astro` render `/` as static HTML. The code
+  sample is the `createRuntime` example read from `docs/getting-started.md` and highlighted at
+  build time; the heading's line count is computed from it, so neither can drift.
+- `src/scripts/home/` draws and runs the page: `iso.ts` builds the isometric SVG waffles,
+  `board.ts` changes them (blocks, tags, pipes, file marks, the comet), `session.ts` runs the
+  scripted hero session and keeps the terminal at eight rows, `details.ts` loops the four "How
+  it works" drawings, `parts.ts` slides the parts-list highlight, and `gate.ts` holds every loop
+  while the visitor pauses it, its section is off screen or the tab is hidden. With reduced
+  motion, the session and details show one still frame.
+- `src/pages/404.astro` is the designed not-found page.
+- `/old/`: `src/pages/old/index.astro` emits its head; `src/components/old/Landing.astro` and
+  `src/styles/old.css` render it; `src/scripts/old/landing.ts` maps native scroll to scene
+  progress; `src/scripts/old/waffle-scene.ts` is the Three.js scene, loaded after first paint.
+  Three.js is bundled only into `/old/`. Append `?full-quality` to the `/old/` URL to turn off the
+  scene's adaptive pixel density, for screenshots on slow machines.
+- Fonts live in `src/assets/` as instanced Latin subsets (sources and sizes in
+  `docs/bun-patches.md`). The new page uses `bricolage-grotesque-text.woff2`,
+  `bricolage-grotesque-display.woff2`, `martian-mono.woff2` and the inlined
+  `fredoka-wordmark.woff2`; `/old/` keeps its 2026-10-30 files. Scripts and fonts receive
   content-hashed URLs under `dist/_astro/`; `public/_headers` supplies immutable caching for
   those URLs. HTML is revalidated. Font licenses are in `public/assets/FONTS-LICENSE.txt`;
   Three.js's unchanged MIT notice is in `public/assets/THREE-LICENSE.txt`.
+- `public/robots.txt` and `public/sitemap.xml` list only `/`.
 
-The 2026-10-30 redesign departs from the owner's original self-extracting HTML on purpose; see
-[the provenance notes](../docs/bun-patches.md#waffle-landing-page). The original export stays
-outside the repository and remains useful as a performance and visibility baseline.
+The 2026-10-30 redesign (now `/old/`) departs from the owner's original self-extracting HTML on
+purpose; see [the provenance notes](../docs/bun-patches.md#waffle-landing-page). The original
+export stays outside the repository and remains useful as a performance and visibility baseline
+for `/old/`.
 
 ## Build and local development
 
@@ -43,7 +63,7 @@ its shared heavy runner for builds and browser jobs; for example, replace the
 plain build command above with:
 
 ```sh
-bun /work/platform-production/heavy/current/run.js --class build waffle-site-build -- bun run build
+bun /work/heavy-runner/current/run.js --host local --class build waffle-site-build -- bun run build
 ```
 
 Do not rebuild `dist/` while a comparison is measuring it.
@@ -81,7 +101,8 @@ python3 -m http.server 4322 --bind 127.0.0.1 \
 
 Serve `dist/` with the preview command above on port 4323. Reuse existing task
 servers if those ports are already owned; never stop another run's processes.
-Stop servers you started with Ctrl-C when comparisons finish. Remove your
+`bun run preview` detaches the server and prints its pid; stop it with `bun run preview stop`
+from `site/` (or Ctrl-C for the Python server) when comparisons finish. Remove your
 extracted fixture after its last consumer stops; retain evidence only while it
 has an active review owner.
 
@@ -92,25 +113,38 @@ With the production build served on port 4323, run the smoke check in all three 
 ```sh
 PLAYWRIGHT_BROWSERS_PATH=/work/cache/ms-playwright \
 SITE_URL=http://127.0.0.1:4323/ ENGINES=chromium,firefox,webkit \
-bun /work/platform-production/heavy/current/run.js --class browser waffle-site-smoke -- bun scripts/smoke.ts
+bun /work/heavy-runner/current/run.js --host local --class browser waffle-site-smoke -- bun scripts/smoke.ts
 ```
 
-It checks phone, tablet and desktop sizes for browser errors, a painted scene (or the no-WebGL
-note where the engine has no WebGL, as headless Firefox on this PC does), a story that reaches
-the sky, text that stays inside the viewport and links that have targets. The pixel parity
-checker against the original page was removed with the redesign.
+It checks phone, tablet and desktop sizes, plus a reduced-motion phone, on three pages:
 
-`visibility.ts` still compares the reference and candidate scene loops: both must stop drawing
-while the canvas is off screen and resume without a time jump. It needs the reference server
-on port 4322 or `REFERENCE_URL` pointing at another build of the previous page.
+- `/`: no browser errors, failed requests or requests to another origin; the drawing has
+  sixteen slots; a block rises; the pause button and scrolling away both freeze the session
+  and the detail loops resume on screen; the terminal holds eight full rows; reduced motion runs
+  no animations; no text spills sideways; every link has a target and none leads to `/old/`;
+  footer links are at least 44 px tall; on desktop, the skip link is the first tab stop and
+  every stop shows an outline that nothing clips or covers.
+- `/old/`: a painted scene (or the no-WebGL note where the engine has no WebGL, as headless
+  Firefox on this PC does), a story that reaches the sky, `noindex`, text inside the viewport
+  and links with targets.
+- `/no-such-page/`: a 404 status with the designed page. `astro preview` serves `404.html` with
+  that status, like the Workers `404-page` handling.
+
+Run new or changed checks two or three times before merging to catch races.
+
+`visibility.ts` and `performance.ts` measure the Three.js scene, so their candidate defaults to
+`http://127.0.0.1:4323/old/`; pass `SITE_URL` with the `/old/` path when overriding it.
+`visibility.ts` compares the reference and candidate scene loops: both must stop drawing while
+the canvas is off screen and resume without a time jump. It needs the reference server on port
+4322 or `REFERENCE_URL` pointing at another build of the previous page.
 
 ```sh
 PLAYWRIGHT_BROWSERS_PATH=/work/cache/ms-playwright \
 OWNER_HTML=/work/tmp/waffle-site-source/waffle-website.html \
 BASELINE_HTML=/work/tmp/waffle-site-reference-run/landing.bundle.html \
-REFERENCE_URL=http://127.0.0.1:4322/ SITE_URL=http://127.0.0.1:4323/ \
+REFERENCE_URL=http://127.0.0.1:4322/ SITE_URL=http://127.0.0.1:4323/old/ \
 PERFORMANCE_OUTPUT=/work/tmp/waffle-site-performance.json \
-bun /work/platform-production/heavy/current/run.js --class browser waffle-site-performance -- bun scripts/performance.ts
+bun /work/heavy-runner/current/run.js --host local --class browser waffle-site-performance -- bun scripts/performance.ts
 ```
 
 `performance.ts` runs three cold Chromium navigations each for the standalone
@@ -135,9 +169,9 @@ On the owner's PC, request a quiet heavy-runner slot:
 PLAYWRIGHT_BROWSERS_PATH=/work/cache/ms-playwright \
 OWNER_HTML=/work/tmp/waffle-site-source/waffle-website.html \
 BASELINE_HTML=/work/tmp/waffle-site-reference-run/landing.bundle.html \
-SITE_URL=http://127.0.0.1:4323/ PERF_MODE=abba ABBA_BLOCKS=5 \
+SITE_URL=http://127.0.0.1:4323/old/ PERF_MODE=abba ABBA_BLOCKS=5 \
 PERFORMANCE_OUTPUT=/work/tmp/waffle-site-performance-abba.json \
-bun /work/platform-production/heavy/current/run.js --class browser --quiet waffle-site-performance-abba -- bun scripts/performance.ts
+bun /work/heavy-runner/current/run.js --host local --class browser --quiet waffle-site-performance-abba -- bun scripts/performance.ts
 ```
 
 Keep the production output unchanged throughout the run. Report the full spread

@@ -1,3 +1,4 @@
+export type { LogicalProcessIdentity, ProcessKind } from "../proc/types.js";
 /** Host-provided identity for this runtime, not identity discovered from the browser. */
 export interface RuntimeHostIdentity {
   readonly uid: number;

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 
 const reference = process.env.REFERENCE_URL ?? "http://127.0.0.1:4322/";
-const candidate = process.env.SITE_URL ?? "http://127.0.0.1:4323/";
+// The 3D scene lives on the old landing page at /old/ since the 2026-11-16 redesign.
+const candidate = process.env.SITE_URL ?? "http://127.0.0.1:4323/old/";
 const evidence = process.env.VISIBILITY_EVIDENCE ?? "/work/tmp/waffle-site-visibility.json";
 const dt = 1000 / 60;
 const angleStep = (dt / 1000) * 0.22;

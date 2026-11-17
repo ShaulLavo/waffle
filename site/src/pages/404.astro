@@ -1,0 +1,39 @@
+---
+// Served with a 404 status for any missing URL (`not_found_handling` in wrangler.jsonc).
+import Page from "../layouts/Page.astro";
+
+const START = "https://github.com/ShaulLavo/waffle/blob/main/docs/getting-started.md";
+---
+
+<Page
+  title="Page not found · Waffle"
+  description="This page does not exist on the Waffle site."
+  noindex
+  preload={["text", "display", "mono"]}
+>
+  <a class="skip" href="#main">
+    Skip to content
+  </a>
+  <header class="nav">
+    <div class="wrap nav__bar">
+      <a class="logo" href="/" aria-label="Waffle, home">
+        waffle
+      </a>
+    </div>
+  </header>
+  <main id="main" class="missing">
+    <div class="wrap">
+      <p class="mono label">404</p>
+      <h1 class="missing__title">Nothing runs at this address.</h1>
+      <p class="sub">The link may be mistyped, or the page has moved.</p>
+      <div class="hero__actions">
+        <a class="btn" href="/">
+          Back to the home page
+        </a>
+        <a class="btn btn--ghost" href={START}>
+          Read Getting started
+        </a>
+      </div>
+    </div>
+  </main>
+</Page>

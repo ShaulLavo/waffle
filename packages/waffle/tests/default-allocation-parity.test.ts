@@ -87,8 +87,8 @@ function withoutIdleWorkers(expected: string[]) {
 function withExecutionObservation(expected: string[]) {
   const oldDirectory = '"initial":720928,"maximum":720928,"growable":false';
   expect(expected.filter((event) => event.includes(oldDirectory))).toHaveLength(2);
-  // One native-return word and the bounded tagged diagnostic are owned by each process slot.
-  const directoryBytes = 32 + 1024 * (89 + START_DIAGNOSTIC_WORDS) * 8;
+  // Each slot owns native return, its diagnostic, logical P/Q/kind and image admission.
+  const directoryBytes = 32 + 1024 * (93 + START_DIAGNOSTIC_WORDS) * 8;
   const events = expected.map((event) =>
     event.replace(
       oldDirectory,

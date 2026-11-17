@@ -10,7 +10,7 @@ test("the persistent interrupt revision pins the exact admission implementation"
     { revision: INTERRUPT_REWRITER_REVISION, hash },
     "Bump INTERRUPT_REWRITER_REVISION and update its pinned hash after any rewriter edit",
   ).toEqual({
-    revision: 6,
-    hash: "8e353ef4407048a624e63a3ca1cb800cdc0ca3ac3385a6e956e8684194ecfb6b",
+    revision: 7,
+    hash: "7497d5f60b659449f17089411a47338ec6d70fcbafc441ed8dcfffd63cf1f81d",
   });
 });

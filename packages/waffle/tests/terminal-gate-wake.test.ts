@@ -113,6 +113,7 @@ test("a background no-op release wakes the fully notified infinite terminal poll
   let waits = 0;
   const parked = new Error("stop at real infinite poll wait");
   const abi = new ProcessABI({
+    processIdentity: f.client.processIdentity,
     memory,
     descriptors: f.descriptors,
     fs: new MemFS(),

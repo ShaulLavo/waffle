@@ -471,6 +471,35 @@ for (const width of [4, 8] as const) {
   });
 }
 
+// Chromium's terminate() can return while the thread is still parked. The member that reuses
+// its pages then notifies the same cell; the stale thread must not resume its guest there.
+for (const width of [4, 8] as const) {
+  test(`a released wait${width * 8} woken by the reusing member stops instead of resuming`, async () => {
+    const { reserve } = setup();
+    const a = reserve(),
+      b = reserve(a),
+      pause = gate();
+    launch(b);
+    const stale = launch(a, { width, stage: "after-entry", gate: pause.buffer });
+    stale.start();
+    await enteredGap(stale);
+    // Released with no native stop: the thread passed its closed check and parks after this.
+    a.stopped();
+    pause.release();
+    const c = reserve(b);
+    expect(c.index).toBe(a.index);
+    const waker = createGroupMember(launch(c, { width }).request, { checkActive() {} });
+    try {
+      // A positive count proves the stale thread was parked on the cell.
+      expect(await notifyWaiter(() => waker.imports.futex_wake!(stale.addr, 1))).toBe(1);
+      await stoppedOutcome(stale);
+      expect(Atomics.load(stale.cells, WAIT_EPOCH)).toBe(2);
+    } finally {
+      waker.dispose();
+    }
+  }, 10_000);
+}
+
 test("old nine-word requests are refused rather than accepted with a fallback", () => {
   const { reserve } = setup();
   const f = launch(reserve());
@@ -552,7 +581,7 @@ async function staggeredSeal(width: 4 | 8, kind: "source" | "diagnostic"): Promi
     a.stopped();
     expect(observed.calls).toEqual([]);
     expect(Reflect.get(owner, "retiredWaits")).toHaveLength(1);
-    expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
+    expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(1);
     const c = reserve(b),
       h = launch(c, { width, addr: 96, stage: "after-entry", gate: pause.buffer, waitControl });
     expect(c.index).toBe(a.index);
@@ -568,7 +597,7 @@ async function staggeredSeal(width: 4 | 8, kind: "source" | "diagnostic"): Promi
     b.stopped();
     expect(observed.calls).toEqual([]);
     expect(Reflect.get(owner, "retiredWaits")).toHaveLength(2);
-    expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
+    expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(1);
     c.stopRequested();
     expect(observed.calls.toSorted((a, b) => a.addr - b.addr)).toEqual([
       { addr: 64, count: Infinity, woken: 1 },
@@ -610,7 +639,7 @@ for (const stage of ["address", "width", "epoch", "exit", "post-closed"] as cons
     const observed = observeNotifications(buffer);
     try {
       a.stopped();
-      expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
+      expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(1);
       expect(Reflect.get(groups.owner(a.group)!, "retiredWaits")).toHaveLength(1);
       const c = reserve(b),
         fresh = launch(c);
@@ -621,7 +650,7 @@ for (const stage of ["address", "width", "epoch", "exit", "post-closed"] as cons
       a.stopped();
       expect(Atomics.load(fresh.cells, WAIT_CLOSED)).toBe(0);
       b.stopRequested();
-      expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(0);
+      expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(1);
       c.stopRequested();
       expect(Atomics.load(f.cells, WAIT_CLOSED)).toBe(1);
       if (stage === "epoch")

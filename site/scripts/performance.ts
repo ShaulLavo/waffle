@@ -6,7 +6,7 @@ import { gzipSync, brotliCompressSync, constants } from "node:zlib";
 import os from "node:os";
 
 // Run through the shared heavy runner, never alongside an unowned browser job:
-// PLAYWRIGHT_BROWSERS_PATH=/work/cache/ms-playwright bun /work/platform-production/heavy/current/run.js --class browser waffle-site-performance -- bun site/scripts/performance.ts
+// PLAYWRIGHT_BROWSERS_PATH=/work/cache/ms-playwright bun /work/heavy-runner/current/run.js --class browser waffle-site-performance -- bun site/scripts/performance.ts
 // This is a lab diagnostic, NOT Lighthouse and NOT a Lighthouse performance score.
 const mode = process.env.PERF_MODE ?? "three-way";
 if (!["three-way", "abba"].includes(mode)) throw new Error("PERF_MODE must be three-way or abba");
@@ -22,7 +22,8 @@ const baselinePath =
   process.env.BASELINE_HTML ??
   "/work/tmp/waffle-site-extracted/outer/281df726-0eff-4ae0-a4d0-749fd2cd790e.html";
 const ownerPath = process.env.OWNER_HTML ?? "/work/tmp/waffle-site-reference/waffle-website.html";
-const candidateUrl = process.env.SITE_URL ?? "http://127.0.0.1:4323/";
+// The 3D scene lives on the old landing page at /old/ since the 2026-11-16 redesign.
+const candidateUrl = process.env.SITE_URL ?? "http://127.0.0.1:4323/old/";
 const extractedUrl = process.env.REFERENCE_URL ?? "http://127.0.0.1:4322/";
 const observationMs = 8_000;
 const repeats = mode === "abba" ? blocks : 3;

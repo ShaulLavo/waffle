@@ -3,6 +3,7 @@
 // the first exec.
 import type { GuestLauncher, Runtime, ProgramLoadState } from "../runtime.js";
 import { packageIdentity } from "./catalog.js";
+import { fetchWasm } from "./download.js";
 import type { HostCommandDefinition } from "../proc/command.js";
 import type { RegisteredCommand } from "../proc/registry.js";
 import type { ProcessHandle } from "../proc/types.js";
@@ -53,6 +54,8 @@ export type PackageProgram = {
       readonly launch?: ProgramLaunch;
       readonly command?: never;
       readonly wasm: URL;
+      /** Maximum downloaded response bytes. Defaults to 256 MiB, checked before compilation. */
+      readonly maxDownloadBytes?: number;
       readonly source?: never;
       readonly script?: never;
     }
@@ -63,6 +66,7 @@ export type PackageProgram = {
       readonly command?: never;
       readonly source: () => Promise<Uint8Array>;
       readonly wasm?: never;
+      readonly maxDownloadBytes?: never;
       readonly script?: never;
     }
   | {
@@ -70,11 +74,13 @@ export type PackageProgram = {
       readonly command?: never;
       readonly script: { readonly interpreter: string; readonly source: () => Promise<string> };
       readonly wasm?: never;
+      readonly maxDownloadBytes?: never;
       readonly source?: never;
     }
   | {
       readonly command: HostCommandDefinition;
       readonly wasm?: never;
+      readonly maxDownloadBytes?: never;
       readonly source?: never;
       readonly script?: never;
       readonly launch?: never;
@@ -271,7 +277,9 @@ function programPaths(
   if (program.argv0 !== undefined && typeof program.argv0 !== "string")
     throw new TypeError(`Program ${program.path} argv0 must be a string`);
   const source =
-    program.script || program.command ? undefined : trackedSource(programLoader(program), activity);
+    program.script || program.command
+      ? undefined
+      : trackedSource(programLoader(program, options.signal), activity);
   const marker = encoder.encode(`waffle program: ${pkg.name} ${program.path}\n`);
   const command = program.command
     ? trackedCommand(
@@ -290,19 +298,11 @@ function programPaths(
     .map((path) => ({ path, marker, source, command, argv0, launch, program }));
 }
 
-function programLoader(program: PackageProgram): () => Promise<Uint8Array> {
-  if (program.wasm instanceof URL) return fetchWasm(new URL(program.wasm.href));
+function programLoader(program: PackageProgram, signal?: AbortSignal): () => Promise<Uint8Array> {
+  if (program.wasm instanceof URL)
+    return fetchWasm(new URL(program.wasm.href), signal, program.maxDownloadBytes);
   if (program.wasm === undefined && typeof program.source === "function") return program.source;
   throw new TypeError(`Program ${program.path} must give its wasm as a URL or a source loader`);
-}
-
-// The registry shares concurrent loads and retries after a failure; this only owns the fetch.
-function fetchWasm(url: URL): () => Promise<Uint8Array> {
-  return async () => {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Program fetch failed: ${url.href} (${response.status})`);
-    return new Uint8Array(await response.arrayBuffer());
-  };
 }
 
 // One function per program, shared by its aliases, so the runtime compiles it once.

@@ -61,6 +61,7 @@ function fixture(
     ) => void,
   ) {
     return new ProcessABI({
+      processIdentity: supervisor.get(root)!.processIdentity,
       memory,
       wake,
       descriptors: supervisor.get(root)!.image.descriptors,
@@ -457,6 +458,7 @@ for (const adapter of ["worker", "supervisor"] as const)
         });
       supervisor.createRoot({ pid: parent.pid });
       supervisor.reserveAdmittedSpawn(parent.pid, request, {
+        processIdentity: state.processIdentity,
         pid,
         outcome: state.signals.outcome,
         observation: childTransport,
@@ -467,6 +469,7 @@ for (const adapter of ["worker", "supervisor"] as const)
       const service = adapter === "worker" ? parent : supervisor;
       const memory = new WebAssembly.Memory({ initial: 1 });
       const abi = new ProcessABI({
+        processIdentity: workerProcessState(transport).processIdentity,
         memory,
         descriptors,
         fs: new MemFS(),

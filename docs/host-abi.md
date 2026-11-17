@@ -77,11 +77,23 @@ cwd before running application code; this import alone does not initialize it.
 
 ### PID
 
-`runtime_proc.getpid: () -> i32` returns the calling process's own positive runtime PID,
-not its parent PID or job ID. `ProcessABI` reads its already-bound `options.pid` directly;
-the call takes no arguments, reads no guest memory, never waits and sends no service or
-broker request. In-process and worker adapters expose the same import. It adds no eager
-process-service activation, helper export or RPC operation.
+`runtime_proc.getpid: () -> i32` returns the caller's execution handle E. Waits,
+signals, jobs and execution ancestry use that handle, including for a thread member.
+`runtime_proc.process_id: () -> i32` returns the logical process PID P, and
+`runtime_proc.parent_process_id: () -> i32` returns its immutable creation-parent PID Q.
+P is positive; Q is zero for a root. All IDs fit a signed i32.
+
+An ordinary child receives a fresh P equal to E and Q equal to its caller's P.
+A spawn with `processKind: "thread"` receives a fresh E and copies the caller's whole
+P/Q pair, including for nested threads. Omission or `"process"` selects an ordinary
+process. Other values return `-EINVAL`. Opaque `worker` payload never selects membership.
+The caller cannot choose another process to join. Parent or leader collection leaves
+every admitted pair unchanged; this is creation ancestry, without dynamic reparenting.
+
+`ProcessABIOptions.processIdentity` is required. The provider captures a frozen pair at
+construction. These three scalar queries take no arguments, access no guest memory,
+never wait, allocate nothing and send no service or broker request. They work before
+module start without activating the supervisor. Existing worker fatal guards still apply.
 
 ## Descriptor kind import
 
@@ -206,7 +218,7 @@ Cancellation and process death do not publish a late completion.
 executable. The UTF-8 JSON request is `{ executable, argv, env, cwd, fds }`, with
 the same executable lookup, shebang handling, argument rewrite, environment policy,
 and `{ parent, child }` descriptor bindings as spawn. The environment and descriptor
-list are complete. Supplying `job`, `jobLifetime`, or `worker` returns `-EINVAL`.
+list are complete. Supplying `job`, `jobLifetime`, `worker`, or `processKind` returns `-EINVAL`.
 
 Success unwinds the old image and never returns to it. The PID, parent, job,
 children, waiters, cancellation authority, signal cells, and outcome remain owned
@@ -214,6 +226,21 @@ by the same process. The old Worker and its memory admission ticket stop before
 the replacement's memory is admitted. The parent's wait and job cleanup observe
 only the final image's result. Replacement does not publish process native return
 or terminal stop between images.
+
+Exec also preserves P/Q. A thread-kind caller or a leader with another logical member
+returns precommit `-ENOTSUP`. Published undelivered reservations and pending adapter
+acquisitions count. Cancellation, selected exit and logical collection do not release
+membership; owned no-consumer rollback or full cleanup including native return does.
+A completed member's unconsumed result alone does not block exec. The owner neither
+waits for nor terminates siblings to make exec eligible. Thread publication checks
+the caller's current image and retirement before exposing its handle, on both host
+and guest paths. The owner closes image admission before its final logical-sibling
+check. Plain singleton exec ignores unrelated directory intents; shared-memory group
+exec retains its directory-wide intent guard. Successful replacement admits threads
+only from its successor image.
+A thread spawn whose row is already published, but whose second admission check has
+not yet run when exec closes image admission, returns `-ESRCH` even though the
+caller's image stays current.
 
 Validation, descriptor staging, executable lookup, and module loading or compilation
 failures return negative WASI errno before commit. The caller remains usable, and
@@ -864,7 +891,10 @@ Only then it closes each current or retired incarnation's private wait record an
 every waiter on each recorded pending address. A raw non-member waiter on that same cell may
 receive a teardown-only spurious `ok`; callers must recheck their condition. Normal operation
 and stopping one member with live siblings add no wakes or deadline changes. On WebKit,
-an individually terminated worker can stay parked until a normal notify reaches it.
+an individually terminated worker can stay parked until a normal notify reaches it, and
+Chromium can leave one parked, or still running, briefly after `terminate()` returns. Releasing a member
+therefore closes its record without a wake: if a later notify wakes it, typically from the
+member that reused its pages, its wait throws instead of returning to guest code.
 
 An external root's embedder calls its exact `RootMemoryGroupMember.terminating()` in
 `finally` immediately after invoking native terminate, before awaiting its result, including

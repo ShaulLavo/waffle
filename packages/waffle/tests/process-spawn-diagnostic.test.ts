@@ -36,6 +36,7 @@ function fixture() {
   const root = supervisor.createRoot();
   const memory = new WebAssembly.Memory({ initial: 1 });
   const abi = new ProcessABI({
+    processIdentity: supervisor.get(root)!.processIdentity,
     memory,
     pid: root,
     service: supervisor,
@@ -298,6 +299,7 @@ test("diagnostic state belongs to each caller even when they share one superviso
   const root = f.supervisor.createRoot(),
     memory = new WebAssembly.Memory({ initial: 1 });
   const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(root)!.processIdentity,
     memory,
     pid: root,
     service: f.supervisor,
@@ -350,6 +352,7 @@ test("broker admission failures reach a blocked guest through shared storage wit
   broker.adoptRoot(root);
   const memory = new WebAssembly.Memory({ initial: 1 });
   const abi = new ProcessABI({
+    processIdentity: parent.processIdentity,
     memory,
     pid: parent.pid,
     service: parent,

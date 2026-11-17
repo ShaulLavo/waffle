@@ -52,5 +52,5 @@
   "peerDependencies": {
     "waffle": "*"
   },
-  "waffleHostInterface": 2
+  "waffleHostInterface": 3
 }

@@ -62,6 +62,7 @@ for (const [error, code, wasi] of failures) {
     const shell = supervisor.createRoot();
     const memory = new WebAssembly.Memory({ initial: 1 });
     const abi = new ProcessABI({
+      processIdentity: supervisor.get(shell)!.processIdentity,
       memory,
       descriptors: supervisor.get(shell)!.image.descriptors,
       fs: backend.fs,
@@ -125,6 +126,7 @@ for (const status of [126, 127])
       });
       const memory = new WebAssembly.Memory({ initial: 1 });
       const abi = new ProcessABI({
+        processIdentity: supervisor.get(shell)!.processIdentity,
         memory,
         descriptors: supervisor.get(shell)!.image.descriptors,
         fs: new MemoryBackend().fs,
@@ -262,6 +264,7 @@ test("signals use a tagged signal number rather than a shell status in both wait
   const shell = supervisor.createRoot(),
     memory = new WebAssembly.Memory({ initial: 1 });
   const abi = new ProcessABI({
+    processIdentity: supervisor.get(shell)!.processIdentity,
     memory,
     descriptors: supervisor.get(shell)!.image.descriptors,
     fs: new MemoryBackend().fs,

@@ -635,6 +635,7 @@ test("real runtime_proc Wasm publication I/O returns EAGAIN without offsets, out
   const fd = descriptors.open(resource, (1n << 1n) | (1n << 2n) | (1n << 6n), 0n);
   const memory = new WebAssembly.Memory({ initial: 4 });
   const abi = new ProcessABI({
+    processIdentity: { pid: 1, parentPid: 0 },
     memory,
     descriptors,
     fs: root,

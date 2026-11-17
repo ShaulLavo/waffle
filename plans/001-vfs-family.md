@@ -308,6 +308,20 @@ Keep the explicit refusal for detached or unlinked files whose bytes changed (th
 `persistence.test.ts` case after a failed checkpoint). Do not retry errno 6 in general and do not
 hydrate stale payloads. Initial write set: `packages/waffle/fs/persistent.ts` and a focused test.
 
+### Intermittent: WebKit OPFS invalidation read, 2026-11-16
+
+Status: Approved follow-up. Owner: Waffle lane. The WebKit test
+`OPFS qualification native File invalidation reacquires exact bytes` (added in
+[PR 539](https://github.com/ShaulLavo/waffle/pull/539)) failed once in the "browser (serial)"
+job of main CI run 43976877773, attempt 1, on `8e86a2a0`, with "read exact bytes after
+modification". Attempt 2 passed. The test checks bytes, not time, so this is a real
+intermittent failure, not runner noise.
+
+First step: make the assertion at `packages/waffle/tests/opfs-qualification-browser.ts:105`
+print what it read (the decoded result, its length, and the acquisition count), so the next
+failure shows whether the read returned stale bytes, partial bytes or nothing. Then reproduce
+with repeated WebKit runs of that case before choosing a fix. Do not add retries to the test.
+
 ### Scheduled later: compact storage follow-ons
 
 Status: Approved, scheduled later, owner November 8, 2026. Add inline tiny files in their index

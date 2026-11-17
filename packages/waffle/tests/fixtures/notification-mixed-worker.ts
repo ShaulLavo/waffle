@@ -123,6 +123,7 @@ async function run(
     const reader = attachPipeEndpoint(request.pipe);
     const fd = descriptors.open(reader, (1n << 29n) - 1n, (1n << 29n) - 1n);
     const process = new ProcessABI({
+      processIdentity: service.processIdentity,
       memory: new WebAssembly.Memory({ initial: 1 }),
       descriptors,
       fs,

@@ -9,7 +9,11 @@ import {
 import { CommandStdio } from "./command-stdio.js";
 import { TaggedCells, controlLoad, controlNotify } from "./control.js";
 import { readOutcome } from "./outcome.js";
-import type { CommandProcessContext, ProcessHandle } from "./types.js";
+import {
+  snapshotLogicalProcessIdentity,
+  type CommandProcessContext,
+  type ProcessHandle,
+} from "./types.js";
 
 export interface CommandCapabilities {
   readonly processes: ProcessQuery;
@@ -86,6 +90,7 @@ export function runCommand(
     const command: HostCommandContext = Object.freeze({
       pid: process.pid,
       parentPid: process.parentPid,
+      processIdentity: snapshotLogicalProcessIdentity(process.processIdentity),
       request,
       stdin: io.stdin,
       stdout: io.stdout,
