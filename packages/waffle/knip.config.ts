@@ -74,6 +74,7 @@ export default {
         // Bundled by the link browser runner before the linker imports execute.
         "tests/fixtures/link-relay-worker.ts",
         "tests/gpu-async-browser-runner.ts",
+        "tests/asset-load-recovery-browser-runner.ts",
         "tests/fixtures/gpu/async-page.ts",
         "tests/fixtures/gpu/async-native.ts",
         "tests/fixtures/gpu/integration-{guest,service-worker,page}.ts",

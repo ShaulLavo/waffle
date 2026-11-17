@@ -3,6 +3,7 @@ import { ExecutableFormatError } from "../proc/start-failure.js";
 import { type InterruptRewriteProfile, rewriteInterruptsOwned } from "./rewriter-internal.js";
 import {
   cacheStorageAdmittedStore,
+  ADMITTED_STORE_LIMITS,
   INTERRUPT_INTERVAL,
   INTERRUPT_POLICY,
   programStage,
@@ -17,17 +18,47 @@ import {
 // caller of the owned entry point; public imports go through loader.ts and copy their input.
 const compileOwned = Symbol("compile owned runtime source");
 
-/** Process-independent module promises. Instances get fresh countdown globals and imports.
+interface CacheLimits {
+  readonly maxRetainedBytes: number;
+  readonly maxIdleMs: number;
+  readonly maxActiveEntries: number;
+  readonly maxActiveBytes: number;
+}
+
+const cacheLimits: CacheLimits = {
+  maxRetainedBytes: ADMITTED_STORE_LIMITS.maxTotalBytes,
+  maxIdleMs: 5 * 60 * 1000,
+  maxActiveEntries: ADMITTED_STORE_LIMITS.maxEntries,
+  maxActiveBytes: ADMITTED_STORE_LIMITS.maxTotalBytes,
+};
+
+interface RetainedModule {
+  readonly module: WebAssembly.Module;
+  readonly sourceBytes: number;
+  lastUsed: number;
+}
+
+/** Process-independent producers and bounded completed retention.
+ * Instances get fresh countdown globals and imports.
  * Registries retain resolved modules separately for their lifetime. Persistence holds bytes only.
  */
 export class InterruptModuleCache {
-  private readonly modules = new Map<string, Promise<WebAssembly.Module>>();
+  private readonly active = new Map<string, Promise<WebAssembly.Module>>();
+  private readonly completed = new Map<string, RetainedModule>();
+  private activeBytes = 0;
+  private retainedBytes = 0;
+  private readonly limits: CacheLimits;
   constructor(
     private readonly capacity = 16,
     private readonly store: AdmittedModuleStore | null = null,
+    limits: Partial<CacheLimits> = {},
   ) {
     if (!Number.isSafeInteger(capacity) || capacity < 1)
       throw new RangeError("interrupt module cache capacity must be a positive integer");
+    this.limits = { ...cacheLimits, ...limits };
+    for (const value of Object.values(this.limits))
+      if (!Number.isSafeInteger(value) || value < 1)
+        throw new RangeError("interrupt module cache limits must be positive integers");
   }
 
   async compile(
@@ -35,6 +66,7 @@ export class InterruptModuleCache {
     profile: InterruptRewriteProfile = "ordinary",
   ): Promise<WebAssembly.Module> {
     // Hash and rewrite one owned snapshot, even if the caller mutates a borrowed view.
+    this.checkSourceSize(source.byteLength);
     return this[compileOwned](new Uint8Array(source), profile);
   }
 
@@ -43,26 +75,96 @@ export class InterruptModuleCache {
     profile: InterruptRewriteProfile,
   ): Promise<WebAssembly.Module> {
     // Hash and rewrite the fixed runtime-owned snapshot without another copy.
+    this.checkSourceSize(bytes.byteLength);
     const start = programTime();
     const hash = await sha256Hex(bytes);
     programStage("digest", start, { bytes: bytes.length });
     const key = `${profile}:${hash}`;
-    let pending = this.modules.get(key);
+    this.trim(programTime());
+    const pending = this.active.get(key);
     if (pending) {
-      this.modules.delete(key);
-      this.modules.set(key, pending);
+      this.observe("join", start);
       return pending;
     }
-    // Publish before admission so aliases and concurrent loads share all expensive work.
-    pending = Promise.resolve().then(() => this.load(hash, bytes, profile));
-    this.modules.set(key, pending);
-    if (this.modules.size > this.capacity) this.modules.delete(this.modules.keys().next().value!);
-    try {
-      return await pending;
-    } catch (error) {
-      if (this.modules.get(key) === pending) this.modules.delete(key);
-      throw error;
+    const completed = this.completed.get(key);
+    if (completed) {
+      completed.lastUsed = programTime() ?? completed.lastUsed;
+      this.completed.delete(key);
+      this.completed.set(key, completed);
+      this.observe("hit", start);
+      return completed.module;
     }
+    if (
+      this.active.size >= this.limits.maxActiveEntries ||
+      bytes.byteLength > this.limits.maxActiveBytes - this.activeBytes
+    ) {
+      this.observe("refused", start);
+      throw new RangeError(
+        "interrupt module cache active load budget exceeded; retry after settlement",
+      );
+    }
+    // Publish before admission so aliases and concurrent loads share all expensive work.
+    const producer = Promise.resolve().then(() => this.produce(key, hash, bytes, profile));
+    this.active.set(key, producer);
+    this.activeBytes += bytes.byteLength;
+    this.observe("producer", start);
+    return producer;
+  }
+
+  private checkSourceSize(bytes: number): void {
+    if (bytes > this.limits.maxActiveBytes)
+      throw new RangeError("interrupt module source exceeds the active byte budget");
+  }
+
+  private async produce(
+    key: string,
+    hash: string,
+    bytes: Uint8Array<ArrayBuffer>,
+    profile: InterruptRewriteProfile,
+  ): Promise<WebAssembly.Module> {
+    try {
+      const module = await this.load(hash, bytes, profile);
+      this.retain(key, module, bytes.byteLength);
+      return module;
+    } finally {
+      // Only this producer owns settlement. Joined callers never clean up a later retry.
+      this.active.delete(key);
+      this.activeBytes -= bytes.byteLength;
+      this.observe("settled", programTime());
+    }
+  }
+
+  private retain(key: string, module: WebAssembly.Module, sourceBytes: number): void {
+    const now = programTime();
+    this.trim(now);
+    if (now === undefined || sourceBytes > this.limits.maxRetainedBytes) return;
+    this.completed.set(key, { module, sourceBytes, lastUsed: now });
+    this.retainedBytes += sourceBytes;
+    this.trim(now);
+  }
+
+  private trim(now: number | undefined): void {
+    for (const [key, entry] of this.completed) {
+      if (
+        now !== undefined &&
+        now - entry.lastUsed < this.limits.maxIdleMs &&
+        this.completed.size <= this.capacity &&
+        this.retainedBytes <= this.limits.maxRetainedBytes
+      )
+        break;
+      this.completed.delete(key);
+      this.retainedBytes -= entry.sourceBytes;
+    }
+  }
+
+  private observe(result: string, start: number | undefined): void {
+    programStage("cache", start, {
+      result,
+      activeEntries: this.active.size,
+      activeSourceBytes: this.activeBytes,
+      retainedEntries: this.completed.size,
+      retainedSourceBytes: this.retainedBytes,
+    });
   }
 
   private async load(

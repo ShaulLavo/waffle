@@ -888,7 +888,10 @@ Only then it closes each current or retired incarnation's private wait record an
 every waiter on each recorded pending address. A raw non-member waiter on that same cell may
 receive a teardown-only spurious `ok`; callers must recheck their condition. Normal operation
 and stopping one member with live siblings add no wakes or deadline changes. On WebKit,
-an individually terminated worker can stay parked until a normal notify reaches it.
+an individually terminated worker can stay parked until a normal notify reaches it, and
+Chromium can leave one parked, or still running, briefly after `terminate()` returns. Releasing a member
+therefore closes its record without a wake: if a later notify wakes it, typically from the
+member that reused its pages, its wait throws instead of returning to guest code.
 
 An external root's embedder calls its exact `RootMemoryGroupMember.terminating()` in
 `finally` immediately after invoking native terminate, before awaiting its result, including

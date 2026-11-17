@@ -1,5 +1,6 @@
 import { withStorageCleanup, type StorageAllocationHooks } from "./storage-allocation.js";
 import { OPFS_FORMAT } from "../fs/vfs-format.js";
+import { opfsQualificationCases } from "./opfs-qualification-browser.js";
 import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs.js";
 import type { PersistenceBatch, PersistedNode } from "../fs/storage.js";
 import {
@@ -1037,41 +1038,43 @@ export function opfsStorageTests(
             run: (name) => runtimeStartupCase(name, "opfs", filesystemWorkerURL),
           },
         ];
-  return shared.concat(runtime, focusedCases(filesystemWorkerURL)).map(({ label, run }) => ({
-    label,
-    async run() {
-      const name = allocation?.name() ?? `bun-wasm-opfs-test-${crypto.randomUUID()}`;
-      await allocation?.allocate({
-        kind: "opfs-directory",
-        name: `bun-wasm-${encodedTestName(name)}`,
-      });
-      const opened: { cancel: AbortController; pending: Promise<OpfsStorage> }[] = [];
-      const open = (options: OpfsStorageOptions = {}) => {
-        const cancel = new AbortController();
-        const signal = options.signal
-          ? AbortSignal.any([cancel.signal, options.signal])
-          : cancel.signal;
-        const pending = OpfsStorage.open(name, { ...options, signal });
-        opened.push({ cancel, pending });
-        return pending;
-      };
-      await withStorageCleanup(
-        () => run(name, open),
-        async () => {
-          // Failure owns queued opens too: abort pending requests before closing granted owners.
-          for (const entry of opened) entry.cancel.abort();
-          for (const entry of opened)
-            await entry.pending
-              .then(
-                (storage) => storage.close(),
-                () => {},
-              )
-              .catch(() => {});
-          await OpfsStorage.delete(name);
-        },
-      );
-    },
-  }));
+  return shared
+    .concat(runtime, focusedCases(filesystemWorkerURL), opfsQualificationCases())
+    .map(({ label, run }) => ({
+      label,
+      async run() {
+        const name = allocation?.name() ?? `bun-wasm-opfs-test-${crypto.randomUUID()}`;
+        await allocation?.allocate({
+          kind: "opfs-directory",
+          name: `bun-wasm-${encodedTestName(name)}`,
+        });
+        const opened: { cancel: AbortController; pending: Promise<OpfsStorage> }[] = [];
+        const open = (options: OpfsStorageOptions = {}) => {
+          const cancel = new AbortController();
+          const signal = options.signal
+            ? AbortSignal.any([cancel.signal, options.signal])
+            : cancel.signal;
+          const pending = OpfsStorage.open(name, { ...options, signal });
+          opened.push({ cancel, pending });
+          return pending;
+        };
+        await withStorageCleanup(
+          () => run(name, open),
+          async () => {
+            // Failure owns queued opens too: abort pending requests before closing granted owners.
+            for (const entry of opened) entry.cancel.abort();
+            for (const entry of opened)
+              await entry.pending
+                .then(
+                  (storage) => storage.close(),
+                  () => {},
+                )
+                .catch(() => {});
+            await OpfsStorage.delete(name);
+          },
+        );
+      },
+    }));
 }
 
 export async function runOpfsStorageTests(filter?: string): Promise<string[]> {
