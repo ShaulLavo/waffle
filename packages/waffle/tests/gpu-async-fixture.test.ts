@@ -38,7 +38,8 @@ test("C local mapping leases and source sentinel pass without a GPU", () => {
   const result = Bun.spawnSync([output]);
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toContain("GPU_ASYNC_LOCAL_OK");
-});
+  // Hang cap only: a native C compile on a shared CI runner can exceed Bun's 5 s default.
+}, 120_000);
 
 describe.skipIf(!wasm)(
   "real compiled C decoder under protocol controls, not native acceptance",
