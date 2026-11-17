@@ -27,16 +27,12 @@ export interface RunningMemberOptions {
   /** Hang cap while waiting for the owner to prove a busy member's exit. */
   readonly proofCapMs: number;
   /**
-   * The guest calls a checkpoint each pass and returns once it reports a stop, which the
-   * page sets right before terminate(), as the broker selects SIGKILL first.
+   * The guest calls a checkpoint each pass and returns once it reports a stop. The page sets
+   * it, waits for the worker to report that the guest left, then calls terminate(), in the
+   * broker's order. Calling terminate() right after the stop instead crashed WebKit's page in
+   * every stressed run at 4-page chunks (plans/group-futex-retirement.md, gap 1).
    */
   readonly polling?: boolean;
-  /**
-   * With `polling`: terminate() only once the heartbeat stopped, after the guest left its loop.
-   * WebKit crashes the page now and then when terminate() lands while a guest that calls JS
-   * imports is still running (plans/group-futex-retirement.md, gap 1).
-   */
-  readonly graceful?: boolean;
 }
 
 interface BusyRepetition {
@@ -103,13 +99,25 @@ function grow(owner: MemoryGroupOwner, lease: MemberLease, pages: number): numbe
 
 function startWorker(request: RunningMemberRequest, transfer: Transferable[] = []) {
   const worker = new Worker("/worker.js", { type: "module" });
+  const left = Promise.withResolvers<void>();
   const running = new Promise<void>((resolve, reject) => {
-    worker.onmessage = ({ data }) =>
-      data.event === "running" ? resolve() : reject(new Error(String(data.event)));
+    worker.onmessage = ({ data }) => {
+      if (data.event === "left") left.resolve();
+      else if (data.event === "running") resolve();
+      else reject(new Error(String(data.event)));
+    };
     worker.onerror = (event) => reject(new Error(event.message));
   });
   worker.postMessage(request, transfer);
-  return { worker, running };
+  return { worker, running, left: left.promise };
+}
+
+/**
+ * The broker's stop order (browser/process-broker.ts, terminateWorker): after the stop, wait
+ * up to 1 s for the worker to report that its guest left, then terminate().
+ */
+function guestLeft(left: Promise<void>): Promise<void> {
+  return Promise.race([left, pause(1000)]);
 }
 
 /** Busy-waits until the guest's heartbeat moved twice: it is executing its loop, not booting. */
@@ -117,21 +125,6 @@ function awaitBeats(beat: Int32Array): void {
   const until = now() + 10_000;
   while (Atomics.load(beat, 0) < 2)
     if (now() > until) throw new Error("timed out waiting for the busy member's heartbeat");
-}
-
-/** Yields until the heartbeat stays unchanged for 5 ms: the guest left its loop. */
-async function awaitQuiet(beat: Int32Array): Promise<void> {
-  const until = now() + 5_000;
-  let last = Atomics.load(beat, 0),
-    since = now();
-  while (now() - since < 5) {
-    if (now() > until) throw new Error("the polling guest did not stop at its checkpoint");
-    await pause(1);
-    const value = Atomics.load(beat, 0);
-    if (value === last) continue;
-    last = value;
-    since = now();
-  }
 }
 
 /** Yields until the member published its futex wait record (odd epoch). */
@@ -252,8 +245,10 @@ async function busyRepetition(
     awaitBeats(beat);
     stagger(index);
     const start = now();
-    if (interrupt) Atomics.store(new Int32Array(interrupt), 0, 9);
-    if (options.graceful) await awaitQuiet(beat);
+    if (interrupt) {
+      Atomics.store(new Int32Array(interrupt), 0, 9);
+      await guestLeft(started.left);
+    }
     worker.terminate();
     busy.lease.stopRequested();
     await releaseAfter(timing);

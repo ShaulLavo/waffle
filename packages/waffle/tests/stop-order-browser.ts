@@ -16,12 +16,19 @@ export interface StopOrderOptions {
   readonly repetitions: number;
   readonly pages: number;
   readonly polling: boolean;
+  /**
+   * `kill`: supervisor.kill(pid, 9) selects the outcome first. `physical`: the launch handle's
+   * terminate(), a physical stop like runtime disposal, where the broker selects SIGKILL itself.
+   */
+  readonly stop: "kill" | "physical";
 }
 
 export interface StopOrderReport {
   readonly runs: number;
-  /** Kills whose exit status reported SIGKILL. */
+  /** Stops whose exit status reported SIGKILL. */
   readonly killed: number;
+  /** Exit status count by code. A physical stop can also end with 1 (revoked or cancelled). */
+  readonly codes: Readonly<Record<string, number>>;
   /** Workers terminate() was called on. */
   readonly terminated: number;
   /** Of those, the ones whose worker had already posted its exit. */
@@ -77,16 +84,19 @@ export async function stopOrder(options: StopOrderOptions): Promise<StopOrderRep
   const workers = observeWorkers();
   const runtime = createRuntime({ filesystem: { workerURL: "/fs-worker.js", mode: "memory" } });
   const memories = new Map<number, WebAssembly.Memory>();
-  runtime.registerAdapter("stop-order", (context, service) =>
-    service.launchWorker(context, {
+  const handles = new Map<number, { terminate(): void | Promise<void> }>();
+  runtime.registerAdapter("stop-order", (context, service) => {
+    const handle = service.launchWorker(context, {
       workerUrl: "/worker.js",
       request: { module: context.module, args: context.request.argv, env: {} },
       onMessage(message) {
         const data = message as { type?: string; memory?: WebAssembly.Memory };
         if (data.type === "stop-order-memory" && data.memory) memories.set(context.pid, data.memory);
       },
-    }),
-  );
+    });
+    handles.set(context.pid, handle);
+    return handle;
+  });
   const source = stopOrderModule(options.pages, options.polling);
   // A trusted cooperative module: source bytes would get interrupt checkpoints injected, and
   // the busy guest must make no host call at all.
@@ -115,6 +125,7 @@ export async function stopOrder(options: StopOrderOptions): Promise<StopOrderRep
     while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);
   };
   let killed = 0;
+  const codes: Record<string, number> = {};
   const killToTerminateMs: number[] = [];
   try {
     await runtime.filesystem.writeFile("/spin", source);
@@ -137,9 +148,12 @@ export async function stopOrder(options: StopOrderOptions): Promise<StopOrderRep
         return !!memory && Atomics.load(new Int32Array(memory.buffer), 0) > 2;
       }, `heartbeat of ${pid}`);
       const killAt = performance.now();
-      supervisor.kill(pid, 9);
+      const stopped = options.stop === "kill" ? supervisor.kill(pid, 9) : handles.get(pid)!.terminate();
       const result = await supervisor.waitForExit(root.pid, pid);
+      await stopped;
       if (result.code === 9) killed++;
+      codes[result.code] = (codes[result.code] ?? 0) + 1;
+      handles.delete(pid);
       client.wait(root.pid, pid);
       await flush();
       const observed = workers.byPid.get(pid);
@@ -158,6 +172,7 @@ export async function stopOrder(options: StopOrderOptions): Promise<StopOrderRep
   return {
     runs: options.repetitions,
     killed,
+    codes,
     terminated: terminated.length,
     terminatedAfterExit: terminated.filter(
       (entry) => entry.exitAt !== undefined && entry.exitAt <= entry.terminateAt!,

@@ -1758,8 +1758,72 @@ test("SIGKILL is selected before terminate(), except for an exec-replaced image"
     await replaced;
     expect(outcome()).toBeNull();
     // A direct physical stop of the live replacement, with no outcome selected yet.
-    await handles.at(-1)!.terminate();
+    const stopping = handles.at(-1)!.terminate();
+    await until(() => outcome() !== null);
+    f.workers.at(-1)!.emit({ type: "exit", code: 137, signal: 9 });
+    await stopping;
     expect(atTerminate[1]).toMatchObject({ kind: "signaled", code: 9 });
+  } finally {
+    await f.close();
+  }
+});
+
+// docs/host-abi.md, "Stop polling": terminate() landing while a guest still calls host imports
+// in a loop can crash a WebKit page, so a started guest gets a bounded time to unwind first.
+async function stopTimed(options: { shared?: boolean } = {}) {
+  const handles: import("../proc/types.js").ProcessHandle[] = [];
+  const f = await fixture({
+    ...options,
+    wrap: (handle) => {
+      handles.push(handle);
+      return handle;
+    },
+  });
+  const worker = f.workers.at(-1)!;
+  const stop = () => {
+    const start = performance.now();
+    return Promise.resolve(handles.at(-1)!.terminate()).then(() => performance.now() - start);
+  };
+  return { f, worker, stop };
+}
+
+test("a physical stop selects SIGKILL, then terminates only after the guest reported exit", async () => {
+  const { f, worker, stop } = await stopTimed();
+  try {
+    const stopping = stop();
+    await until(() => readOutcome(f.table.require(f.pid).outcome) !== null);
+    await Bun.sleep(20);
+    // The guest is still unwinding: no terminate() yet.
+    expect(worker.stops).toBe(0);
+    worker.emit({ type: "exit", code: 137, signal: 9 });
+    await stopping;
+    expect(worker.stops).toBe(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a started guest that never reports exit is still terminated after the bounded wait", async () => {
+  const { f, worker, stop } = await stopTimed();
+  try {
+    const waited = await stop();
+    expect(worker.stops).toBe(1);
+    // A lower bound only: the broker waited for the guest before terminate().
+    expect(waited).toBeGreaterThanOrEqual(900);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a group member parked in its futex wait is terminated without the wait", async () => {
+  const { f, worker, stop } = await stopTimed({ shared: true });
+  try {
+    // A published wait record (odd epoch): SIGKILL does not wake it and terminate() cannot
+    // race guest code, so the stop goes straight to terminate().
+    Atomics.store(new Int32Array(worker.request.memoryGroup!.reply), WAIT_EPOCH, 1);
+    const stopping = stop();
+    await until(() => worker.stops === 1);
+    await stopping;
   } finally {
     await f.close();
   }

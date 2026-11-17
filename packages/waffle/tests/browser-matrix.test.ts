@@ -19,6 +19,7 @@ const runners = [
   "filesystem-transport",
   "threads-runtime",
   "running-member-reuse",
+  "stop-order",
   "gpu",
 ];
 const continuity = "workspace-continuity";

@@ -85,10 +85,8 @@ async function stoppingCases(page: Page, pages: number): Promise<string[]> {
   const options = optionsFor(pages);
   const parked = await call(page, "parkedMemberReuse", options);
   // A guest that polls its checkpoint unwinds and frees its lock on every engine, WebKit too.
-  // WebKit sometimes crashes the page when terminate() races that unwinding, so there the
-  // page terminates once the guest left its loop.
-  const graceful = engineOf(page) === "webkit";
-  const polling = await call(page, "runningMemberReuse", { ...options, polling: true, graceful });
+  // The page terminates it in the broker's order, only after the worker reported that it left.
+  const polling = await call(page, "runningMemberReuse", { ...options, polling: true });
   return failures(`parked ${pages}`, parked, repetitions, false).concat(
     failures(`polling ${pages}`, polling, repetitions, true),
   );

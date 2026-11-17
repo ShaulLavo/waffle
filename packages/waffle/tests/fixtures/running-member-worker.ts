@@ -27,6 +27,8 @@ function spin(data: RunningMemberRequest): void {
     data.words,
     data.marker,
   );
+  // A polling guest saw its stop and returned, like a runtime worker posting its exit.
+  postMessage({ event: "left" });
 }
 
 function park(request: MemoryGroupMemberRequest, base: number): void {
