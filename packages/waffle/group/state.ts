@@ -255,6 +255,8 @@ export interface MemberLease {
   failed(): void;
   /** Native termination was attempted, including throw/rejection. This is not a stop receipt. */
   stopRequested(): void;
+  /** The launched agent has a futex wait published: it is parked, or about to park or leave. */
+  parked(): boolean;
   /** True once this incarnation's memory and capacity were returned. */
   settled(): boolean;
   /** Close this exact sole launched incarnation to new joins until physical stop. */
@@ -443,6 +445,10 @@ export class MemoryGroupOwner {
         member.stopRequested = true;
         this.settleStopping();
       },
+      parked: () =>
+        this.members[member.index] === member &&
+        member.reply !== undefined &&
+        (Atomics.load(member.reply, WAIT_EPOCH) & 1) === 1,
       settled: () => member.phase === "released",
       closeAdmission: () => this.closeAdmission(member),
     });
