@@ -16,9 +16,19 @@ if [[ ! -x "$sdk/bin/clang" ]] || ! grep -qx '34.0' "$sdk/VERSION" || ! grep -qx
   echo 'WASI_SDK_PATH must name wasi-sdk 34.0 with wasi-libc 2e6fb9d8ee0c' >&2
   exit 1
 fi
-for tool in cmake ninja curl tar patch sha256sum setsid timeout; do command -v "$tool" >/dev/null; done
+missing=()
+for tool in cmake ninja curl tar patch sha256sum setsid timeout; do
+  command -v "$tool" >/dev/null || missing+=("$tool")
+done
+if ((${#missing[@]})); then
+  echo "build-wasi-libc.sh needs ${missing[*]} on PATH (CMake 3.26+, Ninja, curl, tar, patch, GNU coreutils sha256sum and timeout, util-linux setsid)" >&2
+  exit 1
+fi
 # The caller chooses and verifies a data-volume scratch root before invoking us.
-[[ -d "$scratch" && -w "$scratch" ]]
+if [[ ! -d "$scratch" || ! -w "$scratch" ]]; then
+  echo "Scratch root is not a writable directory: $scratch (set WASI_LIBC_SCRATCH_ROOT)" >&2
+  exit 1
+fi
 readonly output=$(realpath -m "$1")
 readonly work=$(mktemp -d "$scratch/waffle-wasi-libc-XXXXXX")
 active=

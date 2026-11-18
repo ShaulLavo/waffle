@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -143,6 +144,49 @@ toolingTest("standalone libc build confines compiler intermediates to owned TMPD
     ).toBe(true);
     expect(existsSync(join("/tmp", f.marker))).toBe(false);
     expect(readdirSync(f.scratch)).toEqual([]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+for (const missing of [["cmake"], ["ninja"], ["cmake", "ninja"]])
+  toolingTest(`standalone libc build names missing ${missing.join(" and ")}`, async () => {
+    const f = fixture();
+    try {
+      // Only stubs, real setsid and timeout, and what the script runs before its check.
+      const bin = join(f.root, "bin");
+      for (const tool of ["dirname", "grep", "setsid", "timeout"])
+        symlinkSync(Bun.which(tool)!, join(bin, tool));
+      for (const tool of missing) rmSync(join(bin, tool));
+      const child = Bun.spawn([Bun.which("bash")!].concat(f.command.slice(1)), {
+        cwd: repo,
+        env: { ...f.env, PATH: bin },
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      const stderr = await new Response(child.stderr).text();
+      expect(await child.exited).toBe(1);
+      expect(stderr).toContain(`needs ${missing.join(" ")} on PATH`);
+      expect(existsSync(join(f.root, "output"))).toBe(false);
+      expect(readdirSync(f.scratch)).toEqual([]);
+    } finally {
+      f.cleanup();
+    }
+  });
+
+toolingTest("standalone libc build names an unusable scratch root", async () => {
+  const f = fixture();
+  try {
+    const scratch = join(f.root, "absent");
+    const child = Bun.spawn(f.command, {
+      cwd: repo,
+      env: { ...f.env, WASI_LIBC_SCRATCH_ROOT: scratch },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const stderr = await new Response(child.stderr).text();
+    expect(await child.exited).toBe(1);
+    expect(stderr).toContain(`Scratch root is not a writable directory: ${scratch}`);
   } finally {
     f.cleanup();
   }
