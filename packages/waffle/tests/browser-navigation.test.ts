@@ -30,9 +30,23 @@ test("WebKit admission uses the original navigation options and removes only its
   if (typeof matches !== "function") throw new Error("Expected URL predicate");
   expect(matches(new URL("http://127.0.0.1:1234/"))).toBe(true);
   expect(matches(new URL("http://127.0.0.1:1234/other"))).toBe(false);
-  expect(routeOptions).toEqual({ times: 1 });
+  // An expiring route breaks context routes that continue the request (Playwright 1.64.1).
+  expect(routeOptions).toBeUndefined();
   expect(page.unroute).toHaveBeenCalledWith(matches, resume);
 });
+
+for (const failure of [
+  Object.assign(new Error("Timeout 15000ms exceeded."), { name: "TimeoutError" }),
+  new Error("net::ERR_ABORTED"),
+]) {
+  test(`the route is removed after a ${failure.name} navigation failure`, async () => {
+    const page = fixture();
+    page.goto.mockRejectedValue(failure);
+    await expect(navigateTestPage(page, "http://127.0.0.1/")).rejects.toBe(failure);
+    const [matches, resume] = page.route.mock.calls[0]!;
+    expect(page.unroute).toHaveBeenCalledWith(matches, resume);
+  });
+}
 
 test("an unrelated navigation failure stays the original failure, even if cleanup fails", async () => {
   const page = fixture();
