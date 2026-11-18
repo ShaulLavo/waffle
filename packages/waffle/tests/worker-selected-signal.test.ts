@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { bootstrap, RuntimeWorkerSignal } from "../browser/worker.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { WasiExit } from "../core/index.js";
-import { createFilesystemConnection, sharedRevoked } from "../fs/index.js";
+import { createFilesystemConnection, revokeFilesystem, sharedRevoked } from "../fs/index.js";
 import { ProcessSignalExit } from "../proc/abi.js";
 import { TaggedCells } from "../proc/control.js";
 import { collectDirectoryProcess, confirmDirectoryProcess } from "../proc/directory.js";
@@ -61,7 +61,7 @@ function childFixture() {
 
 async function observeDefaultSignal(
   transport: WorkerProcessTransport,
-  beforeSignal: () => void = () => {},
+  beforeSignal: (connection: ReturnType<typeof createFilesystemConnection>) => void = () => {},
   postMessage: import("../browser/worker.js").RuntimeWorkerHost["postMessage"] = () => {},
   options: { checkActiveOnly?: boolean; adapterSignal?: boolean; recheck?: boolean } = {},
 ) {
@@ -86,7 +86,7 @@ async function observeDefaultSignal(
           fs.release = () => {};
         },
         run(context) {
-          beforeSignal();
+          beforeSignal(connection);
           try {
             if (options.checkActiveOnly) context.checkActive();
             else context.defaultSignal(15);
@@ -274,6 +274,57 @@ test("normal default-signal bookkeeping delivers the selected typed signal", asy
     fixture.descriptors.dispose();
   }
 });
+
+// A page-side kill claims the outcome, then completion revokes the filesystem. Run both writes
+// inside checkActive's revocation read, as if the guest thread were descheduled there: the guard
+// must still unwind as the claimed outcome, not as an anonymous WasiExit(1).
+for (const claimed of [
+  { kind: "signaled", code: 2 },
+  { kind: "exited", code: 23 },
+] as const)
+  test(`checkActive unwinds as a ${claimed.kind} outcome claimed during its revocation read`, async () => {
+    const fixture = childFixture();
+    const state = workerProcessState(fixture.transport);
+    const nativeLoad = Atomics.load;
+    // Armed once the guest runs, so only checkActive's revocation read is held.
+    let armed: ReturnType<typeof createFilesystemConnection> | undefined;
+    let killed = false;
+    const loads = spyOn(Atomics, "load").mockImplementation(((array: Int32Array, index: number) => {
+      if (armed && !killed && array.buffer === armed.client.ownerStates) {
+        killed = true;
+        claimOutcome(state.signals.outcome, claimed);
+        revokeFilesystem(armed.client);
+      }
+      return nativeLoad(array, index);
+    }) as typeof Atomics.load);
+    try {
+      const result = await observeDefaultSignal(
+        fixture.transport,
+        (opened) => {
+          armed = opened;
+        },
+        () => {},
+        { checkActiveOnly: true },
+      );
+      expect(killed).toBe(true);
+      expect(result.revoked).toBe(true);
+      if (claimed.kind === "signaled") {
+        expect(result.observed).toBeInstanceOf(RuntimeWorkerSignal);
+        expect(result.observed).toMatchObject({ signal: 2 });
+        expect(result.messages.find((message) => message.type === "exit")).toMatchObject({
+          code: 130,
+          signal: 2,
+        });
+      } else {
+        expect(result.observed).toBeInstanceOf(WasiExit);
+        expect(result.observed).toMatchObject({ code: 23 });
+      }
+    } finally {
+      armed = undefined;
+      loads.mockRestore();
+      fixture.descriptors.dispose();
+    }
+  });
 
 test("a conflicting immutable exit never becomes a signal", async () => {
   const fixture = childFixture();
