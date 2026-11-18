@@ -77,12 +77,30 @@ async function verifyExistingRoute(browser: Browser): Promise<void> {
   }
 }
 
+async function verifyContextRoute(browser: Browser): Promise<void> {
+  const context = await browser.newContext();
+  try {
+    let continued = 0;
+    const url = `${server.url}context-route`;
+    await context.route(url, async (route) => {
+      await route.continue();
+      continued++;
+    });
+    const page = await context.newPage();
+    await verifyDocument(page, url, 200, browser.browserType().name());
+    if (continued !== 1) throw new Error("The context route did not continue the navigation");
+  } finally {
+    await context.close();
+  }
+}
+
 async function verifyEngine(engine: string): Promise<void> {
   if (!isEngine(engine)) throw new Error(`Unknown browser: ${engine}`);
   const browser = await lifecycle.launch(engine);
   try {
     for (let index = 0; index < 10; index++) await verifyNavigation(browser, index);
     await verifyExistingRoute(browser);
+    await verifyContextRoute(browser);
     console.log(JSON.stringify({ engine, navigationAdmission: 10 }));
   } finally {
     await lifecycle.closeBrowser(browser);

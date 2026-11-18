@@ -23,11 +23,14 @@ export async function navigateTestPage(
   // WebKit 325840 lets a COOP response overtake the old process's load-start IPC.
   // Request interception admits that IPC before the real network request continues.
   // Remove when Playwright ships https://github.com/WebKit/WebKit/pull/75569.
+  // No `times: 1`: in Playwright 1.64.1 an expiring page route that falls back to a context
+  // route makes that context handler's `route.continue()` reject with "Route is already
+  // handled!". The exact-URL matcher and the removal below bound the route instead.
   const url = new URL(target);
   url.hash = "";
   const matches = (candidate: URL) => candidate.href === url.href;
   const resume = (route: Route) => route.fallback();
-  await page.route(matches, resume, { times: 1 });
+  await page.route(matches, resume);
   let failed = false;
   try {
     return await navigate(page, target, options);
