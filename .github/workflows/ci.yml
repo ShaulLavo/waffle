@@ -564,6 +564,7 @@ jobs:
       - uses: ./.github/actions/setup-wasmtime
         if: steps.wasmtime.outputs.cache-hit != 'true'
       - run: echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/ubuntu-main-archive
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bison ninja-build
       - uses: ./.github/actions/program-optimizer
       - run: bun install --frozen-lockfile --ignore-scripts
@@ -1351,11 +1352,7 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: ${{ steps.playwright-cache.outputs.key }}
-      - name: Use Ubuntu HTTPS archives for browser dependencies
-        run: |
-          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
-          test -s /etc/apt/apt-mirrors.txt
-          cat /etc/apt/apt-mirrors.txt
+      - uses: ./.github/actions/ubuntu-main-archive
       - run: bunx playwright install --with-deps chromium firefox webkit
       - name: Require the producer's fixture artifact ID
         run: test -n "$MEMORY_GROUP_ARTIFACT_ID"
