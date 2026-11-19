@@ -145,7 +145,9 @@ export interface MemoryGroupSnapshot {
   readonly exitFailures: number;
   /**
    * Bytes withheld until exits are proven. A live group counts the member chunks of `exiting`
-   * incarnations (regions they held stay allocated and are counted in `regions`). An ended
+   * incarnations and the memory of regions whose handle died while such an incarnation still
+   * held them (they are no longer in `regions`). A region an exiting incarnation held that
+   * still has a live holder, pin or publication stays in `regions` instead. An ended
    * group counts its whole backing, which waits for the last proof before it is retired.
    * On WebKit a terminated worker that never makes a host call is never proven to exit.
    */
@@ -271,6 +273,11 @@ export interface MemberLease {
 const SMALL_REGION = 32 * 1024;
 const UNIT = 16;
 
+/** Backing a region occupies: its whole chunk, or its units inside an arena page. */
+function regionBytes(region: Region): number {
+  return region.chunk ? region.chunk.pages * PAGE_BYTES : region.units * UNIT;
+}
+
 export class MemoryGroupOwner {
   readonly handle: MemoryGroupHandle;
   private readonly watchTable: Int32Array;
@@ -289,6 +296,8 @@ export class MemoryGroupOwner {
   /** Unproven exits. They outlive group end: the backing is retired once they drain. */
   private readonly exits = new Set<Exit>();
   private quarantinedPages = 0;
+  /** Memory of regions whose handle died while an exiting incarnation still held them. */
+  private quarantinedRegionBytes = 0;
   private exitFailures = 0;
   /** Bytes charged to the page budget for this group's backing. */
   private charged = PAGE_BYTES;
@@ -418,7 +427,7 @@ export class MemoryGroupOwner {
       exitFailures: this.exitFailures,
       quarantinedBytes: this.ended
         ? this.memory.buffer.byteLength
-        : this.quarantinedPages * PAGE_BYTES,
+        : this.quarantinedPages * PAGE_BYTES + this.quarantinedRegionBytes,
       ended: this.ended,
     });
   }
@@ -810,9 +819,20 @@ export class MemoryGroupOwner {
     this.maybeFree(region);
   }
 
+  /**
+   * With no holder, pin or publication left, nothing may reach the region again: its handle
+   * dies now, so a stale handle is refused. Its memory returns only once every former holder's
+   * exit is proven (`exiting`); handing it to a new holder first would let a still-running
+   * thread write into it.
+   */
   private maybeFree(region: Region): void {
-    if (region.holders.size || region.pins || region.published || region.exiting) return;
+    if (region.holders.size || region.pins || region.published) return;
     this.regions.delete(region.handle);
+    if (region.exiting) this.quarantinedRegionBytes += regionBytes(region);
+    else this.releaseMemory(region);
+  }
+
+  private releaseMemory(region: Region): void {
     if (region.chunk) {
       this.free.give(region.chunk.page, region.chunk.pages);
       return;
@@ -976,8 +996,16 @@ export class MemoryGroupOwner {
     for (const chunk of exit.chunks) this.free.give(chunk.page, chunk.pages);
     for (const region of exit.regions) {
       region.exiting--;
-      this.maybeFree(region);
+      // A dead handle's memory waited only for these proofs; a live region frees normally.
+      if (this.regions.get(region.handle) === region) this.maybeFree(region);
+      else if (!region.exiting) this.releaseQuarantined(region);
     }
+  }
+
+  /** Runs once per dead region: `exiting` only rises while the handle is live. */
+  private releaseQuarantined(region: Region): void {
+    this.quarantinedRegionBytes -= regionBytes(region);
+    this.releaseMemory(region);
   }
 
   /** Pooled backing goes to another group, so it waits until every exit is proven. */
