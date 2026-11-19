@@ -1616,6 +1616,9 @@ export class ProcessSupervisor {
   }
   private failRetirementFence(record: ProcessRecord, error: unknown): void {
     record.retirement = { kind: "failed", error };
+    // Page shutdown can complete the physical stop before a late fence rejects. Keep the
+    // failure visible to job waits exactly as if the completed record had never been dropped.
+    if (this.table.job(record.job) || this.consumers.has(record.job)) this.trackConsumer(record);
     this.report(error);
     this.notifyRetirement(record.job);
   }
@@ -1642,6 +1645,7 @@ export class ProcessSupervisor {
         record.stopping!.consumer = undefined;
         record.retirement =
           record.image.request === null ? { kind: "external" } : { kind: "complete" };
+        this.releaseRetiredConsumer(record);
         this.notifyRetirement(record.job);
       },
       (error) => {
@@ -1702,6 +1706,17 @@ export class ProcessSupervisor {
       completion.handleFailed(error);
       completion.failed(error);
     }
+  }
+  /** Every reader of a job's consumer set skips completely retired records: job waits and
+   * retirement checks count only unsettled or failed stops, sibling checks only incomplete
+   * ones, and page shutdown only stops still pending. Dropping the record here lets a
+   * long-lived job's finished members (and their transferred pipe buffers) be collected at
+   * reap instead of when the whole job ends. External roots and failed stops stay tracked. */
+  private releaseRetiredConsumer(record: ProcessRecord): void {
+    if (record.retirement?.kind !== "complete") return;
+    const consumers = this.consumers.get(record.job);
+    if (!consumers?.delete(record) || consumers.size !== 0) return;
+    this.consumers.delete(record.job);
   }
   private notifyRetirement(job: number): void {
     for (const listener of this.retireListeners) this.safely(() => listener(job));

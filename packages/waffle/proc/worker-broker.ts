@@ -240,7 +240,10 @@ export class WorkerProcessBroker {
     return (this.activation ??= this.options.supervisor().then((supervisor) => {
       this.supervisor = supervisor;
       supervisor.registerOwnedJobCleanup((pid) => this.closeOwnedJobs(pid));
-      supervisor.onJobRetirement((job) => this.publishRetirement(job));
+      supervisor.onJobRetirement((job) => {
+        this.releaseRetiredResources(supervisor, job);
+        this.publishRetirement(job);
+      });
       if (!this.disposed) {
         const stopQuiescent = supervisor.onProcessQuiescent((event) => {
           if (this.disposed) return;
@@ -679,6 +682,20 @@ export class WorkerProcessBroker {
           this.failedCleanup.delete(pid);
         }
       }
+    }
+  }
+  /** A retired process has disposed its descriptors and stopped its worker, so the descriptor
+   * tokens its spawn transferred are dead weight (each pipe token pins that pipe's shared
+   * buffer). Drop them now, like a kernel closing an exiting task's files before its parent
+   * waits, so an unwaited zombie keeps only its identity and exit status. Tokens whose
+   * discard failed stay for disposal to retry. */
+  private releaseRetiredResources(supervisor: ProcessSupervisor, job: number): void {
+    for (const [pid, transport] of this.transports) {
+      if (transport.resources.length === 0 || this.failedCleanup.has(pid)) continue;
+      const record = supervisor.get(pid);
+      if (record?.job !== job || record.retirement?.kind !== "complete") continue;
+      transport.bindings = [];
+      transport.resources = [];
     }
   }
   private publishRetirement(job: number): void {
