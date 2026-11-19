@@ -72,9 +72,19 @@ function taskService(root: object, access: ServiceAccess = serviceAccess()) {
   return { service, replies, connections, turn };
 }
 
-for (const cleanupFails of [false, true])
-  test(`map-fill revoke joins the actual outer stack and separate ack task (${cleanupFails})`, async () => {
+const mapFillCases = [false, true].flatMap((cleanupFails) => [
+  { cleanupFails, slow: false },
+  { cleanupFails, slow: true },
+]);
+for (const { cleanupFails, slow } of mapFillCases)
+  test(`map-fill revoke joins the actual outer stack and separate ack task (${cleanupFails})${slow ? " on a slow runner" : ""}`, async () => {
     const mapped = deferred<void>();
+    if (slow) {
+      // Each clock read advances 2.5 ms, so every 4 ms slice replays exactly one command.
+      let now = 0;
+      const clock = spyOn(performance, "now").mockImplementation(() => (now += 2.5));
+      cleanups.push(() => clock.mockRestore());
+    }
     const holder: { rig?: ReturnType<typeof taskService> } = {};
     const currentRig = () => {
       if (!holder.rig) throw new Error("service not created");
@@ -84,10 +94,12 @@ for (const cleanupFails of [false, true])
       destroyed = 0,
       ranges = 0,
       premature = false,
-      cleanupInside = false;
+      cleanupInside = false,
+      mapStarted = false;
     const nativeHistory: string[] = [];
     const buffer = {
       mapAsync() {
+        mapStarted = true;
         return mapped.promise;
       },
       getMappedRange() {
@@ -163,6 +175,10 @@ for (const cleanupFails of [false, true])
       options: null,
     });
     await rig.turn();
+    // Each connection's slice has a 4 ms budget, so a slow runner can reach map_async in a later
+    // turn. The cap only catches a hang.
+    for (let n = 0; n < 100 && !mapStarted; n++) await rig.turn();
+    expect(mapStarted).toBe(true);
     expect(Atomics.load(new Int32Array(peer.commands), 2)).toBeGreaterThan(0);
     mapped.resolve();
     await settle();
