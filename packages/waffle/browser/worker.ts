@@ -688,11 +688,15 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       return true;
     }
   };
+  // A kill claims the outcome before completion revokes the filesystem. Sample revocation
+  // first, as the broker does: a guest descheduled between the two reads then still sees the
+  // claimed outcome and unwinds as that signal or exit, never as an anonymous WasiExit(1).
   const checkActive = () => {
+    const retired = revoked() || cancellation.signal.aborted;
     const winner = observedOutcome();
     if (winner?.kind === "signaled") defaultSignal(winner.code);
     if (winner) throw new WasiExit(waitStatus(winner));
-    if (revoked() || cancellation.signal.aborted) throw new WasiExit(1);
+    if (retired) throw new WasiExit(1);
   };
   // Only the synchronous host-authored diagnostic write may use still-owned I/O after its
   // terminal claim. Guest calls remain guarded, and revocation still retires that authority.
