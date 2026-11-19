@@ -378,6 +378,13 @@ const originalGraphicsGrants = new WeakMap<GraphicsGrant, GraphicsGrant>();
  */
 const STOP_UNWIND_MS = 1000;
 
+/** Messages a worker posts last, once its guest can no longer run (browser/worker.ts finish). */
+function guestFinished(type: RuntimeWorkerMessage["type"] | undefined): boolean {
+  return (
+    type === "exit" || type === "error" || type === "cleanup-error" || type === "observation-error"
+  );
+}
+
 function guestEnded(child: RuntimeChild): void {
   child.guestEnded = true;
   child.endGuest?.();
@@ -2246,8 +2253,7 @@ export class BrowserProcessBroker {
     if (group) Object.assign(request, { memoryGroup: group.request });
     this.watch();
     worker.onmessage = ({ data }: MessageEvent<RuntimeWorkerMessage>) => {
-      if (data?.type === "exit" || data?.type === "error" || data?.type === "cleanup-error")
-        guestEnded(child);
+      if (guestFinished(data?.type)) guestEnded(child);
       this.childMessage(child, options, data);
     };
     worker.onerror = (event) => {
@@ -3037,6 +3043,10 @@ export class BrowserProcessBroker {
       this.retireChildController(child.context.pid, child);
       child.adapter = undefined;
     };
+    // Select SIGKILL before the quiesce fence revokes the filesystem: a guest that notices the
+    // revocation first would otherwise exit 1 instead of reporting the stop's SIGKILL (137).
+    // No change once an outcome is settled; exec replacement must not end the process.
+    if (!replacing && !child.replacing) this.publishStopSignal(child.context.pid);
     const fence = replacing ? this.imageFence(child) : this.quiesceProcess(child.context.pid);
     child.stopping = (fence ? fence.then(stop) : stop()).catch((error) => {
       this.observationOwners.get(child.context.pid)?.fail(error);

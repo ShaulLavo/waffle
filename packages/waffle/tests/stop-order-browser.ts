@@ -22,7 +22,7 @@ export interface StopOrderReport {
   readonly runs: number;
   /** Stops whose exit status reported SIGKILL. */
   readonly killed: number;
-  /** Exit status count by code. A physical stop can also end with 1 (revoked or cancelled). */
+  /** Exit status count by code. */
   readonly codes: Readonly<Record<string, number>>;
   /** Workers terminate() was called on. */
   readonly terminated: number;

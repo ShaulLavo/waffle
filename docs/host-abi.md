@@ -607,12 +607,15 @@ therefore asks guests to stop through the process outcome, which they poll:
   member's pages for reuse ([Memory groups](memory-groups.md#exit-proof)).
 - What the host guarantees: before the broker terminates a process's worker (kill, runtime
   disposal, a failed or abandoned launch, or any other physical stop), it selects `SIGKILL` as
-  the outcome if none is selected yet, so `signal(0, 4)` throws before `terminate()`. An outcome
+  the outcome if none is selected yet, so `signal(0, 4)` throws before `terminate()`. It does so
+  at the start of the stop, before the process's filesystem is revoked, so a stopped guest
+  reports `SIGKILL` (status 137) rather than exit 1 from the revocation. An outcome
   selected earlier stays (an exit code is not rewritten), and every host call also throws once
   any outcome is selected. Exec replacement is the exception: the old image is stopped inside
   its exec call, which never returns into guest code once the replacement is committed.
 - Then the broker waits, up to about a second, for the worker to report that its guest finished
-  (its `exit` or `error` message, or a worker error), and only then calls `terminate()`. A
+  (its `exit`, `error`, `cleanup-error` or `observation-error` message, or a worker error), and
+  only then calls `terminate()`. A
   polling guest reports within a few milliseconds, so `terminate()` lands on an idle worker. It
   does not wait when no guest code can be running: the guest never entered, already finished,
   or is a memory group member parked in its futex wait, which `SIGKILL` does not wake. The second
