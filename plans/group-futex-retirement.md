@@ -411,6 +411,14 @@ simulator, 2026-11-17): the direct-worker case passed 60 of 60 polling stops at 
 exit proven, median 1.48 ms after `terminate()`), and the broker test passed 120 of 120
 (`terminate()` always after the exit report, 2 to 9 ms after the stop); no page crash.
 
+Seen in CI (2026-11-19): main run 44459103051 (commit ddf5fdc0), job `browser (serial)`, WebKit
+27.2. `running-member-reuse-browser-runner.ts webkit` logged the 4-page parked case passing at
+04:40:33, then nothing until `{"engine":"webkit","crash":true}` at 04:41:20 during the 4-page
+polling case (`stoppingCases`), and `page.evaluate` failed with "Target page, context or browser
+has been closed". The 1-page polling case took under 1 s. The rest of the suite passed. Locally
+(PC, Playwright WebKit 27.2) the runner passed with 6 and with 30 repetitions. This is the open
+crash above, not a test timing bug; the test should not be loosened to hide it.
+
 Cost (known and accepted, correctness over memory). A busy guest that never polls keeps its chunks
 and held regions withheld until its group ends (for a group that never ends, until the page
 closes): forever on WebKit, about 2 s on Chromium, about 1 ms on Firefox. On iOS Safari 26.5 such a
