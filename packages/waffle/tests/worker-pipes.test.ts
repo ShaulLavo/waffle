@@ -509,13 +509,18 @@ test("sixteen distinct child workers each use IPC across shared registry growth"
   expect(f.broker.size).toBe(0);
 });
 
-test("3001 pipe-backed spawn/waitJob cycles recycle a two-slot runtime and root disposal clears it", async () => {
-  const transport = createWorkerProcessTransport({ capacity: 2 });
-  const rootState = workerProcessState(transport),
-    directoryBytes = transport.directory.byteLength;
+/** One long-lived root on the real worker-process stack: supervisor, process broker, pipe relay
+ * and the root's own client. Every message crosses structured cloning, as between workers. */
+function rootRuntime(
+  capacity: number,
+  cellsPerProcess: number,
+  pipe: { capacity: number; maxReaders: number; maxWriters: number },
+) {
+  const transport = createWorkerProcessTransport({ capacity });
+  const rootState = workerProcessState(transport);
   const registry = new PipePublicationRegistry({
-    processCapacity: 2,
-    cellsPerProcess: 1,
+    processCapacity: capacity,
+    cellsPerProcess,
     maxCells: 1 << 16,
     wake: rootState.wake,
   });
@@ -524,8 +529,8 @@ test("3001 pipe-backed spawn/waitJob cycles recycle a two-slot runtime and root 
   const messages: WorkerProcessMessage[] = [];
   const executables = new ExecutableRegistry();
   executables.register("fixture", { module: emptyModule, adapter: "preview1" });
-  let terminated = 0,
-    diagnostic: unknown;
+  const diagnostics: unknown[] = [];
+  let terminated = 0;
   const supervisor = new ProcessSupervisor({
     registry: executables,
     launch(context) {
@@ -539,9 +544,7 @@ test("3001 pipe-backed spawn/waitJob cycles recycle a two-slot runtime and root 
     // The real host completes its resource fence here. Collection is independent of the
     // physical guest handle and is also required for ordinary (not just signaled) exits.
     quiesce: (pid) => registry.collectProcess(pid),
-    onError: (error) => {
-      diagnostic ??= error;
-    },
+    onError: (error) => diagnostics.push(error),
   });
   supervisor.createRoot({
     pid: rootState.pid,
@@ -556,24 +559,18 @@ test("3001 pipe-backed spawn/waitJob cycles recycle a two-slot runtime and root 
     onPipe: (handle) => pipes.attach(handle as PipeEndpointHandle),
     pumpPipes: () => pipes.pump(),
     quiesce: (pid) => registry.collectProcess(pid),
-    onError: (error) => {
-      diagnostic ??= error;
-    },
+    onError: (error) => diagnostics.push(error),
   });
   processes.adoptRoot(transport);
   const descriptors = new DescriptorTable();
   const postMessage = (message: WorkerProcessMessage) => messages.push(structuredClone(message));
-  const host = new WorkerPipeHost({
-    transport,
-    registry,
-    postMessage,
-    pipe: { capacity: 8, maxReaders: 1, maxWriters: 1 },
-  });
+  const host = new WorkerPipeHost({ transport, registry, postMessage, pipe });
   const root = new WorkerProcessClient({
     transport,
     descriptors,
     codec: host.codec(),
     postMessage,
+    createPipe: () => host.createPipe(),
     prepareSpawn: (pid) => {
       registry.registerProcess(pid);
       return {
@@ -592,6 +589,46 @@ test("3001 pipe-backed spawn/waitJob cycles recycle a two-slot runtime and root 
     pipes.dispose();
     registry.collectProcess(rootState.pid);
   });
+  return {
+    transport,
+    rootState,
+    registry,
+    pipes,
+    messages,
+    supervisor,
+    processes,
+    descriptors,
+    root,
+    flush,
+    diagnostics,
+    terminated: () => terminated,
+    /** The child's own side of an admitted process, from its cloned worker transport. */
+    child(pid: number) {
+      const childTransport = structuredClone(processes.get(pid)!);
+      const childHost = new WorkerPipeHost({
+        transport: childTransport,
+        registry: (childTransport.data as { pipeRegistry: PipePublicationRegistryHandle })
+          .pipeRegistry,
+        postMessage,
+        pipe,
+      });
+      const childDescriptors = new DescriptorTable();
+      const client = new WorkerProcessClient({
+        transport: childTransport,
+        descriptors: childDescriptors,
+        codec: childHost.codec(),
+        postMessage,
+        createPipe: () => childHost.createPipe(),
+      });
+      return { descriptors: childDescriptors, client };
+    },
+  };
+}
+
+test("3001 pipe-backed spawn/waitJob cycles recycle a two-slot runtime and root disposal clears it", async () => {
+  const f = rootRuntime(2, 1, { capacity: 8, maxReaders: 1, maxWriters: 1 });
+  const { transport, rootState, registry, pipes, messages, supervisor, processes, root, flush } = f;
+  const directoryBytes = transport.directory.byteLength;
   let stale: PipeEndpoint | undefined;
   try {
     for (let iteration = 0; iteration < 3001; iteration++) {
@@ -599,22 +636,7 @@ test("3001 pipe-backed spawn/waitJob cycles recycle a two-slot runtime and root 
         job = root.jobOf(pid);
       await flush();
       await supervisor.start(pid);
-      const childTransport = structuredClone(processes.get(pid)!);
-      const childHost = new WorkerPipeHost({
-        transport: childTransport,
-        registry: (childTransport.data as { pipeRegistry: PipePublicationRegistryHandle })
-          .pipeRegistry,
-        postMessage,
-        pipe: { capacity: 8, maxReaders: 1, maxWriters: 1 },
-      });
-      const childDescriptors = new DescriptorTable();
-      const child = new WorkerProcessClient({
-        transport: childTransport,
-        descriptors: childDescriptors,
-        codec: childHost.codec(),
-        postMessage,
-        createPipe: () => childHost.createPipe(),
-      });
+      const { descriptors: childDescriptors, client: child } = f.child(pid);
       try {
         const [reader, writer] = child.createPipe();
         if (!(reader instanceof PipeEndpoint) || !(writer instanceof PipeEndpoint))
@@ -640,13 +662,13 @@ test("3001 pipe-backed spawn/waitJob cycles recycle a two-slot runtime and root 
         expect(registry.processCount).toBe(1);
         expect(pipes.size).toBe(0);
         expect(messages).toHaveLength(0);
-        expect(diagnostic).toBeUndefined();
+        expect(f.diagnostics).toEqual([]);
       } finally {
         childDescriptors.dispose();
         registry.collectProcess(pid);
       }
     }
-    expect(terminated).toBe(3001);
+    expect(f.terminated()).toBe(3001);
     expect(stale!.tryWrite([encoder.encode("stale")])).toBe(-PipeErrno.BADF);
     expect(transport.directory.byteLength).toBe(directoryBytes);
     expect(registry.handle().buffer.byteLength).toBeLessThan(512 * 1024);
@@ -660,10 +682,103 @@ test("3001 pipe-backed spawn/waitJob cycles recycle a two-slot runtime and root 
     expect(supervisor.job(rootState.job)).toBeUndefined();
     expect(processes.get(rootState.pid)).toBeUndefined();
     expect(pipes.size).toBe(0);
-    expect(diagnostic).toBeUndefined();
+    expect(f.diagnostics).toEqual([]);
   } finally {
     stale?.close();
   }
+});
+
+/** Spawn one child into the root's own job with a fresh pipe as its stdout, as a dev server or
+ * shell does; the child writes once and exits. Records weak references to what the page holds. */
+async function churnChild(
+  f: ReturnType<typeof rootRuntime>,
+  code: number,
+  held: { tokens: WeakRef<object>[]; records: WeakRef<object>[] },
+): Promise<{ pid: number; reader: PipeEndpoint }> {
+  const [reader, writer] = f.root.createPipe();
+  if (!(reader instanceof PipeEndpoint) || !(writer instanceof PipeEndpoint))
+    throw new Error("pipe factory returned a non-pipe stream");
+  const writerFd = f.descriptors.open(writer, 3n, 3n);
+  const job = f.rootState.job;
+  const pid = f.root.spawn(
+    f.rootState.pid,
+    request({ job, fds: [{ child: 1, parent: writerFd }] }),
+  );
+  f.descriptors.close(writerFd);
+  await f.flush();
+  await f.supervisor.start(pid);
+  const admitted = f.processes.get(pid)!;
+  expect(admitted.resources.length).toBeGreaterThan(0);
+  for (const token of admitted.resources) held.tokens.push(new WeakRef(token as object));
+  held.records.push(new WeakRef(f.supervisor.get(pid)!));
+  const child = f.child(pid);
+  child.client.installBindings();
+  const stdout = child.descriptors.get(1)!.resource as PipeEndpoint;
+  expect(stdout.tryWrite([encoder.encode("x")])).toBe(1);
+  child.descriptors.dispose();
+  f.supervisor.exit(pid, code);
+  f.pipes.pump();
+  await f.flush();
+  return { pid, reader };
+}
+async function liveAfterGc(refs: readonly WeakRef<object>[]): Promise<number> {
+  await Bun.sleep(0);
+  Bun.gc(true);
+  await Bun.sleep(0);
+  Bun.gc(true);
+  return refs.filter((ref) => ref.deref() !== undefined).length;
+}
+
+// Chromium holds about 4,096 pipe-sized shared buffers per page. Every child of a long-lived
+// root used to stay in the supervisor's per-job record set until the root itself exited, so its
+// transferred pipe tokens (and their buffers) were never released and pipe() hit ENOMEM.
+test("a long-lived root's reaped children release their records and pipe buffers", async () => {
+  const f = rootRuntime(4, 4, { capacity: 8, maxReaders: 2, maxWriters: 2 });
+  const held = { tokens: [] as WeakRef<object>[], records: [] as WeakRef<object>[] };
+  for (let iteration = 0; iteration < 400; iteration++) {
+    const { pid, reader } = await churnChild(f, iteration % 32, held);
+    expect(output(reader, 8)).toBe("x");
+    reader.close();
+    expect(f.root.wait(f.rootState.pid, pid)?.code).toBe(iteration % 32);
+    await f.flush();
+    expect(f.processes.get(pid)).toBeUndefined();
+    expect(f.supervisor.get(pid)).toBeUndefined();
+    expect(f.pipes.size).toBe(0);
+  }
+  // A conservative stack scan may pin the last few; everything older must be gone.
+  expect(await liveAfterGc(held.records)).toBeLessThanOrEqual(8);
+  expect(await liveAfterGc(held.tokens)).toBeLessThanOrEqual(8);
+  expect(f.diagnostics).toEqual([]);
+  f.supervisor.exit(f.rootState.pid, 0);
+  f.processes.releaseRoot(f.rootState.pid);
+  f.supervisor.dispose();
+  expect(Array.from(f.supervisor.table.values())).toHaveLength(0);
+  expect(f.diagnostics).toEqual([]);
+});
+
+test("an unwaited zombie keeps its exit status but not its transferred pipe buffers", async () => {
+  const f = rootRuntime(64, 4, { capacity: 8, maxReaders: 2, maxWriters: 2 });
+  const held = { tokens: [] as WeakRef<object>[], records: [] as WeakRef<object>[] };
+  const zombies: number[] = [];
+  for (let index = 0; index < 32; index++) {
+    const { pid, reader } = await churnChild(f, index + 1, held);
+    expect(output(reader, 8)).toBe("x");
+    reader.close();
+    const deadline = performance.now() + 5000;
+    while (f.supervisor.get(pid)?.retirement === undefined && performance.now() < deadline)
+      await Bun.sleep(1);
+    expect(f.supervisor.get(pid)?.retirement?.kind).toBe("complete");
+    zombies.push(pid);
+  }
+  expect(await liveAfterGc(held.tokens)).toBeLessThanOrEqual(4);
+  // Zombie semantics: each child stays waitable with its status until the parent collects it.
+  for (const [index, pid] of zombies.entries()) {
+    expect(f.root.childExited(f.rootState.pid, pid)).toBe(true);
+    expect(f.root.wait(f.rootState.pid, pid)?.code).toBe(index + 1);
+    await f.flush();
+    expect(f.supervisor.get(pid)).toBeUndefined();
+  }
+  expect(f.diagnostics).toEqual([]);
 });
 
 test("authorized worker kill freezes publication before parent-visible completion", async () => {

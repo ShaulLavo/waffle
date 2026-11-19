@@ -663,6 +663,9 @@ process slot becomes reusable after its captured native consumers return.
 A subsequent wait, or a wait for a non-child, returns `-ECHILD` (`-12`). Pipe-owner
 metadata has been released by the cleanup fence; a consuming wait never retains it.
 An exited but uncollected child remains a zombie and retains process capacity.
+A zombie keeps only its identity and exit status: its descriptors close at exit, and the
+host drops its spawn's transferred descriptors (and the pipe buffers they pin) once its
+Worker has physically stopped, without waiting for the parent's wait or the end of its job.
 Choosing an outcome alone is not proof that a Worker's resources are safe to release.
 Shared collectibility is published before host exit observers and waiters see the
 result. A consuming host wait does not await native termination; pending native
