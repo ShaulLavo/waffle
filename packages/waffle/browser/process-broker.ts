@@ -344,6 +344,10 @@ interface RuntimeChild {
   context: ProcessContext;
   worker?: Worker;
   acknowledged: boolean;
+  /** The worker reported that its guest finished (exit, error or a worker error). */
+  guestEnded?: boolean;
+  /** Resolves a stop waiting for guestEnded (see terminateWorker). */
+  endGuest?: () => void;
   replacementAcknowledged?: boolean;
   failed: boolean;
   stopped: boolean;
@@ -367,6 +371,44 @@ interface RuntimeChild {
 
 /** Page-owned process admission and descriptor transport. Guest adapter policy is injected. */
 const originalGraphicsGrants = new WeakMap<GraphicsGrant, GraphicsGrant>();
+
+/**
+ * How long a stop waits for a signalled guest to unwind before terminate(). A guest polling
+ * runtime_proc.signal(0, 4) takes about a millisecond; this only caps one that never polls.
+ */
+const STOP_UNWIND_MS = 1000;
+
+function guestEnded(child: RuntimeChild): void {
+  child.guestEnded = true;
+  child.endGuest?.();
+}
+
+/** True once executable entry committed: guest code may be running on this worker. */
+function guestEntered(child: RuntimeChild): boolean {
+  try {
+    return startStatus(child.context.outcome) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Waits until the worker reports that its guest finished, or STOP_UNWIND_MS. No wait when no
+ * guest code can be running: it never entered, already finished, or is parked in a group
+ * futex wait, which SIGKILL does not wake. closeParked() closes that wait record first, so a
+ * timed or sibling wake before terminate() throws instead of resuming guest code.
+ */
+function guestUnwound(child: RuntimeChild): Promise<void> | undefined {
+  if (child.guestEnded || !guestEntered(child)) return;
+  if (child.group?.closeParked()) return;
+  const unwound = Promise.withResolvers<void>();
+  const cap = setTimeout(unwound.resolve, STOP_UNWIND_MS);
+  child.endGuest = unwound.resolve;
+  return unwound.promise.finally(() => {
+    clearTimeout(cap);
+    child.endGuest = undefined;
+  });
+}
 
 function senderRevoked(
   result: ReturnType<typeof readOutcome>,
@@ -2203,9 +2245,15 @@ export class BrowserProcessBroker {
     const group = child.group?.launch();
     if (group) Object.assign(request, { memoryGroup: group.request });
     this.watch();
-    worker.onmessage = ({ data }: MessageEvent<RuntimeWorkerMessage>) =>
+    worker.onmessage = ({ data }: MessageEvent<RuntimeWorkerMessage>) => {
+      if (data?.type === "exit" || data?.type === "error" || data?.type === "cleanup-error")
+        guestEnded(child);
       this.childMessage(child, options, data);
-    worker.onerror = (event) => this.childError(child, event);
+    };
+    worker.onerror = (event) => {
+      guestEnded(child);
+      this.childError(child, event);
+    };
     try {
       if (readOutcome(context.outcome))
         throw new ProcessError(ProcessErrno.SRCH, "process exited before worker publication");
@@ -3032,12 +3080,19 @@ export class BrowserProcessBroker {
     const worker = child.worker;
     if (!worker) return;
     let ended: void | Promise<void>;
-    // terminate() never stops a busy Wasm thread on iOS Safari and takes about 2 s on Chromium.
-    // Select SIGKILL first (no change once an outcome is settled) so a guest polling
-    // runtime_proc.signal(0, 4) or its fatal checkpoint unwinds and its thread exits; a group
-    // owner can then reuse its pages (docs/host-abi.md, "Stop polling"). Exec replacement
-    // stops an old image inside its exec call and must not end the process.
-    if (!child.replacing) this.publishStopSignal(child.context.pid);
+    // terminate() never stops a busy Wasm thread on iOS Safari and takes about 2 s on Chromium,
+    // and on WebKit it can crash the page when it lands while the guest is still calling host
+    // imports in a loop. Select SIGKILL first (no change once an outcome is settled) so a guest
+    // polling runtime_proc.signal(0, 4) or its fatal checkpoint unwinds, then give it a bounded
+    // time to report that it finished, so terminate() lands on an idle worker; a group owner
+    // can then reuse its pages (docs/host-abi.md, "Stop polling"). Exec replacement stops an
+    // old image inside its exec call and must not end the process.
+    if (!child.replacing) {
+      this.publishStopSignal(child.context.pid);
+      // Await only a real wait: without one, terminate() stays in this synchronous step.
+      const unwinding = guestUnwound(child);
+      if (unwinding) await unwinding;
+    }
     try {
       ended = worker.terminate();
     } finally {

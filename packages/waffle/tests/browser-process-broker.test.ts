@@ -2171,7 +2171,11 @@ for (const completion of [
       expect(events).not.toContain("terminate");
       expect(events).not.toContain("cleanup");
       releaseControllerFilesystem();
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      // A started guest that never reports its exit (host failure) is terminated after the
+      // broker's bounded unwind wait (docs/host-abi.md, "Stop polling"); 5 s is a hang cap.
+      const cap = performance.now() + 5_000;
+      do await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      while (!events.includes("cleanup") && performance.now() < cap);
       expect(events.filter((event) => event === "terminate")).toHaveLength(
         completion === "constructor-failure" || completion === "connect-failure" ? 0 : 1,
       );
