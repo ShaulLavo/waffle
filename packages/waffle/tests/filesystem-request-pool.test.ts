@@ -167,7 +167,6 @@ test("released and reused arenas settle abandoned counts and private bytes exact
   for (const peer of peers) retireRequestMemory(peer.memory);
   expect(requestBudgetBytes(budget)).toBe(charge);
   expect(requestMemoryResources(reused.memory).namespaceRequests).toBe(0);
-  expect(Reflect.get(pool, "receipts")).toHaveLength(4);
 });
 
 test("retirement errors keep abandoned request counts and private charges while safe peers release", () => {
@@ -213,7 +212,6 @@ test("reuse allocation failure leaves the selected arena recoverable and excess 
   expectOwned(pool, [peers[0]!.memory]);
   expect(requestBudgetBytes(budget)).toBe(charged);
   expect(requestMemoryResources(peers[0]!.memory).namespaceRequests).toBe(0);
-  expect(Reflect.get(pool, "receipts")).toHaveLength(3);
   for (const peer of peers) expect(retainedPorts().has(peer.port)).toBe(false);
   failControl = false;
   const recovered = connection(pool);
@@ -368,4 +366,43 @@ test("private sender roots use captured collection operations", () => {
     Set.prototype.delete = remove;
   }
   expect(retainedPorts().has(channel.port2)).toBe(false);
+});
+
+/** Every distinct SharedArrayBuffer the value strongly references, through own properties,
+ * arrays, maps and sets. Like expectOwned, this inspects ownership directly instead of GC. */
+function ownedSharedBuffers(root: object): Set<SharedArrayBuffer> {
+  const buffers = new Set<SharedArrayBuffer>();
+  const seen = new Set<unknown>();
+  const pending: unknown[] = [root];
+  while (pending.length) {
+    const value = pending.pop();
+    if (typeof value !== "object" || value === null || seen.has(value)) continue;
+    seen.add(value);
+    if (value instanceof SharedArrayBuffer) buffers.add(value);
+    else if (ArrayBuffer.isView(value)) pending.push(value.buffer);
+    else if (value instanceof Map) pending.push(...value.keys(), ...value.values());
+    else if (value instanceof Set) pending.push(...value);
+    else for (const key of Reflect.ownKeys(value)) pending.push(Reflect.get(value, key));
+  }
+  return buffers;
+}
+
+test("a long-lived pool does not keep the control of every connection it ever served", () => {
+  const budget = createRequestBudget();
+  const pool = new FilesystemRequestPool(budget, 65536);
+  const baseline = ownedSharedBuffers(pool).size;
+  const controls = new Set<SharedArrayBuffer>();
+  for (let round = 0; round < 1000; round++) {
+    const peer = connection(pool);
+    controls.add(peer.memory.control);
+    retire(peer);
+  }
+  expect(controls.size).toBe(1000);
+  const owned = ownedSharedBuffers(pool);
+  // The budget plus the one reusable arena's data, control and revocation word: nothing per
+  // past connection.
+  expect(owned.size).toBeLessThanOrEqual(baseline + 3);
+  expect(Array.from(controls).filter((control) => owned.has(control)).length).toBeLessThanOrEqual(
+    1,
+  );
 });

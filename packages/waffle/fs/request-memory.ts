@@ -389,7 +389,6 @@ export class FilesystemRequestPool {
   // Reachability does not prevent native asynchronous Disentangle.
   private static readonly formerServicePorts = new SetConstructor<MessagePort>();
   private readonly arenas: Arena[] = [];
-  private readonly receipts: SharedArrayBuffer[] = [];
   readonly connectionBytes: number;
   constructor(
     readonly budget: SharedArrayBuffer,
@@ -534,15 +533,16 @@ export class FilesystemRequestPool {
     this.arenas[this.arenas.length] = arena;
     return arena;
   }
+  /** The pool holds a control only through its arena; a replaced control stays with its old
+   * peers. Its charge is kept, like every released reference's backing charge. */
   private createControl(construction?: Construction): SharedArrayBuffer {
     charge(this.budget, REQUEST_CONTROL_BYTES);
     try {
-      const control =
+      return (
         construction?.allocateShared(REQUEST_CONTROL_BYTES) ??
         this.allocate?.(REQUEST_CONTROL_BYTES, REQUEST_CONTROL_BYTES) ??
-        new SharedArrayBufferConstructor(REQUEST_CONTROL_BYTES);
-      this.receipts[this.receipts.length] = control;
-      return control;
+        new SharedArrayBufferConstructor(REQUEST_CONTROL_BYTES)
+      );
     } catch (error) {
       refund(this.budget, REQUEST_CONTROL_BYTES);
       throw error;
