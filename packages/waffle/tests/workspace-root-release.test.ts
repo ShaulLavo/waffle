@@ -69,11 +69,12 @@ async function child(): Promise<void> {
 if (process.env[CHILD]) await child();
 else
   test("disposed workspace root collects while its terminal cursor stays reachable", async () => {
-    // JSC's concurrent JIT worklist holds compiled closures and their scopes for an unbounded
-    // time; it retained the root through backend locals on slow hosts. Synchronous JIT keeps
-    // the probe about Waffle ownership.
+    // JSC's JIT can hold compiled closures and their scopes for an unbounded time: the
+    // concurrent worklist retained the root through backend locals on slow hosts, and on a
+    // 28-core PC the synchronous JIT kept it alive in every run (5 of 5, Bun 1.4.4) while CI
+    // passed. With the JIT off (the interpreter only) the probe is about Waffle ownership.
     const run = Bun.spawn([process.execPath, import.meta.path], {
-      env: { ...process.env, [CHILD]: "1", BUN_JSC_useConcurrentJIT: "0" },
+      env: { ...process.env, [CHILD]: "1", BUN_JSC_useJIT: "0" },
       stdout: "pipe",
       stderr: "pipe",
       // Bun kills a hung child well before the test deadline, which closes both pipes.
