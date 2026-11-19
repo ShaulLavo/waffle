@@ -277,3 +277,41 @@ for (const selected of ["host-failure", "guest-exit", "signal"] as const)
       supervisor.dispose();
     }
   });
+
+// Page shutdown stops a process physically while its quiescence fence is still pending, so its
+// record completes and leaves its job's consumer set first. A later fence rejection must still
+// fail the job's retirement, as it did when completed records were kept until the job ended.
+test("page shutdown: a fence rejecting after the physical stop completed still fails the job", async () => {
+  const registry = new ExecutableRegistry();
+  registry.register("custom", { module, adapter: "custom" });
+  const fence = Promise.withResolvers<void>();
+  const never = new Promise<void>(() => {});
+  const errors: unknown[] = [];
+  let first = 0;
+  let second = 0;
+  const supervisor = new ProcessSupervisor({
+    registry,
+    launch: (context) => ({ terminate: () => (context.pid === second ? never : undefined) }),
+    quiesce: (pid) => (pid === first ? fence.promise : undefined),
+    onError: (error) => errors.push(error),
+  });
+  const root = supervisor.createRoot();
+  first = supervisor.reserveSpawn(root, request);
+  const job = supervisor.get(first)!.job;
+  second = supervisor.reserveSpawn(root, { ...request, job });
+  await supervisor.start(first);
+  await supervisor.start(second);
+  const record = supervisor.get(first)!;
+  supervisor.dispose();
+  void supervisor.retireFencedProcesses();
+  await turn();
+  await turn();
+  expect(record.retirement).toEqual({ kind: "complete" });
+  expect(supervisor.jobRetired(job)).toBe(false);
+  const failure = new Error("late fence");
+  fence.reject(failure);
+  await turn();
+  expect(record.retirement).toMatchObject({ kind: "failed" });
+  expect(() => supervisor.jobRetired(job)).toThrow("process physical retirement failed");
+  expect(errors).toContain(failure);
+});
