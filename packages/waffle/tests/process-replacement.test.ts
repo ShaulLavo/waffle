@@ -72,6 +72,17 @@ async function until(check: () => boolean): Promise<void> {
     await Bun.sleep(1);
   }
 }
+/**
+ * The group's terminal seal (settleStopping). A stop closes the stopped member's own wait record
+ * at once, so its cell no longer tells whether the seal ran. Test-only reflection.
+ */
+function sealed(
+  f: { groups(): MemoryGroups },
+  group: Parameters<MemoryGroups["owner"]>[0],
+): boolean {
+  return Reflect.get(f.groups().owner(group)!, "admission") === "sealed";
+}
+
 async function fixture(
   options: {
     stop?: () => void | Promise<void>;
@@ -328,17 +339,19 @@ test("an unresolved real adapter defers the stopped group's seal and settles it 
     await f.flush(f.root.pid);
     starting = f.supervisor.start(sibling).catch(() => {});
     await entered.promise;
+    const group = f.broker.memoryGroupOf(f.pid)!;
     f.supervisor.kill(f.pid, 9);
     await until(() => f.workers[0]!.stops === 1);
-    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(0);
-    const group = f.broker.memoryGroupOf(f.pid)!;
+    // The stop closes the stopped member's own wait record (no wake); the group stays open.
+    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(1);
+    expect(sealed(f, group)).toBe(false);
     const reserved = f.groups().admit(90, workerProcessDirectoryId(f.root), group);
     reserved.abort();
-    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(0);
+    expect(sealed(f, group)).toBe(false);
     pending.reject(failure);
     await starting;
     // The retry comes from acquisition settlement, not another lease transition or a pump.
-    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(1);
+    expect(sealed(f, group)).toBe(true);
     expect(() => f.groups().owner(group)!.reserve(91)).toThrow("admission is closed");
   } finally {
     pending.resolve({ terminate() {} });
@@ -386,12 +399,14 @@ test("a pending adapter can still join before the terminal seal, and live siblin
     });
     pending.resolve(handle);
     await starting;
-    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(0);
+    // Only the stopped member's own record is closed; the live sibling's stays open.
+    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(1);
+    expect(sealed(f, group)).toBe(false);
     const next = new Int32Array(f.workers[1]!.request.memoryGroup!.reply);
     expect(Atomics.load(next, WAIT_CLOSED)).toBe(0);
     f.supervisor.kill(sibling, 9);
     await until(() => f.workers[1]!.stops === 1);
-    expect(Atomics.load(cells, WAIT_CLOSED)).toBe(1);
+    expect(sealed(f, group)).toBe(true);
     expect(Atomics.load(next, WAIT_CLOSED)).toBe(1);
     const unrelated = f.groups().admit(92, workerProcessDirectoryId(f.root), "new");
     const extra = f.groups().admit(93, workerProcessDirectoryId(f.root), unrelated.group);
@@ -423,7 +438,7 @@ for (const mode of ["loader-rejection", "cancel-before-adapter"] as const) {
       ...request({ executable: "earlier", cwd: "/" }),
       job: -1,
     });
-    const cells = new Int32Array(f.workers[0]!.request.memoryGroup!.reply);
+    const group = f.broker.memoryGroupOf(f.pid)!;
     let starting: Promise<void> | undefined;
     try {
       await f.flush(f.root.pid);
@@ -434,11 +449,11 @@ for (const mode of ["loader-rejection", "cancel-before-adapter"] as const) {
       await entered.promise;
       f.supervisor.kill(f.pid, 9);
       await until(() => f.workers[0]!.stops === 1);
-      expect(Atomics.load(cells, WAIT_CLOSED)).toBe(0);
+      expect(sealed(f, group)).toBe(false);
       if (mode === "loader-rejection") loading.reject(new Error("registry load rejected"));
       else f.supervisor.kill(sibling, 9);
       await quiescent.promise;
-      expect(Atomics.load(cells, WAIT_CLOSED)).toBe(1);
+      expect(sealed(f, group)).toBe(true);
       expect(f.table.get(sibling)).toBeDefined();
       expect(f.contexts).toHaveLength(1);
     } finally {
@@ -1805,12 +1820,16 @@ test("a physical stop selects SIGKILL, then terminates only after the guest repo
 
 test("a started guest that never reports exit is still terminated after the bounded wait", async () => {
   const { f, worker, stop } = await stopTimed();
+  const timers = unwindTimers();
   try {
     const waited = await stop();
     expect(worker.stops).toBe(1);
     // A lower bound only: the broker waited for the guest before terminate().
     expect(waited).toBeGreaterThanOrEqual(900);
+    // Control for the parked test below: a real wait schedules one unwind timer.
+    expect(timers.count()).toBe(1);
   } finally {
+    timers.restore();
     await f.close();
   }
 });
@@ -1830,11 +1849,102 @@ test("a group member parked in its futex wait is terminated without the wait", a
     // terminate() takes effect throws instead of resuming guest code.
     cells = new Int32Array(worker.request.memoryGroup!.reply);
     Atomics.store(cells, WAIT_EPOCH, 1);
+    const timers = unwindTimers();
+    try {
+      const stopping = stop();
+      await until(() => worker.stops === 1);
+      await stopping;
+      // The wait was skipped, not just run out: no unwind timer was ever scheduled.
+      expect(timers.count()).toBe(0);
+    } finally {
+      timers.restore();
+    }
+    expect(closedAtTerminate).toEqual([1]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a group member that is not parked has its wait record closed by the stop", async () => {
+  const closedAtTerminate: number[] = [];
+  let cells: Int32Array | undefined;
+  const { f, worker, stop } = await stopTimed({
+    shared: true,
+    stop: () => {
+      if (cells) closedAtTerminate.push(Atomics.load(cells, WAIT_CLOSED));
+    },
+  });
+  try {
+    // Even epoch: not parked. The record is closed anyway, so a member that reaches its futex
+    // wait after the stop signal throws instead of parking, and the stop waits for its report.
+    cells = new Int32Array(worker.request.memoryGroup!.reply);
     const stopping = stop();
-    await until(() => worker.stops === 1);
+    await until(() => Atomics.load(cells!, WAIT_CLOSED) === 1);
+    expect(worker.stops).toBe(0);
+    worker.emit({ type: "exit", code: 137, signal: 9 });
     await stopping;
     expect(closedAtTerminate).toEqual([1]);
   } finally {
     await f.close();
   }
 });
+
+// A physical stop revokes the filesystem in its quiesce fence. A guest that saw the revocation
+// before any outcome would exit 1, so SIGKILL is selected before the fence runs.
+test("a physical stop whose SIGKILL publication throws still terminates the worker", async () => {
+  const { f, worker, stop } = await stopTimed();
+  const failure = new Error("injected signal publication failure");
+  const publish = spyOn(
+    f.broker as unknown as { publishStopSignal(pid: number): void },
+    "publishStopSignal",
+  );
+  publish.mockImplementation(() => {
+    throw failure;
+  });
+  try {
+    const stopping = stop();
+    await until(() => publish.mock.calls.length > 0);
+    // No SIGKILL was selected, so the stop waits for the guest's report; give it one.
+    worker.emit({ type: "exit", code: 0 });
+    await stopping;
+    expect(worker.stops).toBe(1);
+    expect(f.diagnostics).toContain(failure);
+  } finally {
+    publish.mockRestore();
+    await f.close();
+  }
+});
+
+test("a physical stop selects SIGKILL before its quiesce fence revokes the process", async () => {
+  const atQuiesce: unknown[] = [];
+  let outcome = (): unknown => undefined;
+  const handles: import("../proc/types.js").ProcessHandle[] = [];
+  const f = await fixture({
+    quiesce: () => {
+      atQuiesce.push(outcome());
+    },
+    wrap: (handle) => {
+      handles.push(handle);
+      return handle;
+    },
+  });
+  outcome = () => readOutcome(f.table.require(f.pid).outcome);
+  try {
+    const stopping = handles.at(-1)!.terminate();
+    await until(() => atQuiesce.length > 0);
+    expect(atQuiesce[0]).toMatchObject({ kind: "signaled", code: 9 });
+    f.workers.at(-1)!.emit({ type: "exit", code: 137, signal: 9 });
+    await stopping;
+  } finally {
+    await f.close();
+  }
+});
+
+/** Counts the broker's unwind waits: setTimeout calls with STOP_UNWIND_MS (1000). */
+function unwindTimers() {
+  const spy = spyOn(globalThis, "setTimeout");
+  return {
+    count: () => spy.mock.calls.filter((call) => call[1] === 1000).length,
+    restore: () => spy.mockRestore(),
+  };
+}

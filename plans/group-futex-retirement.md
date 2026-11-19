@@ -360,14 +360,29 @@ the broker always terminated busy guests that make host calls. Record:
 
 Mitigated by stopping in order (managing chat's decision, 2026-11-17): `terminateWorker` selects
 SIGKILL, waits up to 1 s (`STOP_UNWIND_MS`, a hang cap) for the worker to report that its guest
-finished (`exit`, `error` or `cleanup-error` message, or a worker error), then calls
-`terminate()`. It does not wait when the guest never entered (no STARTED bit), already
-finished, or is a group member parked in its futex wait (`MemberLease.closeParked()`: for a published wait it
-stores `WAIT_CLOSED` without a wake, then reads an odd `WAIT_EPOCH` again, the same order as
-`release()`, so a
-timed wait or a sibling's wake before `terminate()` makes the member throw instead of returning to
-guest code). SIGKILL does not wake such a member, and skipping the wait keeps PR 548's parked fast
-path. Kernel analogue: init systems stop a service the same way, SIGTERM, a grace period, then
+finished (`exit`, `error`, `cleanup-error` or `observation-error` message, or a worker error),
+then calls `terminate()`. It does not wait when the guest never entered (no STARTED bit),
+already finished, or is a group member parked in its futex wait (`MemberLease.closeParked()`:
+it stores `WAIT_CLOSED` without a wake, then reads an odd `WAIT_EPOCH`, the same order as
+`release()`, so a timed wait or a sibling's wake before `terminate()` makes the member throw
+instead of returning to guest code). The store is unconditional (follow-up to PR 550's review),
+so a member that reaches its futex wait just after the stop signal throws instead of parking
+and costing the whole cap. SIGKILL does not wake a parked member, and skipping the wait keeps
+PR 548's parked fast path.
+
+Exit status of a physical stop (follow-up to PR 550's review, fixed). `stopPhysical` used to
+revoke the process's filesystem in its quiesce fence before `terminateWorker` selected SIGKILL,
+so a polling guest that saw the revocation first claimed exit 1: about 1 in 60 physical stops on
+Chromium and WebKit and all 60 on Firefox in the stop-order runner, with and without PR 556.
+`stopPhysical` now selects SIGKILL before the fence (not for exec replacement), and every
+physical stop reports 9 on all three engines (`a physical stop selects SIGKILL before its
+quiesce fence revokes the process`, `tests/process-replacement.test.ts`; the stop-order runner
+now requires 9 for physical stops too). A throw while publishing that SIGKILL is reported and
+the stop goes on to `terminate()` (`signalStop`). Not covered (open): threaded (wasi-threads)
+processes take `stopPhysical`'s `child.threads` branch, and `RuntimeThreadOwner.stopAll()`
+(`thread/runtime-owner.ts`) neither selects SIGKILL first nor waits for an exit report.
+
+Kernel analogue: init systems stop a service the same way, SIGTERM, a grace period, then
 SIGKILL (systemd's `TimeoutStopSec`, then `SIGKILL`); here the grace period ends early once the
 guest reports that it finished. The wait is
 on the worker's report, not the exit lock: a worker never ends its own thread, so its lock frees

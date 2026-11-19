@@ -52,10 +52,9 @@ function failures(
 ): string[] {
   const found: string[] = [];
   if (report.runs !== expected) found.push(`ran ${report.runs} of ${expected}`);
-  // A physical stop can revoke or cancel the process before it selects SIGKILL, so exit 1 can
-  // win there (about 1 in 60, also before the stop order changed).
-  if (stop === "kill" && report.killed !== report.runs)
-    found.push(`${report.runs - report.killed} not SIGKILLed`);
+  // A physical stop selects SIGKILL before it revokes the process, so every stop reports 9.
+  if (report.killed !== report.runs)
+    found.push(`${stop} stop: ${report.runs - report.killed} not SIGKILLed`);
   if (report.terminated !== report.runs)
     found.push(`${report.runs - report.terminated} workers never terminated`);
   return found.map((failure) => `${name}: ${failure}`);

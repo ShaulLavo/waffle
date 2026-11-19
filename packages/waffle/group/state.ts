@@ -258,10 +258,10 @@ export interface MemberLease {
   /** Native termination was attempted, including throw/rejection. This is not a stop receipt. */
   stopRequested(): void;
   /**
-   * Stop-time only: if its agent has a futex wait published, closes the wait record without a
-   * wake and reports whether the wait is still published. True means it is parked or about to
-   * park, and any way out of the wait now throws instead of returning to guest code (see
-   * parkedAndClosed). A record with no published wait is left open.
+   * Stop-time only: closes this incarnation's wait record without a wake (as release() will
+   * anyway), then reports whether its agent has a futex wait published. True means it is
+   * parked or about to park, and any way out of the wait now throws instead of returning to
+   * guest code (see parkedAndClosed). False means a later wait throws at once.
    */
   closeParked(): boolean;
   /** True once this incarnation's memory and capacity were returned. */
@@ -463,10 +463,9 @@ export class MemoryGroupOwner {
       },
       closeParked: () => {
         if (this.members[member.index] !== member || !member.reply) return false;
-        // Not parked: leave the record open; the stop waits for the guest's exit report.
-        if (!this.parkedAndClosed(member.reply)) return false;
-        // Same order as release(): CLOSED first, then only an odd epoch read after it counts,
-        // so a timed or sibling wake before terminate() throws instead of resuming guest code.
+        // Same order as release(): CLOSED first, then only an odd epoch read after it counts.
+        // A timed or sibling wake before terminate() throws instead of resuming guest code, and
+        // a member that parks after the stop signal throws instead of parking.
         Atomics.store(member.reply, WAIT_CLOSED, 1);
         return this.parkedAndClosed(member.reply);
       },
