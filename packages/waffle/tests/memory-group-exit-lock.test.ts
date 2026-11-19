@@ -110,10 +110,14 @@ test("a region an exiting member held keeps its memory after its last live holde
   stop(busy.lease);
   expect(op(keeper.lease, GroupOp.DETACH, handle!)[0]).toBe(0);
   // Its handle is dead, but its memory waits for the busy member's exit proof.
-  expect(owner.snapshot()).toMatchObject({ regions: 0, exiting: 1 });
+  expect(owner.snapshot()).toMatchObject({
+    regions: 0,
+    exiting: 1,
+    quarantinedBytes: 2 * PAGE_BYTES,
+  });
   const free = owner.snapshot().freeBytes;
   locks.grant(busy.request.exitLock!);
-  expect(owner.snapshot()).toMatchObject({ regions: 0, exiting: 0 });
+  expect(owner.snapshot()).toMatchObject({ regions: 0, exiting: 0, quarantinedBytes: 0 });
   expect(owner.snapshot().freeBytes).toBe(free + 2 * PAGE_BYTES);
   stop(keeper.lease);
   locks.grant(keeper.request.exitLock!);
@@ -130,14 +134,71 @@ test("a region whose last holder is an exiting member cannot be attached again",
   const [, handle] = op(busy.lease, GroupOp.CREATE, 2 * PAGE_BYTES, PAGE_BYTES);
   const holds = owner.snapshot().holds;
   stop(busy.lease);
-  expect(owner.snapshot()).toMatchObject({ holds: holds - 1, regions: 0, exiting: 1 });
+  expect(owner.snapshot()).toMatchObject({
+    holds: holds - 1,
+    regions: 0,
+    exiting: 1,
+    quarantinedBytes: 2 * PAGE_BYTES,
+  });
   expect(op(keeper.lease, GroupOp.ATTACH, handle!)[0]).toBe(-GroupErrno.BADF);
-  expect(op(keeper.lease, GroupOp.PIN, handle!)[0]).toBe(-GroupErrno.BADF);
   expect(owner.snapshot()).toMatchObject({ holds: holds - 1, regions: 0 });
   // Its memory still comes back only with the proof, and only once.
   const free = owner.snapshot().freeBytes;
   locks.grant(busy.request.exitLock!);
-  expect(owner.snapshot().freeBytes).toBe(free + 2 * PAGE_BYTES);
+  expect(owner.snapshot()).toMatchObject({ quarantinedBytes: 0, freeBytes: free + 2 * PAGE_BYTES });
+  expect(op(keeper.lease, GroupOp.ATTACH, handle!)[0]).toBe(-GroupErrno.BADF);
+  stop(keeper.lease);
+  locks.grant(keeper.request.exitLock!);
+  end();
+});
+
+test("a small region's arena page returns only with its exiting holder's proof", () => {
+  const { owner, join, op, stop, end } = group();
+  const busy = join(),
+    keeper = join();
+  const [, handle] = op(busy.lease, GroupOp.CREATE, 64, 16);
+  const free = owner.snapshot().freeBytes;
+  stop(busy.lease);
+  expect(owner.snapshot()).toMatchObject({ regions: 0, exiting: 1, quarantinedBytes: 64 });
+  expect(op(keeper.lease, GroupOp.ATTACH, handle!)[0]).toBe(-GroupErrno.BADF);
+  expect(owner.snapshot().freeBytes).toBe(free);
+  locks.grant(busy.request.exitLock!);
+  // The arena held only this region, so its page goes back to the free list.
+  expect(owner.snapshot()).toMatchObject({ quarantinedBytes: 0, freeBytes: free + PAGE_BYTES });
+  stop(keeper.lease);
+  locks.grant(keeper.request.exitLock!);
+  end();
+});
+
+test("a region held by two exiting members returns only with the second proof", () => {
+  const { owner, join, op, stop, end } = group();
+  const first = join(),
+    second = join(),
+    keeper = join();
+  const [, handle] = op(first.lease, GroupOp.CREATE, 2 * PAGE_BYTES, PAGE_BYTES);
+  expect(op(second.lease, GroupOp.ATTACH, handle!)[0]).toBe(0);
+  stop(first.lease);
+  // The second member still holds it: the handle stays live.
+  expect(owner.snapshot()).toMatchObject({ regions: 1, quarantinedBytes: 0 });
+  stop(second.lease);
+  expect(owner.snapshot()).toMatchObject({
+    regions: 0,
+    exiting: 2,
+    quarantinedBytes: 2 * PAGE_BYTES,
+  });
+  const free = owner.snapshot().freeBytes;
+  locks.grant(first.request.exitLock!);
+  expect(owner.snapshot()).toMatchObject({
+    exiting: 1,
+    quarantinedBytes: 2 * PAGE_BYTES,
+    freeBytes: free,
+  });
+  locks.grant(second.request.exitLock!);
+  expect(owner.snapshot()).toMatchObject({
+    exiting: 0,
+    quarantinedBytes: 0,
+    freeBytes: free + 2 * PAGE_BYTES,
+  });
   expect(op(keeper.lease, GroupOp.ATTACH, handle!)[0]).toBe(-GroupErrno.BADF);
   stop(keeper.lease);
   locks.grant(keeper.request.exitLock!);

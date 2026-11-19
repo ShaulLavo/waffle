@@ -324,7 +324,8 @@ stop receipt. Pages then take one of two paths:
   behavior.
 - Dead handles (fixed 2026-11-17, after bun-wasm PR 900's flake). A region whose last live
   holder, pin and publication are gone loses its handle at once (`maybeFree`), as before PR 548;
-  only its memory waits for the exit proof (`reuse` calls `releaseMemory`). In 0.0.141 such a
+  only its memory waits for the exit proof, counted in `quarantinedBytes` until `reuse` releases
+  it. In 0.0.141 such a
   region stayed in the handle table until the proof, so a live member could `ATTACH` the stale
   handle and get memory the stopped thread might still write. bun-wasm's QuickJS main thread did
   exactly that after a receiver was stopped mid-attach: it re-attached and detached the region
