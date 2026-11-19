@@ -1891,6 +1891,30 @@ test("a group member that is not parked has its wait record closed by the stop",
 
 // A physical stop revokes the filesystem in its quiesce fence. A guest that saw the revocation
 // before any outcome would exit 1, so SIGKILL is selected before the fence runs.
+test("a physical stop whose SIGKILL publication throws still terminates the worker", async () => {
+  const { f, worker, stop } = await stopTimed();
+  const failure = new Error("injected signal publication failure");
+  const publish = spyOn(
+    f.broker as unknown as { publishStopSignal(pid: number): void },
+    "publishStopSignal",
+  );
+  publish.mockImplementation(() => {
+    throw failure;
+  });
+  try {
+    const stopping = stop();
+    await until(() => publish.mock.calls.length > 0);
+    // No SIGKILL was selected, so the stop waits for the guest's report; give it one.
+    worker.emit({ type: "exit", code: 0 });
+    await stopping;
+    expect(worker.stops).toBe(1);
+    expect(f.diagnostics).toContain(failure);
+  } finally {
+    publish.mockRestore();
+    await f.close();
+  }
+});
+
 test("a physical stop selects SIGKILL before its quiesce fence revokes the process", async () => {
   const atQuiesce: unknown[] = [];
   let outcome = (): unknown => undefined;

@@ -3046,7 +3046,7 @@ export class BrowserProcessBroker {
     // Select SIGKILL before the quiesce fence revokes the filesystem: a guest that notices the
     // revocation first would otherwise exit 1 instead of reporting the stop's SIGKILL (137).
     // No change once an outcome is settled; exec replacement must not end the process.
-    if (!replacing && !child.replacing) this.publishStopSignal(child.context.pid);
+    if (!replacing && !child.replacing) this.signalStop(child.context.pid);
     const fence = replacing ? this.imageFence(child) : this.quiesceProcess(child.context.pid);
     child.stopping = (fence ? fence.then(stop) : stop()).catch((error) => {
       this.observationOwners.get(child.context.pid)?.fail(error);
@@ -3098,7 +3098,7 @@ export class BrowserProcessBroker {
     // can then reuse its pages (docs/host-abi.md, "Stop polling"). Exec replacement stops an
     // old image inside its exec call and must not end the process.
     if (!child.replacing) {
-      this.publishStopSignal(child.context.pid);
+      this.signalStop(child.context.pid);
       // Await only a real wait: without one, terminate() stays in this synchronous step.
       const unwinding = guestUnwound(child);
       if (unwinding) await unwinding;
@@ -3201,6 +3201,17 @@ export class BrowserProcessBroker {
     if (captured && this.supervisor?.get(pid) === captured)
       this.supervisor.observeSignal(pid, signal);
     return true;
+  }
+  /**
+   * A physical stop's SIGKILL is a courtesy to a polling guest: if publishing it throws, the
+   * stop reports that and goes on, so the worker is still fenced and terminated.
+   */
+  private signalStop(pid: number): void {
+    try {
+      this.publishStopSignal(pid);
+    } catch (error) {
+      this.report(error);
+    }
   }
   /** Publication only, as at disposal: no revocation, supervisor callback or wake. */
   private publishStopSignal(pid: number): void {

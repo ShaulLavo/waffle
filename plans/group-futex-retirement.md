@@ -367,7 +367,12 @@ Chromium and WebKit and all 60 on Firefox in the stop-order runner, with and wit
 `stopPhysical` now selects SIGKILL before the fence (not for exec replacement), and every
 physical stop reports 9 on all three engines (`a physical stop selects SIGKILL before its
 quiesce fence revokes the process`, `tests/process-replacement.test.ts`; the stop-order runner
-now requires 9 for physical stops too). Kernel analogue: init systems stop a service the same way, SIGTERM, a grace period, then
+now requires 9 for physical stops too). A throw while publishing that SIGKILL is reported and
+the stop goes on to `terminate()` (`signalStop`). Not covered (open): threaded (wasi-threads)
+processes take `stopPhysical`'s `child.threads` branch, and `RuntimeThreadOwner.stopAll()`
+(`thread/runtime-owner.ts`) neither selects SIGKILL first nor waits for an exit report.
+
+Kernel analogue: init systems stop a service the same way, SIGTERM, a grace period, then
 SIGKILL (systemd's `TimeoutStopSec`, then `SIGKILL`); here the grace period ends early once the
 guest reports that it finished. The wait is
 on the worker's report, not the exit lock: a worker never ends its own thread, so its lock frees
