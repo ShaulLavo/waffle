@@ -977,8 +977,8 @@ export class MemoryBackend implements FilesystemBackend {
   private planPublicationTimes(
     intent: Extract<MutationIntent, { kind: "setTimes" }>,
   ): MutationPlan {
+    // No write-permission check: the owner may set times on a read-only file, as on Linux.
     this.check(intent.handle);
-    if (!(this.fs.permissions(intent.handle).access & 2)) throw new FilesystemError(2);
     const stat = this.shared.stat(intent.handle)!;
     const mtime = intent.mtime === null ? undefined : fileTimeMs(intent.mtime);
     // The workspace sees whole-millisecond mtimes; atime and sub-millisecond changes stay local.

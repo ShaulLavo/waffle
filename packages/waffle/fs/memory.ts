@@ -592,8 +592,9 @@ export class MemFS implements FileSystem {
     mtime: FileTime | null,
     ctime = fileTimeNow(),
   ): number {
+    // The one virtual principal owns every inode, and Linux lets the owner set times on a
+    // read-only file (tar -x and cp -p rely on it), so mode bits do not apply here.
     const node = this.nodeForHandle(handle);
-    if (!(node.mode & 0o200)) return 2;
     if (atime === null && mtime === null) return 0;
     if (atime !== null) node.atime = atime;
     if (mtime !== null) node.mtime = mtime;

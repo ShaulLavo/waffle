@@ -35,8 +35,13 @@ import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { FilesystemError } from "../fs/protocol.js";
 import { gatedIndexedDB } from "./gated-indexeddb.js";
 import { assertRuntimeStartupTrace } from "./runtime-startup-proof.js";
-import type { PersistedNode, StorageBackend } from "../fs/storage.js";
+import type { ChecksummedRecord, PersistedNode, StorageBackend } from "../fs/storage.js";
 import { storedTimes } from "./fixtures/file-times.js";
+import {
+  isChecksummedRecord,
+  oldFormatRecord,
+  startFreshCase,
+} from "./fixtures/workspace-recovery.js";
 
 function request<T>(value: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -69,6 +74,32 @@ async function change(
         tx.onabort = () => reject(tx.error);
       }),
   );
+}
+
+/** Rewrites every saved snapshot and journal record into the record shape Waffle wrote before
+ * nanosecond file times. Re-encoding awaits, so records are read and written in two steps. */
+async function ageIndexedDbStore(name: string): Promise<void> {
+  const stored: [store: string, key: IDBValidKey, value: unknown][] = [];
+  await raw(name, async (db) => {
+    const tx = db.transaction(["metadata", "journal"]);
+    for (const store of ["metadata", "journal"]) {
+      const [keys, values] = await Promise.all([
+        request(tx.objectStore(store).getAllKeys()),
+        request(tx.objectStore(store).getAll()),
+      ]);
+      keys.forEach((key, index) => stored.push([store, key, values[index]]));
+    }
+  });
+  const aged = await Promise.all(
+    stored
+      .filter(([, , value]) => isChecksummedRecord(value))
+      .map(async ([store, key, value]) => {
+        const record = await oldFormatRecord(value as ChecksummedRecord);
+        return [store, key, record] as const;
+      }),
+  );
+  assert(aged.length > 0, "the saved workspace has records to age");
+  for (const [store, key, record] of aged) await change(name, store, key, record);
 }
 
 async function reseedLegacy(name: string): Promise<void> {
@@ -769,6 +800,8 @@ function indexedDBCases(
       runtimeInvalidSchemaCase(name, filesystemWorkerURL));
     test("runtime startup milestones cross the actual filesystem worker boundary", (name) =>
       runtimeStartupCase(name, "indexeddb", filesystemWorkerURL));
+    test("deleteWorkspace lets an old-format IndexedDB workspace start fresh", (name) =>
+      startFreshCase(name, "indexeddb", filesystemWorkerURL, ageIndexedDbStore));
     test("memory startup milestones exclude storage stages across the actual filesystem worker boundary", (name) =>
       runtimeStartupCase(name, false, filesystemWorkerURL));
   }

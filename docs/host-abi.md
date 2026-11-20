@@ -49,7 +49,8 @@ remain provided by Node and measure host process/thread time, not per-guest tota
 independently: `ATIM` or `MTIM` takes the given value, `ATIM_NOW` or `MTIM_NOW` takes the
 filesystem clock, and neither leaves that time unchanged. A time with its `NOW` flag, or an
 unknown flag bit, is `EINVAL` (28). With no time selected the call changes nothing. Any change
-also sets ctime to the current time.
+also sets ctime to the current time. Setting times needs no write permission: the one guest
+principal owns every inode, and the owner may set times on a read-only file, as on Linux.
 
 Filestat records report atime, mtime and ctime separately, with the full unsigned 64-bit
 nanosecond value a guest set, including across reloads of OPFS and IndexedDB workspaces. The
@@ -1143,7 +1144,13 @@ and artifact hashes remain integrity evidence. They do not substitute for
 observable contract stays compatible. Increase the integer monotonically when an old family cannot safely run on
 the new contract. A family changes its required integer only when it starts using a newer
 contract. A new export that preserves existing calls does not require a bump. A removed export,
-changed signature, or incompatible result, error, readiness, authority, or lifetime rule does.
+changed signature, or incompatible result, error, readiness, authority, or lifetime rule does
+when a family can depend on it: a guest import any family calls, or a module export a family
+imports. Every family is type-checked against the runtime in this repository
+(`bun run programs:check`), so a changed export that no family imports does not, provided every
+existing guest call keeps its meaning. Replacing `FileSystem.setMtime` with `setTimes` and adding
+times to `FileStat` was such a change, and the Preview 1 time calls now do what their arguments
+always asked for.
 
 The family peer `waffle: "*"` controls package-manager placement only. It does not assert any
 compatibility range. Source workspaces keep `devDependencies.waffle = "workspace:*"`; published

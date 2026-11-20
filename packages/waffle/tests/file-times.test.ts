@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import type { FileSystem } from "../core/filesystem.js";
 import { MemFS } from "../fs/memory.js";
 import { PersistentBackend } from "../fs/persistent.js";
@@ -198,6 +198,92 @@ test("the shared backend's write path sets mtime and ctime from one clock readin
   expect(stat.atime).toBe(ATIME);
   expect(stat.ctime).toBe(stat.mtime);
   expect(stat.mtime).toBeGreaterThan(MTIME);
+});
+
+/** A controlled clock, so a name change in the same millisecond cannot hide a missing ctime. */
+function clockAt(ms: number) {
+  const now = spyOn(Date, "now").mockReturnValue(ms);
+  cleanup.push(() => now.mockRestore());
+  return (next: number) => now.mockReturnValue(next);
+}
+const atMs = (ms: number) => BigInt(ms) * 1_000_000n;
+
+/** Renames, links and unlinks change only the inode's names: the shared table sets ctime
+ * without a revision bump and leaves atime and mtime alone. */
+test("name changes set ctime in the shared file table", () => {
+  const setClock = clockAt(1_000);
+  const backend = new MemoryBackend();
+  backend.execute("writeFile", ["/file"], new TextEncoder().encode("abc"));
+  const handle = (backend.fs.resolve(backend.fs.preopen("/"), "file") as { node: number }).node;
+  backend.retain(handle);
+  cleanup.push(() => backend.release(handle));
+  backend.execute("setTimes", [handle, ATIME, MTIME], new Uint8Array());
+  const revision = backend.shared.revision(handle);
+  const steps: [number, string, string[]][] = [
+    [2_000, "move", ["/file", "/moved"]],
+    [3_000, "move", ["/moved", "/again"]],
+  ];
+  for (const [ms, operation, args] of steps) {
+    setClock(ms);
+    backend.execute(operation, args, new Uint8Array());
+    expect(backend.shared.stat(handle)).toMatchObject({
+      atime: ATIME,
+      mtime: MTIME,
+      ctime: atMs(ms),
+    });
+  }
+  const root = backend.fs.preopen("/");
+  setClock(4_000);
+  backend.execute(
+    "link",
+    [backend.fs.resolve(root, "again"), backend.fs.resolve(root, "hard")],
+    new Uint8Array(),
+  );
+  expect(backend.shared.stat(handle)).toMatchObject({ nlink: 2, mtime: MTIME, ctime: atMs(4_000) });
+  setClock(5_000);
+  backend.execute("remove", ["/hard"], new Uint8Array());
+  expect(backend.shared.stat(handle)).toMatchObject({ nlink: 1, mtime: MTIME, ctime: atMs(5_000) });
+  expect(backend.shared.revision(handle)).toBe(revision);
+});
+
+test("a rename's ctime survives a reopen", async () => {
+  const setClock = clockAt(1_000);
+  const store = new Store();
+  const first = await persistent(store, true);
+  const handle = (first.fs.resolve(first.fs.preopen("/"), "file") as { node: number }).node;
+  first.retain(handle);
+  first.execute("setTimes", [handle, ATIME, MTIME], new Uint8Array());
+  await first.flush();
+  setClock(2_000);
+  first.execute("move", ["/file", "/moved"], new Uint8Array());
+  first.release(handle);
+  await first.flush();
+  const second = await persistent(store);
+  const moved = (second.fs.resolve(second.fs.preopen("/"), "moved") as { node: number }).node;
+  expect(second.fs.stat(moved)).toMatchObject({ atime: ATIME, mtime: MTIME, ctime: atMs(2_000) });
+});
+
+/** tar -x and cp -p set times after making a file read-only; Linux allows the owner that. */
+test("the owner sets times on a read-only file", () => {
+  const fs = seeded(new MemFS());
+  const h = fileTimesGuest(fs);
+  const handle = (fs.resolve(fs.preopen("/"), "file") as { node: number }).node;
+  expect(fs.setMode(handle, 0o400)).toBe(0);
+  expect(h.setPathTimes("file", ATIME, MTIME, ATIM | MTIM)).toBe(0);
+  expect(h.pathTimes("file")).toMatchObject({ atime: ATIME, mtime: MTIME });
+
+  const backend = new MemoryBackend();
+  seeded(backend.fs);
+  const shared = (backend.fs.resolve(backend.fs.preopen("/"), "file") as { node: number }).node;
+  backend.retain(shared);
+  cleanup.push(() => backend.release(shared));
+  backend.execute("setMode", [shared, 0o400], new Uint8Array());
+  expect(backend.execute("setTimes", [shared, ATIME, MTIME], new Uint8Array())).toBe(0);
+  expect(backend.shared.stat(shared)).toMatchObject({ mode: 0o400, atime: ATIME, mtime: MTIME });
+  expect(backend.shared.setTimes(shared, null, MTIME + 1n, atMs(1))).toBe(0);
+  expect(backend.shared.stat(shared)?.mtime).toBe(MTIME + 1n);
+  // Writing stays denied.
+  expect(() => backend.shared.write(shared, [new Uint8Array([1])], 0)).toThrow("errno 2");
 });
 
 // Keeps a checksummed snapshot, the record OPFS writes, so stored times go through validation.

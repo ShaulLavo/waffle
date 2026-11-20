@@ -1,4 +1,5 @@
 import { restoreTree } from "./persisted-tree.js";
+import { utf8ByteLength } from "./utf8-size.js";
 import type { ReadBacking } from "./workspace-read.js";
 import type { MemoryBudget } from "./memory-budget.js";
 import { DirtyCapacityError, type DirtyLimits } from "./dirty-admission.js";
@@ -609,7 +610,7 @@ export class PersistentBackend extends MemoryBackend {
   private nodeMetadataBytes(node: Node): number {
     let bytes = 256;
     if (node.kind === "symlink")
-      return bytes + node.target.length * 2 + new TextEncoder().encode(node.target).length;
+      return bytes + node.target.length * 2 + utf8ByteLength(node.target);
     if (node.kind !== "dir") return bytes;
     for (const name of node.children.keys()) bytes += 64 + name.length * 2;
     return bytes;
@@ -764,7 +765,7 @@ export class PersistentBackend extends MemoryBackend {
       return {
         ...metadata,
         kind: "symlink",
-        size: new TextEncoder().encode(node.target).length,
+        size: utf8ByteLength(node.target),
         target: node.target,
       };
     return {

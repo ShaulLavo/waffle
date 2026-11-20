@@ -171,16 +171,55 @@ async function finishIdleClaim(
   throwCleanupFailures(failures, "Idle database claim cleanup failed");
 }
 
-async function requestIdleWriter(
+async function requestIdleWriter<T>(
   locks: StorageLockManager,
   name: string,
-  callback: (lock: unknown | null) => Promise<void>,
-): Promise<void> {
+  callback: (lock: unknown | null) => Promise<T>,
+): Promise<T> {
   return locks.request(
     `bun-wasm:filesystem:indexeddb:${name}`,
     { mode: "exclusive", ifAvailable: true },
     callback,
   );
+}
+
+/** Deletes a workspace database without reading its records, so an unreadable workspace can
+ * start fresh. Only the format markers identify it as a workspace. Another owner, including a
+ * live tab or an idle handle, keeps its workspace and gets "busy". */
+export async function deleteIdle(
+  name: string,
+  signal?: AbortSignal,
+): Promise<"deleted" | "missing" | "busy"> {
+  signal?.throwIfAborted();
+  if (!globalThis.indexedDB || !globalThis.navigator?.locks) return "missing";
+  const locks = navigator.locks;
+  const maintenance = await maintenanceLock(locks, name, "exclusive", signal);
+  if (maintenance === "busy") return "busy";
+  try {
+    return await requestIdleWriter(locks, name, (lock) =>
+      lock ? deleteOwnedDatabase(name, signal) : Promise.resolve("busy" as const),
+    );
+  } finally {
+    await maintenance.release();
+  }
+}
+
+async function deleteOwnedDatabase(
+  name: string,
+  signal?: AbortSignal,
+): Promise<"deleted" | "missing"> {
+  const debts: Promise<void>[] = [];
+  const database = await existingDatabase(name, signal, (debt) => debts.push(debt));
+  let workspace = false;
+  try {
+    workspace = database !== undefined && (await isWorkspace(database));
+  } finally {
+    database?.close();
+    await Promise.all(debts);
+  }
+  if (!workspace) return "missing";
+  await deleteIdleDatabase(name, () => {}, signal);
+  return "deleted";
 }
 
 function ownershipLost(error: unknown, signal?: AbortSignal): boolean {

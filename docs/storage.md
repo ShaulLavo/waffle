@@ -93,6 +93,29 @@ for (const name of await storedWorkspaces("fast")) {
 }
 ```
 
+`deleteWorkspace({ mode: "fast", name }, { signal })` deletes a workspace that no longer
+opens, for example one saved in an older format, so the next runtime with that name starts
+empty. It removes the named workspace from IndexedDB and OPFS without reading its records;
+only the stored format markers identify it. It returns `"deleted"`, `"missing"` when neither
+store holds a Waffle workspace of that name, or `"busy"` when a runtime, opener or idle
+handle owns it, in which case nothing of that workspace is removed from IndexedDB. Offer it
+when opening fails with `INVALID_VFS_FORMAT`, after the user agrees to lose the saved files.
+
+```ts
+import { createRuntime, deleteWorkspace } from "waffle";
+
+let runtime = createRuntime({ filesystem: { mode: "fast", name } });
+const failure = await runtime.filesystem.listFiles().then(
+  () => undefined,
+  (error) => error,
+);
+if (failure?.code === "INVALID_VFS_FORMAT" && confirm("Start fresh?")) {
+  await runtime.dispose().catch(() => {});
+  if ((await deleteWorkspace({ mode: "fast", name })) === "deleted")
+    runtime = createRuntime({ filesystem: { mode: "fast", name } });
+}
+```
+
 `openIdleWorkspace(selection, { signal })` takes a non-stealable maintenance lock without
 waiting. It returns `"busy"` if a runtime, queued ordinary opener or another idle handle owns
 the workspace, and `"missing"` if no Waffle workspace is stored. It does not need or create

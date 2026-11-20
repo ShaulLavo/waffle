@@ -2248,7 +2248,7 @@ export class SharedFilesystemState {
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
     try {
       if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
-      this.checkAccess(slot, 2);
+      // The owner may set times on a read-only file, as on Linux; see MemFS.setTimes.
       this.checkDirty(slot, this.slots[this.at(slot, FILE_SIZE)]!);
       const next = {
         atime: atime ?? this.time(slot, ATIME),

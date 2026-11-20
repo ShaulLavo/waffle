@@ -202,6 +202,34 @@ export class OpfsStorage implements StorageBackend {
       await owner.close();
     }
   }
+  /** Removes a workspace without reading its snapshots, so an unreadable one can start fresh.
+   * A workspace another tab holds keeps running and gets "busy" instead of waiting. */
+  static async deleteIdle(
+    name: string,
+    options: Pick<OpfsStorageOptions, "root" | "storage" | "locks" | "signal"> = {},
+  ): Promise<"deleted" | "missing" | "busy"> {
+    options.signal?.throwIfAborted();
+    const locks: StorageLockManager | undefined = options.locks ?? globalThis.navigator?.locks;
+    const storage = options.storage ?? globalThis.navigator?.storage;
+    if (!locks || (!options.root && typeof storage?.getDirectory !== "function")) return "missing";
+    return locks.request(
+      `bun-wasm:filesystem:${name}`,
+      { mode: "exclusive", ifAvailable: true },
+      async (lock) => {
+        if (!lock) return "busy";
+        // A context that cannot open OPFS, such as a WebKit page, cannot hold an OPFS workspace.
+        const root = options.root ?? (await storage!.getDirectory().catch(() => undefined));
+        if (!root) return "missing";
+        try {
+          await root.removeEntry(`bun-wasm-${encodeName(name)}`, { recursive: true });
+          return "deleted";
+        } catch (error) {
+          if (missing(error)) return "missing";
+          throw translate(error, "delete");
+        }
+      },
+    );
+  }
   static async open(name: string, options: OpfsStorageOptions = {}): Promise<OpfsStorage> {
     const locks: StorageLockManager | undefined = options.locks ?? globalThis.navigator?.locks;
     if (!locks) throw new Error("OPFS storage requires Web Locks");

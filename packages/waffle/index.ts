@@ -2,6 +2,7 @@ export { createRuntime } from "./runtime.js";
 export {
   storedWorkspaces,
   openIdleWorkspace,
+  deleteWorkspace,
   type StoredWorkspaceSelection,
   type IdleWorkspace,
   type StoredWorkspaceEntry,

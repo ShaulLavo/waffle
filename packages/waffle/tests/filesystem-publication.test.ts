@@ -996,8 +996,11 @@ test("resident direct metadata joins the publication order and chmod revokes an 
     expect(await fixture.root.asyncCall("setMode", [fixture.handle, 0o400])).toBe(0);
     const denied = await fixture.cut();
     expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(-2);
-    expect(fixture.root.setTimes(fixture.handle, null, ms(88))).toBe(2);
     expect(await fixture.cut()).toEqual(denied);
+    // The owner still sets times on a read-only file, as on Linux, and the change publishes.
+    expect(fixture.root.setTimes(fixture.handle, null, ms(88))).toBe(0);
+    expect(fixture.sibling.shared.stat(fixture.handle)?.mtime).toBe(ms(88));
+    expect((await fixture.cut()).generation).toBe(denied.generation + 1);
     expect(await fixture.root.asyncCall("setMode", [fixture.handle, 0o600])).toBe(0);
     expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(1);
     expect(fixture.sibling.shared.stat(fixture.handle)?.ino).toBe(inode);

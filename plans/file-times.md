@@ -31,6 +31,9 @@ The behaviour follows Linux `utimensat(2)` and `stat(2)`:
   inode). A directory whose entries change gets a new mtime and ctime, as today for mtime.
   Each of these paths already holds the file lock and stores mtime, mode or the link count, so
   ctime is one more store there.
+- Setting times needs no write permission. Waffle has one virtual principal that owns every
+  inode, and Linux lets the owner set times on a read-only file (`tar -x` and `cp -p` rely on
+  it).
 - atime is set at creation and by explicit time changes. Reads do not update it, which matches
   Linux mounted with `noatime`. Updating it on reads would add a shared store and a persistence
   write to every read; `relatime` behaviour can come later if a guest needs it.
@@ -93,6 +96,14 @@ answer to unreadable metadata. It never resets the store. The format identity ma
 (`waffle-opfs-snapshots-v1`, `waffle-indexeddb-chunks-v2`) name the storage layout, which does
 not change, so they stay; bumping them would also route a v2 IndexedDB store into the v1
 migration path. There is no migration; there are no outside users.
+
+Recovery: a returning browser must still be able to start over. The public
+`deleteWorkspace({ mode: "fast", name })` deletes the named workspace from IndexedDB and OPFS
+without reading its records (only the format markers identify it), and returns `"busy"`
+instead of touching a workspace a runtime, opener or idle handle holds. It is generic recovery
+for any unreadable workspace, not migration code. Consumers offer it as "Start fresh" on
+`INVALID_VFS_FORMAT`. Waffle's own site and examples use only memory mode, so they need no
+such button.
 
 ## Workspace archive
 
