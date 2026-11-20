@@ -37,9 +37,16 @@ export const MAX_FILE_TIME: FileTime = 0xffff_ffff_ffff_ffffn;
 // Captured at load: guest code shares this realm and may replace the global later.
 const bigint = BigInt;
 const number = Number;
+// Writes in the same millisecond reuse one bigint instead of allocating two per write.
+let lastMs = Number.NaN;
+let lastTime: FileTime = 0n;
 /** A whole-millisecond clock reading as a file time. */
 export function msFileTime(ms: number): FileTime {
-  return bigint(ms) * NS_PER_MS;
+  if (ms !== lastMs) {
+    lastTime = bigint(ms) * NS_PER_MS;
+    lastMs = ms;
+  }
+  return lastTime;
 }
 /** The filesystem clock. Like Linux's coarse file-time clock, it has millisecond granularity. */
 export function fileTimeNow(): FileTime {
