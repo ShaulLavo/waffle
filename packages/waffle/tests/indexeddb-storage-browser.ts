@@ -38,6 +38,7 @@ import { assertRuntimeStartupTrace } from "./runtime-startup-proof.js";
 import type { ChecksummedRecord, PersistedNode, StorageBackend } from "../fs/storage.js";
 import { storedTimes } from "./fixtures/file-times.js";
 import {
+  busyDeletesNothingCase,
   isChecksummedRecord,
   oldFormatRecord,
   startFreshCase,
@@ -270,6 +271,8 @@ export function storageContractCases(): StorageContractCase[] {
   test("nanosecond file times persist across reopen", async (_name, open) => {
     await fileTimesStorageCase(open);
   });
+  test("deleteWorkspace deletes nothing while either store's writer lock is held", (name, open) =>
+    busyDeletesNothingCase(name, open, batch(1)));
   test("host writeFile exclusive creation is atomic", async (_name, open) => {
     await exclusiveFilesystemCase(open);
   });

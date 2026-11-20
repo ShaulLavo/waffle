@@ -98,7 +98,8 @@ opens, for example one saved in an older format, so the next runtime with that n
 empty. It removes the named workspace from IndexedDB and OPFS without reading its records;
 only the stored format markers identify it. It returns `"deleted"`, `"missing"` when neither
 store holds a Waffle workspace of that name, or `"busy"` when a runtime, opener or idle
-handle owns it, in which case nothing of that workspace is removed from IndexedDB. Offer it
+handle owns it in either store. It claims both stores before touching either, so `"busy"`
+means nothing was deleted. Offer it
 when opening fails with `INVALID_VFS_FORMAT`, after the user agrees to lose the saved files.
 
 ```ts

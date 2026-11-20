@@ -1,6 +1,11 @@
 import { createRuntime, deleteWorkspace, VfsError } from "../../index.js";
 import { withVfsImplementation, type VfsImplementation } from "../../fs/vfs-internal.js";
-import { encodeRecord, type ChecksummedRecord } from "../../fs/storage.js";
+import {
+  encodeRecord,
+  type ChecksummedRecord,
+  type PersistenceBatch,
+  type StorageBackend,
+} from "../../fs/storage.js";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -34,6 +39,34 @@ async function step<T>(label: string, work: () => Promise<T>): Promise<T> {
   } catch (error) {
     throw new Error(`${label}: ${String(error)}`, { cause: error });
   }
+}
+
+/** Each store's writer lock alone, with no maintenance lock, as an opener holds it: while
+ * either is held, deleteWorkspace reports "busy" and the saved workspace stays whole. */
+export async function busyDeletesNothingCase(
+  name: string,
+  open: () => Promise<StorageBackend>,
+  saved: PersistenceBatch,
+): Promise<void> {
+  const storage = await open();
+  await storage.persist(saved);
+  await storage.close();
+  for (const lock of [`bun-wasm:filesystem:indexeddb:${name}`, `bun-wasm:filesystem:${name}`]) {
+    const result = await navigator.locks.request(lock, { mode: "exclusive" }, () =>
+      deleteWorkspace({ mode: "fast", name }),
+    );
+    assert(result === "busy", `${lock} held: expected busy, got ${result}`);
+    const reopened = await open();
+    const generation = (await reopened.load())?.generation;
+    await reopened.close();
+    assert(generation === saved.generation, `${lock} held: the saved workspace was deleted`);
+  }
+  const deleted = await deleteWorkspace({ mode: "fast", name });
+  assert(deleted === "deleted", `with no owner the workspace is deleted, got ${deleted}`);
+  const fresh = await open();
+  const index = await fresh.load();
+  await fresh.close();
+  assert(index === undefined, "the deleted workspace opens empty");
 }
 
 function runtime(name: string, vfs: VfsImplementation, workerURL: string | URL) {

@@ -46,8 +46,8 @@ export async function storedWorkspaces(mode: "fast"): Promise<string[]> {
 
 /** Deletes the named workspace from IndexedDB and OPFS without reading its records, so a
  * workspace that no longer opens, for example one saved in an older format, can start fresh.
- * A workspace another tab or idle handle holds is left alone: the result is then "busy", and
- * IndexedDB is checked first, so a busy IndexedDB workspace leaves OPFS untouched too. */
+ * Both stores are claimed before either is touched: if another tab, opener or idle handle holds
+ * the workspace in either store, the result is "busy" and nothing is deleted. */
 export async function deleteWorkspace(
   selection: StoredWorkspaceSelection,
   options?: { readonly signal?: AbortSignal },
@@ -57,15 +57,24 @@ export async function deleteWorkspace(
     throw new TypeError("A stored workspace needs a name");
   const signal = options?.signal;
   signal?.throwIfAborted();
-  const [{ deleteIdle }, { OpfsStorage }] = await Promise.all([
+  const [{ claimIdleDeletion }, { OpfsStorage }] = await Promise.all([
     import("./idle-owner.js"),
     import("./opfs.js"),
   ]);
-  const indexeddb = await deleteIdle(selection.name, signal);
+  const indexeddb = await claimIdleDeletion(selection.name, signal);
   if (indexeddb === "busy") return "busy";
-  const opfs = await OpfsStorage.deleteIdle(selection.name, { signal });
-  if (opfs === "busy") return "busy";
-  return indexeddb === "deleted" || opfs === "deleted" ? "deleted" : "missing";
+  try {
+    const opfs = await OpfsStorage.claimIdle(selection.name, { signal });
+    if (opfs === "busy") return "busy";
+    try {
+      const removed = [await indexeddb.remove(), await opfs.remove()];
+      return removed.includes("deleted") ? "deleted" : "missing";
+    } finally {
+      await opfs.release();
+    }
+  } finally {
+    await indexeddb.release();
+  }
 }
 
 export async function openIdleWorkspace(
