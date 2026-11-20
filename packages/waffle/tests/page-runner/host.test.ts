@@ -40,9 +40,9 @@ async function control(mode: FakeMode, filtered = true) {
 test("host keeps filtered full inventory distinct and tolerates unowned service survival", async () => {
   const { result } = await control("pass");
   expect(result.exit).toBe(4);
-  expect(result.required).toHaveLength(94);
+  expect(result.required).toHaveLength(96);
   expect(result.selected).toHaveLength(1);
-  expect(result.omitted).toHaveLength(93);
+  expect(result.omitted).toHaveLength(95);
   expect(result.cleanup.serviceDisposition).toContain("never signalled");
 });
 for (const mode of [
