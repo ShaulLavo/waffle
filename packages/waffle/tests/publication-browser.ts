@@ -496,13 +496,13 @@ async function metadataAndReads(): Promise<void> {
     await group(f, before, ["resize"]);
     equal(f.client.stat(f.handle).size, 6);
     before = await f.observer.cut();
-    equal(f.client.setMtime(f.handle, 77), 0);
+    equal(f.client.setTimes(f.handle, null, 77_000_000n), 0);
     await group(f, before, ["metadata"]);
     before = await f.observer.cut();
     equal(await f.client.asyncCall("resize", [f.handle, 3, true]), 0);
     await group(f, before, ["resize", "metadata"]);
     before = await f.observer.cut();
-    equal(await f.client.asyncCall("setMtime", [f.handle, 88]), 0);
+    equal(await f.client.asyncCall("setTimes", [f.handle, null, 88_000_000n]), 0);
     await group(f, before, ["metadata"]);
     const ino = f.client.stat(f.handle).ino;
     equal(await f.client.asyncCall("setMode", [f.handle, 0o400]), 0);
@@ -564,7 +564,7 @@ async function identitiesAndPins(): Promise<void> {
     await f.observer.releasePin(newer.id);
     equal((await f.observer.diagnostics()).pins, 0);
     for (let index = 0; index < limits.operations; index++)
-      await f.client.asyncCall("setMtime", [f.handle, index + 100]);
+      await f.client.asyncCall("setTimes", [f.handle, null, BigInt(index + 100) * 1_000_000n]);
     equal(await f.observer.receipt(admitted.admission.id), { kind: "retired" });
     throws(() => f.client[localPublication]("write", args, bytes, admitted.admission.id));
     equal((await f.observer.changes(before, f.config.logBytes)).kind, "gap");

@@ -1,11 +1,12 @@
 import { FilesystemClient, createFilesystemConnection } from "../../fs/index.js";
+import { statTimes } from "./file-times.js";
 
 export function retainedClientFixture() {
   const pair = createFilesystemConnection();
   const client = new FilesystemClient(pair.client);
   client.shared.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 },
+    { kind: "file", ino: 1, nlink: 1, size: 4, ...statTimes(1) },
     new Uint8Array([65, 66, 67, 68]),
   );
   const capabilities = new Int32Array(pair.client.capabilities);

@@ -163,7 +163,7 @@ for (const [mode, agent] of [
         );
       expect(current.boundary).toBe("PRE-IMPORT PAGE-OWNED JavaScript");
       expect(current.fixtures).toEqual(baseline.fixtures);
-      expect(withoutStorageRoot(current, 33_289_256)).toEqual(
+      expect(withoutStorageRoot(current, 33_813_544)).toEqual(
         withGroupMemberCells(
           withExecutionObservation(
             withPrivateInputArena(

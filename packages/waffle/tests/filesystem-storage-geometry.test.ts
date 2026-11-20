@@ -8,11 +8,13 @@ import {
 } from "../fs/protocol";
 import { MAX_SHARED_FILE_BYTES } from "../fs/shared-capacity";
 import { TABLE_BLOCKS } from "../fs/storage-geometry";
+import { statTimes } from "./fixtures/file-times";
 
 const storagePage = 4 * 1024;
 const segmentBytes = 16 * 1024 * 1024;
-const rootBytes = 33_289_256;
-const metadataBytes = 16_512_040;
+// 28 words per file slot: three 64-bit times added 16 bytes to each of 32,768 slots.
+const rootBytes = 33_813_544;
+const metadataBytes = 17_036_328;
 const blockCount = 40_758;
 const blockWords = 64;
 const rootCellBase = blockCount * blockWords;
@@ -20,7 +22,13 @@ const rootWords = 8;
 const physicalHint = 27;
 const tableHint = 28;
 const pinnedPages = 29;
-const stat = (size: number, ino = 1) => ({ kind: "file" as const, ino, nlink: 1, size, mtime: 1 });
+const stat = (size: number, ino = 1) => ({
+  kind: "file" as const,
+  ino,
+  nlink: 1,
+  size,
+  ...statTimes(1),
+});
 
 interface StateInternals {
   tableOwners: Int32Array;
@@ -61,11 +69,13 @@ test("ordinary and connected roots have the exact complete storage layout", () =
   expect(state.owners.length).toBe(393216);
   expect(state.slots.byteOffset).toBe(1573184);
   expect(state.slots.length).toBe(32768 * SLOT_WORDS);
-  expect(internals(state).tableOwners.byteOffset).toBe(4718912);
+  // The 64-bit time view needs an 8-byte-aligned slot table.
+  expect(state.slots.byteOffset % 8).toBe(0);
+  expect(internals(state).tableOwners.byteOffset).toBe(5243200);
   expect(internals(state).tableOwners.length).toBe(blockCount);
-  expect(state.pages.byteOffset).toBe(4881944);
+  expect(state.pages.byteOffset).toBe(5406232);
   expect(state.pages.length).toBe(2_870_656);
-  expect(state.watch.cells.byteOffset).toBe(16364568);
+  expect(state.watch.cells.byteOffset).toBe(16888856);
   expect(state.buffer.byteLength - segmentBytes).toBe(metadataBytes);
 });
 

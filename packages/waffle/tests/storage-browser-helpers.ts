@@ -1,4 +1,5 @@
 import type { PersistenceBatch, StorageBackend } from "../fs/storage.js";
+import { storedTimes } from "./fixtures/file-times.js";
 
 export function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -22,11 +23,11 @@ export function batch(generation: number, text = `v${generation}`): PersistenceB
     root: 1,
     removes: [],
     upserts: [
-      { ino: 1, kind: "dir", mtime: generation, size: 0, children: [["file", 2]] },
+      { ino: 1, kind: "dir", ...storedTimes(generation), size: 0, children: [["file", 2]] },
       {
         ino: 2,
         kind: "file",
-        mtime: generation,
+        ...storedTimes(generation),
         size: bytes(text).length,
         data: `file:${generation}`,
       },

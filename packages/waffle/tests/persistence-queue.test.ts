@@ -1,4 +1,5 @@
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
+import { storedTimes } from "./fixtures/file-times";
 import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { afterEach, expect, test } from "bun:test";
 import { FilesystemClient, FilesystemService, createFilesystemConnection } from "../fs";
@@ -57,15 +58,15 @@ class BlockedStore implements StorageBackend {
       {
         ino: 1,
         kind: "dir",
-        mtime: 1,
+        ...storedTimes(1),
         size: 0,
         children: [
           ["cold", 2],
           ["replacement", 3],
         ],
       },
-      { ino: 2, kind: "file", mtime: 1, size: 4, data: "cold" },
-      { ino: 3, kind: "file", mtime: 1, size: 3, data: "replacement" },
+      { ino: 2, kind: "file", ...storedTimes(1), size: 4, data: "cold" },
+      { ino: 3, kind: "file", ...storedTimes(1), size: 3, data: "replacement" },
     ],
   };
   async load() {

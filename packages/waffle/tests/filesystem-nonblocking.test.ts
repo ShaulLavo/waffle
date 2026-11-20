@@ -11,6 +11,7 @@ import {
 } from "../fs";
 import { PAGE } from "../fs/protocol";
 import { PersistentBackend } from "../fs/persistent";
+import { storedTimes } from "./fixtures/file-times";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -173,8 +174,8 @@ async function persistentFixture(failure = false) {
           generation: 1,
           root: 1,
           nodes: [
-            { ino: 1, kind: "dir", size: 0, mtime: 1, children: [["file", 2]] },
-            { ino: 2, kind: "file", size: 4, mtime: 1, data: "payload" },
+            { ino: 1, kind: "dir", size: 0, ...storedTimes(1), children: [["file", 2]] },
+            { ino: 2, kind: "file", size: 4, ...storedTimes(1), data: "payload" },
           ],
         };
       },

@@ -30,7 +30,7 @@ import {
   sharedArrayBufferByteLength,
   atomicsWaitAsync,
 } from "../proc/intrinsics.js";
-import { FilesystemError } from "../core/filesystem.js";
+import { FilesystemError, isFileTime, type FileTime } from "../core/filesystem.js";
 import {
   decodeEffects,
   encodeEffects,
@@ -88,6 +88,10 @@ export function integer(value: unknown, max = Number.MAX_SAFE_INTEGER): number {
     throw new FilesystemError(28);
   return value;
 }
+function fileTime(value: unknown): FileTime {
+  if (!isFileTime(value)) throw new FilesystemError(28);
+  return value;
+}
 export function residentDescriptor(value: unknown): ResidentDescriptor {
   const data = record(value);
   if (data.kind !== "file" && data.kind !== "workspace") throw new FilesystemError(28);
@@ -143,7 +147,9 @@ export function residentGrant(value: unknown): ResidentGrant {
       ino: integer(stat.ino),
       nlink: integer(stat.nlink),
       size: integer(stat.size),
-      mtime: integer(stat.mtime),
+      atime: fileTime(stat.atime),
+      mtime: fileTime(stat.mtime),
+      ctime: fileTime(stat.ctime),
       mode: integer(stat.mode),
     },
     cut: cut(data.cut),

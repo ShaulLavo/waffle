@@ -80,9 +80,11 @@ export type ResolvedEntry = { readonly path: string } & (
   | { readonly kind: "file" | "dir" | "socket" }
   | { readonly kind: "symlink"; readonly target: string }
 );
+/** Times in whole milliseconds since 1970. */
 interface EntryStat {
   ino: number;
   mtime: number;
+  ctime: number;
 }
 type LeafEntry = EntryStat &
   ({ kind: "file" } | { kind: "socket" } | { kind: "symlink"; target: string });

@@ -60,26 +60,27 @@ export const W1_READ_SET = Array.from(
 /** Seed through today's storage API, outside timing. This avoids preloading 50,000
  * tiny files into a 64-KiB-per-file resident pool and does not change runtime behavior.
  * One batch has a complete graph; the production storage validates/persists it. */
+const TIMES = { atime: "0", mtime: "0", ctime: "0" } as const;
 export function w1Fixture(): PersistenceBatch {
-  const root: PersistedNode = { ino: 1, kind: "dir", mtime: 0, size: 0, children: [] };
+  const root: PersistedNode = { ino: 1, kind: "dir", ...TIMES, size: 0, children: [] };
   const nodes: PersistedNode[] = [root],
     data = new Map<string, Uint8Array>();
   let ino = 2;
   for (let dir = 0; dir < SIZES.W1.directories; dir++) {
-    const directory: PersistedNode = { ino: ino++, kind: "dir", mtime: 0, size: 0, children: [] };
+    const directory: PersistedNode = { ino: ino++, kind: "dir", ...TIMES, size: 0, children: [] };
     root.children!.push([`d${number(dir)}`, directory.ino]);
     nodes.push(directory);
     for (let j = 0; j < 10; j++) {
       const file = dir * 10 + j,
         key = `fixture-${file}`;
       directory.children!.push([`f${number(file)}`, ino]);
-      nodes.push({ ino: ino++, kind: "file", mtime: 0, size: SIZES.W1.bytes, data: key });
+      nodes.push({ ino: ino++, kind: "file", ...TIMES, size: SIZES.W1.bytes, data: key });
       data.set(key, content(file, SIZES.W1.bytes));
     }
     if (dir < SIZES.W1.largeFiles) {
       const key = `large-${dir}`;
       directory.children!.push(["large", ino]);
-      nodes.push({ ino: ino++, kind: "file", mtime: 0, size: SIZES.W1.largeBytes, data: key });
+      nodes.push({ ino: ino++, kind: "file", ...TIMES, size: SIZES.W1.largeBytes, data: key });
       data.set(key, content(SIZES.W1.files + dir, SIZES.W1.largeBytes));
     }
   }

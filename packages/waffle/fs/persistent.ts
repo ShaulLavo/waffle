@@ -1,4 +1,5 @@
 import { restoreTree } from "./persisted-tree.js";
+import { utf8ByteLength } from "./utf8-size.js";
 import type { ReadBacking } from "./workspace-read.js";
 import type { MemoryBudget } from "./memory-budget.js";
 import { DirtyCapacityError, type DirtyLimits } from "./dirty-admission.js";
@@ -9,10 +10,11 @@ import {
   type CheckpointCost,
 } from "./checkpoint-pressure.js";
 import { FilesystemError, PAGE } from "./protocol.js";
-import type { FileHandle } from "../core/index.js";
+import type { FileHandle, FileStat } from "../core/index.js";
 import { MemoryBackend, type LocalMutationPlan, type MemoryBackendSharedRoot } from "./backend.js";
 import { MemFS, adoptInodes, type Node, type FileNode, type NamespacePlan } from "./memory.js";
 import {
+  storeTime,
   validatePersistedIndex,
   type PersistedIndex,
   type PersistedNode,
@@ -39,6 +41,13 @@ interface CheckpointCapture {
 
 interface CheckpointEpoch {
   failure?: { cause: unknown };
+}
+
+/** A file's shared slot owns its times while it runs; checkpoints copy them to the tree. */
+function copyTimes(node: Node, stat: FileStat): void {
+  node.atime = stat.atime;
+  node.mtime = stat.mtime;
+  node.ctime = stat.ctime;
 }
 
 /** Memory is authoritative while running. Storage receives immutable, ordered checkpoints;
@@ -342,7 +351,7 @@ export class PersistentBackend extends MemoryBackend {
         continue;
       node.identity = this.shared.identity(handle) ?? node.identity;
       node.size = stat.size;
-      node.mtime = stat.mtime;
+      copyTimes(node, stat);
       if (this.shared.evict(handle, revision)) {
         this.revisions.delete(handle);
         this.registeredNodes.delete(handle);
@@ -448,7 +457,7 @@ export class PersistentBackend extends MemoryBackend {
           ? action.size
           : Math.max(this.shared.info(action.handle)!.size, action.size),
       );
-    if (action.kind === "setMode" || action.kind === "setMtime") {
+    if (action.kind === "setMode" || action.kind === "setTimes") {
       const node = this.fs.nodeForHandle(action.handle);
       if (node.kind === "dir" && !this.dirty.has(node)) units += this.nodeMetadataBytes(node) * 4;
       files.set(action.handle, this.shared.stat(action.handle)!.size);
@@ -601,7 +610,7 @@ export class PersistentBackend extends MemoryBackend {
   private nodeMetadataBytes(node: Node): number {
     let bytes = 256;
     if (node.kind === "symlink")
-      return bytes + node.target.length * 2 + new TextEncoder().encode(node.target).length;
+      return bytes + node.target.length * 2 + utf8ByteLength(node.target);
     if (node.kind !== "dir") return bytes;
     for (const name of node.children.keys()) bytes += 64 + name.length * 2;
     return bytes;
@@ -724,7 +733,7 @@ export class PersistentBackend extends MemoryBackend {
     const stat = this.shared.stat(handle);
     if (!stat) return;
     node.size = stat.size;
-    node.mtime = stat.mtime;
+    copyTimes(node, stat);
     node.identity = this.shared.identity(handle) ?? node.identity;
     const snapshot = this.shared.snapshot(handle);
     if (snapshot) {
@@ -734,6 +743,37 @@ export class PersistentBackend extends MemoryBackend {
     }
     this.revisions.set(handle, revision);
     changed.add(node);
+  }
+  private persistedNode(node: Node): PersistedNode {
+    const metadata = {
+      ino: node.ino,
+      identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
+      atime: storeTime(node.atime),
+      mtime: storeTime(node.mtime),
+      ctime: storeTime(node.ctime),
+      mode: node.mode,
+    };
+    if (node.kind === "dir")
+      return {
+        ...metadata,
+        kind: "dir",
+        size: 0,
+        children: Array.from(node.children, ([name, child]) => [name, child.ino]),
+      };
+    if (node.kind === "socket") return { ...metadata, kind: "socket", size: 0 };
+    if (node.kind === "symlink")
+      return {
+        ...metadata,
+        kind: "symlink",
+        size: utf8ByteLength(node.target),
+        target: node.target,
+      };
+    return {
+      ...metadata,
+      kind: "file",
+      size: node.size ?? node.data.length,
+      data: this.keys.get(node.ino),
+    };
   }
   private captureReserved(
     request: CheckpointRequest,
@@ -760,46 +800,7 @@ export class PersistentBackend extends MemoryBackend {
     for (const handle of this.shared.registeredHandles())
       this.captureFile(handle, request, capture);
     const { changed, data, detachedSnapshots } = capture;
-    const upserts: PersistedNode[] = Array.from(changed, (node) =>
-      node.kind === "dir"
-        ? {
-            ino: node.ino,
-            identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
-            kind: "dir",
-            mtime: node.mtime,
-            mode: node.mode,
-            size: 0,
-            children: Array.from(node.children, ([name, child]) => [name, child.ino]),
-          }
-        : node.kind === "socket"
-          ? {
-              ino: node.ino,
-              identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
-              kind: "socket",
-              mtime: node.mtime,
-              mode: node.mode,
-              size: 0,
-            }
-          : node.kind === "symlink"
-            ? {
-                ino: node.ino,
-                identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
-                kind: "symlink",
-                mtime: node.mtime,
-                mode: node.mode,
-                size: new TextEncoder().encode(node.target).length,
-                target: node.target,
-              }
-            : {
-                ino: node.ino,
-                identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
-                kind: "file",
-                mtime: node.mtime,
-                mode: node.mode,
-                size: node.size ?? node.data.length,
-                data: this.keys.get(node.ino),
-              },
-    );
+    const upserts: PersistedNode[] = Array.from(changed, (node) => this.persistedNode(node));
     this.dirty.clear();
     const removes = Array.from(this.removed);
     this.removed.clear();

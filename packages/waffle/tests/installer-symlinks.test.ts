@@ -230,11 +230,11 @@ test("Preview1 set-times follows only when requested and moving a link never mov
   const raw = h.fs.lookup("/sandbox/link", false);
   if (!target || !raw) throw new Error("missing test inodes");
   expect(h.calls.path_filestat_set_times(3, 0, 256, h.path("link"), 0n, 1000000n, 4)).toBe(0);
-  expect(raw.mtime).toBe(1);
-  expect(target.mtime).not.toBe(1);
+  expect(raw.mtime).toBe(1000000n);
+  expect(target.mtime).not.toBe(1000000n);
   expect(h.calls.path_filestat_set_times(3, 1, 256, h.path("link"), 0n, 2000000n, 4)).toBe(0);
-  expect(raw.mtime).toBe(1);
-  expect(target.mtime).toBe(2);
+  expect(raw.mtime).toBe(1000000n);
+  expect(target.mtime).toBe(2000000n);
   expect(h.calls.path_rename(3, 256, h.path("link"), 3, 2048, h.path("moved", 2048))).toBe(0);
   expect(h.readlink("moved").bytes).toEqual(encoder.encode("packages/member/index.ts"));
   expect(h.calls.path_unlink_file(3, 256, h.path("moved"))).toBe(0);

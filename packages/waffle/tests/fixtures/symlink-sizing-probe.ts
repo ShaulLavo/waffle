@@ -1,4 +1,4 @@
-import { FilesystemError } from "../../core/filesystem.js";
+import { FilesystemError, fileTimeMs } from "../../core/filesystem.js";
 import { parseFileIdentity } from "../../fs/file-identity.js";
 import { newDir, newSymlink, nodeSize } from "../../fs/memory.js";
 import { NamespaceCursor, type NamespaceSource } from "../../fs/namespace-cursor.js";
@@ -13,7 +13,12 @@ const identity = parseFileIdentity({ id: "10000000000000001", version: "10000000
 const source: NamespaceSource = {
   root,
   current: () => cut,
-  metadata: (node) => ({ ...identity, size: nodeSize(node), mode: node.mode, mtime: node.mtime }),
+  metadata: (node) => ({
+    ...identity,
+    size: nodeSize(node),
+    mode: node.mode,
+    mtime: fileTimeMs(node.mtime),
+  }),
 };
 
 function measure(scenario: string | undefined) {

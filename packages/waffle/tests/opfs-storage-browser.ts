@@ -3,6 +3,8 @@ import { OPFS_FORMAT } from "../fs/vfs-format.js";
 import { opfsQualificationCases } from "./opfs-qualification-browser.js";
 import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs.js";
 import type { PersistenceBatch, PersistedNode } from "../fs/storage.js";
+import { storedTimes } from "./fixtures/file-times.js";
+import { oldFormatRecord, startFreshCase } from "./fixtures/workspace-recovery.js";
 import {
   assert,
   batch,
@@ -94,13 +96,13 @@ async function rejectsCode(action: Promise<unknown>, code: string): Promise<void
 
 function manyFiles(count: number): PersistenceBatch {
   const children: [string, number][] = [];
-  const upserts: PersistedNode[] = [{ ino: 1, kind: "dir", mtime: 1, size: 0, children }];
+  const upserts: PersistedNode[] = [{ ino: 1, kind: "dir", ...storedTimes(1), size: 0, children }];
   const data = new Map<string, Uint8Array>();
   for (let index = 0; index < count; index++) {
     const ino = index + 2,
       key = `file:${ino}`;
     children.push([`file${index}`, ino]);
-    upserts.push({ ino, kind: "file", mtime: 1, size: 1, data: key });
+    upserts.push({ ino, kind: "file", ...storedTimes(1), size: 1, data: key });
     data.set(key, new Uint8Array([index & 255]));
   }
   return { generation: 1, root: 1, upserts, removes: [], data };
@@ -129,6 +131,21 @@ async function writeRaw(handle: FileSystemFileHandle, contents: Uint8Array): Pro
     await writable.abort().catch(() => {});
     throw error;
   }
+}
+
+/** Rewrites every saved snapshot into the record shape Waffle wrote before nanosecond times. */
+async function ageOpfsStore(name: string): Promise<void> {
+  const metadata = await metadataDirectory(name);
+  let aged = 0;
+  for await (const [entry, handle] of metadata.entries()) {
+    if (handle.kind !== "file" || !entry.startsWith("snapshot-")) continue;
+    const text = await (await (handle as FileSystemFileHandle).getFile()).text();
+    if (!text) continue;
+    const record = await oldFormatRecord(JSON.parse(text));
+    await writeRaw(handle as FileSystemFileHandle, bytes(JSON.stringify(record)));
+    aged++;
+  }
+  assert(aged > 0, "the saved workspace has a snapshot to age");
 }
 
 interface OpfsCase {
@@ -1036,6 +1053,10 @@ export function opfsStorageTests(
             label:
               "runtime startup milestones exclude IndexedDB stages across the actual filesystem worker boundary",
             run: (name) => runtimeStartupCase(name, "opfs", filesystemWorkerURL),
+          },
+          {
+            label: "deleteWorkspace lets an old-format OPFS workspace start fresh",
+            run: (name) => startFreshCase(name, "opfs-memory", filesystemWorkerURL, ageOpfsStore),
           },
         ];
   return shared

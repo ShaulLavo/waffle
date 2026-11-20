@@ -21,6 +21,7 @@ import {
   type StorageBackend,
 } from "../fs/storage";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
+import { storedTimes } from "./fixtures/file-times";
 
 const HOLD_MS = 150;
 
@@ -34,8 +35,8 @@ class Storage implements StorageBackend {
     generation: 1,
     root: 1,
     nodes: [
-      { ino: 1, kind: "dir", size: 0, mode: 0o700, mtime: 1, children: [["cold", 2]] },
-      { ino: 2, kind: "file", size: 4, mode: 0o600, mtime: 1, data: "cold-key" },
+      { ino: 1, kind: "dir", size: 0, mode: 0o700, ...storedTimes(1), children: [["cold", 2]] },
+      { ino: 2, kind: "file", size: 4, mode: 0o600, ...storedTimes(1), data: "cold-key" },
     ],
   };
   async reserveIdentity(workspace?: string) {

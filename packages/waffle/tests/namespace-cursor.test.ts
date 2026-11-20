@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { FilesystemError } from "../core/filesystem";
+import { FilesystemError, fileTimeMs } from "../core/filesystem";
 import { MemoryBackend } from "../fs/backend";
 import { FilesystemClient } from "../fs/client";
 import { MemFS, type DirNode, type Node } from "../fs/memory";
@@ -26,7 +26,7 @@ function fixture(fs = new MemFS()) {
       return {
         ...backend.ensureIdentity(node),
         size: node.kind === "file" ? (node.size ?? node.data.length) : 0,
-        mtime: node.mtime,
+        mtime: fileTimeMs(node.mtime),
         mode: node.mode,
       };
     },

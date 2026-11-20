@@ -15,7 +15,8 @@ import {
 } from "./publication.js";
 import { type FileIdentity, type IdentityReservation, IdentityAllocator } from "./file-identity.js";
 import type { PublicationBuffers } from "./publication-internal.js";
-import { type FileHandle, type ResolvedPath } from "../core/index.js";
+import { type FileHandle, type FileStat, type ResolvedPath } from "../core/index.js";
+import { fileTimeMs, fileTimeNow, msFileTime, type FileTime } from "../core/filesystem.js";
 import { MemFS, type Node, type NamespacePlan } from "./memory.js";
 import { FilesystemError, type FilesystemIdentity } from "./protocol.js";
 import { SharedFilesystemState, type SharedSegment } from "./shared.js";
@@ -43,6 +44,15 @@ export interface FilesystemBackend {
   flush?(target?: FileHandle | string): Promise<void>;
   /** Release startup resources when cancellation races backend creation. */
   close?(): Promise<void>;
+}
+type DirectoryTimes = Pick<FileStat, "atime" | "mtime" | "ctime">;
+function sameTimes(left: DirectoryTimes | undefined, right: DirectoryTimes): boolean {
+  return (
+    left !== undefined &&
+    left.atime === right.atime &&
+    left.mtime === right.mtime &&
+    left.ctime === right.ctime
+  );
 }
 const namespaceOperations = new Set([
   "preopen",
@@ -73,17 +83,29 @@ type LocalMutationAction =
       readonly handle: FileHandle;
       readonly offset: number;
       readonly data: Uint8Array;
-      readonly mtime: number;
+      /** The new mtime and ctime. */
+      readonly time: FileTime;
     }
   | {
       readonly kind: "resize";
       readonly handle: FileHandle;
       readonly size: number;
       readonly truncate: boolean;
-      readonly mtime: number;
+      readonly time: FileTime;
     }
-  | { readonly kind: "setMode"; readonly handle: FileHandle; readonly mode: number }
-  | { readonly kind: "setMtime"; readonly handle: FileHandle; readonly mtime: number }
+  | {
+      readonly kind: "setMode";
+      readonly handle: FileHandle;
+      readonly mode: number;
+      readonly time: FileTime;
+    }
+  | {
+      readonly kind: "setTimes";
+      readonly handle: FileHandle;
+      readonly atime: FileTime | null;
+      readonly mtime: FileTime | null;
+      readonly ctime: FileTime;
+    }
   | { readonly kind: "preopen"; readonly path: string }
   | NamespaceAction
   | {
@@ -93,7 +115,7 @@ type LocalMutationAction =
       readonly append: boolean;
       readonly data: Uint8Array;
       readonly offset: number;
-      readonly mtime: number;
+      readonly time: FileTime;
     };
 interface MutationPlan {
   readonly backing?: { rollback(): void; commit(): void };
@@ -182,7 +204,8 @@ export class MemoryBackend implements FilesystemBackend {
   shared: SharedFilesystemState;
   private readonly startupRoot?: SharedFilesystemState;
   private sharedPhase: "standalone" | "imported" | "attached" = "standalone";
-  private directoryTimes = new Map<FileHandle, number>();
+  /** Directory times last copied into the shared table; files keep theirs there. */
+  private directoryTimes = new Map<FileHandle, DirectoryTimes>();
   private mayHaveSharedMetadata(handle: FileHandle, node: Node): boolean {
     // Non-file metadata enters the shared table only through sync, which records it here.
     return node.kind === "file" || this.directoryTimes.has(handle);
@@ -257,12 +280,12 @@ export class MemoryBackend implements FilesystemBackend {
     if (node.kind === "file")
       this.shared.register(handle, stat, node.data, true, this.ensureIdentity(node));
     else if (
-      this.directoryTimes.get(handle) !== stat.mtime ||
+      !sameTimes(this.directoryTimes.get(handle), stat) ||
       this.shared.stat(handle)?.mode !== stat.mode ||
       this.shared.stat(handle)?.nlink !== stat.nlink
     ) {
       this.shared.register(handle, stat, undefined, true, this.ensureIdentity(node));
-      this.directoryTimes.set(handle, stat.mtime);
+      this.directoryTimes.set(handle, stat);
     }
   }
   protected identityChanged(_node: Node): void {}
@@ -445,11 +468,12 @@ export class MemoryBackend implements FilesystemBackend {
     const node = this.fs.lookup(path, false);
     if (!node) return;
     const metadata = (entry: Node) => {
-      const stat = this.shared.stat(this.fs.handleForNode(entry));
+      const times = this.shared.stat(this.fs.handleForNode(entry)) ?? entry;
       return {
         kind: entry.kind,
         ino: entry.ino,
-        mtime: stat?.mtime ?? entry.mtime,
+        mtime: fileTimeMs(times.mtime),
+        ctime: fileTimeMs(times.ctime),
         ...(entry.kind === "symlink" ? { target: entry.target } : {}),
       };
     };
@@ -556,8 +580,8 @@ export class MemoryBackend implements FilesystemBackend {
         return this.planPublicationResize(intent);
       case "setMode":
         return this.planPublicationMode(intent);
-      case "setMtime":
-        return this.planPublicationMtime(intent);
+      case "setTimes":
+        return this.planPublicationTimes(intent);
       case "preopen":
       case "mkdirp": {
         const prepared = this.fs.planMkdirp(intent.path, this.effectBound);
@@ -708,6 +732,7 @@ export class MemoryBackend implements FilesystemBackend {
     preopen?: string,
   ): MutationPlan {
     const changes: PublicationEffect<FileKey>[] = [];
+    const mtime = fileTimeMs(plan.time);
     for (const node of plan.created)
       changes.push({
         kind: "inode",
@@ -716,7 +741,7 @@ export class MemoryBackend implements FilesystemBackend {
           ? { nodeKind: "symlink", target: node.target }
           : { nodeKind: node.kind === "dir" ? "directory" : node.kind }),
         mode: node.mode,
-        mtime: plan.mtime,
+        mtime,
       });
     for (const edge of plan.edges)
       changes.push({
@@ -731,7 +756,7 @@ export class MemoryBackend implements FilesystemBackend {
         kind: "metadata",
         file: this.publicationKey(parent.ino),
         mode: parent.mode,
-        mtime: plan.mtime,
+        mtime,
       });
     const registered: FileHandle[] = [];
     try {
@@ -798,14 +823,15 @@ export class MemoryBackend implements FilesystemBackend {
       if (!Number.isSafeInteger(size)) throw new FilesystemError(28);
       const file = this.publicationKey(info.ino),
         version = this.shared.publication?.nextContentVersion(info.ino) ?? 0;
-      const mtime = prepared.plan.mtime,
+      const time = prepared.plan.time,
+        mtime = fileTimeMs(time),
         changes = namespace.changes.slice();
       if (intent.append && !data.length && !changes.length)
         return { action: { kind: "none" }, result: { kind: "void" }, changes: [] };
       if (!intent.append && size !== info.size)
         changes.push({ kind: "resize", file, size, version });
       if (data.length) changes.push({ kind: "bytes", file, offset, bytes: data, size, version });
-      if (info.mode !== prepared.node.mode || info.mtime !== mtime)
+      if (info.mode !== prepared.node.mode || fileTimeMs(info.mtime) !== mtime)
         changes.push({ kind: "metadata", file, mode: prepared.node.mode, mtime });
       if (!changes.length) return { action: { kind: "none" }, result: { kind: "void" }, changes };
       return {
@@ -816,7 +842,7 @@ export class MemoryBackend implements FilesystemBackend {
           append: intent.append,
           data,
           offset,
-          mtime,
+          time,
         },
         result: { kind: "void" },
         changes,
@@ -833,14 +859,15 @@ export class MemoryBackend implements FilesystemBackend {
       if (edge.before) changed.add(edge.before);
       if (edge.after) changed.add(edge.after);
     }
+    const time = action.plan.time;
     for (const node of changed) {
       const handle = this.fs.existingHandle(node);
-      if (handle !== undefined) this.shared.setNlink(handle, this.fs.linkCount(node));
+      if (handle !== undefined) this.shared.setNlink(handle, this.fs.linkCount(node), time);
     }
     for (const link of action.plan.links) {
       if (link.delta > 0) this.shared.relink(this.fs.handleForNode(link.node));
     }
-    for (const handle of action.registered) this.shared.setMtime(handle, action.plan.mtime);
+    for (const handle of action.registered) this.shared.setTimes(handle, time, time, time);
     for (const parent of action.plan.parents) {
       const handle = this.fs.handleForNode(parent);
       if (this.directoryTimes.has(handle) && this.shared.stat(handle)) this.sync(handle);
@@ -879,7 +906,7 @@ export class MemoryBackend implements FilesystemBackend {
     const file = this.publicationKey(info.ino),
       mtime = Date.now();
     return {
-      action: { kind: "write", handle: intent.handle, offset, data, mtime },
+      action: { kind: "write", handle: intent.handle, offset, data, time: msFileTime(mtime) },
       result,
       changes: [
         {
@@ -898,7 +925,8 @@ export class MemoryBackend implements FilesystemBackend {
     const info = this.publicationFile(intent.handle);
     const size = intent.truncate ? intent.size : Math.max(info.size, intent.size);
     const file = this.publicationKey(info.ino),
-      mtime = intent.truncate ? Date.now() : info.mtime;
+      time = intent.truncate ? fileTimeNow() : info.mtime,
+      mtime = fileTimeMs(time);
     const changes: PublicationEffect<FileKey>[] = [];
     if (size !== info.size)
       changes.push({
@@ -907,7 +935,7 @@ export class MemoryBackend implements FilesystemBackend {
         size,
         version: this.shared.publication?.nextContentVersion(info.ino) ?? 0,
       });
-    if (mtime !== info.mtime)
+    if (mtime !== fileTimeMs(info.mtime))
       changes.push({ kind: "metadata", file, mode: info.mode ?? 0o600, mtime });
     return {
       action: {
@@ -915,7 +943,7 @@ export class MemoryBackend implements FilesystemBackend {
         handle: intent.handle,
         size: intent.size,
         truncate: intent.truncate,
-        mtime,
+        time,
       },
       result: { kind: "number", value: 0 },
       changes,
@@ -937,34 +965,42 @@ export class MemoryBackend implements FilesystemBackend {
               kind: "metadata",
               file: this.publicationKey(stat.ino),
               mode: intent.mode,
-              mtime: stat.mtime,
+              mtime: fileTimeMs(stat.mtime),
             },
           ];
     return {
-      action: { kind: "setMode", handle: intent.handle, mode: intent.mode },
+      action: { kind: "setMode", handle: intent.handle, mode: intent.mode, time: fileTimeNow() },
       result: { kind: "number", value: 0 },
       changes,
     };
   }
-  private planPublicationMtime(
-    intent: Extract<MutationIntent, { kind: "setMtime" }>,
+  private planPublicationTimes(
+    intent: Extract<MutationIntent, { kind: "setTimes" }>,
   ): MutationPlan {
+    // No write-permission check: the owner may set times on a read-only file, as on Linux.
     this.check(intent.handle);
-    if (!(this.fs.permissions(intent.handle).access & 2)) throw new FilesystemError(2);
     const stat = this.shared.stat(intent.handle)!;
+    const mtime = intent.mtime === null ? undefined : fileTimeMs(intent.mtime);
+    // The workspace sees whole-millisecond mtimes; atime and sub-millisecond changes stay local.
     const changes: PublicationEffect<FileKey>[] =
-      stat.mtime === intent.mtime
+      mtime === undefined || mtime === fileTimeMs(stat.mtime)
         ? []
         : [
             {
               kind: "metadata",
               file: this.publicationKey(stat.ino),
               mode: stat.mode ?? 0o600,
-              mtime: intent.mtime,
+              mtime,
             },
           ];
     return {
-      action: { kind: "setMtime", handle: intent.handle, mtime: intent.mtime },
+      action: {
+        kind: "setTimes",
+        handle: intent.handle,
+        atime: intent.atime,
+        mtime: intent.mtime,
+        ctime: fileTimeNow(),
+      },
       result: { kind: "number", value: 0 },
       changes,
     };
@@ -999,23 +1035,22 @@ export class MemoryBackend implements FilesystemBackend {
         return;
       case "write":
         this.shared.write(action.handle, [action.data], action.offset);
-        this.shared.setMtime(action.handle, action.mtime);
-        this.fs.setMtime(action.handle, action.mtime);
+        this.setModified(action.handle, action.time);
         return;
       case "resize":
         this.shared.resize(action.handle, action.size, action.truncate);
-        if (action.truncate) this.shared.setMtime(action.handle, action.mtime);
+        if (action.truncate) this.shared.setTimes(action.handle, null, action.time, action.time);
         if (action.truncate) this.shared.reclaimLocked(action.handle);
         return;
       case "setMode":
-        this.fs.setMode(action.handle, action.mode);
-        this.shared.setMode(action.handle, action.mode);
+        this.fs.setMode(action.handle, action.mode, action.time);
+        this.shared.setMode(action.handle, action.mode, action.time);
         return;
-      case "setMtime":
-        this.fs.setMtime(action.handle, action.mtime);
-        this.shared.setMtime(action.handle, action.mtime);
+      case "setTimes":
+        this.fs.setTimes(action.handle, action.atime, action.mtime, action.ctime);
+        this.shared.setTimes(action.handle, action.atime, action.mtime, action.ctime);
         if (this.directoryTimes.has(action.handle))
-          this.directoryTimes.set(action.handle, action.mtime);
+          this.directoryTimes.set(action.handle, this.fs.stat(action.handle));
         return;
       case "preopen":
         this.sync(this.fs.preopen(action.path));
@@ -1027,8 +1062,7 @@ export class MemoryBackend implements FilesystemBackend {
         this.applyNamespace(action.namespace);
         if (!action.append) this.shared.resize(action.handle, 0, true);
         if (action.data.length) this.shared.write(action.handle, [action.data], action.offset);
-        this.shared.setMtime(action.handle, action.mtime);
-        this.fs.setMtime(action.handle, action.mtime);
+        this.setModified(action.handle, action.time);
         if (!action.append) this.shared.reclaimLocked(action.handle);
         return;
       default: {
@@ -1036,6 +1070,10 @@ export class MemoryBackend implements FilesystemBackend {
         return exhaustive;
       }
     }
+  }
+  private setModified(handle: FileHandle, time: FileTime): void {
+    this.shared.setTimes(handle, null, time, time);
+    this.fs.setTimes(handle, null, time, time);
   }
   revokeOwner(owner: number, epoch?: Int32Array): void {
     this.shared.revokeOwner(owner, epoch);

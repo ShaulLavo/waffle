@@ -5,7 +5,8 @@ import type { StorageBackend } from "../../fs/storage.js";
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
-async function session(storage: StorageBackend) {
+/** A real backend, service and client over `storage`, as a page runs them. */
+export async function storageSession(storage: StorageBackend) {
   const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection();
@@ -24,7 +25,7 @@ async function session(storage: StorageBackend) {
 }
 /** The same real backend/service/client contract runs in units and all browser storage engines. */
 export async function permissionStorageCase(open: () => Promise<StorageBackend>): Promise<void> {
-  const first = await session(await open());
+  const first = await storageSession(await open());
   try {
     const fs = first.client;
     await fs.asyncCall("writeFile", ["/file"], new TextEncoder().encode("old"));
@@ -68,7 +69,7 @@ export async function permissionStorageCase(open: () => Promise<StorageBackend>)
     reads++;
     return read(key);
   };
-  const reopened = await session(storage);
+  const reopened = await storageSession(storage);
   try {
     const fs = reopened.client;
     const root = await fs.asyncCall("preopen", ["/"]);

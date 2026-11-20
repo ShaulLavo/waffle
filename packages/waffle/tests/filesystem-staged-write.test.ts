@@ -35,6 +35,7 @@ import {
   type Cleanup,
   type Rig,
 } from "./fixtures/lazy-backing.js";
+import { statTimes } from "./fixtures/file-times.js";
 
 const cleanups: Cleanup[] = [];
 afterEach(async () => {
@@ -46,7 +47,7 @@ const file = (ino: number, size: number) => ({
   ino,
   nlink: 1,
   size,
-  mtime: 1,
+  ...statTimes(1),
   mode: 0o644,
 });
 /** `/target` lives wholly in segment 1, which only the owner and yielding clients hold. Its

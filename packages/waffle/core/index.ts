@@ -11,6 +11,7 @@ export type {
   FileSystem,
   FileHandle,
   FileStat,
+  FileTime,
   FilePermissions,
   DirectoryEntry,
   ResolvedPath,

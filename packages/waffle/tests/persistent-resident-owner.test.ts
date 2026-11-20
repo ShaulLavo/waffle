@@ -1,4 +1,5 @@
 import { residentMemory } from "./fixtures/resident-memory";
+import { storedTimes } from "./fixtures/file-times";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation } from "../fs/file-identity";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
@@ -51,8 +52,15 @@ async function fixture(kind: "read" | "flush") {
           generation: 1,
           root: 10,
           nodes: [
-            { ino: 10, kind: "dir", mode: 0o700, size: 0, mtime: 1, children: [["file", 11]] },
-            { ino: 11, kind: "file", mode: 0o400, size: 4, mtime: 1, data: "payload" },
+            {
+              ino: 10,
+              kind: "dir",
+              mode: 0o700,
+              size: 0,
+              ...storedTimes(1),
+              children: [["file", 11]],
+            },
+            { ino: 11, kind: "file", mode: 0o400, size: 4, ...storedTimes(1), data: "payload" },
           ],
         };
       },

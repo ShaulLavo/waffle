@@ -1,6 +1,7 @@
 import type { IdleWorkspaceWalk, StoredWorkspaceEntry } from "../index.js";
 import type { PersistenceBatch } from "../fs/storage.js";
 import { idle } from "./idle-workspace-fixtures.js";
+import { storedTimes } from "./fixtures/file-times.js";
 import { assert, bytes, rejects, type StorageContractCase } from "./storage-browser-helpers.js";
 
 function tree(): PersistenceBatch {
@@ -16,7 +17,9 @@ function tree(): PersistenceBatch {
         ino: 1,
         kind: "dir",
         size: 0,
-        mtime: 17.25,
+        // The workspace reports whole milliseconds of a nanosecond time.
+        ...storedTimes(17),
+        mtime: "17250000",
         children: [
           ["app", 2],
           ["link", 4],
@@ -30,20 +33,27 @@ function tree(): PersistenceBatch {
         kind: "dir",
         size: 0,
         mode: 0o1700,
-        mtime: 18,
+        ...storedTimes(18),
         children: [
           ["source", 3],
           ["node_modules", 7],
           ["node_modules-old", 8],
         ],
       },
-      { ino: 3, kind: "file", size: source.length, mode: 0o400, mtime: 19, data: "source" },
-      { ino: 4, kind: "symlink", size: bytes(target).length, mtime: 20, target },
-      { ino: 5, kind: "socket", size: 0, mtime: 21 },
-      { ino: 6, kind: "dir", size: 0, mtime: 22, children: [] },
-      { ino: 7, kind: "dir", size: 0, mtime: 23, children: [["pruned-sentinel", 9]] },
-      { ino: 8, kind: "dir", size: 0, mtime: 24, children: [] },
-      { ino: 9, kind: "dir", size: 0, mtime: 25, children: [] },
+      {
+        ino: 3,
+        kind: "file",
+        size: source.length,
+        mode: 0o400,
+        ...storedTimes(19),
+        data: "source",
+      },
+      { ino: 4, kind: "symlink", size: bytes(target).length, ...storedTimes(20), target },
+      { ino: 5, kind: "socket", size: 0, ...storedTimes(21) },
+      { ino: 6, kind: "dir", size: 0, ...storedTimes(22), children: [] },
+      { ino: 7, kind: "dir", size: 0, ...storedTimes(23), children: [["pruned-sentinel", 9]] },
+      { ino: 8, kind: "dir", size: 0, ...storedTimes(24), children: [] },
+      { ino: 9, kind: "dir", size: 0, ...storedTimes(25), children: [] },
     ],
   };
 }
@@ -85,7 +95,7 @@ export function idleMetadataCases(): StorageContractCase[] {
           const entries = await collect(owner.walk());
           const byPath = new Map(entries.map((entry) => [entry.path, entry]));
           assert(
-            entries.length === 10 && byPath.get("/")?.mtime === 17.25,
+            entries.length === 10 && byPath.get("/")?.mtime === 17,
             "whole stored tree including selected root",
           );
           assert(
@@ -187,7 +197,7 @@ export function idleMetadataCases(): StorageContractCase[] {
         assert(root?.kind === "dir" && root.children, "fixture root");
         for (let ino = 10; ino < 610; ino++) {
           root.children.push([`empty-${ino}`, ino]);
-          saved.upserts.push({ ino, kind: "file", size: 0, mtime: ino });
+          saved.upserts.push({ ino, kind: "file", size: 0, ...storedTimes(ino) });
         }
         await storage.persist(saved);
         await storage.close();
@@ -234,7 +244,7 @@ export function idleMetadataCases(): StorageContractCase[] {
           ino: 10,
           kind: "file",
           size: payload.length,
-          mtime: 26,
+          ...storedTimes(26),
           data: "huge",
         });
         saved.upserts[0]!.children!.push(["huge", 10]);

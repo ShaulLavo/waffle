@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { FilesystemError } from "../core/filesystem.js";
+import { FilesystemError, fileTimeMs } from "../core/filesystem.js";
 import { parseFileIdentity } from "../fs/file-identity.js";
 import { newDir, newFile, newSymlink, nodeSize } from "../fs/memory.js";
 import { NamespaceCursor, type NamespaceSource } from "../fs/namespace-cursor.js";
@@ -19,7 +19,7 @@ function fixture(target: string) {
   const root = newDir();
   const link = newSymlink(target);
   link.mode = 0o640;
-  link.mtime = 123;
+  link.mtime = 123_000_000n;
   root.children.set("l", link);
   const cut = namespaceCut("sizing", { history: "sizing", generation: 1 });
   const reads: string[] = [];
@@ -32,7 +32,7 @@ function fixture(target: string) {
         ...(node === root ? rootIdentity : linkIdentity),
         size: nodeSize(node),
         mode: node.mode,
-        mtime: node.mtime,
+        mtime: fileTimeMs(node.mtime),
       };
     },
   };

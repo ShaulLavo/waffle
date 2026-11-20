@@ -9,12 +9,30 @@ import {
   type StoredIdentity,
   type IdentityReservation,
 } from "./file-identity.js";
-import { permissionsFor } from "../core/filesystem.js";
+import { MAX_FILE_TIME, permissionsFor, type FileTime } from "../core/filesystem.js";
+/** A file time as the decimal count of nanoseconds since 1970. JSON numbers cannot carry
+ * nanoseconds exactly. */
+export type StoredTime = string;
+export function storeTime(time: FileTime): StoredTime {
+  return `${time}`;
+}
+export function restoreTime(time: StoredTime): FileTime {
+  return BigInt(time);
+}
+function validTime(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    /^(0|[1-9][0-9]{0,19})$/.test(value) &&
+    BigInt(value) <= MAX_FILE_TIME
+  );
+}
 /** Durable inode metadata. Payload keys are immutable, including across snapshots. */
 interface PersistedMetadata {
   identity?: StoredIdentity;
   ino: number;
-  mtime: number;
+  atime: StoredTime;
+  mtime: StoredTime;
+  ctime: StoredTime;
   /** Absent only in saved metadata predating permission adoption. */
   mode?: number;
   size: number;
@@ -141,7 +159,13 @@ function validateSocket(node: PersistedNode): void {
 export function validatePersistedNode(value: unknown): asserts value is PersistedNode {
   if (!value || typeof value !== "object") invalid();
   const node = value as PersistedNode;
-  if (!validInteger(node.ino) || !validInteger(node.size) || !Number.isFinite(node.mtime))
+  if (
+    !validInteger(node.ino) ||
+    !validInteger(node.size) ||
+    !validTime(node.atime) ||
+    !validTime(node.mtime) ||
+    !validTime(node.ctime)
+  )
     invalid();
   validateMode(node);
   if (node.identity !== undefined) parseStoredIdentity(node.identity);

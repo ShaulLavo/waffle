@@ -190,7 +190,7 @@ test("#115 count-only shared metadata updates neither require write access nor a
   backend.retain(handle);
   try {
     const revision = backend.shared.revision(handle);
-    backend.shared.setNlink(handle, 2);
+    backend.shared.setNlink(handle, 2, 1_000_000n);
     expect(backend.shared.stat(handle)?.nlink).toBe(2);
     expect(backend.shared.snapshot(handle)?.stat.nlink).toBe(2);
     expect(backend.shared.info(handle)?.nlink).toBe(2);

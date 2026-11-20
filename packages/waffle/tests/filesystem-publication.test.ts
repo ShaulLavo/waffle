@@ -306,7 +306,7 @@ function directPublicationFixture() {
   shared.identities.configure({ workspace: crypto.randomUUID(), era: 1n }, 1n);
   shared.register(
     3,
-    { kind: "file", ino: file.ino, nlink: 1, mode: 0o600, mtime: 1, size: 3 },
+    { kind: "file", ino: file.ino, nlink: 1, mode: 0o600, ...statTimes(1), size: 3 },
     new Uint8Array([1, 2, 3]),
     true,
     { id: file.id, version: file.version },
@@ -976,8 +976,8 @@ test("resident direct metadata joins the publication order and chmod revokes an 
     const resized = await fixture.cut();
     expect(resized.generation).toBe(start.generation + 1);
     expect(fixture.sibling.tryRead(fixture.handle, [new Uint8Array(6)], 0)).toBe(6);
-    expect(fixture.root.setMtime(fixture.handle, 77)).toBe(0);
-    expect(fixture.sibling.shared.stat(fixture.handle)?.mtime).toBe(77);
+    expect(fixture.root.setTimes(fixture.handle, null, ms(77))).toBe(0);
+    expect(fixture.sibling.shared.stat(fixture.handle)?.mtime).toBe(ms(77));
     const page = await fixture.changes(start);
     expect(page.publications).toHaveLength(2);
     expect(page.publications[0].changes[0]).toMatchObject({ kind: "resize", size: 6 });
@@ -996,8 +996,11 @@ test("resident direct metadata joins the publication order and chmod revokes an 
     expect(await fixture.root.asyncCall("setMode", [fixture.handle, 0o400])).toBe(0);
     const denied = await fixture.cut();
     expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(-2);
-    expect(fixture.root.setMtime(fixture.handle, 88)).toBe(2);
     expect(await fixture.cut()).toEqual(denied);
+    // The owner still sets times on a read-only file, as on Linux, and the change publishes.
+    expect(fixture.root.setTimes(fixture.handle, null, ms(88))).toBe(0);
+    expect(fixture.sibling.shared.stat(fixture.handle)?.mtime).toBe(ms(88));
+    expect((await fixture.cut()).generation).toBe(denied.generation + 1);
     expect(await fixture.root.asyncCall("setMode", [fixture.handle, 0o600])).toBe(0);
     expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(1);
     expect(fixture.sibling.shared.stat(fixture.handle)?.ino).toBe(inode);
@@ -1125,7 +1128,7 @@ test("production host replace append exclusive and move each publish one complet
   try {
     // A replacement publishes a metadata effect only when it changes the timestamp. Give the
     // seeded file an old one, so that does not depend on a millisecond passing during setup.
-    expect(await fixture.root.asyncCall("setMtime", [fixture.handle, 1])).toBe(0);
+    expect(await fixture.root.asyncCall("setTimes", [fixture.handle, null, ms(1)])).toBe(0);
     const start = await fixture.cut();
     await fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([9, 8]));
     let page = await fixture.changes(start);
@@ -1269,7 +1272,7 @@ test("production exact identities survive after-commit response loss and cannot 
     expect((await fixture.changes(before)).publications).toHaveLength(1);
     const after = await fixture.cut();
     for (let index = 0; index < limits.operations; index++)
-      await fixture.root.asyncCall("setMtime", [fixture.handle, 100 + index]);
+      await fixture.root.asyncCall("setTimes", [fixture.handle, null, ms(100 + index)]);
     expect(
       (await fixture.root.asyncCall("publicationReceipt", [fixture.grant, admitted.admission.id]))
         .kind,
@@ -1335,8 +1338,8 @@ test("production current cached and host reads recheck traversal permissions and
     expect(fixture.root.permissions(child.node)?.access).toBe(6);
     expect(await fixture.root.asyncCall("resize", [child.node, 2, false])).toBe(0);
     expect(fixture.root.stat(child.node).size).toBe(2);
-    expect(await fixture.root.asyncCall("setMtime", [child.node, 55])).toBe(0);
-    expect(fixture.root.stat(child.node).mtime).toBe(55);
+    expect(await fixture.root.asyncCall("setTimes", [child.node, null, ms(55)])).toBe(0);
+    expect(fixture.root.stat(child.node).mtime).toBe(ms(55));
     expect(await fixture.root.asyncCall("setMode", [parent, 0o600])).toBe(0);
     const denied = await fixture.cut();
     await expectErrno(fixture.root.asyncCall("readFile", ["/dir/child"]), 2);
@@ -1633,6 +1636,7 @@ test("production append EOF growth prepares capacity but retry owns only the lat
 });
 
 import { atomicsLoad, reflectApply, typedArrayBuffer } from "../proc/intrinsics";
+import { ms, statTimes } from "./fixtures/file-times";
 
 function cancelUnconnectedIdentity(identity: FilesystemIdentity): void {
   revokeFilesystem(identity);

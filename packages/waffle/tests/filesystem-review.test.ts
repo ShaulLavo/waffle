@@ -1,5 +1,6 @@
 import { SLOT_WORDS } from "../fs/shared.js";
 import { expect, test } from "bun:test";
+import { statTimes } from "./fixtures/file-times";
 import {
   FilesystemClient,
   FilesystemService,
@@ -65,8 +66,8 @@ test("readFile honors a truncate between length sampling and read lock", () => {
 test("geometric growth falls back to the final available page", () => {
   const half = DATA_PAGES_PER_SEGMENT / 2;
   const state = new SharedFilesystemState(undefined, PAGE * DATA_PAGES_PER_SEGMENT);
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * half, mtime: 1 });
-  state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * (half - 1), mtime: 1 });
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * half, ...statTimes(1) });
+  state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * (half - 1), ...statTimes(1) });
   state.grow(0, PAGE * (half + 1));
   expect(state.info(0)?.capacity).toBe(PAGE * (half + 1));
   expect(state.resources().usedBytes).toBe(PAGE * DATA_PAGES_PER_SEGMENT);
@@ -77,7 +78,7 @@ function directFixture() {
   const client = new FilesystemClient(pair.client);
   client.shared.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 },
+    { kind: "file", ino: 1, nlink: 1, size: 1, ...statTimes(1) },
     new Uint8Array([65]),
   );
   client.call = () => undefined;
@@ -203,11 +204,15 @@ test("revoking a live in-flight writer keeps its locks and pages until it exits"
 
 test("zero-byte positioned writes do not grow or timestamp a file", () => {
   const state = new SharedFilesystemState();
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 }, new Uint8Array([65]));
+  state.register(
+    0,
+    { kind: "file", ino: 1, nlink: 1, size: 1, ...statTimes(1) },
+    new Uint8Array([65]),
+  );
   expect(state.write(0, [empty], 4096)).toBe(0);
-  expect(state.stat(0)).toMatchObject({ size: 1, mtime: 1 });
+  expect(state.stat(0)).toMatchObject({ size: 1, ...statTimes(1) });
   expect(state.append(0, [empty])).toEqual({ written: 0, offset: 1 });
-  expect(state.stat(0)).toMatchObject({ size: 1, mtime: 1 });
+  expect(state.stat(0)).toMatchObject({ size: 1, ...statTimes(1) });
 });
 
 test("a successful truncate returns trailing capacity for another file", () => {
@@ -229,7 +234,7 @@ test("a failed SAB allocation rolls back all uncommitted page owners", () => {
     ino: 1,
     nlink: 1,
     size: PAGE * (DATA_PAGES_PER_SEGMENT - 1),
-    mtime: 1,
+    ...statTimes(1),
   });
   const allocator = state as unknown as { ensureSegment(index: number): void };
   const original = allocator.ensureSegment.bind(state);
@@ -238,38 +243,41 @@ test("a failed SAB allocation rolls back all uncommitted page owners", () => {
     original(index);
   };
   expect(() =>
-    state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * 2, mtime: 1 }),
+    state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * 2, ...statTimes(1) }),
   ).toThrow();
   expect(Array.from(state.owners).filter((owner) => owner !== 0).length).toBe(
     DATA_PAGES_PER_SEGMENT - 1,
   );
   allocator.ensureSegment = original;
-  state.register(2, { kind: "file", ino: 3, nlink: 1, size: PAGE, mtime: 1 });
+  state.register(2, { kind: "file", ino: 3, nlink: 1, size: PAGE, ...statTimes(1) });
   expect(state.resources().usedBytes).toBe(PAGE * DATA_PAGES_PER_SEGMENT);
 });
 
 test("shared stat cannot observe a torn two-word timestamp", () => {
   const state = new SharedFilesystemState();
-  const oldTime = 0x1ffffffff;
-  const newTime = 0x200000000;
+  const oldTime = 0x1ffffffffn;
+  const newTime = 0x200000000n;
   state.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: 1, mtime: oldTime },
+    { kind: "file", ino: 1, nlink: 1, size: 1, atime: oldTime, mtime: oldTime, ctime: oldTime },
     new Uint8Array([65]),
   );
   const originalLoad = Atomics.load;
   let intercepted = false;
   Atomics.load = ((...args: any[]) => {
     const value = Reflect.apply(originalLoad, Atomics, args);
-    if (!intercepted && args[0] === state.slots && args[1] === SLOT_WORDS + 3) {
+    // Slot 1's mtime is its words 2 and 3, the 64-bit cell (SLOT_WORDS + 2) / 2.
+    if (!intercepted && args[0] instanceof BigUint64Array && args[1] === (SLOT_WORDS + 2) / 2) {
       intercepted = true;
       // An actual competing writer can enter only if the metadata reader has no file lock.
-      if (originalLoad(state.slots, SLOT_WORDS + 8) === 0) state.setMtime(0, newTime);
+      if (originalLoad(state.slots, SLOT_WORDS + 8) === 0)
+        state.setTimes(0, null, newTime, newTime);
     }
     return value;
   }) as typeof Atomics.load;
   try {
     expect([oldTime, newTime]).toContain(state.stat(0)!.mtime);
+    expect(intercepted).toBe(true);
   } finally {
     Atomics.load = originalLoad;
   }

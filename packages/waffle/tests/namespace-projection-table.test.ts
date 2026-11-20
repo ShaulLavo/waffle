@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { ms, storedTimes } from "./fixtures/file-times";
 import { resourceUsage } from "node:process";
 import { parseFileIdentity } from "../fs/file-identity.js";
 import {
@@ -565,7 +566,7 @@ function coldCorpus(order: IdentityOrder = "forward", flat = 0): PersistedIndex 
       kind,
       size,
       mode: kind === "dir" ? 0o700 : 0o600,
-      mtime: 0,
+      ...storedTimes(0),
       identity: recoveredIdentity(ino, order),
       ...(kind === "dir" ? { children: [] } : { data: `fixture-${ino}` }),
     };
@@ -865,7 +866,7 @@ test("public W1 directory rename, replacement, hardlinks and 1,000 ordered opera
     expect(source.before!.version).toBe(destination.after!.version);
     const root = await current.client.asyncCall("preopen", ["/"]);
     const child = await current.client.asyncCall("resolve", [root, "renamed/f00000"]);
-    expect(await current.client.asyncCall("setMtime", [child.node, 42])).toBe(0);
+    expect(await current.client.asyncCall("setTimes", [child.node, null, ms(42)])).toBe(0);
     expect(await pull()).toContainEqual(
       expect.objectContaining({ kind: "metadata", id: identity(3).id, paths: ["/renamed/f00000"] }),
     );
@@ -1071,7 +1072,7 @@ test("a real W1 change-ring overrun yields a gap and a full fresh resnapshot", a
     const root = await current.client.asyncCall("preopen", ["/"]);
     const node = await current.client.asyncCall("resolve", [root, "d00000"]);
     for (let step = 1; step <= 40; step++)
-      expect(await current.client.asyncCall("setMtime", [node.node, step])).toBe(0);
+      expect(await current.client.asyncCall("setTimes", [node.node, null, ms(step)])).toBe(0);
     const page = await current.workspace.changes(initial.cut.watermark);
     expect(page.kind).toBe("gap");
     if (page.kind !== "gap") throw new Error("missing real ring gap");
@@ -1099,7 +1100,7 @@ test("the public wire and accepted projection preserve valid lone-surrogate file
     });
     const root = await current.client.asyncCall("preopen", ["/"]);
     const child = await current.client.asyncCall("resolve", [root, name]);
-    await current.client.asyncCall("setMtime", [child.node, 42]);
+    await current.client.asyncCall("setTimes", [child.node, null, ms(42)]);
     expect(await publicFeed(current.workspace, initial.cut)()).toContainEqual(
       expect.objectContaining({ kind: "metadata", id: identity(2).id, paths: [`/${name}`] }),
     );

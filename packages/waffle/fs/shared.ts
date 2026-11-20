@@ -22,7 +22,8 @@ import {
   type PreparedPublication,
 } from "./publication.js";
 import type { PublicationBuffers, PublicationConnection } from "./publication-internal.js";
-import type { FileHandle, FileStat } from "../core/index.js";
+import type { FileHandle, FileStat, FileTime } from "../core/index.js";
+import { fileTimeMs, fileTimeNow, msFileTime } from "../core/filesystem.js";
 import {
   FilesystemError,
   DEFAULT_SHARED_MAX_BYTES,
@@ -77,8 +78,10 @@ const TABLE_HINT = 28;
 const PINNED_PAGES = 29;
 const MODE = 12;
 const FILE_SIZE = 1;
-const MTIME_LOW = 2;
-const MTIME_HIGH = 3;
+// File times are unsigned 64-bit nanoseconds in two words each, starting on an even word.
+const MTIME = 2;
+const ATIME = 24;
+const CTIME = 26;
 const INO = 4;
 const CAPACITY = 5;
 const REFS = 6;
@@ -153,6 +156,8 @@ export class SharedFilesystemState {
   readonly cells: Int32Array;
   readonly owners: Int32Array;
   readonly slots: Int32Array;
+  /** The slot table again, as 64-bit cells for the time fields. */
+  private readonly times: BigUint64Array;
   readonly pages: Int32Array;
   private readonly tableOwners: Int32Array;
   readonly segments: SharedArrayBuffer[];
@@ -206,6 +211,7 @@ export class SharedFilesystemState {
       }
       this.owners = new Int32Array(buffer, HEADER_WORDS * 4, TOTAL_DATA_PAGES);
       this.slots = new Int32Array(buffer, SLOT_OFFSET * 4, MAX_FILES * SLOT_WORDS);
+      this.times = new BigUint64Array(buffer, SLOT_OFFSET * 4, (MAX_FILES * SLOT_WORDS) / 2);
       this.tableOwners = new Int32Array(buffer, TABLE_OWNER_OFFSET * 4, TABLE_BLOCKS);
       this.pages = new Int32Array(buffer, PAGE_CELL_OFFSET * 4, PAGE_CELLS);
       this.firstBytes = new Uint8Array(buffer, DATA_OFFSET, SHARED_SEGMENT_BYTES);
@@ -748,14 +754,27 @@ export class SharedFilesystemState {
       this.globalUnlock(owner);
     }
   }
-  private setTimestamp(slot: number, mtime: number): void {
-    Atomics.store(this.slots, this.at(slot, MTIME_LOW), mtime >>> 0);
-    Atomics.store(this.slots, this.at(slot, MTIME_HIGH), Math.floor(mtime / 0x100000000) >>> 0);
+  private time(slot: number, field: number): FileTime {
+    return Atomics.load(this.times, (slot * SLOT_WORDS + field) / 2);
   }
-  private getMtime(slot: number): number {
+  private setTime(slot: number, field: number, time: FileTime): void {
+    Atomics.store(this.times, (slot * SLOT_WORDS + field) / 2, time);
+  }
+  /** Content changes set mtime and ctime together. */
+  private setModified(slot: number, time: FileTime): void {
+    this.setTime(slot, MTIME, time);
+    this.setTime(slot, CTIME, time);
+  }
+  private storeTimes(slot: number, times: Pick<FileStat, "atime" | "mtime" | "ctime">): void {
+    this.setTime(slot, ATIME, times.atime);
+    this.setTime(slot, MTIME, times.mtime);
+    this.setTime(slot, CTIME, times.ctime);
+  }
+  private sameTimes(slot: number, times: Pick<FileStat, "atime" | "mtime" | "ctime">): boolean {
     return (
-      (Atomics.load(this.slots, this.at(slot, MTIME_HIGH)) >>> 0) * 0x100000000 +
-      (Atomics.load(this.slots, this.at(slot, MTIME_LOW)) >>> 0)
+      this.time(slot, ATIME) === times.atime &&
+      this.time(slot, MTIME) === times.mtime &&
+      this.time(slot, CTIME) === times.ctime
     );
   }
   /** Revision reads and increments are covered by the file lock, including the carry. */
@@ -898,8 +917,8 @@ export class SharedFilesystemState {
       this.slots[this.at(slot, MODE)] = stat.mode ?? -1;
       this.changed(slot);
     }
-    if (stat.kind === "directory" && this.getMtime(slot) !== stat.mtime) {
-      this.setTimestamp(slot, stat.mtime);
+    if (stat.kind === "directory" && !this.sameTimes(slot, stat)) {
+      this.storeTimes(slot, stat);
       this.changed(slot);
     }
     return true;
@@ -934,7 +953,7 @@ export class SharedFilesystemState {
         Atomics.store(this.slots, this.at(slot, FILE_SIZE), stat.size);
         Atomics.store(this.slots, this.at(slot, INO), stat.ino);
         Atomics.store(this.slots, this.at(slot, NLINK), stat.nlink);
-        this.setTimestamp(slot, stat.mtime);
+        this.storeTimes(slot, stat);
         Atomics.store(this.slots, this.at(slot, MODE), stat.mode ?? -1);
         const floor =
           (this.cells[FREED_REVISION_HIGH]! >>> 0) * 0x100000000 +
@@ -1109,7 +1128,9 @@ export class SharedFilesystemState {
         ino: this.slots[base + INO]!,
         nlink: this.slots[base + NLINK]! >>> 0,
         size: this.slots[base + FILE_SIZE]!,
-        mtime: this.getMtime(slot),
+        atime: this.time(slot, ATIME),
+        mtime: this.time(slot, MTIME),
+        ctime: this.time(slot, CTIME),
         ...this.modeField(slot),
       };
       const data = new Uint8Array(stat.size);
@@ -1201,7 +1222,9 @@ export class SharedFilesystemState {
         ino: Atomics.load(this.slots, this.at(slot, INO)),
         nlink: Atomics.load(this.slots, this.at(slot, NLINK)) >>> 0,
         size: Atomics.load(this.slots, this.at(slot, FILE_SIZE)),
-        mtime: this.getMtime(slot),
+        atime: this.time(slot, ATIME),
+        mtime: this.time(slot, MTIME),
+        ctime: this.time(slot, CTIME),
         ...this.modeField(slot),
         capacity: Atomics.load(this.slots, this.at(slot, CAPACITY)) * DATA_PAGE_BYTES,
       };
@@ -1228,20 +1251,25 @@ export class SharedFilesystemState {
         ino: Atomics.load(this.slots, this.at(slot, INO)),
         nlink: Atomics.load(this.slots, this.at(slot, NLINK)) >>> 0,
         size: kind !== 2 ? Atomics.load(this.slots, this.at(slot, FILE_SIZE)) : 0,
-        mtime: this.getMtime(slot),
+        atime: this.time(slot, ATIME),
+        mtime: this.time(slot, MTIME),
+        ctime: this.time(slot, CTIME),
         ...this.modeField(slot),
       };
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
     }
   }
-  setNlink(handle: FileHandle, nlink: number): void {
+  /** A name change of the inode. The tree records the same ctime for persistence, so the
+   * revision, and with it the persisted payload, stays unchanged. */
+  setNlink(handle: FileHandle, nlink: number, ctime: FileTime): void {
     const slot = this.findSlot(handle);
     if (!slot) return;
     this.lock(this.at(slot, FILE_LOCK));
     try {
-      if (this.slots[this.at(slot, HANDLE)] === handle + 1)
-        Atomics.store(this.slots, this.at(slot, NLINK), nlink);
+      if (this.slots[this.at(slot, HANDLE)] !== handle + 1) return;
+      Atomics.store(this.slots, this.at(slot, NLINK), nlink);
+      this.setTime(slot, CTIME, ctime);
     } finally {
       this.unlock(this.at(slot, FILE_LOCK));
     }
@@ -1254,7 +1282,7 @@ export class SharedFilesystemState {
     const mode = this.slots[this.at(slot, MODE)]!;
     if (mode >= 0 && ((mode >>> 6) & access) !== access) throw new FilesystemError(2);
   }
-  setMode(handle: FileHandle, mode: number): void {
+  setMode(handle: FileHandle, mode: number, ctime = fileTimeNow()): void {
     const slot = this.slot(handle);
     this.lock(this.at(slot, FILE_LOCK));
     try {
@@ -1264,6 +1292,7 @@ export class SharedFilesystemState {
       if (!changed) return;
       this.dirty(slot);
       this.slots[this.at(slot, MODE)] = mode;
+      this.setTime(slot, CTIME, ctime);
       this.changed(slot);
       this.commitIdentityVersion(slot, version);
     } finally {
@@ -1613,8 +1642,7 @@ export class SharedFilesystemState {
     try {
       this.copyChunks(slot, chunks, at);
       if (end > size) this.slots[base + FILE_SIZE] = end;
-      this.slots[base + MTIME_LOW] = mtime >>> 0;
-      this.slots[base + MTIME_HIGH] = Math.floor(mtime / 0x100000000) >>> 0;
+      this.setModified(slot, msFileTime(mtime));
       this.changed(slot);
       this.commitIdentityVersion(slot, identity);
       if (publication) this.publication!.commit(publication);
@@ -1810,8 +1838,7 @@ export class SharedFilesystemState {
           this.changed(slot);
           slots[base + REVISION_STATE] = slots[base + REVISION_STATE]! & ~RESIDENT;
           if (end > size) slots[base + FILE_SIZE] = end;
-          slots[base + MTIME_LOW] = mtime >>> 0;
-          slots[base + MTIME_HIGH] = Math.floor(mtime / 0x100000000) >>> 0;
+          this.setModified(slot, msFileTime(mtime));
           this.commitIdentityVersion(slot, identity);
           if (prepared) this.publication!.commit(prepared.publication);
         } catch (error) {
@@ -1968,7 +1995,7 @@ export class SharedFilesystemState {
       }
       if (end > Atomics.load(this.slots, this.at(slot, FILE_SIZE)))
         Atomics.store(this.slots, this.at(slot, FILE_SIZE), end);
-      this.setTimestamp(slot, Date.now());
+      this.setModified(slot, fileTimeNow());
       this.changed(slot);
       this.commitIdentityVersion(slot, identity);
       return total;
@@ -2019,7 +2046,7 @@ export class SharedFilesystemState {
         at += chunk.length;
       }
       Atomics.store(this.slots, this.at(slot, FILE_SIZE), at);
-      this.setTimestamp(slot, Date.now());
+      this.setModified(slot, fileTimeNow());
       this.changed(slot);
       this.commitIdentityVersion(slot, identity);
       return { written: total, offset: at };
@@ -2094,14 +2121,14 @@ export class SharedFilesystemState {
         );
       }
       const next = truncate ? size : Math.max(old, size);
-      const mtime = truncate ? Date.now() : this.getMtime(slot);
+      const time = truncate ? fileTimeNow() : this.time(slot, MTIME);
       const identity = this.prepareIdentityVersion(
         slot,
-        next !== old || mtime !== this.getMtime(slot),
+        next !== old || time !== this.time(slot, MTIME),
       );
       if (truncate || next !== old) this.checkDirty(slot, next);
       const publication = admission
-        ? this.prepareResize(slot, handle, size, truncate, next, mtime, identity, admission)
+        ? this.prepareResize(slot, handle, size, truncate, next, time, identity, admission)
         : undefined;
       if (resident && truncate && size < old)
         this.prepareVersionPages(slot, size, truncateBoundaryEnd(size, old), next);
@@ -2109,7 +2136,7 @@ export class SharedFilesystemState {
       if (resident && truncate && size < old) this.zeroTruncatedPages(slot, size, old);
       Atomics.store(this.slots, this.at(slot, FILE_SIZE), next);
       this.slots[this.at(slot, REVISION_STATE)]! |= RESIDENT;
-      if (truncate) this.setTimestamp(slot, mtime);
+      if (truncate) this.setModified(slot, time);
       if (truncate || next !== old) this.changed(slot);
       this.commitIdentityVersion(slot, identity);
       if (publication) this.publication!.commit(publication);
@@ -2140,7 +2167,7 @@ export class SharedFilesystemState {
     size: number,
     truncate: boolean,
     next: number,
-    mtime: number,
+    time: FileTime,
     identity: PlannedIdentityRevision | undefined,
     admission: PublicationAdmission,
   ): PreparedPublication {
@@ -2155,24 +2182,35 @@ export class SharedFilesystemState {
         size: next,
         version: domain.nextContentVersion(file.ino),
       });
-    if (mtime !== this.getMtime(slot))
-      changes.push({ kind: "metadata", file, mode: this.slots[this.at(slot, MODE)]!, mtime });
+    this.pushMtimeEffect(changes, slot, file, time);
     return domain.prepare(admission, { kind: "number", value: 0 }, changes);
   }
-  private prepareMtime(
+  /** The workspace sees whole-millisecond mtimes; a change below that, or of atime alone,
+   * is not a workspace effect. */
+  private pushMtimeEffect(
+    changes: import("./publication.js").PublicationEffect[],
+    slot: number,
+    file: import("./publication.js").PublicationFile,
+    time: FileTime | null,
+  ): void {
+    if (time === null) return;
+    const mtime = fileTimeMs(time);
+    if (mtime !== fileTimeMs(this.time(slot, MTIME)))
+      changes.push({ kind: "metadata", file, mode: this.slots[this.at(slot, MODE)]!, mtime });
+  }
+  private prepareTimes(
     slot: number,
     handle: FileHandle,
-    mtime: number,
+    atime: FileTime | null,
+    mtime: FileTime | null,
     identity: PlannedIdentityRevision | undefined,
     admission: PublicationAdmission,
   ): PreparedPublication {
     const domain = this.publication!;
-    domain.verifyAdmission(admission, { kind: "setMtime", handle, mtime }, new Uint8Array());
+    domain.verifyAdmission(admission, { kind: "setTimes", handle, atime, mtime }, new Uint8Array());
     const file = this.publicationFile(slot, identity);
-    const changes: import("./publication.js").PublicationEffect[] =
-      mtime === this.getMtime(slot)
-        ? []
-        : [{ kind: "metadata", file, mode: this.slots[this.at(slot, MODE)]!, mtime }];
+    const changes: import("./publication.js").PublicationEffect[] = [];
+    this.pushMtimeEffect(changes, slot, file, mtime);
     return domain.prepare(admission, { kind: "number", value: 0 }, changes);
   }
   /** Service-only: caller holds the global allocator/mutation lock. */
@@ -2196,9 +2234,12 @@ export class SharedFilesystemState {
       this.unlock(this.at(slot, FILE_LOCK));
     }
   }
-  setMtime(
+  /** Null leaves a time alone; ctime is the caller's single clock reading for this change. */
+  setTimes(
     handle: FileHandle,
-    mtime: number,
+    atime: FileTime | null,
+    mtime: FileTime | null,
+    ctime: FileTime,
     revoked?: () => boolean,
     owner = this.lockOwner,
     admission?: PublicationAdmission,
@@ -2207,14 +2248,23 @@ export class SharedFilesystemState {
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
     try {
       if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
-      this.checkAccess(slot, 2);
+      // The owner may set times on a read-only file, as on Linux; see MemFS.setTimes.
       this.checkDirty(slot, this.slots[this.at(slot, FILE_SIZE)]!);
-      const identity = this.prepareIdentityVersion(slot, mtime !== this.getMtime(slot));
+      const next = {
+        atime: atime ?? this.time(slot, ATIME),
+        mtime: mtime ?? this.time(slot, MTIME),
+        ctime,
+      };
+      // Setting the times a file already has is no new version, though ctime still moves.
+      const identity = this.prepareIdentityVersion(
+        slot,
+        next.atime !== this.time(slot, ATIME) || next.mtime !== this.time(slot, MTIME),
+      );
       const publication = admission
-        ? this.prepareMtime(slot, handle, mtime, identity, admission)
+        ? this.prepareTimes(slot, handle, atime, mtime, identity, admission)
         : undefined;
       this.dirty(slot);
-      this.setTimestamp(slot, mtime);
+      this.storeTimes(slot, next);
       this.changed(slot);
       this.commitIdentityVersion(slot, identity);
       if (publication) this.publication!.commit(publication);

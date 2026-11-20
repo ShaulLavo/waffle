@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { statTimes } from "./fixtures/file-times";
 import {
   MissingSegmentError,
   SharedFilesystemState,
@@ -30,7 +31,7 @@ const file = (ino: number, size: number) => ({
   ino,
   nlink: 1,
   size,
-  mtime: 1,
+  ...statTimes(1),
 });
 /** Refuses the owner's next `count` new segment constructions, as a native RangeError would. */
 function refuseSegments(state: SharedFilesystemState, refused: (attempt: number) => boolean) {

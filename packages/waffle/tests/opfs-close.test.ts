@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { storedTimes } from "./fixtures/file-times";
 import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs";
 import type { StorageLockManager } from "../fs/indexeddb";
 import type { PersistenceBatch, PersistedNode } from "../fs/storage";
@@ -256,12 +257,14 @@ function encoded(value: string): string {
 }
 function batch(generation = 1, count = 2): PersistenceBatch {
   const children: [string, number][] = [];
-  const upserts: PersistedNode[] = [{ ino: 1, kind: "dir", size: 0, mtime: generation, children }];
+  const upserts: PersistedNode[] = [
+    { ino: 1, kind: "dir", size: 0, ...storedTimes(generation), children },
+  ];
   const data = new Map<string, Uint8Array>();
   for (let index = 0; index < count; index++) {
     const key = `key:${index}`;
     children.push([key, index + 2]);
-    upserts.push({ ino: index + 2, kind: "file", size: 1, mtime: generation, data: key });
+    upserts.push({ ino: index + 2, kind: "file", size: 1, ...storedTimes(generation), data: key });
     data.set(key, new Uint8Array([index]));
   }
   return { generation, root: 1, upserts, removes: [], data };

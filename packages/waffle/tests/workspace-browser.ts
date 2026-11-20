@@ -188,10 +188,10 @@ function directWrites(
       const after = peer.shared.snapshot(handle);
       const originalOneShotSuccess = result === 1;
       check(result === -6, `Contended tryWrite returned ${result}, expected -6`);
-      check(
-        after && JSON.stringify(after) === JSON.stringify(before),
-        "Rejected write changed file bytes or metadata",
-      );
+      // Snapshot stats carry bigint file times.
+      const text = (value: unknown) =>
+        JSON.stringify(value, (_, item) => (typeof item === "bigint" ? String(item) : item));
+      check(after && text(after) === text(before), "Rejected write changed file bytes or metadata");
       check(
         slots.every((value, index) => value === peer.shared.slots[index]),
         "Rejected write changed file slots or their lock owners",
@@ -298,7 +298,7 @@ async function run(mode: "memory" | "fast"): Promise<void> {
     peer.retain(resolved.node);
     const held = workspace.snapshot();
     check((await held.next()).kind === "entries", "No streamed page");
-    await peer.asyncCall("setMtime", [resolved.node, 123]);
+    await peer.asyncCall("setTimes", [resolved.node, null, 123_000_000n]);
     check((await held.next()).kind === "restart", "Metadata change did not restart scan");
     const initial = await complete(workspace);
     guest = new Worker(guestURL, { type: "module" });

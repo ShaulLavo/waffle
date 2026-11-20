@@ -1,5 +1,5 @@
 import { allocateSharedControl } from "../memory/control.js";
-import { FilesystemError, type FileStat } from "../core/filesystem.js";
+import { FilesystemError, fileTimeMs, msFileTime, type FileStat } from "../core/filesystem.js";
 import {
   atomicsLoad,
   atomicsStore,
@@ -584,7 +584,7 @@ export class ResidentGrantAuthority {
     const mtime =
       metadata?.kind === "metadata"
         ? bounded(metadata.mtime, Number.MAX_SAFE_INTEGER)
-        : grant.stat.mtime;
+        : fileTimeMs(grant.stat.mtime);
     const expected = mutation(grant, bytes, mtime);
     if (
       !sameBytes(canonical(expected, grant.effectBytes), canonical(publication, grant.effectBytes))
@@ -601,7 +601,11 @@ export class ResidentGrantAuthority {
     );
     const plan: LocalMutationPlan = {
       ...staged,
-      action: staged.action.kind === "write" ? { ...staged.action, mtime } : staged.action,
+      // The writer's clock reading, whole milliseconds as every write time is.
+      action:
+        staged.action.kind === "write"
+          ? { ...staged.action, time: msFileTime(mtime) }
+          : staged.action,
       changes: staged.changes.map((effect) =>
         effect.kind === "metadata" ? { ...effect, mtime } : effect,
       ),

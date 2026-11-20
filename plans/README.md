@@ -6,6 +6,8 @@ Live plans: `001-vfs-family.md` (approved, in progress) and `browser-runtime.md`
 
 Approved: [Group futex retirement](group-futex-retirement.md), preserving native waits and allowing cancellation only after an irreversible whole-group admission seal.
 
+Approved (2026-11-20): [File times](file-times.md), independent nanosecond atime and mtime and a Linux-style ctime for guests.
+
 Approved work: [Native guest threads](wasi-threads.md), with
 [toolchain research and prior-art references](wasi-threads-references.md). This is an implementation
 plan for execution; thread support is not yet delivered.

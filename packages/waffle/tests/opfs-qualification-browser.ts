@@ -2,6 +2,7 @@ import type { OpfsStorage, OpfsStorageOptions } from "../fs/opfs.js";
 import type { PersistenceBatch } from "../fs/storage.js";
 import { PersistentBackend } from "../fs/persistent.js";
 import { assert, batch, bytes } from "./storage-browser-helpers.js";
+import { storedTimes } from "./fixtures/file-times.js";
 
 type Open = (options?: OpfsStorageOptions) => Promise<OpfsStorage>;
 type NativeAccess = {
@@ -201,7 +202,13 @@ async function payloadLifecycle(open: Open): Promise<void> {
   try {
     const first = revision(1, large);
     first.upserts[0]!.children!.push(["other", 3]);
-    first.upserts.push({ ino: 3, kind: "file", mtime: 1, size: large.length, data: "other" });
+    first.upserts.push({
+      ino: 3,
+      kind: "file",
+      ...storedTimes(1),
+      size: large.length,
+      data: "other",
+    });
     first.data.set("other", large);
     await storage.persist(first);
     await storage.flush();
@@ -248,7 +255,7 @@ async function payloadLifecycle(open: Open): Promise<void> {
       await empty.persist({
         generation: 5,
         root: 1,
-        upserts: [{ ino: 1, kind: "dir", mtime: 5, size: 0, children: [] }],
+        upserts: [{ ino: 1, kind: "dir", ...storedTimes(5), size: 0, children: [] }],
         removes: [2],
         data: new Map(),
       });

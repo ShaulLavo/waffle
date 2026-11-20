@@ -1,4 +1,5 @@
 import { MemoryBackend } from "./backend.js";
+import { fileTimeMs } from "../core/filesystem.js";
 import { nodeMetadata, walkTree, type Node, type DirNode } from "./memory.js";
 import { ReaderPagePressure, type SharedPageVersion } from "./shared-version-pages.js";
 import {
@@ -415,7 +416,7 @@ export class WorkspaceReadAuthority {
       cut: current,
       ...nodeMetadata(node),
       size: metadata.size,
-      mtime: metadata.mtime,
+      mtime: fileTimeMs(metadata.mtime),
       mode: metadata.mode!,
     };
     if (operation === "publicationReadStat") return { kind: "ok", value: stat };

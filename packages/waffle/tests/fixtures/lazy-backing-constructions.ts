@@ -23,7 +23,9 @@ const file = (ino: number, size: number) => ({
   ino,
   nlink: 1,
   size,
-  mtime: 1,
+  atime: 1_000_000n,
+  mtime: 1_000_000n,
+  ctime: 1_000_000n,
 });
 const errnoOf = (run: () => unknown): number | null => {
   try {

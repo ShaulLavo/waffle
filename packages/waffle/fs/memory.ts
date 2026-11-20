@@ -2,7 +2,13 @@ import { DirectoryPages, checkDirectoryPage } from "./directory-pages.js";
 import { utf8ByteLength } from "./utf8-size.js";
 import type { FileIdentity } from "./file-identity.js";
 import type { NodeMetadata } from "./workspace-types.js";
-import { permissionsFor, FilesystemError, type SocketBinding } from "../core/filesystem.js";
+import {
+  permissionsFor,
+  FilesystemError,
+  fileTimeNow,
+  type FileTime,
+  type SocketBinding,
+} from "../core/filesystem.js";
 import {
   dirname,
   basename,
@@ -18,49 +24,60 @@ export { normalize, splitPath, dirname, basename } from "../core/index.js";
 // In-memory filesystem shared by the shell, the editor and every bun.wasm run.
 // The browser filesystem service is the sole owner of this tree.
 
-export interface FileNode {
+/** Nanoseconds since 1970. Times taken together share one bigint. */
+export interface NodeTimes {
+  atime: FileTime;
+  mtime: FileTime;
+  ctime: FileTime;
+}
+export function nodeTimes(time: FileTime = fileTimeNow()): NodeTimes {
+  return { atime: time, mtime: time, ctime: time };
+}
+/** Content changes set mtime and ctime, as Linux does for write and truncate. */
+function modified(node: NodeTimes, time: FileTime): void {
+  node.mtime = time;
+  node.ctime = time;
+}
+
+export interface FileNode extends NodeTimes {
   identity?: FileIdentity;
   kind: "file";
   data: Uint8Array;
   /** Logical size when the persistence backend keeps the payload outside this object. */
   size?: number;
   mode: number;
-  mtime: number; // ms since epoch
   ino: number;
 }
 
-export interface DirNode {
+export interface DirNode extends NodeTimes {
   identity?: FileIdentity;
   kind: "dir";
   children: Map<string, Node>;
   mode: number;
-  mtime: number;
   ino: number;
 }
 
-export interface SymlinkNode {
+export interface SymlinkNode extends NodeTimes {
   identity?: FileIdentity;
   kind: "symlink";
   readonly target: string;
   mode: number;
-  mtime: number;
   ino: number;
 }
-export interface SocketNode {
+export interface SocketNode extends NodeTimes {
   identity?: FileIdentity;
   kind: "socket";
   lease?: number;
   mode: number;
-  mtime: number;
   ino: number;
 }
 export type Node = FileNode | DirNode | SymlinkNode | SocketNode;
 export function newSocket(): SocketNode {
-  return { kind: "socket", mode: 0o600, mtime: Date.now(), ino: newIno() };
+  return { kind: "socket", mode: 0o600, ...nodeTimes(), ino: newIno() };
 }
 
 export function newSymlink(target: string): SymlinkNode {
-  return { kind: "symlink", target, mode: 0o600, mtime: Date.now(), ino: newIno() };
+  return { kind: "symlink", target, mode: 0o600, ...nodeTimes(), ino: newIno() };
 }
 export function nodeKind(node: Node): FileStat["kind"] {
   return node.kind === "dir" ? "directory" : node.kind;
@@ -214,7 +231,8 @@ export interface NamespacePlan {
   readonly parents: readonly DirNode[];
   readonly forgotten: readonly Node[];
   readonly links: readonly { readonly node: Node; readonly delta: 1 | -1 }[];
-  readonly mtime: number;
+  /** One clock reading for every time this plan sets. */
+  readonly time: FileTime;
 }
 function namespacePlan(
   edits: readonly NamespaceEdge[] = [],
@@ -229,7 +247,7 @@ function namespacePlan(
     forgotten,
     links,
     parents: Array.from(new Set(edits.map((edge) => edge.parent))),
-    mtime: Date.now(),
+    time: fileTimeNow(),
   };
 }
 function boundedNamespace(plan: NamespacePlan, bound: number): NamespacePlan {
@@ -256,11 +274,11 @@ export function adoptInodes(root: DirNode): void {
 }
 
 export function newDir(): DirNode {
-  return { kind: "dir", mode: 0o700, children: new Map(), mtime: Date.now(), ino: newIno() };
+  return { kind: "dir", mode: 0o700, children: new Map(), ...nodeTimes(), ino: newIno() };
 }
 
 export function newFile(data: Uint8Array = new Uint8Array(0)): FileNode {
-  return { kind: "file", mode: 0o600, data, mtime: Date.now(), ino: newIno() };
+  return { kind: "file", mode: 0o600, data, ...nodeTimes(), ino: newIno() };
 }
 
 const encoder = new TextEncoder();
@@ -499,7 +517,9 @@ export class MemFS implements FileSystem {
       ino: node.ino,
       nlink: this.linkCount(node),
       size: nodeSize(node),
+      atime: node.atime,
       mtime: node.mtime,
+      ctime: node.ctime,
       mode: node.mode,
     };
   }
@@ -508,11 +528,12 @@ export class MemFS implements FileSystem {
     return permissionsFor(nodeKind(node), node.mode);
   }
   /** Host policy mutation. All inodes belong to the same virtual principal. */
-  setMode(handle: FileHandle, mode: number): number {
+  setMode(handle: FileHandle, mode: number, time = fileTimeNow()): number {
     if (!Number.isInteger(mode) || mode < 0 || mode > 0xffffffff) return 28;
     const node = this.nodeForHandle(handle);
     if (mode & ~this.permissions(handle).modeSupported) return 58;
     node.mode = mode;
+    node.ctime = time;
     this.changed(node);
     return 0;
   }
@@ -543,7 +564,7 @@ export class MemFS implements FileSystem {
       node.data.set(chunk, pos);
       pos += chunk.length;
     }
-    node.mtime = Date.now();
+    modified(node, fileTimeNow());
     return pos - offset;
   }
   append(
@@ -562,13 +583,22 @@ export class MemFS implements FileSystem {
     if (!(node.mode & 0o200)) return 2;
     if (truncate && size < node.data.length) node.data = node.data.slice(0, size);
     else ensureSize(node, size);
-    if (truncate) node.mtime = Date.now();
+    if (truncate) modified(node, fileTimeNow());
     return 0;
   }
-  setMtime(handle: FileHandle, mtime: number): number {
+  setTimes(
+    handle: FileHandle,
+    atime: FileTime | null,
+    mtime: FileTime | null,
+    ctime = fileTimeNow(),
+  ): number {
+    // The one virtual principal owns every inode, and Linux lets the owner set times on a
+    // read-only file (tar -x and cp -p rely on it), so mode bits do not apply here.
     const node = this.nodeForHandle(handle);
-    if (!(node.mode & 0o200)) return 2;
-    node.mtime = mtime;
+    if (atime === null && mtime === null) return 0;
+    if (atime !== null) node.atime = atime;
+    if (mtime !== null) node.mtime = mtime;
+    node.ctime = ctime;
     this.changed(node);
     return 0;
   }
@@ -608,7 +638,7 @@ export class MemFS implements FileSystem {
     parent.children.set(path.name, node);
     this.changeLinkCount(node, 1);
     this.onLinkChange?.(node, 1);
-    parent.mtime = Date.now();
+    modified(parent, node.ctime);
     this.changed(node);
     this.changed(parent);
     if (node.kind === "dir") this.directoryParents.set(node, parent);
@@ -747,8 +777,11 @@ export class MemFS implements FileSystem {
     parent.children.set(to.name, node);
     this.changeLinkCount(node, 1);
     this.onLinkChange?.(node, 1);
-    parent.mtime = Date.now();
+    const time = fileTimeNow();
+    modified(parent, time);
+    node.ctime = time;
     this.changed(parent);
+    this.changed(node);
     return 0;
   }
   removePath(path: ResolvedPath, directory: boolean): number {
@@ -765,8 +798,11 @@ export class MemFS implements FileSystem {
     parent.children.delete(path.name);
     this.changeLinkCount(node, -1);
     this.onLinkChange?.(node, -1);
-    parent.mtime = Date.now();
+    const time = fileTimeNow();
+    modified(parent, time);
+    node.ctime = time;
     this.changed(parent);
+    this.changed(node);
     this.forget(node);
     if (node.kind === "dir") this.removedDirectories.add(node);
     return 0;
@@ -796,7 +832,9 @@ export class MemFS implements FileSystem {
     this.pageEntry(sourceParent, from.name, undefined);
     this.pageEntry(parent, to.name, node);
     sourceParent.children.delete(from.name);
-    sourceParent.mtime = Date.now();
+    const time = fileTimeNow();
+    modified(sourceParent, time);
+    node.ctime = time;
     parent.children.set(to.name, node);
     if (node.kind === "dir") this.directoryParents.set(node, parent);
     if (target) {
@@ -805,9 +843,12 @@ export class MemFS implements FileSystem {
       this.onLinkChange?.(target, -1);
     }
     if (target?.kind === "dir") this.removedDirectories.add(target);
-    parent.mtime = Date.now();
+    modified(parent, time);
+    if (target) target.ctime = time;
     this.changed(sourceParent);
     this.changed(parent);
+    this.changed(node);
+    if (target) this.changed(target);
     return 0;
   }
 
@@ -1091,13 +1132,20 @@ export class MemFS implements FileSystem {
     }
     for (const node of plan.forgotten) this.forget(node);
     for (const node of plan.created) {
-      node.mtime = plan.mtime;
+      node.atime = node.mtime = node.ctime = plan.time;
       this.changed(node);
     }
     for (const parent of plan.parents) {
-      parent.mtime = plan.mtime;
+      modified(parent, plan.time);
       this.changed(parent);
     }
+    // A name added or removed changes the inode's link set, and so its ctime.
+    for (const edge of plan.edits)
+      for (const node of [edge.before, edge.after]) {
+        if (!node || created.has(node)) continue;
+        node.ctime = plan.time;
+        this.changed(node);
+      }
   }
   discardNamespace(plan: NamespacePlan): void {
     for (const node of plan.created) this.forget(node);
@@ -1148,7 +1196,7 @@ export class MemFS implements FileSystem {
       merged.set(data, node.data.length);
       node.data = merged;
     } else node.data = data;
-    node.mtime = Date.now();
+    modified(node, fileTimeNow());
     this.changed(node);
   }
   readFile(path: string): Uint8Array | undefined {
@@ -1168,8 +1216,11 @@ export class MemFS implements FileSystem {
       this.changeLinkCount(node, -1);
       this.onLinkChange?.(node, -1);
       this.forget(node);
-      parent.mtime = Date.now();
+      const time = fileTimeNow();
+      modified(parent, time);
+      node.ctime = time;
       this.changed(parent);
+      this.changed(node);
     }
     return removed;
   }

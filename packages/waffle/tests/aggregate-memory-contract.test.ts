@@ -223,8 +223,8 @@ test("aggregate contract admits startup backing before the real allocator runs",
   const backend = await open(storage, memoryBudget);
   try {
     expect(allocator.calls).toBe(1);
-    expect(backend.shared.buffer.byteLength).toBe(33_289_256);
-    expect(memoryBudget.snapshot().allocated - before.allocated).toBe(33_289_768);
+    expect(backend.shared.buffer.byteLength).toBe(33_813_544);
+    expect(memoryBudget.snapshot().allocated - before.allocated).toBe(33_814_056);
     expect(allocator.admittedBackingBytes).toBe(
       before.backingBytes + backend.shared.buffer.byteLength,
     );
@@ -240,7 +240,7 @@ test("aggregate contract admits startup backing before the real allocator runs",
 test("the exact startup root lease is admitted and one byte less is refused", () => {
   const empty = budget(128 * MiB).snapshot();
   const overhead = empty.allocated + empty.reserve;
-  const lease = 33_289_768;
+  const lease = 33_814_056;
   const allocate = (bytes: number) =>
     new SharedFilesystemState(
       undefined,
@@ -252,7 +252,7 @@ test("the exact startup root lease is admitted and one byte less is refused", ()
       budget(overhead + bytes),
     );
   expect(() => allocate(lease - 1)).toThrow(MemoryBudgetError);
-  expect(allocate(lease).buffer.byteLength).toBe(33_289_256);
+  expect(allocate(lease).buffer.byteLength).toBe(33_813_544);
 });
 
 test("aggregate contract returns startup reservations after controlled allocation failure", async () => {

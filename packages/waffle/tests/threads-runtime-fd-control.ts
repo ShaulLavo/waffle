@@ -341,10 +341,10 @@ async function run(selected: DescriptorCase) {
       .filter((holder) => holder.state === "debt")
       .map((holder) => ({ label: holder.label, bytes: holder.declaredBytes }));
     assert.deepEqual(controlDebts, [
-      { label: "guest-control", bytes: 80 },
-      { label: "guest-control", bytes: 80 },
+      { label: "guest-control", bytes: 88 },
+      { label: "guest-control", bytes: 88 },
     ]);
-    assert.equal(snapshot.debtBytes, 160);
+    assert.equal(snapshot.debtBytes, 176);
     const backing = snapshot.sharedGuests;
     assert.equal(backing.length, 1);
     assert.equal(backing[0]?.phase, "awaiting-collection");

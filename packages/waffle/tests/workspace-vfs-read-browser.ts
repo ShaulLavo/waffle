@@ -1,3 +1,4 @@
+import { storedTimes } from "./fixtures/file-times.js";
 import {
   FilesystemClient,
   FilesystemService,
@@ -20,8 +21,8 @@ function batch(generation: number, key: string, bytes?: Uint8Array): Persistence
     generation,
     root: 1,
     upserts: [
-      { ino: 1, kind: "dir", size: 0, mtime: generation, children: [["file", 2]] },
-      { ino: 2, kind: "file", size: bytes?.length ?? SIZE, mtime: generation, data: key },
+      { ino: 1, kind: "dir", size: 0, ...storedTimes(generation), children: [["file", 2]] },
+      { ino: 2, kind: "file", size: bytes?.length ?? SIZE, ...storedTimes(generation), data: key },
     ],
     removes: [],
     data: new Map(bytes ? [[key, bytes]] : []),

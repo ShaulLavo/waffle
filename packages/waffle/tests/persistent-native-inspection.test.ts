@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { storedTimes } from "./fixtures/file-times";
 import { CHUNK_SIZE, preparePayload } from "../fs/indexeddb-chunks";
 import { encodeRecord, encodeSnapshot, type PersistedIndex } from "../fs/storage";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format";
@@ -23,8 +24,8 @@ async function workspace(): Promise<NativeWorkspaceRecords> {
     generation: 1,
     root: 1,
     nodes: [
-      { ino: 1, kind: "dir", size: 0, mtime: 10, children: [["final", 2]] },
-      { ino: 2, kind: "file", size: 8, mtime: 11, data: "saved" },
+      { ino: 1, kind: "dir", size: 0, ...storedTimes(10), children: [["final", 2]] },
+      { ino: 2, kind: "file", size: 8, ...storedTimes(11), data: "saved" },
     ],
   };
   return {
@@ -39,7 +40,7 @@ async function workspace(): Promise<NativeWorkspaceRecords> {
         previous: 1,
         generation: 2,
         root: 1,
-        upserts: [{ ...index.nodes[1], mtime: 12 }],
+        upserts: [{ ...index.nodes[1], ...storedTimes(12) }],
         removes: [],
       }),
     ],
@@ -157,7 +158,7 @@ test("native inspection recovers checksummed saved metadata at the active genera
   const result = await inspectNativeWorkspace(await workspace());
   expect(result.format).toBe(INDEXEDDB_FORMAT);
   expect([result.epoch, result.active, result.generation]).toEqual([1, 2, 2]);
-  expect(result.index.nodes.find((node) => node.ino === 2)?.mtime).toBe(12);
+  expect(result.index.nodes.find((node) => node.ino === 2)?.mtime).toBe(storedTimes(12).mtime);
   expect(result.payloads[0]?.bytes).toEqual([10, 20, 30, 41, 42, 43, 44, 45]);
 });
 
@@ -244,7 +245,7 @@ test("native inspection rejects absent payloads and checksummed metadata with wr
     previous: 1,
     generation: 2,
     root: 1,
-    upserts: [{ ino: 2, kind: "file", mtime: 12, size: 7, data: "saved" }],
+    upserts: [{ ino: 2, kind: "file", ...storedTimes(12), size: 7, data: "saved" }],
     removes: [],
   });
   await expect(inspectNativeWorkspace({ ...data, journals: [wrongSize] })).rejects.toThrow(

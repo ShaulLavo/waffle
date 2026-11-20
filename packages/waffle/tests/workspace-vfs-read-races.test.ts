@@ -745,7 +745,7 @@ test("a metadata mutation preserves leased stat and read permission without copy
     const held = await value.workspace.pin("/file");
     if (held.kind !== "ok") throw new Error(held.kind);
     const before = value.backend.shared.resources().usedBytes;
-    await value.client.asyncCall("setMtime", [value.handle, 123]);
+    await value.client.asyncCall("setTimes", [value.handle, null, 123_000_000n]);
     await value.client.asyncCall("setMode", [value.handle, 0]);
     expect(await value.workspace.read("/file", { offset: 0, length: 1 })).toEqual({
       kind: "denied",

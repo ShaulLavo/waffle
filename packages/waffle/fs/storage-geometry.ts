@@ -22,7 +22,8 @@ export const TABLE_BLOCKS =
 // Blocks come first so a missing block computes a negative index instead of a live root cell.
 export const ROOT_CELL_BASE = TABLE_BLOCKS * TABLE_ENTRIES;
 export const PAGE_CELLS = ROOT_CELL_BASE + MAX_FILES * FILE_ROOT_WORDS;
-export const SLOT_WORDS = 24;
+// Even, so each slot's 64-bit time fields stay 8-byte aligned for a BigUint64Array view.
+export const SLOT_WORDS = 28;
 const DIRTY_HEADER_WORDS = 48;
 export const HEADER_WORDS = 32 + DIRTY_HEADER_WORDS;
 export const WATCH_CAPACITY = 128;

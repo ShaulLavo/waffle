@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { storedTimes } from "./fixtures/file-times";
 import { openFilesystemBackend } from "../browser/filesystem-backend.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { MemFS } from "../fs/memory.js";
@@ -146,7 +147,7 @@ test("persistent identity migration finishes before publication attaches to the 
   await storage.persist({
     generation: 1,
     root: 1,
-    upserts: [{ ino: 1, kind: "dir", mtime: 0, mode: 0o700, size: 0, children: [] }],
+    upserts: [{ ino: 1, kind: "dir", ...storedTimes(0), mode: 0o700, size: 0, children: [] }],
     removes: [],
     data: new Map(),
   });
@@ -234,7 +235,7 @@ test("actual filesystem worker allocates no new MiB-sized backing before its fir
 
 test("standalone memory backends own the exact fixed storage root", () => {
   const backend = new MemoryBackend();
-  expect(backend.shared.buffer.byteLength).toBe(33289256);
+  expect(backend.shared.buffer.byteLength).toBe(33813544);
   backend.execute("writeFile", ["/standalone"], new Uint8Array([65]));
   expect(backend.execute("readFile", ["/standalone"], new Uint8Array())).toEqual(
     new Uint8Array([65]),

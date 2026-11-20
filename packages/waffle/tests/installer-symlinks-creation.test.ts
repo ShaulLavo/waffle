@@ -8,6 +8,7 @@ import {
   symlinkSnapshotValue,
 } from "./fixtures/installer-symlinks-support.js";
 import { guestFunction, guestModule } from "./fixtures/publication-wasm.js";
+import { ms } from "./fixtures/file-times.js";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 const encoder = new TextEncoder();
@@ -36,7 +37,7 @@ function seed() {
   link(fs, "/file-bad", "a/absent/new.txt");
   link(fs, "/file-link", "a/b/note.txt");
   const reset = (node: Node) => {
-    node.mtime = 1;
+    node.mtime = ms(1);
     if (node.kind === "dir") for (const child of node.children.values()) reset(child);
   };
   reset(fs.root);
@@ -170,13 +171,13 @@ test.each(modes)("D3 %s creates explicit suffixes after existing nested targets"
   expect(f.fs.lookup("/a/b/note.txt")).toBe(file);
   expect(new TextDecoder().decode(f.fs.readFile("/a/b/note.txt"))).toBe("ordinary text");
   expect(original?.kind === "symlink" && original.target).toBe("a/b");
-  expect(original?.mtime).toBe(1);
-  expect(file?.mtime).toBe(1);
+  expect(original?.mtime).toBe(ms(1));
+  expect(file?.mtime).toBe(ms(1));
   expect(f.links).toHaveLength(6);
   expect(f.links.every((entry) => entry.delta === 1)).toBe(true);
   expect(new Set(f.links.map((entry) => entry.ino)).size).toBe(6);
-  expect(f.fs.lookup("/a/base/new")?.mtime).toBeGreaterThan(1);
-  expect(f.fs.lookup("/a/base")?.mtime).toBeGreaterThan(1);
+  expect(f.fs.lookup("/a/base/new")?.mtime).toBeGreaterThan(ms(1));
+  expect(f.fs.lookup("/a/base")?.mtime).toBeGreaterThan(ms(1));
 });
 
 test.each(modes)(
@@ -188,7 +189,7 @@ test.each(modes)(
     expect(new TextDecoder().decode(await f.read("/a/new.txt"))).toBe("new text");
     expect(f.fs.lookup("/file-leaf", false)).toBe(leaf);
     expect(leaf?.kind === "symlink" && leaf.target).toBe("./a//b/../new.txt");
-    expect(leaf?.mtime).toBe(1);
+    expect(leaf?.mtime).toBe(ms(1));
     await rejected(f, () => f.write("/file-bad"), 44);
     await rejected(f, () => f.write("/bad/explicit.txt"), 44);
     await rejected(f, () => f.write("/file-link", true), 20);

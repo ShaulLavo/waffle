@@ -9,6 +9,7 @@ import {
 } from "../fs/publication.js";
 import { decodeRecord, encodeRecord, type CheckpointPublication } from "../fs/storage.js";
 import { VfsError } from "../fs/vfs.js";
+import { storedTimes } from "./fixtures/file-times.js";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -200,7 +201,7 @@ async function run(databaseName?: StagingDatabaseName): Promise<void> {
       await storage.persist({
         generation: 1,
         root: 1,
-        upserts: [{ ino: 1, kind: "dir", size: 0, mtime: 0, children: [] }],
+        upserts: [{ ino: 1, kind: "dir", size: 0, ...storedTimes(0), children: [] }],
         removes: [],
         data: new Map(),
         publication: checkpoint,

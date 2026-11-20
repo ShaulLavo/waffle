@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { storedTimes } from "./fixtures/file-times";
 import { encodeRecord } from "../fs/storage.js";
 import {
   initialEnvelope,
@@ -20,7 +21,7 @@ function stage(): CompleteStage {
     batch: {
       generation: 1,
       root: 1,
-      upserts: [{ ino: 1, kind: "dir", size: 0, mtime: 0, children: [] }],
+      upserts: [{ ino: 1, kind: "dir", size: 0, ...storedTimes(0), children: [] }],
       removes: [],
       data: new Map(),
     },
