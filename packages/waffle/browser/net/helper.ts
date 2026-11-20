@@ -830,9 +830,10 @@ export class NetHelper {
   }
 
   private async followRedirects(req: FetchRequest, job: FetchJob): Promise<FetchResponse> {
+    const requested = req.url;
     for (let count = 0; ; count++) {
       job.controller.signal.throwIfAborted();
-      const response = await this.fetchHop(req, job);
+      const response = await this.fetchHop(req, job, requested);
       response.head.redirected ||= count > 0;
       const location = response.head.headers.find(
         ([name]) => name.toLowerCase() === "location",
@@ -841,14 +842,19 @@ export class NetHelper {
         return response;
       if (req.redirect !== "error" && location === undefined) return response;
       await response.body?.cancel();
-      if (req.redirect === "error") throw new TypeError("Fetch redirect mode is error");
+      // Bun rejects every redirect status under "error", with or without a Location.
+      if (req.redirect === "error") throw fetchFailure("UnexpectedRedirect", requested);
       if (location === undefined) return response;
       if (count === 20) throw new TypeError("Fetch redirect limit exceeded");
-      req = redirectRequest(req, response.head, location);
+      req = redirectRequest(req, response.head, location, requested);
     }
   }
 
-  private async fetchHop(req: FetchRequest, job: FetchJob): Promise<FetchResponse> {
+  private async fetchHop(
+    req: FetchRequest,
+    job: FetchJob,
+    requested: string,
+  ): Promise<FetchResponse> {
     const port = this.loopbackPort(req.url);
     if (port !== undefined) return this.loopback(req, port, job.controller.signal);
     // Browser fetch can require its global receiver; do not bind it to this helper.
@@ -862,6 +868,7 @@ export class NetHelper {
     });
     if (response.type === "opaqueredirect" && req.redirect !== "manual") {
       await response.body?.cancel();
+      if (req.redirect === "error") throw fetchFailure("UnexpectedRedirect", requested);
       throw new TypeError("Network policy hides the redirect destination");
     }
     const metadata = readNetFetchResponseMetadata(response);
@@ -1014,7 +1021,7 @@ export class NetHelper {
     // Pass the engine's own wording through ("Failed to fetch" in Chromium, "Load failed" in WebKit).
     const error: NetError =
       err instanceof Error
-        ? { name: err.name || "TypeError", message: err.message }
+        ? { name: err.name || "TypeError", message: err.message, code: fetchFailureCode(err) }
         : { name: "TypeError", message: String(err) };
     await this.ring.write(id, Kind.Error, json(error));
   }
@@ -1151,11 +1158,36 @@ function inspectLookupError(error: unknown): NetError {
   };
 }
 
-function redirectRequest(req: FetchRequest, head: FetchHead, location: string): FetchRequest {
+/** A fetch failure Bun reports by code, worded as Bun words it for `requested`. */
+function fetchFailure(code: string, requested: string): TypeError {
+  const message = `${code} fetching "${requested}". For more information, pass \`verbose: true\` in the second argument to fetch()`;
+  return Object.assign(new TypeError(message), { code });
+}
+
+function fetchFailureCode(err: Error): string | undefined {
+  const code = "code" in err ? err.code : undefined;
+  return typeof code === "string" ? code : undefined;
+}
+
+function redirectURL(location: string, base: string): URL {
+  try {
+    return new URL(location, base);
+  } catch {
+    const message = "RedirectURLInvalid: Redirect URL in Location header is invalid.";
+    throw Object.assign(new TypeError(message), { code: "RedirectURLInvalid" });
+  }
+}
+
+function redirectRequest(
+  req: FetchRequest,
+  head: FetchHead,
+  location: string,
+  requested: string,
+): FetchRequest {
   const previous = new URL(req.url);
-  const url = new URL(location, head.url);
+  const url = redirectURL(location, head.url);
   if (url.protocol !== "http:" && url.protocol !== "https:")
-    throw new TypeError("Fetch redirect requires HTTP or HTTPS");
+    throw fetchFailure("UnsupportedRedirectProtocol", requested);
   if (url.username || url.password) throw new TypeError("Fetch redirect contains credentials");
   if (!location.includes("#")) url.hash = previous.hash;
   const headers = new Headers(req.headers);

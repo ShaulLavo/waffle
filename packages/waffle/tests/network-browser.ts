@@ -400,6 +400,68 @@ async function fetchAddressCases(server: Guest, client: Guest): Promise<void> {
   await server.call({ op: "close", handle: listener });
 }
 
+/** One virtual HTTP exchange whose response is `head`; resolves with the guest's error record. */
+async function redirectFailure(
+  server: Guest,
+  client: Guest,
+  head: string,
+  redirect: RequestRedirect,
+): Promise<{ name?: string; code?: string; message?: string }> {
+  const listener = number(await server.call({ op: "listen", port: 32159 }));
+  check(listener > 0, "Redirect listener failed");
+  const url = "http://127.0.0.1:32159/start";
+  const fetched = number(await client.call({ op: "fetch", url, redirect }));
+  const accepted = number(
+    await until(
+      () => server.call({ op: "accept", handle: listener }),
+      (value) => typeof value === "number" && value > 0,
+    ),
+  );
+  check(text(await read(server, accepted)).startsWith("GET /start "), "Redirect request lost");
+  const response = bytes(`HTTP/1.1 ${head}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+  await server.call({ op: "write", handle: accepted, bytes: response });
+  await server.call({ op: "shutdown", handle: accepted });
+  const status = await until(
+    () => client.call({ op: "head", handle: fetched }),
+    (value) => value !== -2,
+  );
+  check(status === -1, `Redirect ${head} did not fail`);
+  const error = JSON.parse(String(await client.call({ op: "error", handle: fetched })));
+  await client.call({ op: "close", handle: fetched });
+  await server.call({ op: "close", handle: accepted });
+  await server.call({ op: "close", handle: listener });
+  return error;
+}
+
+/** Bun's redirect error codes reach the guest through the real browser helper. */
+async function fetchRedirectCases(server: Guest, client: Guest): Promise<void> {
+  const bun = (code: string) =>
+    `${code} fetching "http://127.0.0.1:32159/start". For more information, pass \`verbose: true\` in the second argument to fetch()`;
+  const cases = [
+    ["302 Found\r\nLocation: /elsewhere", "error", "UnexpectedRedirect", bun("UnexpectedRedirect")],
+    ["302 Found", "error", "UnexpectedRedirect", bun("UnexpectedRedirect")],
+    [
+      "302 Found\r\nLocation: data:text/plain,hi",
+      "follow",
+      "UnsupportedRedirectProtocol",
+      bun("UnsupportedRedirectProtocol"),
+    ],
+    [
+      "302 Found\r\nLocation: http://[",
+      "follow",
+      "RedirectURLInvalid",
+      "RedirectURLInvalid: Redirect URL in Location header is invalid.",
+    ],
+  ] satisfies [string, RequestRedirect, string, string][];
+  for (const [head, redirect, code, message] of cases) {
+    const error = await redirectFailure(server, client, head, redirect);
+    check(
+      error.name === "TypeError" && error.code === code && error.message === message,
+      `Redirect ${JSON.stringify(head)} reached the guest as ${JSON.stringify(error)}`,
+    );
+  }
+}
+
 export interface NetworkBrowserEnvironment {
   readonly serviceWorker: OwnedServiceWorker;
 }
@@ -460,6 +522,7 @@ export async function networkBrowserCases(
     await unixCases(runtime, (scope) => make(network, 0, false, scope));
     await addressCases(server, client);
     await fetchAddressCases(server, client);
+    await fetchRedirectCases(server, client);
     const p = await pair(server, client, 32130);
     check(
       (await client.call({ op: "addr", handle: p.conn })) ===
