@@ -8,6 +8,7 @@ import {
 } from "../fs/index.js";
 import { SharedFilesystemState } from "../fs/shared.js";
 import { validatePersistedNode } from "../fs/storage.js";
+import { statTimes, storedTimes } from "./fixtures/file-times.js";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -108,12 +109,12 @@ test("shared stat and direct I/O carry permissions through unlink and slot reuse
 
 test("absent mode metadata is unsupported, not a fabricated default", () => {
   const state = new SharedFilesystemState();
-  state.register(42, { kind: "file", ino: 1, nlink: 1, size: 0, mtime: 1 });
+  state.register(42, { kind: "file", ino: 1, nlink: 1, size: 0, ...statTimes(1) });
   expect(state.stat(42)?.mode).toBeUndefined();
 });
 
 test("persisted modes reject unsupported bits and retain old saved defaults explicitly", () => {
-  const node = { ino: 1, kind: "file", mtime: 1, size: 0 };
+  const node = { ino: 1, kind: "file", ...storedTimes(1), size: 0 };
   expect(() => validatePersistedNode({ ...node, mode: 0o200 })).not.toThrow();
   expect(() => validatePersistedNode({ ...node, mode: 0o777 })).toThrow();
   expect(() => validatePersistedNode({ ...node, mode: -1 })).toThrow();

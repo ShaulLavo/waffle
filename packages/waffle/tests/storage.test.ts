@@ -10,14 +10,15 @@ import {
   type PersistedIndex,
 } from "../fs/storage";
 import { IndexedDBStorage, recoverIndex, type StorageLockManager } from "../fs/indexeddb";
+import { storedTimes } from "./fixtures/file-times";
 
 const index = (): PersistedIndex => ({
   version: 1,
   generation: 1,
   root: 1,
   nodes: [
-    { ino: 1, kind: "dir", mtime: 0, size: 0, children: [["hello", 2]] },
-    { ino: 2, kind: "file", mtime: 1, size: 2, data: "2:1" },
+    { ino: 1, kind: "dir", ...storedTimes(0), size: 0, children: [["hello", 2]] },
+    { ino: 2, kind: "file", ...storedTimes(1), size: 2, data: "2:1" },
   ],
 });
 
@@ -54,17 +55,25 @@ describe("durable metadata", () => {
     cycle.nodes[0]!.children!.push(["cycle", 1]);
     expect(() => validatePersistedIndex(cycle)).toThrow();
     const unreachable = index();
-    unreachable.nodes.push({ ino: 3, kind: "file", mtime: 0, size: 0 });
+    unreachable.nodes.push({ ino: 3, kind: "file", ...storedTimes(0), size: 0 });
     expect(() => validatePersistedIndex(unreachable)).toThrow();
-    const nonfinite = index();
-    nonfinite.nodes[1]!.mtime = Number.NaN;
-    expect(() => validatePersistedIndex(nonfinite)).toThrow();
+    for (const time of ["1.5", "-1", "01", "18446744073709551616", "", "1e3"]) {
+      const invalid = index();
+      invalid.nodes[1]!.ctime = time;
+      expect(() => validatePersistedIndex(invalid)).toThrow();
+    }
+    const numeric = index() as unknown as { nodes: Record<string, unknown>[] };
+    numeric.nodes[1]!.mtime = 1;
+    expect(() => validatePersistedIndex(numeric)).toThrow();
+    const largest = index();
+    largest.nodes[1]!.atime = "18446744073709551615";
+    expect(() => validatePersistedIndex(largest)).not.toThrow();
   });
 
   test("allows hard-linked files and payload-free empty files", async () => {
     const value = index();
     value.nodes[0]!.children!.push(["hardlink", 2], ["empty", 3]);
-    value.nodes.push({ ino: 3, kind: "file", mtime: 0, size: 0 });
+    value.nodes.push({ ino: 3, kind: "file", ...storedTimes(0), size: 0 });
     expect(await decodeSnapshot(await encodeSnapshot(value))).toEqual(value);
   });
 });
@@ -76,7 +85,13 @@ describe("journal recovery", () => {
     previous,
     root: 1,
     upserts: [
-      { ino: 2, kind: "file" as const, mtime: generation, size: 2, data: `2:${generation}` },
+      {
+        ino: 2,
+        kind: "file" as const,
+        ...storedTimes(generation),
+        size: 2,
+        data: `2:${generation}`,
+      },
     ],
     removes: [] as number[],
   });
@@ -108,7 +123,7 @@ describe("journal recovery", () => {
         reads++;
         return "file" as const;
       },
-      mtime: 0,
+      ...storedTimes(0),
       size: 0,
     });
     const journals = new Map(Array.from({ length: 127 }, (_, i) => [i + 2, journal(i + 2, i + 1)]));
@@ -492,8 +507,8 @@ test("durable sockets cannot acquire hard links or payload data", () => {
     generation: 1,
     root: 1,
     nodes: [
-      { ino: 1, kind: "dir", mtime: 0, size: 0, children: [["socket", 2]] },
-      { ino: 2, kind: "socket", mtime: 0, mode: 0o600, size: 0 },
+      { ino: 1, kind: "dir", ...storedTimes(0), size: 0, children: [["socket", 2]] },
+      { ino: 2, kind: "socket", ...storedTimes(0), mode: 0o600, size: 0 },
     ],
   };
   expect(() => validatePersistedIndex(value)).not.toThrow();

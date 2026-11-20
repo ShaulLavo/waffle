@@ -2,6 +2,7 @@ import { openIdleWorkspace } from "../index.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import type { PersistedNode, PersistenceBatch } from "../fs/storage.js";
 import { assert, type StorageContractCase } from "./storage-browser-helpers.js";
+import { storedTimes } from "./fixtures/file-times.js";
 
 function files(): PersistenceBatch {
   return {
@@ -12,14 +13,14 @@ function files(): PersistenceBatch {
       ino: 1,
       kind: "dir",
       size: 0,
-      mtime: 1,
+      ...storedTimes(1),
       children: Array.from({ length: 4 }, (_, index) => [`file${index}`, index + 2]),
     }).concat(
       Array.from({ length: 4 }, (_, index): PersistedNode => ({
         ino: index + 2,
         kind: "file",
         size: 1,
-        mtime: 1,
+        ...storedTimes(1),
         data: `payload${index}`,
       })),
     ),

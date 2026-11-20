@@ -6,6 +6,7 @@ import type {
 } from "./idle-workspace.js";
 import { type Node, type MemFS, nodeSize, normalize } from "./memory.js";
 import { FilesystemError } from "./protocol.js";
+import { fileTimeMs } from "../core/filesystem.js";
 
 interface PendingEntry {
   readonly node: Node;
@@ -78,7 +79,7 @@ export class IdleWalk implements IdleWorkspaceWalk {
       nlink: this.links.get(node.ino) ?? 0,
       mode: node.mode,
       size: nodeSize(node),
-      mtime: node.mtime,
+      mtime: fileTimeMs(node.mtime),
       ...(node.kind === "symlink" ? { target: node.target } : {}),
     };
   }

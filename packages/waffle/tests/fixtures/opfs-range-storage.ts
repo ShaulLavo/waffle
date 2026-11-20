@@ -2,6 +2,7 @@ import { expect } from "bun:test";
 import { OpfsStorage } from "../../fs/opfs";
 import { encodeSnapshot, type PersistedIndex } from "../../fs/storage";
 import type { StorageLockManager } from "../../fs/indexeddb";
+import { storedTimes } from "./file-times";
 
 export const payloadSize = 128 * 1024 * 1024;
 const encoded = (value: string) =>
@@ -246,8 +247,8 @@ export class RangeFixture {
         generation: i + 1,
         root: 1,
         nodes: [
-          { ino: 1, kind: "dir", size: 0, mtime: 1, children: [["file", 2]] },
-          { ino: 2, kind: "file", size, mtime: 1, data: key },
+          { ino: 1, kind: "dir", size: 0, ...storedTimes(1), children: [["file", 2]] },
+          { ino: 2, kind: "file", size, ...storedTimes(1), data: key },
         ],
       };
       const record = JSON.stringify(await encodeSnapshot(index));

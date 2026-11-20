@@ -20,6 +20,7 @@ import { idleWorkspaceCases } from "./idle-workspace-browser.js";
 import { checkpointFailureCases } from "./checkpoint-failure-browser.js";
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { permissionStorageCase } from "./fixtures/permissions-storage.js";
+import { fileTimesStorageCase } from "./fixtures/file-times-storage.js";
 import { withVfsImplementation, type VfsImplementation } from "../fs/vfs-internal.js";
 /** Real browser storage tests. Shared contract cases run unchanged against both backends. */
 import { createRuntime, VfsError, type RuntimeStartupStage } from "../index.js";
@@ -35,6 +36,7 @@ import { FilesystemError } from "../fs/protocol.js";
 import { gatedIndexedDB } from "./gated-indexeddb.js";
 import { assertRuntimeStartupTrace } from "./runtime-startup-proof.js";
 import type { PersistedNode, StorageBackend } from "../fs/storage.js";
+import { storedTimes } from "./fixtures/file-times.js";
 
 function request<T>(value: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -234,6 +236,9 @@ export function storageContractCases(): StorageContractCase[] {
   test("inode permissions persist across replacement and reopen", async (_name, open) => {
     await permissionStorageCase(open);
   });
+  test("nanosecond file times persist across reopen", async (_name, open) => {
+    await fileTimesStorageCase(open);
+  });
   test("host writeFile exclusive creation is atomic", async (_name, open) => {
     await exclusiveFilesystemCase(open);
   });
@@ -350,7 +355,7 @@ export function storageContractCases(): StorageContractCase[] {
       storage.persist({ generation: 3, root: 1, upserts: [], removes: [2], data: new Map() }),
       "metadata",
     );
-    const root: PersistedNode = { ino: 1, kind: "dir", size: 0, mtime: 3, children: [] };
+    const root: PersistedNode = { ino: 1, kind: "dir", size: 0, ...storedTimes(3), children: [] };
     await storage.persist({
       generation: 3,
       root: 1,

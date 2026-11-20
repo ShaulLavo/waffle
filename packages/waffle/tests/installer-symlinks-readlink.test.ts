@@ -401,7 +401,10 @@ test("N5 existing explicit pins preserve a raw link through rename, unlink and n
   link(f.fs, "/link", "ordinary.txt");
   const beforeRead = snapshotNode(f.fs.root);
   expect(await f.client.asyncCall("readlink", [handle])).toBe(target);
-  expect(f.client.stat(handle)).toEqual({ ...stat, nlink: 0 });
+  // Losing its last name moves the inode's ctime, as on Linux.
+  const unlinked = f.client.stat(handle);
+  expect({ ...unlinked, ctime: stat.ctime }).toEqual({ ...stat, nlink: 0 });
+  expect(unlinked.ctime).toBeGreaterThanOrEqual(stat.ctime);
   expect(snapshotNode(f.fs.root)).toEqual(beforeRead);
   expect(f.backend.pins.has(handle)).toBe(true);
   f.client.release(handle);

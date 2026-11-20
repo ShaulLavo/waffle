@@ -460,12 +460,16 @@ test("blocking caches observe sibling same-size writes, stat changes, truncation
   const root = await client.asyncCall("preopen", ["/"]);
   const path = await client.asyncCall("resolve", [root, "cached"]);
   await client.asyncCall("write", [path.node, 0], encode("after!!!"));
-  await client.asyncCall("setMtime", [path.node, 123456]);
+  await client.asyncCall("setTimes", [path.node, null, 123_456_000_000n]);
   result = nextMessage(worker);
   worker.postMessage({ scenario: "snapshot" });
   const changed = await result;
   expect(text(Uint8Array.from(changed.bytes))).toBe("after!!!");
-  expect(changed.stat).toMatchObject({ ino: initial.stat.ino, size: 8, mtime: 123456 });
+  expect(changed.stat).toMatchObject({
+    ino: initial.stat.ino,
+    size: 8,
+    mtime: 123_456_000_000n,
+  });
   await client.asyncCall("resize", [path.node, 3, true]);
   result = nextMessage(worker);
   worker.postMessage({ scenario: "snapshot" });

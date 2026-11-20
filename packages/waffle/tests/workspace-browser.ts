@@ -298,7 +298,7 @@ async function run(mode: "memory" | "fast"): Promise<void> {
     peer.retain(resolved.node);
     const held = workspace.snapshot();
     check((await held.next()).kind === "entries", "No streamed page");
-    await peer.asyncCall("setMtime", [resolved.node, 123]);
+    await peer.asyncCall("setTimes", [resolved.node, null, 123_000_000n]);
     check((await held.next()).kind === "restart", "Metadata change did not restart scan");
     const initial = await complete(workspace);
     guest = new Worker(guestURL, { type: "module" });

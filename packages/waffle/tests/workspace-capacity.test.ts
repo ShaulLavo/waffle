@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { storedTimes } from "./fixtures/file-times";
 import {
   createFilesystemConnection,
   createWorkspaceVfs,
@@ -181,7 +182,7 @@ test("point metadata uses current shared identity, size, mode and timestamp for 
     const handle: number = from.node;
     current.client.retain(handle);
     expect(current.client.tryWrite(handle, [new Uint8Array([2, 3, 4])], 0)).toBe(3);
-    expect(await current.client.asyncCall("setMtime", [handle, 123])).toBe(0);
+    expect(await current.client.asyncCall("setTimes", [handle, null, 123_000_000n])).toBe(0);
     expect(await current.client.asyncCall("setMode", [handle, 0o400])).toBe(0);
     const expected = current.backend.shared.identity(handle);
     const node = current.backend.fs.root.children.get("file")!;
@@ -352,7 +353,14 @@ test("publication restart releases a partial cursor; service teardown joins stop
 
 function storedTree(directories: number, filesPerDirectory: number, large = 0) {
   const nodes: PersistedNode[] = [];
-  const root: PersistedNode = { ino: 1, kind: "dir", size: 0, mode: 0o700, mtime: 0, children: [] };
+  const root: PersistedNode = {
+    ino: 1,
+    kind: "dir",
+    size: 0,
+    mode: 0o700,
+    ...storedTimes(0),
+    children: [],
+  };
   nodes.push(root);
   for (let index = 0; index < directories; index++) {
     const name = `d${String(index).padStart(5, "0")}`;
@@ -361,7 +369,7 @@ function storedTree(directories: number, filesPerDirectory: number, large = 0) {
       kind: "dir",
       size: 0,
       mode: 0o700,
-      mtime: 0,
+      ...storedTimes(0),
       children: [],
     };
     root.children!.push([name, directory.ino]);
@@ -375,7 +383,7 @@ function storedTree(directories: number, filesPerDirectory: number, large = 0) {
         kind: "file",
         size: SIZES.W1.largeBytes,
         mode: 0o600,
-        mtime: 0,
+        ...storedTimes(0),
         data: `p${ino}`,
       });
     }
@@ -401,7 +409,14 @@ function addStoredFiles(
   for (let index = start; index < start + count; index++) {
     const ino = nodes.length + 1;
     directory.children!.push([`f${String(index).padStart(5, "0")}`, ino]);
-    nodes.push({ ino, kind: "file", size: SIZES.W1.bytes, mode: 0o600, mtime: 0, data: `p${ino}` });
+    nodes.push({
+      ino,
+      kind: "file",
+      size: SIZES.W1.bytes,
+      mode: 0o600,
+      ...storedTimes(0),
+      data: `p${ino}`,
+    });
   }
 }
 

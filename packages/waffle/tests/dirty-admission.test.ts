@@ -16,6 +16,7 @@ import {
 } from "../fs/storage";
 
 import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
+import { ms } from "./fixtures/file-times";
 
 const data = (length: number, value = 65) => new Uint8Array(length).fill(value);
 const turn = () => new Promise<void>((resolve) => setTimeout(resolve, 2));
@@ -210,8 +211,8 @@ test("resize, mode and time reserve whole-file cuts before changing metadata", a
     expect(() => backend.execute("resize", [handle, 17, true], data(0))).toThrow("dirty capacity");
     expect(backend.shared.snapshot(handle)).toEqual(before);
     backend.execute("setMode", [handle, 0o200], data(0));
-    backend.execute("setMtime", [handle, 1234], data(0));
-    expect(backend.shared.stat(handle)).toMatchObject({ mode: 0o200, mtime: 1234 });
+    backend.execute("setTimes", [handle, null, ms(1234)], data(0));
+    expect(backend.shared.stat(handle)).toMatchObject({ mode: 0o200, mtime: ms(1234) });
     expect(client.tryAppend(handle, [data(1)])).toEqual({ written: 1, offset: 5 });
     backend.execute("resize", [handle, 2, true], data(0));
     expect(backend.shared.snapshot(handle)!.data).toEqual(data(2));
@@ -363,7 +364,9 @@ test("metadata-only admission rejects before mode or time changes", async () => 
     );
     const before = backend.shared.stat(root);
     expect(() => backend.execute("setMode", [root, 0o500], data(0))).toThrow("dirty capacity");
-    expect(() => backend.execute("setMtime", [root, 1000], data(0))).toThrow("dirty capacity");
+    expect(() => backend.execute("setTimes", [root, null, ms(1000)], data(0))).toThrow(
+      "dirty capacity",
+    );
     expect(backend.shared.stat(root)).toEqual(before);
     expect(backend.fs.root.mode).toBe(before!.mode!);
     expect(backend.fs.root.mtime).toBe(before!.mtime);
@@ -418,7 +421,7 @@ test("direct metadata pressure fallback returns service errno without throwing",
           counters.namespaceUnits,
         ),
       );
-      expect(client.setMtime(handle, 1234)).toBe(6);
+      expect(client.setTimes(handle, null, ms(1234))).toBe(6);
       expect(backend.shared.snapshot(handle)).toEqual(before);
     } finally {
       client.call = call;
@@ -535,11 +538,13 @@ test("directory metadata reserves the complete dirty child list before mutation"
     expect(before?.mode).toBe(0o700);
     expect(() => backend.execute("setMode", [handle, 0o600], data(0))).toThrow("dirty capacity");
     expect(backend.shared.stat(handle)).toEqual(before);
-    expect(() => backend.execute("setMtime", [handle, 1234], data(0))).toThrow("dirty capacity");
+    expect(() => backend.execute("setTimes", [handle, null, ms(1234)], data(0))).toThrow(
+      "dirty capacity",
+    );
     expect(backend.shared.stat(handle)).toEqual(before);
     await backend.flush();
     expect(storage.index!.nodes.find((node) => node.ino === directory.ino)!.mtime).toBe(
-      before!.mtime,
+      `${before!.mtime}`,
     );
   } finally {
     await Promise.allSettled([backend.close()]);

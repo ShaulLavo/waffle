@@ -11,6 +11,7 @@ import {
   type FilesystemDescriptorToken,
 } from "../../proc/filesystem-codec";
 import type { StorageBackend } from "../../fs/storage";
+import { storedTimes } from "./file-times";
 
 export const coldSize = 32 * 1024 * 1024;
 export const coldByte = (offset: number) =>
@@ -32,8 +33,8 @@ export async function coldDescriptorFixture() {
         generation: 1,
         root: 1,
         nodes: [
-          { ino: 1, kind: "dir", size: 0, mode: 0o700, mtime: 1, children: [["file", 2]] },
-          { ino: 2, kind: "file", size: coldSize, mode: 0o600, mtime: 1, data: "cold" },
+          { ino: 1, kind: "dir", size: 0, mode: 0o700, ...storedTimes(1), children: [["file", 2]] },
+          { ino: 2, kind: "file", size: coldSize, mode: 0o600, ...storedTimes(1), data: "cold" },
         ],
       };
     },

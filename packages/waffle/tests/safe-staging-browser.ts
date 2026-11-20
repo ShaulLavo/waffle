@@ -1,4 +1,5 @@
 import { IdentityAllocator } from "../fs/file-identity.js";
+import { storedTimes } from "./fixtures/file-times.js";
 import {
   checkpointDecodeControl,
   type StagingDatabaseName,
@@ -47,14 +48,26 @@ function batch(generation: number, text = `v${generation}`): PersistenceBatch {
         ino: 1,
         kind: "dir",
         size: 0,
-        mtime: generation,
+        ...storedTimes(generation),
         children: [
           ["a", 2],
           ["b", 3],
         ],
       },
-      { ino: 2, kind: "file", size: text.length, mtime: generation, data: `a:${generation}` },
-      { ino: 3, kind: "file", size: text.length, mtime: generation, data: `b:${generation}` },
+      {
+        ino: 2,
+        kind: "file",
+        size: text.length,
+        ...storedTimes(generation),
+        data: `a:${generation}`,
+      },
+      {
+        ino: 3,
+        kind: "file",
+        size: text.length,
+        ...storedTimes(generation),
+        data: `b:${generation}`,
+      },
     ],
     data: new Map([
       [`a:${generation}`, bytes(text)],

@@ -6,6 +6,7 @@ import { createFilesystemConnection } from "../fs/protocol.js";
 import { mutationIntent } from "../fs/publication.js";
 import { decodeSnapshot, encodeRecord } from "../fs/storage.js";
 import type { ResolvedPath } from "../core/filesystem.js";
+import { storedTimes } from "./fixtures/file-times.js";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -110,8 +111,14 @@ test("snapshot metadata stores the raw target as a link, not a payload file", as
     generation: 1,
     root: 1,
     nodes: [
-      { ino: 1, kind: "dir", mtime: 0, size: 0, children: [["link", 2]] },
-      { ino: 2, kind: "symlink", mtime: 0, size: new TextEncoder().encode(target).length, target },
+      { ino: 1, kind: "dir", ...storedTimes(0), size: 0, children: [["link", 2]] },
+      {
+        ino: 2,
+        kind: "symlink",
+        ...storedTimes(0),
+        size: new TextEncoder().encode(target).length,
+        target,
+      },
     ],
   };
   expect(await decodeSnapshot(await encodeRecord(snapshot))).toEqual(snapshot);

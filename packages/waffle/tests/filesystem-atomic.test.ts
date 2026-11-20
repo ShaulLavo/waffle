@@ -15,6 +15,7 @@ import {
 } from "../fs";
 import { DEFAULT_SHARED_MAX_BYTES, PAGE } from "../fs/protocol";
 import { atomicHost } from "./fixtures/wasi-atomic-host";
+import { storedTimes } from "./fixtures/file-times";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -228,8 +229,8 @@ test("persistent exclusive creation does not hydrate an existing cold file", asy
           generation: 1,
           root: 1,
           nodes: [
-            { ino: 1, kind: "dir", size: 0, mtime: 1, children: [["cold", 2]] },
-            { ino: 2, kind: "file", size: 4, mtime: 1, data: "cold-payload" },
+            { ino: 1, kind: "dir", size: 0, ...storedTimes(1), children: [["cold", 2]] },
+            { ino: 2, kind: "file", size: 4, ...storedTimes(1), data: "cold-payload" },
           ],
         };
       },

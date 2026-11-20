@@ -1355,7 +1355,7 @@ test("R68 real link leaves preserve raw targets and inode metadata without pin r
     const root: number = await value.client.asyncCall("preopen", ["/"]);
     const link = await value.client.asyncCall("resolve", [root, "a-relative", false]);
     if (typeof link === "number" || link.node === undefined) throw new Error("Missing link inode");
-    expect(await value.client.asyncCall("setMtime", [link.node, 12345])).toBe(0);
+    expect(await value.client.asyncCall("setTimes", [link.node, null, 12_345_000_000n])).toBe(0);
     expect(await value.client.asyncCall("setMode", [link.node, 0o400])).toBe(0);
     const selected = await selectedEntries(value.workspace);
     const observed = observe(value.workspace);

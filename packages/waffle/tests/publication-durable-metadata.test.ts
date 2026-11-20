@@ -1,4 +1,5 @@
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { ms } from "./fixtures/file-times.js";
 import { expect, test } from "bun:test";
 import {
   MemoryBackend,
@@ -114,7 +115,7 @@ test("historical host, service and direct groups preserve actual durable revisio
       direct = await latest(current, cut);
     affected(direct.changes, directIdentity);
     cut = direct.receipt.cut;
-    expect(client.setMtime(handle, 42)).toBe(0);
+    expect(client.setTimes(handle, null, ms(42))).toBe(0);
     const timestampIdentity = backend.identity(handle),
       timestamp = await latest(current, cut);
     affected(timestamp.changes, timestampIdentity);
@@ -298,7 +299,7 @@ test("failed effect capacity and identity exhaustion preserve allocation, tree, 
     expect(await observer.cut()).toEqual(cut);
     const original = client.shared.snapshot(file)!.data;
     const noEffect = backend.shared.identities.available;
-    await client.asyncCall("setMtime", [file, backend.shared.stat(file)!.mtime]);
+    await client.asyncCall("setTimes", [file, null, backend.shared.stat(file)!.mtime]);
     expect(client.tryWrite(file, [new Uint8Array()], 0)).toBe(0);
     expect(backend.shared.identities.available).toBe(noEffect);
     expect(await observer.cut()).toEqual(cut);
@@ -308,7 +309,7 @@ test("failed effect capacity and identity exhaustion preserve allocation, tree, 
       MAX_IDENTITY_PART,
     );
     expect(client.tryWrite(file, [bytes("bad")], 0)).toBe(-33);
-    expect(client.setMtime(file, 43)).toBe(33);
+    expect(client.setTimes(file, null, ms(43))).toBe(33);
     await rejectsErrno(client.asyncCall("setMode", [file, 0o400]), 33);
     expect(backend.shared.identities.available).toBe(0n);
     expect(backend.identity(file)).toEqual(before);
@@ -361,7 +362,7 @@ test("service and shared byte admission reject before durable allocation or visi
     await rejectsErrno(current.client.asyncCall("setMode", [handle, 0o400]), 6);
     await rejectsErrno(current.client.asyncCall("mkdirp", ["/bad/child"]), 6);
     expect(current.client.tryWrite(handle, [bytes("bad")], 0)).toBe(-6);
-    expect(current.client.setMtime(handle, 42)).toBe(6);
+    expect(current.client.setTimes(handle, null, ms(42))).toBe(6);
     expect(current.backend.shared.identities.available).toBe(allocation);
     expect(current.backend.identity(handle)).toEqual(before);
     expect(current.backend.fs.lookup("/bad")).toBeUndefined();

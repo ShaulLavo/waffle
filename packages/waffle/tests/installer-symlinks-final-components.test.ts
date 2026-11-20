@@ -7,6 +7,7 @@ import {
   symlinkSnapshotValue,
 } from "./fixtures/installer-symlinks-support.js";
 import { guestFunction, guestModule } from "./fixtures/publication-wasm.js";
+import { ms } from "./fixtures/file-times.js";
 
 const cleanup: (() => void)[] = [];
 const encoder = new TextEncoder();
@@ -36,11 +37,11 @@ function seed() {
   fs.mkdirp("/empty");
   link(fs, "/link", "a/b");
   for (const path of ["/", "/a", "/a/b", "/a/b/note.txt", "/a/sibling.txt", "/empty", "/link"])
-    expect(fs.setMtime(handle(fs, path), 1)).toBe(0);
+    expect(fs.setTimes(handle(fs, path), null, ms(1))).toBe(0);
   return fs;
 }
 function snapshot(fs: MemFS) {
-  const entries: { path: string; node: number; kind: string; mtime: number; value: unknown }[] = [];
+  const entries: { path: string; node: number; kind: string; mtime: bigint; value: unknown }[] = [];
   const counts = new Map<number, number>();
   const visit = (node: Node, path: string) => {
     counts.set(node.ino, (counts.get(node.ino) ?? 0) + 1);

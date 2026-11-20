@@ -12,6 +12,7 @@ import {
   type PersistenceBatch,
 } from "../fs/storage.js";
 import { VfsError } from "../fs/vfs.js";
+import { storedTimes } from "./fixtures/file-times.js";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -69,8 +70,8 @@ function publicationBatch(
     root: 1,
     removes: [],
     upserts: [
-      { ino: 1, kind: "dir", size: 0, mtime: generation, children: [["file", 2]] },
-      { ino: 2, kind: "file", size: 4, mtime: generation, data: `pub:${generation}` },
+      { ino: 1, kind: "dir", size: 0, ...storedTimes(generation), children: [["file", 2]] },
+      { ino: 2, kind: "file", size: 4, ...storedTimes(generation), data: `pub:${generation}` },
     ],
     data: new Map([[`pub:${generation}`, new Uint8Array([generation, 0, 128, 255])]]),
   };

@@ -10,6 +10,7 @@ import {
   type OpfsCloseCommand,
   type OpfsCloseReply,
 } from "../opfs-close-browser.js";
+import { storedTimes } from "./file-times.js";
 
 type NativeAccess = {
   close(): void;
@@ -260,7 +261,7 @@ async function prepare(
     ino: 3,
     kind: "file",
     size: bytes(texts[1]!).length,
-    mtime: 1,
+    ...storedTimes(1),
     data: keys[1],
   });
   saving.data.set(keys[1]!, bytes(texts[1]!));

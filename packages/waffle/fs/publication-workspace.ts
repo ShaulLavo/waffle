@@ -58,6 +58,8 @@ function argumentSize(value: unknown, budget: number, depth = 0): number {
     integer(value);
     return 24;
   }
+  // File times; the operation that takes one checks its range.
+  if (typeof value === "bigint") return 24;
   if (typeof value === "string") {
     if (value.length > budget) throw new FilesystemError(6);
     return value.length * 3 + 4;

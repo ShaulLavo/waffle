@@ -30,7 +30,7 @@ export function gitFilesystem(filesystem: Runtime["filesystem"]): GitFilesystem 
       size: bytes?.byteLength ?? 0,
       ino: found.ino,
       mtimeMs: found.mtime,
-      ctimeMs: found.mtime,
+      ctimeMs: found.ctime,
       uid: 0,
       gid: 0,
       dev: 0,

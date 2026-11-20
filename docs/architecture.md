@@ -644,7 +644,7 @@ maximum reports WASI EFBIG.
 The 1.5 GiB ceiling leaves 512 MiB of headroom for sequential package installs beyond a
 retained 1 GiB tree. Smaller explicit caps still apply. It is a payload reservation limit,
 not an aggregate browser or process memory budget. The fixed allocator layout occupies
-33,289,256 bytes including its first 16 MiB data segment. Ordinary connections and
+33,813,544 bytes including its first 16 MiB data segment. Ordinary connections and
 startup-admitted standalone roots allocate that same exact layout. Startup admission
 adds 512 control bytes to the root backing charge. Additional payload backing grows
 lazily in 16 MiB steps. Browser allocation failure can still return ENOSPC below the

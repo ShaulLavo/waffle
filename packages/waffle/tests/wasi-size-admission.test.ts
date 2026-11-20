@@ -51,7 +51,7 @@ function fixture() {
   const file = wasi.descriptors.get(fd)?.resource;
   if (file?.kind !== "file") throw new Error("missing fixture file");
   file.offset = 3;
-  fs.setMtime(file.handle, 1234);
+  fs.setTimes(file.handle, null, 1_234_000_000n);
   const snapshot = () => ({
     text: new TextDecoder().decode(fs.readFile("/data")),
     stat: fs.stat(file.handle),

@@ -1,5 +1,6 @@
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
+import { ms, storedTimes } from "./fixtures/file-times";
 import { expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import { MemoryBackend } from "../fs/backend";
@@ -132,7 +133,7 @@ test("surviving identity and version reopen while discarded FAST births and revi
     await first.flush();
     first.execute("writeFile", ["/discarded"], bytes("lost"));
     const discarded = first.identity(handle(first, "/discarded"));
-    first.execute("setMtime", [handle(first, "/survivor"), 123], new Uint8Array());
+    first.execute("setTimes", [handle(first, "/survivor"), null, ms(123)], new Uint8Array());
     const discardedVersion = first.identity(handle(first, "/survivor")).version;
     first.dispose();
     second = await PersistentBackend.open(store, { intervalMs: 0 });
@@ -140,7 +141,7 @@ test("surviving identity and version reopen while discarded FAST births and revi
     expect(second.fs.lookup("/discarded")).toBeUndefined();
     second.execute("writeFile", ["/later"], bytes("later"));
     expect(second.identity(handle(second, "/later")).id).not.toBe(discarded.id);
-    second.execute("setMtime", [handle(second, "/survivor"), 124], new Uint8Array());
+    second.execute("setTimes", [handle(second, "/survivor"), null, ms(124)], new Uint8Array());
     expect(second.identity(handle(second, "/survivor")).version).not.toBe(discardedVersion);
   } finally {
     first.dispose();
@@ -155,13 +156,13 @@ test("actual service and direct commits update one general revision, metadata in
   try {
     const first = backend.identity(current.handle);
     const start = await observer.cut();
-    await client.asyncCall("setMtime", [current.handle, 42]);
+    await client.asyncCall("setTimes", [current.handle, null, ms(42)]);
     const metadata = backend.identity(current.handle);
     expect(metadata.id).toBe(first.id);
     expect(metadata.version).not.toBe(first.version);
     expect((await observer.cut()).generation).toBe(start.generation + 1);
     const unchanged = await observer.cut();
-    await client.asyncCall("setMtime", [current.handle, 42]);
+    await client.asyncCall("setTimes", [current.handle, null, ms(42)]);
     await client.asyncCall("write", [current.handle, 0], new Uint8Array());
     expect(backend.identity(current.handle)).toEqual(metadata);
     expect(await observer.cut()).toEqual(unchanged);
@@ -214,7 +215,7 @@ test("empty host overwrite preserves identity and cut unless metadata or size ch
     const metadata = backend.identity(file);
     expect(metadata.id).toBe(before.id);
     expect(metadata.version).not.toBe(before.version);
-    expect(backend.shared.stat(file)?.mtime).toBe(now);
+    expect(backend.shared.stat(file)?.mtime).toBe(ms(now));
     expect((await observer.cut()).generation).toBe(cut.generation + 1);
     await client.asyncCall("writeFile", ["/empty"], bytes("x"));
     const content = backend.identity(file);
@@ -388,7 +389,7 @@ test("serial exhaustion rejects namespace and direct changes before effect or pu
     for (let attempt = 0; attempt <= limits.operations; attempt++) {
       expect(client.tryWrite(current.handle, [bytes("z")], 0)).toBe(-33);
       expect(client.resize(current.handle, 5, false)).toBe(33);
-      expect(client.setMtime(current.handle, 17)).toBe(33);
+      expect(client.setTimes(current.handle, null, ms(17))).toBe(33);
     }
     expect(backend.identity(current.handle)).toEqual(before);
     expect(client.shared.snapshot(current.handle)!.data).toEqual(original);
@@ -444,8 +445,8 @@ function legacyStore() {
     generation: 1,
     root: 1,
     nodes: [
-      { ino: 1, kind: "dir", mode: 0o700, mtime: 1, size: 0, children: [["old", 2]] },
-      { ino: 2, kind: "file", mode: 0o600, mtime: 1, size: 3, data: "old" },
+      { ino: 1, kind: "dir", mode: 0o700, ...storedTimes(1), size: 0, children: [["old", 2]] },
+      { ino: 2, kind: "file", mode: 0o600, ...storedTimes(1), size: 3, data: "old" },
     ],
   };
   return store;
@@ -553,7 +554,7 @@ test("failed renewal preserves the active serial and FAST admission has no durab
     await expect(backend.renewIdentityReservation()).rejects.toThrow("reservation failed");
     expect(backend.identity(current.handle)).toEqual(before);
     expect(current.client.tryWrite(current.handle, [bytes("a")], 0)).toBe(1);
-    await current.client.asyncCall("setMtime", [current.handle, 71]);
+    await current.client.asyncCall("setTimes", [current.handle, null, ms(71)]);
     expect(store.reserveCalls).toBe(reservationCalls + 1);
     expect(store.flushCalls).toBe(flushes);
     expect(backend.identity(current.handle).version >> 64n).toBe(1n);

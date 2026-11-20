@@ -3,10 +3,15 @@ import { expect, spyOn, test } from "bun:test";
 import { DEFAULT_SHARED_MAX_BYTES } from "../fs/protocol";
 import { DATA_PAGE_BYTES as PAGE, DATA_PAGES_PER_SEGMENT } from "../fs/storage-geometry";
 import { MemoryBackend, SharedFilesystemState } from "../fs";
+import { ms, statTimes } from "./fixtures/file-times";
 
 test("revoking a killed shared-page writer releases its file lock", () => {
   const state = new SharedFilesystemState();
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE, mtime: 1 }, new Uint8Array(PAGE));
+  state.register(
+    0,
+    { kind: "file", ino: 1, nlink: 1, size: PAGE, ...statTimes(1) },
+    new Uint8Array(PAGE),
+  );
   const lock = SLOT_WORDS + 8;
   Atomics.store(state.slots, lock, 41);
   state.revokeOwner(41);
@@ -18,12 +23,12 @@ test("the service grows into another SAB segment and preserves page data", () =>
   const state = new SharedFilesystemState();
   state.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: PAGE * DATA_PAGES_PER_SEGMENT, mtime: 1 },
+    { kind: "file", ino: 1, nlink: 1, size: PAGE * DATA_PAGES_PER_SEGMENT, ...statTimes(1) },
     new Uint8Array(PAGE * DATA_PAGES_PER_SEGMENT).fill(65),
   );
   state.register(
     1,
-    { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 },
+    { kind: "file", ino: 2, nlink: 1, size: PAGE, ...statTimes(1) },
     new Uint8Array(PAGE).fill(66),
   );
   const [segment] = state.takeNewSegments();
@@ -39,11 +44,15 @@ test("storage cap reports ENOSPC while the address-space limit reports EFBIG", (
   const cap = new SharedFilesystemState(undefined, 16 * 1024 * 1024);
   cap.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: PAGE * DATA_PAGES_PER_SEGMENT, mtime: 1 },
+    { kind: "file", ino: 1, nlink: 1, size: PAGE * DATA_PAGES_PER_SEGMENT, ...statTimes(1) },
     new Uint8Array(PAGE * DATA_PAGES_PER_SEGMENT),
   );
   try {
-    cap.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 }, new Uint8Array(PAGE));
+    cap.register(
+      1,
+      { kind: "file", ino: 2, nlink: 1, size: PAGE, ...statTimes(1) },
+      new Uint8Array(PAGE),
+    );
     throw new Error("expected ENOSPC");
   } catch (error) {
     expect((error as { errno?: number }).errno).toBe(51);
@@ -51,7 +60,7 @@ test("storage cap reports ENOSPC while the address-space limit reports EFBIG", (
   expect(() =>
     cap.register(
       2,
-      { kind: "file", ino: 3, nlink: 1, size: 1024 * 1024 * 1024 + PAGE, mtime: 1 },
+      { kind: "file", ino: 3, nlink: 1, size: 1024 * 1024 * 1024 + PAGE, ...statTimes(1) },
       new Uint8Array(),
     ),
   ).toThrow(RangeError);
@@ -67,11 +76,11 @@ test("a cloned root attachment preserves service-owned extra segments", () => {
     ino: 1,
     nlink: 1,
     size: PAGE * DATA_PAGES_PER_SEGMENT,
-    mtime: 1,
+    ...statTimes(1),
   });
   state.register(
     1,
-    { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 },
+    { kind: "file", ino: 2, nlink: 1, size: PAGE, ...statTimes(1) },
     new Uint8Array(PAGE).fill(73),
   );
   backend.attachShared(structuredClone(buffer));
@@ -111,29 +120,29 @@ test("failed growth returns partial page reservations to the allocator", () => {
     ino: 1,
     nlink: 1,
     size: PAGE * (DATA_PAGES_PER_SEGMENT - 1),
-    mtime: 1,
+    ...statTimes(1),
   });
   expect(() =>
-    state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * 2, mtime: 1 }),
+    state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * 2, ...statTimes(1) }),
   ).toThrow();
-  state.register(2, { kind: "file", ino: 3, nlink: 1, size: PAGE, mtime: 1 });
+  state.register(2, { kind: "file", ino: 3, nlink: 1, size: PAGE, ...statTimes(1) });
   expect(state.resources().usedBytes).toBe(PAGE * DATA_PAGES_PER_SEGMENT);
 });
 
 test("namespace edits refresh shared parent directory timestamps", () => {
   const backend = new MemoryBackend();
   const root = backend.execute("preopen", ["/"], new Uint8Array()) as number;
-  backend.execute("setMtime", [root, 1], new Uint8Array());
+  backend.execute("setTimes", [root, null, ms(1)], new Uint8Array());
   const path = backend.execute("resolve", [root, "child"], new Uint8Array());
   backend.execute("create", [path, "file", true], new Uint8Array());
-  expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(1);
+  expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(ms(1));
 });
 
 test("unlink retains open pages then zeroes and reuses them on last close", () => {
   const state = new SharedFilesystemState(undefined, PAGE * DATA_PAGES_PER_SEGMENT);
   state.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: PAGE, mtime: 1 },
+    { kind: "file", ino: 1, nlink: 1, size: PAGE, ...statTimes(1) },
     new Uint8Array(PAGE).fill(91),
   );
   state.retain(0);
@@ -143,7 +152,7 @@ test("unlink retains open pages then zeroes and reuses them on last close", () =
   expect(bytes[0]).toBe(91);
   state.release(0);
   expect(state.resources().usedBytes).toBe(0);
-  state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 });
+  state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE, ...statTimes(1) });
   const fresh = new Uint8Array(PAGE);
   state.read(1, [fresh], 0);
   expect(fresh).toEqual(new Uint8Array(PAGE));
@@ -157,9 +166,9 @@ test("resource snapshots include all allocated SAB bytes and the storage cap", (
     ino: 1,
     nlink: 1,
     size: PAGE * DATA_PAGES_PER_SEGMENT,
-    mtime: 1,
+    ...statTimes(1),
   });
-  state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 });
+  state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE, ...statTimes(1) });
   const resources = state.resources();
   expect(resources.bytes).toBe(state.buffer.byteLength + PAGE * DATA_PAGES_PER_SEGMENT);
   expect(resources.metadataBytes! + resources.poolBytes!).toBe(resources.bytes);
@@ -175,44 +184,44 @@ test("link, unlink and cross-directory rename refresh both affected directory ti
   const child = call("create", [call("resolve", [root, "child"]), "directory", true]) as number;
   const file = call("create", [call("resolve", [root, "file"]), "file", true]) as number;
   backend.retain(file);
-  call("setMtime", [root, 1]);
+  call("setTimes", [root, null, ms(1)]);
   expect(call("link", [call("resolve", [root, "file"]), call("resolve", [root, "linked"])])).toBe(
     0,
   );
-  expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(1);
-  call("setMtime", [root, 1]);
+  expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(ms(1));
+  call("setTimes", [root, null, ms(1)]);
   expect(call("removePath", [call("resolve", [root, "linked"]), false])).toBe(0);
-  expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(1);
-  call("setMtime", [root, 1]);
-  call("setMtime", [child, 1]);
+  expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(ms(1));
+  call("setTimes", [root, null, ms(1)]);
+  call("setTimes", [child, null, ms(1)]);
   expect(call("rename", [call("resolve", [root, "file"]), call("resolve", [child, "file"])])).toBe(
     0,
   );
-  expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(1);
-  expect(backend.shared.stat(child)!.mtime).toBeGreaterThan(1);
+  expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(ms(1));
+  expect(backend.shared.stat(child)!.mtime).toBeGreaterThan(ms(1));
 });
 
 test("stat rejects a metadata slot reused while waiting for its file lock", () => {
   const state = new SharedFilesystemState();
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 0, mtime: 1 });
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 0, ...statTimes(1) });
   const slot = state.fileSlot(0);
   const lock = slot * SLOT_WORDS + 8;
   Atomics.store(state.slots, lock, 42);
   state.onContention = () => {
     Atomics.store(state.slots, lock, 0);
     state.unlink(0);
-    state.register(32767, { kind: "file", ino: 2, nlink: 1, size: 0, mtime: 2 });
+    state.register(32767, { kind: "file", ino: 2, nlink: 1, size: 0, ...statTimes(2) });
     state.onContention = undefined;
   };
   expect(state.stat(0)).toBeUndefined();
   expect(state.fileSlot(32767)).toBe(slot);
-  expect(state.stat(32767)).toMatchObject({ ino: 2, mtime: 2 });
+  expect(state.stat(32767)).toMatchObject({ ino: 2, mtime: ms(2) });
 });
 
 test.each([0, 127])("a freed handle %i lookup skips unrelated resident nodes", (handle) => {
   const state = new SharedFilesystemState();
   for (let index = 0; index < 256; index++)
-    state.register(index, { kind: "file", ino: index + 1, nlink: 1, size: 0, mtime: 1 });
+    state.register(index, { kind: "file", ino: index + 1, nlink: 1, size: 0, ...statTimes(1) });
   const observer = new SharedFilesystemState(state.buffer);
   state.unlink(handle);
   const loads = spyOn(Atomics, "load");
@@ -228,7 +237,7 @@ test("reusing collision tombstones preserves live slots and reincarnated handles
   const state = new SharedFilesystemState();
   const stride = state.slots.length / SLOT_WORDS - 1;
   const register = (handle: number) =>
-    state.register(handle, { kind: "file", ino: handle + 1, nlink: 1, size: 0, mtime: 1 });
+    state.register(handle, { kind: "file", ino: handle + 1, nlink: 1, size: 0, ...statTimes(1) });
   register(0);
   register(stride);
   register(stride * 2);
@@ -283,10 +292,10 @@ test("a borrowing backend keeps registered parent identities and timestamps curr
     const root = owner.execute("preopen", ["/"], bytes);
     if (typeof root !== "number") throw new Error("preopen did not return a handle");
     const alias = new MemoryBackend(undefined, undefined, owner);
-    alias.execute("setMtime", [root, 1], bytes);
+    alias.execute("setTimes", [root, null, ms(1)], bytes);
     const previous = alias.shared.identity(root)!;
     alias.execute("writeFile", ["/child"], bytes);
-    expect(owner.shared.stat(root)!.mtime).toBeGreaterThan(1);
+    expect(owner.shared.stat(root)!.mtime).toBeGreaterThan(ms(1));
     expect(owner.shared.identity(root)!.version).toBeGreaterThan(previous.version);
     expect(owner.identity(root)).toEqual(owner.shared.identity(root)!);
   } finally {

@@ -1,12 +1,16 @@
 import { restoreIdentity } from "./file-identity.js";
 import { MemFS, type Node } from "./memory.js";
-import type { PersistedIndex, PersistedNode } from "./storage.js";
+import { restoreTime, type PersistedIndex, type PersistedNode } from "./storage.js";
 
 function restoreNode(entry: PersistedNode): Node {
+  // Times written together are usually equal; equal ones share one bigint.
+  const mtime = restoreTime(entry.mtime);
   const metadata = {
     ino: entry.ino,
     identity: entry.identity && restoreIdentity(entry.identity),
-    mtime: entry.mtime,
+    atime: entry.atime === entry.mtime ? mtime : restoreTime(entry.atime),
+    mtime,
+    ctime: entry.ctime === entry.mtime ? mtime : restoreTime(entry.ctime),
   };
   if (entry.kind === "dir")
     return { ...metadata, kind: "dir", mode: entry.mode ?? 0o700, children: new Map() };

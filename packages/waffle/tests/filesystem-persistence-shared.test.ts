@@ -3,12 +3,13 @@ import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
 import { expect, test } from "bun:test";
 import { createFilesystemIdentity } from "../fs/protocol";
 import * as shared from "../fs/shared";
+import { ms, statTimes } from "./fixtures/file-times";
 
 function fixture() {
   const state = new shared.SharedFilesystemState();
   state.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 },
+    { kind: "file", ino: 1, nlink: 1, size: 4, ...statTimes(1) },
     new Uint8Array([65, 66, 67, 68]),
   );
   return state;
@@ -18,7 +19,7 @@ test("shared persistence snapshots own coherent content, metadata and revision",
   const state = fixture();
   const snapshot = state.snapshot(0)!;
   expect(snapshot).toEqual({
-    stat: { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 },
+    stat: { kind: "file", ino: 1, nlink: 1, size: 4, ...statTimes(1) },
     data: new Uint8Array([65, 66, 67, 68]),
     revision: 1,
   });
@@ -27,7 +28,7 @@ test("shared persistence snapshots own coherent content, metadata and revision",
   expect(state.revision(0)).toBe(2);
   expect(state.snapshot(99)).toBeUndefined();
   expect(state.revision(99)).toBeUndefined();
-  state.register(1, { kind: "directory", ino: 2, nlink: 1, size: 0, mtime: 1 });
+  state.register(1, { kind: "directory", ino: 2, nlink: 1, size: 0, ...statTimes(1) });
   expect(state.snapshot(1)).toBeUndefined();
 });
 
@@ -39,14 +40,14 @@ test("every shared content or timestamp mutation advances the revision", () => {
     () => state.append(0, [new Uint8Array([69])]),
     () => state.resize(0, 2, true),
     () => state.resize(0, 6, false),
-    () => state.setMtime(0, 77),
+    () => state.setTimes(0, null, ms(77), ms(77)),
   ]) {
     change();
     expect(state.revision(0)).toBe(++revision);
     expect(state.snapshot(0)!.revision).toBe(revision);
   }
   expect(state.snapshot(0)!.data).toEqual(new Uint8Array([90, 66, 0, 0, 0, 0]));
-  expect(state.snapshot(0)!.stat).toMatchObject({ size: 6, mtime: 77 });
+  expect(state.snapshot(0)!.stat).toMatchObject({ size: 6, mtime: ms(77) });
 });
 
 test("direct guest writes and appends are visible to persistence without an RPC", () => {
@@ -64,7 +65,7 @@ test("direct guest writes and appends are visible to persistence without an RPC"
   expect(snapshot.revision).toBe(3);
   expect(snapshot.data).toEqual(new Uint8Array([90, 66, 67, 68, 69]));
   expect(snapshot.stat.size).toBe(5);
-  expect(snapshot.stat.mtime).toBeGreaterThan(1);
+  expect(snapshot.stat.mtime).toBeGreaterThan(ms(1));
 });
 
 test("shared revisions remain monotonic across low-word overflow on slow and direct writes", () => {
@@ -91,7 +92,7 @@ test("eviction leaves connection-owner allocation and attachment probing untouch
   const identity = createFilesystemIdentity(undefined, PAGE * 256);
   const state = new shared.SharedFilesystemState(identity.shared, identity.maxBytes);
   Atomics.store(state.cells, 6, 123456);
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 });
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 1, ...statTimes(1) });
   expect(state.evict(0, state.revision(0)!)).toBe(true);
   const child = createFilesystemIdentity(identity);
   expect(child.owner).toBe(identity.owner + 1);
@@ -140,7 +141,7 @@ test("snapshot retains matching bytes, metadata and revision when a writer follo
   }) as typeof Atomics.compareExchange;
   try {
     expect(state.snapshot(0)).toEqual({
-      stat: { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 },
+      stat: { kind: "file", ino: 1, nlink: 1, size: 4, ...statTimes(1) },
       data: new Uint8Array([65, 66, 67, 68]),
       revision: 1,
     });
@@ -173,24 +174,24 @@ test("eviction zeroes and reuses pages and collision slots without resetting the
   const slot = state.fileSlot(0);
   const revision = state.revision(0)!;
   expect(state.evict(0, revision)).toBe(true);
-  state.register(32767, { kind: "file", ino: 2, nlink: 1, size: 4, mtime: 2 });
+  state.register(32767, { kind: "file", ino: 2, nlink: 1, size: 4, ...statTimes(2) });
   expect(state.fileSlot(32767)).toBe(slot);
   expect(state.snapshot(32767)!.data).toEqual(new Uint8Array(4));
   expect(state.revision(32767)).toBeGreaterThan(revision);
   expect(state.evict(32767, revision)).toBe(false);
   expect(state.evict(32767, state.revision(32767)!)).toBe(true);
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 });
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 4, ...statTimes(1) });
   expect(state.evict(0, revision)).toBe(false);
 });
 
 test("old snapshots cannot evict the same handle reincarnated in a different collision slot", () => {
   const state = new shared.SharedFilesystemState();
-  state.register(32767, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 });
+  state.register(32767, { kind: "file", ino: 1, nlink: 1, size: 1, ...statTimes(1) });
   const oldSlot = state.fileSlot(32767);
   const oldRevision = state.revision(32767)!;
   expect(state.evict(32767, oldRevision)).toBe(true);
-  state.register(0, { kind: "file", ino: 2, nlink: 1, size: 1, mtime: 1 });
-  state.register(32767, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 });
+  state.register(0, { kind: "file", ino: 2, nlink: 1, size: 1, ...statTimes(1) });
+  state.register(32767, { kind: "file", ino: 1, nlink: 1, size: 1, ...statTimes(1) });
   expect(state.fileSlot(32767)).not.toBe(oldSlot);
   expect(state.revision(32767)).toBeGreaterThan(oldRevision);
   expect(state.evict(32767, oldRevision)).toBe(false);
@@ -198,7 +199,11 @@ test("old snapshots cannot evict the same handle reincarnated in a different col
 
 test("evicting a collision preserves lookup for the remaining files", () => {
   const state = fixture();
-  state.register(32767, { kind: "file", ino: 2, nlink: 1, size: 1, mtime: 1 }, new Uint8Array([7]));
+  state.register(
+    32767,
+    { kind: "file", ino: 2, nlink: 1, size: 1, ...statTimes(1) },
+    new Uint8Array([7]),
+  );
   expect(state.evict(0, state.revision(0)!)).toBe(true);
   expect(state.snapshot(32767)!.data).toEqual(new Uint8Array([7]));
 });
@@ -241,7 +246,7 @@ test("snapshots reject a slot recycled between lookup and file lock acquisition"
       expect(state.evict(0, 1)).toBe(true);
       state.register(
         32767,
-        { kind: "file", ino: 2, nlink: 1, size: 1, mtime: 1 },
+        { kind: "file", ino: 2, nlink: 1, size: 1, ...statTimes(1) },
         new Uint8Array([90]),
       );
     }
@@ -258,9 +263,9 @@ test("snapshots reject a slot recycled between lookup and file lock acquisition"
 
 test("unreferenced directory slots can also be evicted without losing collision lookups", () => {
   const state = fixture();
-  state.register(32767, { kind: "directory", ino: 2, nlink: 1, size: 0, mtime: 1 });
+  state.register(32767, { kind: "directory", ino: 2, nlink: 1, size: 0, ...statTimes(1) });
   const revision = state.revision(32767)!;
-  state.setMtime(32767, 77);
+  state.setTimes(32767, null, ms(77), ms(77));
   expect(state.evict(32767, revision)).toBe(false);
   expect(state.evict(32767, state.revision(32767)!)).toBe(true);
   expect(state.snapshot(0)!.data).toEqual(new Uint8Array([65, 66, 67, 68]));
@@ -271,7 +276,7 @@ test("linked eviction supports a corpus larger than the identity table", () => {
   for (let handle = 0; handle < 10_000; handle++) {
     state.register(
       handle,
-      { kind: "file", ino: handle + 1, nlink: 1, size: 1, mtime: 1 },
+      { kind: "file", ino: handle + 1, nlink: 1, size: 1, ...statTimes(1) },
       new Uint8Array([handle % 256]),
     );
     expect(state.evict(handle, state.revision(handle)!)).toBe(true);
@@ -281,7 +286,7 @@ test("linked eviction supports a corpus larger than the identity table", () => {
 
 test("metadata-only registration preserves stat without allocating or exposing zero content", () => {
   const state = new shared.SharedFilesystemState();
-  const stat = { kind: "file" as const, ino: 1, nlink: 1, size: 4, mtime: 1 };
+  const stat = { kind: "file" as const, ino: 1, nlink: 1, size: 4, ...statTimes(1) };
   state.register(0, stat, undefined, false);
   expect(state.stat(0)).toEqual(stat);
   expect(state.isResident(0)).toBe(false);
@@ -355,10 +360,15 @@ test("clean pinned payloads can unload and hydrate without changing their cached
 
 test("empty files are resident and metadata-only slots can be evicted", () => {
   const state = new shared.SharedFilesystemState();
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 0, mtime: 1 }, undefined, false);
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 0, ...statTimes(1) }, undefined, false);
   expect(state.isResident(0)).toBe(true);
   expect(state.snapshot(0)!.data).toHaveLength(0);
-  state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 }, undefined, false);
+  state.register(
+    1,
+    { kind: "file", ino: 2, nlink: 1, size: PAGE, ...statTimes(1) },
+    undefined,
+    false,
+  );
   expect(state.evict(1, state.revision(1)!)).toBe(true);
   expect(state.registeredHandles()).toEqual([0]);
   expect(state.isResident(1)).toBe(false);

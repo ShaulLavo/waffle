@@ -32,7 +32,13 @@ import {
   type MutationId,
   type AdmissionResult,
 } from "./publication.js";
-import { permissionsFor, type WatchFileSystem } from "../core/filesystem.js";
+import {
+  fileTimeNow,
+  isFileTime,
+  permissionsFor,
+  type FileTime,
+  type WatchFileSystem,
+} from "../core/filesystem.js";
 import {
   ArrayBufferConstructor,
   Int32ArrayConstructor,
@@ -1884,15 +1890,13 @@ export class FilesystemClient implements FileSystem {
     }
   }
   private publishedMetadata(
-    intent: Extract<MutationIntent, { kind: "resize" | "setMtime" }>,
+    intent: Extract<MutationIntent, { kind: "resize" | "setTimes" }>,
   ): number {
     const domain = this.shared.publication!,
       session = this.connection.publication!.session;
     let admission: PublicationAdmission | undefined;
     try {
       if (intent.kind === "resize" && (!Number.isSafeInteger(intent.size) || intent.size < 0))
-        throw new FilesystemError(28);
-      if (intent.kind === "setMtime" && (!Number.isSafeInteger(intent.mtime) || intent.mtime < 0))
         throw new FilesystemError(28);
       const input = new Uint8ArrayConstructor();
       const admitted = domain.admit(session, domain.next(session), intent, input);
@@ -1903,7 +1907,7 @@ export class FilesystemClient implements FileSystem {
       const args =
         intent.kind === "resize"
           ? [intent.handle, intent.size, intent.truncate]
-          : [intent.handle, intent.mtime];
+          : [intent.handle, intent.atime, intent.mtime];
       const completion = this.submit(intent.kind, args, input, 1024, admission);
       try {
         return completion.wait();
@@ -1917,7 +1921,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   private attemptMetadata(
-    intent: Extract<MutationIntent, { kind: "resize" | "setMtime" }>,
+    intent: Extract<MutationIntent, { kind: "resize" | "setTimes" }>,
     admission: PublicationAdmission,
   ): number | undefined {
     if (!mapHas(this.openHandles, intent.handle) || !this.shared.hasFile(intent.handle))
@@ -1927,10 +1931,12 @@ export class FilesystemClient implements FileSystem {
         this.epoch,
         this.revoked,
         () => {
-          if (intent.kind === "setMtime")
-            return this.shared.setMtime(
+          if (intent.kind === "setTimes")
+            return this.shared.setTimes(
               intent.handle,
+              intent.atime,
               intent.mtime,
+              fileTimeNow(),
               this.revoked,
               this.connection.owner,
               admission,
@@ -1960,7 +1966,7 @@ export class FilesystemClient implements FileSystem {
       throw error;
     }
   }
-  private callMetadata(operation: "resize" | "setMtime", args: unknown[]): number {
+  private callMetadata(operation: "resize" | "setTimes", args: unknown[]): number {
     try {
       return this.call(operation, args);
     } catch (error) {
@@ -2003,8 +2009,10 @@ export class FilesystemClient implements FileSystem {
     }
     return this.callMetadata("resize", [handle, size, truncate]);
   }
-  setMtime(handle: FileHandle, mtime: number): number {
-    if (this.shared.publication) return this.publishedMetadata({ kind: "setMtime", handle, mtime });
+  setTimes(handle: FileHandle, atime: FileTime | null, mtime: FileTime | null): number {
+    if ((atime !== null && !isFileTime(atime)) || (mtime !== null && !isFileTime(mtime))) return 28;
+    if (this.shared.publication)
+      return this.publishedMetadata({ kind: "setTimes", handle, atime, mtime });
     if (
       !this.shared.publication &&
       mapHas(this.openHandles, handle) &&
@@ -2014,16 +2022,24 @@ export class FilesystemClient implements FileSystem {
         return this.shared.mutate(
           this.epoch,
           this.revoked,
-          () => this.shared.setMtime(handle, mtime, this.revoked, this.connection.owner),
+          () =>
+            this.shared.setTimes(
+              handle,
+              atime,
+              mtime,
+              fileTimeNow(),
+              this.revoked,
+              this.connection.owner,
+            ),
           this.connection.owner,
         );
       } catch (error) {
         if (error instanceof DirtyCapacityError)
-          return this.callMetadata("setMtime", [handle, mtime]);
+          return this.callMetadata("setTimes", [handle, atime, mtime]);
         return errno(error);
       }
     }
-    return this.callMetadata("setMtime", [handle, mtime]);
+    return this.callMetadata("setTimes", [handle, atime, mtime]);
   }
   sync(handle: FileHandle): number {
     try {

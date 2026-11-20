@@ -29,12 +29,38 @@ export function permissionsFor(kind: FileStat["kind"], mode: number): FilePermis
   };
 }
 
+/** File times are unsigned nanoseconds since 1970, as WASI Preview 1 carries them. A number
+ * cannot hold them exactly, so the guest-facing filesystem keeps them as bigint. */
+export type FileTime = bigint;
+export const NS_PER_MS = 1_000_000n;
+export const MAX_FILE_TIME: FileTime = 0xffff_ffff_ffff_ffffn;
+// Captured at load: guest code shares this realm and may replace the global later.
+const bigint = BigInt;
+const number = Number;
+/** A whole-millisecond clock reading as a file time. */
+export function msFileTime(ms: number): FileTime {
+  return bigint(ms) * NS_PER_MS;
+}
+/** The filesystem clock. Like Linux's coarse file-time clock, it has millisecond granularity. */
+export function fileTimeNow(): FileTime {
+  return msFileTime(Date.now());
+}
+/** Whole milliseconds, the unit of the host workspace layer. */
+export function fileTimeMs(time: FileTime): number {
+  return number(time / NS_PER_MS);
+}
+export function isFileTime(value: unknown): value is FileTime {
+  return typeof value === "bigint" && value >= 0n && value <= MAX_FILE_TIME;
+}
+
 export interface FileStat {
   kind: "file" | "directory" | "socket" | "symlink";
   ino: number;
   nlink: number;
   size: number;
-  mtime: number;
+  atime: FileTime;
+  mtime: FileTime;
+  ctime: FileTime;
   /** Absent means unsupported, not mode zero. */
   mode?: number;
 }
@@ -83,8 +109,9 @@ export interface FileSystem {
   ): { written: number; offset: number } | number;
   /** Zero on success, positive WASI errno on failure. */
   resize(handle: FileHandle, size: number, truncate: boolean): number;
-  /** Zero on success, positive WASI errno on failure. */
-  setMtime(handle: FileHandle, mtime: number): number;
+  /** Set each given time; null leaves it alone. Any change also sets ctime to now.
+   * Zero on success, positive WASI errno on failure. */
+  setTimes(handle: FileHandle, atime: FileTime | null, mtime: FileTime | null): number;
   /** Explicit durability barrier; pure-memory filesystems need no storage work. */
   sync?(handle: FileHandle): number;
   /** Throws FilesystemError for mode denial and other filesystem failures. */

@@ -43,6 +43,20 @@ spans return `EFAULT` (21). Poll clock subscriptions use the same supported IDs;
 unsupported clocks produce events with `EINVAL`. Native Node WASI clock getters
 remain provided by Node and measure host process/thread time, not per-guest totals.
 
+## File times
+
+`fd_filestat_set_times` and `path_filestat_set_times` follow `utimensat(2)`. Each time is set
+independently: `ATIM` or `MTIM` takes the given value, `ATIM_NOW` or `MTIM_NOW` takes the
+filesystem clock, and neither leaves that time unchanged. A time with its `NOW` flag, or an
+unknown flag bit, is `EINVAL` (28). With no time selected the call changes nothing. Any change
+also sets ctime to the current time.
+
+Filestat records report atime, mtime and ctime separately, with the full unsigned 64-bit
+nanosecond value a guest set, including across reloads of OPFS and IndexedDB workspaces. The
+filesystem clock has millisecond granularity. Writes and truncation set mtime and ctime; mode
+changes and adding or removing a name set ctime. Reads do not update atime, as on Linux mounted
+with `noatime`. Host-facing workspace metadata reports mtime in whole milliseconds.
+
 ## Process identity import
 
 ### Initial process cwd

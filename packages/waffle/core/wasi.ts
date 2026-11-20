@@ -40,8 +40,11 @@ import { withFileOffset } from "./open-file.js";
 
 import {
   FilesystemError,
+  fileTimeNow,
+  type FileHandle,
   type FileSystem,
   type FileStat,
+  type FileTime,
   type ResolvedPath,
 } from "./filesystem.js";
 import {
@@ -195,8 +198,19 @@ function nowNs(clock: SupportedClock): bigint {
   return BigInt(Math.round(perfNow() * 1e6));
 }
 
-function msToNs(ms: number): bigint {
-  return BigInt(Math.floor(ms)) * 1_000_000n;
+/** WASI fst_flags: ATIM 1, ATIM_NOW 2, MTIM 4, MTIM_NOW 8. A time and its NOW flag together are
+ * EINVAL, as in wasmtime. Null leaves that time alone; an i64 argument carries an unsigned time. */
+function requestedTimes(
+  atim: bigint,
+  mtim: bigint,
+  flags: number,
+): readonly [FileTime | null, FileTime | null] | number {
+  if (flags & ~15 || (flags & 3) === 3 || (flags & 12) === 12) return EINVAL;
+  const now = flags & 10 ? fileTimeNow() : 0n;
+  return [
+    flags & 1 ? BigInt.asUintN(64, atim) : flags & 2 ? now : null,
+    flags & 4 ? BigInt.asUintN(64, mtim) : flags & 8 ? now : null,
+  ];
 }
 
 function pollMemoryError(
@@ -687,15 +701,21 @@ export class Wasi {
 
   private writeFilestat(ptr: number, node: FileStat | null, streamType = FT_CHAR): void {
     const view = this.view();
-    const times = node ? msToNs(node.mtime) : 0n;
     view.setBigUint64(ptr, 0n, true); // dev
     view.setBigUint64(ptr + 8, BigInt(node?.ino ?? 0), true);
     view.setUint8(ptr + 16, node ? filetype(node.kind) : streamType);
     view.setBigUint64(ptr + 24, BigInt(node?.nlink ?? 1), true); // nlink
     view.setBigUint64(ptr + 32, BigInt(node?.size ?? 0), true);
-    view.setBigUint64(ptr + 40, times, true);
-    view.setBigUint64(ptr + 48, times, true);
-    view.setBigUint64(ptr + 56, times, true);
+    view.setBigUint64(ptr + 40, node?.atime ?? 0n, true);
+    view.setBigUint64(ptr + 48, node?.mtime ?? 0n, true);
+    view.setBigUint64(ptr + 56, node?.ctime ?? 0n, true);
+  }
+
+  private setTimes(handle: FileHandle, atim: bigint, mtim: bigint, flags: number): number {
+    const times = requestedTimes(atim, mtim, flags);
+    if (typeof times === "number") return times;
+    if (times[0] === null && times[1] === null) return SUCCESS;
+    return this.opts.fs.setTimes(handle, times[0], times[1]);
   }
 
   private writeOut(
@@ -894,13 +914,10 @@ export class Wasi {
       ),
       fd_filestat_set_times: this.descriptorCall(
         RIGHT_FD_FILESTAT_SET_TIMES,
-        (resource, _atim: bigint, mtim: bigint, flags: number) => {
-          if ((resource.kind === "file" || resource.kind === "directory") && flags & 12)
-            return this.opts.fs.setMtime(
-              resource.handle,
-              flags & 8 ? Date.now() : Number(mtim / 1_000_000n),
-            );
-          return SUCCESS;
+        (resource, atim: bigint, mtim: bigint, flags: number) => {
+          if (resource.kind === "file" || resource.kind === "directory")
+            return this.setTimes(resource.handle, atim, mtim, flags);
+          return typeof requestedTimes(atim, mtim, flags) === "number" ? EINVAL : SUCCESS;
         },
       ),
       fd_pread: this.descriptorCall(
@@ -1052,7 +1069,7 @@ export class Wasi {
         flags: number,
         ptr: number,
         len: number,
-        _atim: bigint,
+        atim: bigint,
         mtim: bigint,
         fst: number,
       ) => {
@@ -1060,9 +1077,7 @@ export class Wasi {
         if (typeof path === "number") return path;
         const node = path.node;
         if (node === undefined) return ENOENT;
-        if (fst & 12)
-          return this.opts.fs.setMtime(node, fst & 8 ? Date.now() : Number(mtim / 1_000_000n));
-        return SUCCESS;
+        return this.setTimes(node, atim, mtim, fst);
       },
       path_link: (
         oldFd: number,

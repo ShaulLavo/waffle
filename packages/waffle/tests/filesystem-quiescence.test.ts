@@ -23,6 +23,7 @@ import {
   assertFilesystemStopped,
   assertFilesystemQuiet,
 } from "./filesystem-stop-observer.js";
+import { ms, statTimes } from "./fixtures/file-times.js";
 
 function serviceQuiescence(service: FilesystemService): Promise<void> {
   const sessions = Reflect.get(service, "sessions");
@@ -55,7 +56,7 @@ function raceSectionRevocation(client: FilesystemClient, race: () => void) {
   };
 }
 
-for (const operation of ["read", "write", "append", "resize", "setMtime", "stat"] as const)
+for (const operation of ["read", "write", "append", "resize", "setTimes", "stat"] as const)
   test(`quiescence waits for ${operation}'s held lock, then permits another owner`, async () => {
     const { client, cleanup } = retainedClientFixture();
     const compare = Atomics.compareExchange;
@@ -86,7 +87,7 @@ for (const operation of ["read", "write", "append", "resize", "setMtime", "stat"
         else if (operation === "write") client.write(0, [new Uint8Array([90])], 0);
         else if (operation === "append") client.append(0, [new Uint8Array([90])]);
         else if (operation === "resize") client.resize(0, 2, false);
-        else if (operation === "setMtime") client.setMtime(0, 2);
+        else if (operation === "setTimes") client.setTimes(0, null, ms(2));
         else client.stat(0);
       } catch (error) {
         expect(error).toMatchObject({ errno: 11 });
@@ -208,7 +209,7 @@ test("a revoked live worker finishes its held write before quiescence, without a
   );
   shared.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 },
+    { kind: "file", ino: 1, nlink: 1, size: 4, ...statTimes(1) },
     new Uint8Array([65, 66, 67, 68]),
   );
   const capabilities = new Int32Array(pair.client.capabilities);
@@ -358,7 +359,7 @@ function stopObserverFixture() {
   const shared = state(() => isRevoked(identity));
   shared.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 },
+    { kind: "file", ino: 1, nlink: 1, size: 4, ...statTimes(1) },
     new Uint8Array([65, 66, 67, 68]),
   );
   const slot = shared.fileSlot(0);

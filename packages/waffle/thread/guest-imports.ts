@@ -221,7 +221,6 @@ function fdstat(options: GuestImportOptions, memory: GuestMemory, fd: number, ou
 function writeStat(memory: GuestMemory, out: number, value: FileStat): void {
   const type =
     value.kind === "file" ? 4 : value.kind === "directory" ? 3 : value.kind === "socket" ? 6 : 7;
-  const time = bigint(floor(value.mtime * 1_000_000));
   // The Preview 1 structure includes seven padding bytes after filetype.
   typedArraySet(memory.span(out, 64), new Uint8ArrayConstructor(64));
   memory.u64(out, 0n);
@@ -229,9 +228,9 @@ function writeStat(memory: GuestMemory, out: number, value: FileStat): void {
   memory.u32(out + 16, type);
   memory.u64(out + 24, bigint(value.nlink));
   memory.u64(out + 32, bigint(value.size));
-  memory.u64(out + 40, time);
-  memory.u64(out + 48, time);
-  memory.u64(out + 56, time);
+  memory.u64(out + 40, value.atime);
+  memory.u64(out + 48, value.mtime);
+  memory.u64(out + 56, value.ctime);
 }
 function clock(memory: GuestMemory, id: number, pointer: number): number {
   if (id !== 0 && id !== 1) return EINVAL;

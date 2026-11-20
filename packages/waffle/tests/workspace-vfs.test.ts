@@ -1,4 +1,5 @@
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { storedTimes } from "./fixtures/file-times.js";
 import { expect, expectTypeOf, test } from "bun:test";
 import {
   createFilesystemConnection,
@@ -135,7 +136,7 @@ test("direct writes and metadata invalidate partial scans without holding the wr
     expect((await first.next()).kind).toBe("restart");
     const second = current.workspace.snapshot();
     expect((await second.next()).kind).toBe("entries");
-    await current.client.asyncCall("setMtime", [handle, 123]);
+    await current.client.asyncCall("setTimes", [handle, null, 123_000_000n]);
     expect((await second.next()).kind).toBe("restart");
     const complete = await snapshot(current.workspace);
     expect(complete.entries.find((entry) => entry.path === "/f0")?.mtime).toBe(123);
@@ -370,7 +371,7 @@ test("cold persistent scan reads zero payload and creates no per-node shared han
       kind: "dir",
       mode: 0o700,
       size: 0,
-      mtime: 1,
+      ...storedTimes(1),
       children: Array.from({ length: count }, (_, index): [string, number] => [
         `f${index}`,
         index + 101,
@@ -387,7 +388,7 @@ test("cold persistent scan reads zero payload and creates no per-node shared han
         kind: "file" as const,
         mode: 0o600,
         size: index + 1,
-        mtime: 1,
+        ...storedTimes(1),
         data: `payload-${index}`,
       })),
     ),
@@ -743,16 +744,16 @@ test("change cancellation and concurrent pulls release receipts without late ind
   }
 });
 
-test("snapshot preserves finite recovered timestamps without narrowing the storage contract", async () => {
+test("snapshot reports a recovered nanosecond timestamp in whole milliseconds", async () => {
   const fs = new MemFS();
   fs.writeFile("/file", bytes("x"));
   const resolved = fs.resolve(fs.preopen("/"), "file");
   if (typeof resolved === "number" || resolved.node === undefined) throw new Error("missing file");
-  expect(fs.setMtime(resolved.node, -1.5)).toBe(0);
+  expect(fs.setTimes(resolved.node, null, 1_999_999n)).toBe(0);
   const current = await fixture(new MemoryBackend(fs));
   try {
     const initial = await snapshot(current.workspace);
-    expect(initial.entries.find((entry) => entry.path === "/file")?.mtime).toBe(-1.5);
+    expect(initial.entries.find((entry) => entry.path === "/file")?.mtime).toBe(1);
   } finally {
     await current.stop();
   }

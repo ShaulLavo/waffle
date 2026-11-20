@@ -1,6 +1,7 @@
 import { admitProcessObservation } from "../proc/observation.ts";
 import { expect, test } from "bun:test";
 import { pages } from "../memory/reservations.js";
+import { THREAD_LANE_BYTES } from "../thread/lane.ts";
 import { inspectThreadSource } from "../memory/declarations.js";
 import { guestModule, wait32 } from "./threads-guest-module.js";
 
@@ -105,7 +106,7 @@ test("actual guest realm replacements cannot observe immutable argument bytes or
         outcome: serializeOutcome(outcome),
         signal: new SharedArrayBuffer(4),
         waits: new SharedArrayBuffer(12),
-        lane: { reply: new SharedArrayBuffer(64), port: channel.port2 },
+        lane: { reply: new SharedArrayBuffer(THREAD_LANE_BYTES), port: channel.port2 },
         args: ["private-args"],
         env: { TEST: "private-env" },
       } satisfies import("../thread/guest-worker.js").GuestWorkerRequest,

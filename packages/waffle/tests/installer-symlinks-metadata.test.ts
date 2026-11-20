@@ -1,10 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
 import type { EntryMetadata } from "../browser/shared-fs.js";
 import { MemoryBackend } from "../fs/backend.js";
-import { MemFS } from "../fs/memory.js";
+import { MemFS, type Node } from "../fs/memory.js";
 import { FilesystemClient } from "../fs/client.js";
 import { FilesystemService } from "../fs/service.js";
 import { createFilesystemConnection } from "../fs/protocol.js";
+import { fileTimeMs } from "../core/filesystem.js";
+
+/** lookup() reports whole milliseconds. */
+const lookupTimes = (node: Node) => ({
+  mtime: fileTimeMs(node.mtime),
+  ctime: fileTimeMs(node.ctime),
+});
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -114,14 +121,14 @@ test("service lookup returns shallow child metadata with required link targets",
     kind: "symlink",
     target: "./b//../note.txt",
     ino: raw.ino,
-    mtime: raw.mtime,
+    ...lookupTimes(raw),
   } satisfies EntryMetadata;
   expect(await client.asyncCall("lookup", ["/a/raw"])).toEqual(rawMetadata);
   expect(await client.asyncCall("lookup", ["/a"])).toMatchObject({
     kind: "dir",
     children: new Map<string, EntryMetadata>([
-      ["b", { kind: "dir", ino: directory.ino, mtime: directory.mtime }],
-      ["note.txt", { kind: "file", ino: file.ino, mtime: file.mtime }],
+      ["b", { kind: "dir", ino: directory.ino, ...lookupTimes(directory) }],
+      ["note.txt", { kind: "file", ino: file.ino, ...lookupTimes(file) }],
       ["raw", rawMetadata],
     ]),
   });

@@ -19,6 +19,7 @@ import {
   revokeFilesystem,
   type FilesystemConnection,
 } from "../fs";
+import { ms } from "./fixtures/file-times";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -158,8 +159,8 @@ test("transient stat stays fresh across sibling writes and returns independent s
   before.size = 999;
   expect(client.stat(handle).size).toBe(8);
   await sibling.asyncCall("write", [path.node, 0], encode("longer replacement"));
-  await sibling.asyncCall("setMtime", [path.node, 12345]);
-  expect(client.stat(handle)).toMatchObject({ ino: before.ino, size: 18, mtime: 12345 });
+  await sibling.asyncCall("setTimes", [path.node, null, ms(12345)]);
+  expect(client.stat(handle)).toMatchObject({ ino: before.ino, size: 18, mtime: ms(12345) });
   await sibling.asyncCall("resize", [path.node, 3, true]);
   expect(client.stat(handle)).toMatchObject({ ino: before.ino, size: 3 });
 });
@@ -256,7 +257,10 @@ test("shared stat preserves an open unlinked identity through name reuse and rej
   await client.asyncCall("remove", ["/shared"]);
   await client.asyncCall("writeFile", ["/shared"], encode("new"));
   const replacement = await client.asyncCall("resolve", [root, "shared"]);
-  expect(client.stat(handle)).toEqual({ ...original, nlink: 0 });
+  // Losing its last name changes the inode, so ctime moves too, as on Linux.
+  const unlinked = client.stat(handle);
+  expect({ ...unlinked, ctime: original.ctime }).toEqual({ ...original, nlink: 0 });
+  expect(unlinked.ctime).toBeGreaterThanOrEqual(original.ctime);
   expect(client.stat(replacement.node)).toMatchObject({ size: 3 });
   expect(client.stat(replacement.node).ino).not.toBe(original.ino);
   client.release(handle);
@@ -497,13 +501,13 @@ test("in-capacity append and zero-byte positioned writes make no service calls",
   const { client } = fixture();
   const { handle } = await file(client);
   client.retain(handle);
-  expect(client.setMtime(handle, 123)).toBe(0);
+  expect(client.setTimes(handle, null, ms(123))).toBe(0);
   client.call = () => {
     throw new Error("unexpected direct IO RPC");
   };
   expect(client.write(handle, [new Uint8Array()], 0x10000000)).toBe(0);
   expect(client.append(handle, [new Uint8Array()])).toEqual({ written: 0, offset: 8 });
-  expect(client.stat(handle).mtime).toBe(123);
+  expect(client.stat(handle).mtime).toBe(ms(123));
   expect(client.append(handle, [encode("a"), encode("b")])).toEqual({ written: 2, offset: 10 });
   const bytes = new Uint8Array(10);
   expect(client.read(handle, [bytes], 0)).toBe(10);

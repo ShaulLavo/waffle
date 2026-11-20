@@ -3,6 +3,7 @@ import { retainedClientFixture } from "./fixtures/retained-client.js";
 import { FilesystemError, revokeFilesystem } from "../fs/protocol.js";
 import { FilesystemClient, createFilesystemConnection } from "../fs/index.js";
 import type { ResolvedPath } from "../core/filesystem.js";
+import { statTimes } from "./fixtures/file-times.js";
 
 const stops: (() => void)[] = [];
 afterEach(() => {
@@ -125,7 +126,7 @@ test("publication shared metadata uses its current-state lock and releases it on
   const client = new FilesystemClient(pair.client);
   client.shared.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 },
+    { kind: "file", ino: 1, nlink: 1, size: 1, ...statTimes(1) },
     new Uint8Array([1]),
   );
   const capabilities = new Int32Array(pair.client.capabilities);

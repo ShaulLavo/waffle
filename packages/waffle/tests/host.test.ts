@@ -129,7 +129,15 @@ test("WASI duplicates really share the seek cursor, append flags, and lifetime",
   expect(h.view.getBigUint64(1024, true)).toBe(6n);
 });
 test("core uses only the filesystem contract and accepts a zero-valued opaque handle", () => {
-  const record = { kind: "file", ino: 89, nlink: 1, size: 4, mtime: 0 } as const;
+  const record = {
+    kind: "file",
+    ino: 89,
+    nlink: 1,
+    size: 4,
+    atime: 0n,
+    mtime: 0n,
+    ctime: 0n,
+  } as const;
   const unexpected = (): never => {
     throw new Error("unexpected filesystem call");
   };
@@ -137,7 +145,7 @@ test("core uses only the filesystem contract and accepts a zero-valued opaque ha
     write: unexpected,
     append: unexpected,
     resize: unexpected,
-    setMtime: unexpected,
+    setTimes: unexpected,
     readdir: unexpected,
     readdirPage: unexpected,
     create: unexpected,
@@ -289,7 +297,7 @@ test("filesystem timestamp errors propagate for descriptor and path operations",
   fs.writeFile("/file", "abc");
   const h = host(fs);
   const fd = h.open("file");
-  fs.setMtime = () => 69;
+  fs.setTimes = () => 69;
   expect(h.calls.fd_filestat_set_times(fd, 0n, 1n, 4)).toBe(69);
   expect(h.calls.path_filestat_set_times(3, 0, 256, 4, 0n, 1n, 4)).toBe(69);
   h.wasi.descriptors.dispose();

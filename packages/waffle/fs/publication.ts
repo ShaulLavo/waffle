@@ -20,7 +20,13 @@ import {
   typedArraySet,
 } from "../proc/intrinsics.js";
 import type { FilesystemSection } from "./protocol.js";
-import { FilesystemError, type ResolvedPath, type SocketBinding } from "../core/filesystem.js";
+import {
+  FilesystemError,
+  isFileTime,
+  type FileTime,
+  type ResolvedPath,
+  type SocketBinding,
+} from "../core/filesystem.js";
 import type {
   PublicationBuffers,
   PublicationConnection,
@@ -70,7 +76,13 @@ export type MutationIntent =
       readonly truncate: boolean;
     }
   | { readonly kind: "setMode"; readonly handle: number; readonly mode: number }
-  | { readonly kind: "setMtime"; readonly handle: number; readonly mtime: number }
+  /** Each time is resolved before admission; null leaves it alone. */
+  | {
+      readonly kind: "setTimes";
+      readonly handle: number;
+      readonly atime: FileTime | null;
+      readonly mtime: FileTime | null;
+    }
   | { readonly kind: "preopen" | "mkdirp"; readonly path: string }
   /** With ifContent, the mutation input holds the expected bytes. */
   | { readonly kind: "remove"; readonly path: string; readonly ifContent: boolean }
@@ -382,8 +394,12 @@ function words(value: number): readonly [number, number] {
 function number(low: number, high: number): number {
   return (low >>> 0) + high * 0x100000000;
 }
+/** File times in intents are bigint; their canonical text is the decimal count. */
+function canonicalValue(_key: string, value: unknown): unknown {
+  return typeof value === "bigint" ? `${value}` : value;
+}
 function json(value: unknown, bound: number): Uint8Array {
-  const result = encodeText(stringify(value));
+  const result = encodeText(stringify(value, canonicalValue));
   if (result.length > bound) throw new FilesystemError(6, "publication record bound exceeded");
   return result;
 }
@@ -1653,6 +1669,10 @@ function text(value: unknown): string {
   if (typeof value !== "string") throw new FilesystemError(28);
   return value;
 }
+function fileTime(value: unknown): FileTime | null {
+  if (value !== null && !isFileTime(value)) throw new FilesystemError(28);
+  return value;
+}
 function path(value: unknown): ResolvedPath {
   if (!value || typeof value !== "object" || !("name" in value)) throw new FilesystemError(28);
   return {
@@ -1690,8 +1710,8 @@ export function mutationIntent(
       return { kind: "resize", handle: integer(a), size: integer(b), truncate: c === true };
     case "setMode":
       return { kind: "setMode", handle: integer(a), mode: integer(b) };
-    case "setMtime":
-      return { kind: "setMtime", handle: integer(a), mtime: integer(b) };
+    case "setTimes":
+      return { kind: "setTimes", handle: integer(a), atime: fileTime(b), mtime: fileTime(c) };
     case "preopen":
     case "mkdirp":
       return { kind: operation, path: text(a) };

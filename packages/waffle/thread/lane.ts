@@ -28,10 +28,9 @@ const startPort = MessagePort.prototype.start;
 const safeInteger = Number.isSafeInteger;
 const number = Number;
 const bigint = BigInt;
-const signedBigInt = BigInt.asIntN;
-const floor = Math.floor;
 const MAX_SEQUENCE = 0x7fffffff;
-export const THREAD_LANE_BYTES = 64;
+// A stat reply ends with three 64-bit times at bytes 48, 56 and 64.
+export const THREAD_LANE_BYTES = 72;
 export type ThreadRequest = ThreadOperation | { kind: "spawn"; startArg: number };
 export interface ThreadLaneTransfer {
   readonly port: MessagePort;
@@ -205,7 +204,9 @@ function encodeResult(words: Int32Array, view: DataView, result: ThreadResult): 
   storeNumber(view, 24, stat.ino);
   storeNumber(view, 32, stat.nlink);
   storeNumber(view, 40, stat.size);
-  dataViewSetBigUint64(view, 48, bigint(floor(stat.mtime * 1_000_000)), true);
+  dataViewSetBigUint64(view, 48, stat.atime, true);
+  dataViewSetBigUint64(view, 56, stat.mtime, true);
+  dataViewSetBigUint64(view, 64, stat.ctime, true);
 }
 function storeNumber(view: DataView, offset: number, value: number): void {
   if (!safeInteger(value) || value < 0) throw new RangeError("invalid thread service result");
@@ -240,7 +241,9 @@ function decodeResult(words: Int32Array, view: DataView): ThreadResult {
       ino: readNumber(view, 24),
       nlink: readNumber(view, 32),
       size: readNumber(view, 40),
-      mtime: number(signedBigInt(64, dataViewGetBigUint64(view, 48, true))) / 1_000_000,
+      atime: dataViewGetBigUint64(view, 48, true),
+      mtime: dataViewGetBigUint64(view, 56, true),
+      ctime: dataViewGetBigUint64(view, 64, true),
       ...(mode === -1 ? {} : { mode }),
     },
   };

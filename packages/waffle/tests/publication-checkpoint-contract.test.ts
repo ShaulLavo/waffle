@@ -45,7 +45,7 @@ async function checkpointFixture(): Promise<CheckpointPublication> {
     const observer = publicationObserver(client);
     const start = await observer.cut();
     await client.asyncCall("writeFile", ["/file"], new Uint8Array([1, 2, 3]));
-    await client.asyncCall("setMtime", [root, 42]);
+    await client.asyncCall("setTimes", [root, null, 42_000_000n]);
     const cut = await observer.cut();
     const page = await observer.changes(start, limits.logBytes);
     if (page.kind !== "changes") throw new Error("fixture lost its publication suffix");

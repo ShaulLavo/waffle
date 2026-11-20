@@ -1,4 +1,5 @@
 import { DATA_PAGE_BYTES } from "../fs/storage-geometry.ts";
+import { storedTimes } from "./fixtures/file-times.ts";
 import { PersistentBackend } from "../fs/persistent.ts";
 import { FilesystemService } from "../fs/service.ts";
 import { PAGE, type FilesystemConnection } from "../fs/protocol.ts";
@@ -38,8 +39,8 @@ async function start({ connection, mode }: Extract<HostCommand, { kind: "start" 
     removes: [],
     data: new Map([["payload", new Uint8Array(size).fill(65)]]),
     upserts: [
-      { ino: 100, kind: "dir", mode: 0o700, size: 0, mtime: 1, children: [["file", 101]] },
-      { ino: 101, kind: "file", mode: 0o600, size, mtime: 1, data: "payload" },
+      { ino: 100, kind: "dir", mode: 0o700, size: 0, ...storedTimes(1), children: [["file", 101]] },
+      { ino: 101, kind: "file", mode: 0o600, size, ...storedTimes(1), data: "payload" },
     ],
   });
   backend = await PersistentBackend.open(store, {

@@ -1,4 +1,5 @@
 import type { MemoryBackend } from "./backend.js";
+import { fileTimeMs } from "../core/filesystem.js";
 import { nodeSize, type DirNode, type Node } from "./memory.js";
 import { NamespaceCursor } from "./namespace-cursor.js";
 import { namespaceCut, type NamespacePage, type NamespaceRecord } from "./workspace-protocol.js";
@@ -83,13 +84,13 @@ export class NamespaceAuthority {
         ...identity,
         size: stat.size,
         mode: stat.mode ?? node.mode,
-        mtime: stat.mtime,
+        mtime: fileTimeMs(stat.mtime),
       };
     return {
       ...this.backend.ensureIdentity(node),
       size: nodeSize(node),
       mode: node.mode,
-      mtime: node.mtime,
+      mtime: fileTimeMs(node.mtime),
     };
   }
 }

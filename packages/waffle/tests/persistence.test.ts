@@ -1,4 +1,5 @@
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
+import { ms, storedTimes } from "./fixtures/file-times";
 import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { DescriptorTable } from "../core/descriptors.js";
 import { ProcessABI } from "../proc/abi.js";
@@ -95,7 +96,7 @@ test("flush preserves data, metadata, hard links and renames; reload loads no pa
   const b = await first.client.asyncCall("resolve", [root, "dir/b"]);
   expect(await first.client.asyncCall("link", [a, b])).toBe(0);
   expect((await first.client.asyncCall("stat", [a.node])).nlink).toBe(2);
-  expect(await first.client.asyncCall("setMtime", [a.node, 123456])).toBe(0);
+  expect(await first.client.asyncCall("setTimes", [a.node, null, ms(123456)])).toBe(0);
   await first.client.asyncCall("move", ["/dir/a", "/dir/renamed"]);
   await first.client.asyncCall("flush");
   const second = await fixture(store);
@@ -206,7 +207,7 @@ test("metadata-only edits to a lazy open file persist without loading its bytes"
   const root = await second.client.asyncCall("preopen", ["/"]);
   const path = await second.client.asyncCall("resolve", [root, "metadata"]);
   second.client.retain(path.node);
-  expect(second.client.setMtime(path.node, 777)).toBe(0);
+  expect(second.client.setTimes(path.node, null, ms(777))).toBe(0);
   await second.client.asyncCall("flush");
   expect(store.reads).toBe(0);
   const third = await fixture(store);
@@ -437,7 +438,7 @@ for (const failure of ["capture", "persist"] as const)
     await backend.flush();
     const identities = [backend.identity(linked), backend.identity(detached.node)];
     const staleRevision = backend.shared.revision(stale.node);
-    await client.asyncCall("setMtime", [stale.node, 123456]);
+    await client.asyncCall("setTimes", [stale.node, null, ms(123456)]);
     expect(backend.shared.revision(stale.node)).not.toBe(staleRevision);
     expect(backend.shared.isResident(stale.node)).toBe(false);
     await backend.prepare("read", [hot]);
@@ -667,8 +668,8 @@ test("saved metadata adoption persists defaults without payload reads or format 
     generation: 1,
     root: 1,
     nodes: [
-      { ino: 1, kind: "dir", mtime: 1, size: 0, children: [["file", 2]] },
-      { ino: 2, kind: "file", mtime: 1, size: 1, data: "saved" },
+      { ino: 1, kind: "dir", ...storedTimes(1), size: 0, children: [["file", 2]] },
+      { ino: 2, kind: "file", ...storedTimes(1), size: 1, data: "saved" },
     ],
   };
   store.payloads.set("saved", new Uint8Array([9]));

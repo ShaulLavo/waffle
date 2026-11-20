@@ -109,7 +109,7 @@ test("an empty identity constructs no growable buffer and no data segment", asyn
   expect(value.maxBytes).toBe(1_610_612_736);
   expect(value.segments).toBe(0);
   expect(value.identityConstructions).toEqual([
-    { bytes: 33_289_256, maximum: null },
+    { bytes: 33_813_544, maximum: null },
     { bytes: 262_144, maximum: null },
     { bytes: 49_156, maximum: null },
     { bytes: 4, maximum: null },

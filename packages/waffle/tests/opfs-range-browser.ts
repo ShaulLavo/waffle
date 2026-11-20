@@ -1,4 +1,5 @@
 import { OpfsStorage } from "../fs/opfs.js";
+import { storedTimes } from "./fixtures/file-times.js";
 import { encodeSnapshot, type PersistedIndex } from "../fs/storage.js";
 import { OPFS_FORMAT } from "../fs/vfs-format.js";
 
@@ -29,8 +30,8 @@ async function writeMetadata(directory: FileSystemDirectoryHandle) {
     generation: 1,
     root: 1,
     nodes: [
-      { ino: 1, kind: "dir", size: 0, mtime: 1, children: [["large", 2]] },
-      { ino: 2, kind: "file", size, mtime: 1, data: "revision" },
+      { ino: 1, kind: "dir", size: 0, ...storedTimes(1), children: [["large", 2]] },
+      { ino: 2, kind: "file", size, ...storedTimes(1), data: "revision" },
     ],
   };
   await directory.getFileHandle(`format-${OPFS_FORMAT}`, { create: true });

@@ -1,6 +1,7 @@
 import { CHUNK_SIZE } from "../fs/indexeddb-chunks.js";
 import { PersistentBackend } from "../fs/persistent.js";
 import { FilesystemError } from "../core/filesystem.js";
+import { storedTimes } from "./fixtures/file-times.js";
 import type {
   PersistedIndex,
   PersistedNode,
@@ -60,16 +61,22 @@ function revision(generation: number, prefix = "churn"): PersistenceBatch {
   ];
   const main = `${prefix}:${generation}`;
   const upserts: PersistedNode[] = [
-    { ino: 1, kind: "dir", mtime: generation, size: 0, children },
-    { ino: 2, kind: "file", mtime: 1, size: payloadSize, data: "anchor" },
-    { ino: 3, kind: "file", mtime: generation, size: payloadSize, data: main },
+    { ino: 1, kind: "dir", ...storedTimes(generation), size: 0, children },
+    { ino: 2, kind: "file", ...storedTimes(1), size: payloadSize, data: "anchor" },
+    { ino: 3, kind: "file", ...storedTimes(generation), size: payloadSize, data: main },
   ];
   const data = new Map([[main, expected(main)]]);
   if (generation === 1) data.set("anchor", expected("anchor"));
   if (generation % 2) {
     const temporary = `${prefix}:temporary:${generation}`;
     children.push(["temporary", 4]);
-    upserts.push({ ino: 4, kind: "file", mtime: generation, size: payloadSize, data: temporary });
+    upserts.push({
+      ino: 4,
+      kind: "file",
+      ...storedTimes(generation),
+      size: payloadSize,
+      data: temporary,
+    });
     data.set(temporary, expected(temporary));
   }
   return { generation, root: 1, upserts, removes: generation % 2 ? [] : [4], data };
