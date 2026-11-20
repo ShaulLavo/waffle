@@ -12,13 +12,14 @@ import { publicationAdapter } from "./publication-suite.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const originalHashes = {
-  "publication-browser.ts": "c60aefc6a26039f0fbd341b7ee4ef7ba5d2c766abb27f1a78a02f7fa2eca1ea5",
-  "workspace-browser.ts": "17204218d2e58ff679edfab982741501e7322195ff947e31ec430ef0e2d82392",
+  // Moved to setTimes and nanosecond records with file times (plans/file-times.md).
+  "publication-browser.ts": "10f86e3f045867bcc1f45becfd223c62747f533a30dae357174bfcbe7501855d",
+  "workspace-browser.ts": "a768192fb6bc91f53337ad5ea82b177acfca6db598db1d5df0b52d237d31e878",
   // File-only fixture supplies the required bound logical pair; its publication body is unchanged.
   "fixtures/publication-guest.ts":
     "78619558fa3965ebad62b27063be171cb560a37e6cee4446e7f01ea2e98bd06f",
   "workspace-vfs-read-browser.ts":
-    "43d27744b1824a829b865f6c3403e09f234a9699da7a140428436a0ed380441c",
+    "6724f44c5d28721e1abc537770b22080f3dff21dd8a10710e9748db4153e1318",
   "fixtures/publication-channel-observer.ts":
     "d30e355a0c6b733dda387a24bd42e522a09d0802df1615dcffea78726246e911",
   "recovery-r42-browser-runner.ts":

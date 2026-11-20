@@ -188,8 +188,11 @@ function directWrites(
       const after = peer.shared.snapshot(handle);
       const originalOneShotSuccess = result === 1;
       check(result === -6, `Contended tryWrite returned ${result}, expected -6`);
+      // Snapshot stats carry bigint file times.
+      const text = (value: unknown) =>
+        JSON.stringify(value, (_, item) => (typeof item === "bigint" ? String(item) : item));
       check(
-        after && JSON.stringify(after) === JSON.stringify(before),
+        after && text(after) === text(before),
         "Rejected write changed file bytes or metadata",
       );
       check(
