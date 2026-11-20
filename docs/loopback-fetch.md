@@ -10,7 +10,13 @@ The same policy handles virtual HTTP listeners and injected `NetFetch` responses
 - Cross-origin hops remove authorization and cookie headers. Destinations must use HTTP or HTTPS and cannot contain URL credentials.
 - Each hop selects a current virtual listener or calls the injected network policy. External policy calls receive `redirect: "manual"` so hidden redirects cannot bypass the helper's destination checks or loop limit.
 
-A browser's native Fetch can hide a redirect's status and `Location` as an `opaqueredirect` response. The helper cannot follow that response. `follow` and `error` fail with `TypeError`; `manual` retains the browser response. Embedders that need external redirects must supply a policy that exposes redirect heads. Waffle does not retry with a less restrictive network policy.
+Redirect failures carry Bun's error codes in the `code` field of the guest's error record, with Bun's message (`<code> fetching "<url>". For more information, ...`, naming the requested URL):
+
+- `UnexpectedRedirect`: a redirect status under `error`, with or without `Location`.
+- `UnsupportedRedirectProtocol`: a followed `Location` with a scheme other than HTTP or HTTPS, such as `file:` or `data:`.
+- `RedirectURLInvalid`: a `Location` that does not parse as a URL, with the message `RedirectURLInvalid: Redirect URL in Location header is invalid.`
+
+A browser's native Fetch can hide a redirect's status and `Location` as an `opaqueredirect` response. The helper cannot follow that response. `error` fails with `UnexpectedRedirect` and `follow` fails with a plain `TypeError`; `manual` retains the browser response. Embedders that need external redirects must supply a policy that exposes redirect heads. Waffle does not retry with a less restrictive network policy.
 
 Intermediate bodies are cancelled rather than buffered. Cancellation closes the virtual peer or aborts the pending external request. Final bodies keep the existing Fetch acknowledgement window and virtual TCP receive credit.
 

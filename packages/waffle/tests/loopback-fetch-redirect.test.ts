@@ -1,5 +1,91 @@
 import { expect, test } from "bun:test";
-import { body, decode, encode, handle, head, pair, response } from "./loopback-fetch-fixture.js";
+import {
+  body,
+  decode,
+  encode,
+  handle,
+  head,
+  pair,
+  type Peer,
+  response,
+} from "./loopback-fetch-fixture.js";
+
+/** The error record the guest reads for a failed fetch handle. */
+async function guestError(client: Peer, id: number): Promise<unknown> {
+  return JSON.parse(String(await client.call({ op: "error", handle: id })));
+}
+
+/** Bun's wording for a fetch failure it reports by code (bun-wasm fetch-client-errors). */
+function bunFailure(code: string, url: string) {
+  const message = `${code} fetching "${url}". For more information, pass \`verbose: true\` in the second argument to fetch()`;
+  return { name: "TypeError", code, message };
+}
+
+test.each([
+  { status: 301, headers: "Location: /final\r\n" },
+  { status: 303, headers: "Location: /final\r\n" },
+  { status: 307, headers: "Location: /final\r\n" },
+  { status: 308, headers: "Location: /final\r\n" },
+  { status: 302, headers: "" },
+])(
+  'redirect "error" rejects status $status with UnexpectedRedirect, headers $headers',
+  async ({ status, headers }) => {
+    const { server, client, listener, url } = await pair();
+    const served = server.call({ op: "respond", listener, bytes: response(status, headers) });
+    const id = await handle(client, { op: "fetch", url: `${url}/start`, redirect: "error" });
+    await served;
+    expect(await head(client, id)).toBe(-1);
+    expect(await guestError(client, id)).toEqual(bunFailure("UnexpectedRedirect", `${url}/start`));
+  },
+);
+
+test.each([300, 304, 305, 306])('redirect "error" returns status %s as it is', async (status) => {
+  const { server, client, listener, url } = await pair();
+  const served = server.call({
+    op: "respond",
+    listener,
+    bytes: response(status, "Location: /final\r\n"),
+  });
+  const id = await handle(client, { op: "fetch", url, redirect: "error" });
+  await served;
+  expect(await head(client, id)).toMatchObject({ status, redirected: false });
+  await body(client, id);
+});
+
+test.each(["file:/etc/hosts", "file:hosts", "data:text/plain,hi"])(
+  "following a redirect to %s rejects with UnsupportedRedirectProtocol",
+  async (location) => {
+    const { server, client, listener, url } = await pair();
+    const served = server.call({
+      op: "respond",
+      listener,
+      bytes: response(302, `Location: ${location}\r\n`),
+    });
+    const id = await handle(client, { op: "fetch", url: `${url}/start` });
+    await served;
+    expect(await head(client, id)).toBe(-1);
+    expect(await guestError(client, id)).toEqual(
+      bunFailure("UnsupportedRedirectProtocol", `${url}/start`),
+    );
+  },
+);
+
+test("following an unparsable Location rejects with RedirectURLInvalid", async () => {
+  const { server, client, listener, url } = await pair();
+  const served = server.call({
+    op: "respond",
+    listener,
+    bytes: response(302, "Location: http://[\r\n"),
+  });
+  const id = await handle(client, { op: "fetch", url });
+  await served;
+  expect(await head(client, id)).toBe(-1);
+  expect(await guestError(client, id)).toEqual({
+    name: "TypeError",
+    code: "RedirectURLInvalid",
+    message: "RedirectURLInvalid: Redirect URL in Location header is invalid.",
+  });
+});
 
 test("shared Worker follows a relative loopback redirect before publishing the head", async () => {
   const { server, client, listener, url } = await pair();
@@ -35,7 +121,7 @@ test.each(["manual", "error"] satisfies RequestRedirect[])(
     await served;
     if (redirect === "error") {
       expect(await head(client, id)).toBe(-1);
-      expect(await client.call({ op: "error", handle: id })).toContain("redirect mode is error");
+      expect(await guestError(client, id)).toEqual(bunFailure("UnexpectedRedirect", `${url}/`));
       return;
     }
     expect(await head(client, id)).toMatchObject({

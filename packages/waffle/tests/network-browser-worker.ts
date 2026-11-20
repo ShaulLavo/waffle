@@ -5,7 +5,7 @@ import { AGAIN, type NetRequest } from "../browser/net/protocol.js";
 declare const self: DedicatedWorkerGlobalScope;
 export type NetworkCommand =
   | { op: "listen"; port: number; host?: string }
-  | { op: "fetch"; url: string }
+  | { op: "fetch"; url: string; redirect?: RequestRedirect }
   | { op: "head" | "poll"; handle: number }
   | { op: "connect"; port: number; host?: string }
   | { op: "listenPath" | "connectPath"; path: string }
@@ -76,7 +76,7 @@ function serve(host: NetHost, listener: number): string {
 function execute(host: NetHost, command: NetworkCommand): unknown {
   switch (command.op) {
     case "fetch":
-      return host.fetch(JSON.stringify({ url: command.url }));
+      return host.fetch(JSON.stringify({ url: command.url, redirect: command.redirect }));
     case "head":
       return host.fetchHead(command.handle);
     case "poll":

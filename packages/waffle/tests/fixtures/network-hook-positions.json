@@ -1,5 +1,5 @@
 {
-  "networkBrowserCases": ["networkBrowserCases.body.body[17].block.body[33]:controller"],
+  "networkBrowserCases": ["networkBrowserCases.body.body[17].block.body[34]:controller"],
   "createRelayBrowserFixture": [
     "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[0]:cancellation",
     "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[2]:cancellation",
