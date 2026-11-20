@@ -14,7 +14,7 @@ const hash = (value: string) => createHash("sha256").update(value).digest("hex")
 const originalHashes = {
   // Moved to setTimes and nanosecond records with file times (plans/file-times.md).
   "publication-browser.ts": "10f86e3f045867bcc1f45becfd223c62747f533a30dae357174bfcbe7501855d",
-  "workspace-browser.ts": "a768192fb6bc91f53337ad5ea82b177acfca6db598db1d5df0b52d237d31e878",
+  "workspace-browser.ts": "efd231caac240a656454f8bce4c16c466bd12f9f211b797bba9d308229c27e18",
   // File-only fixture supplies the required bound logical pair; its publication body is unchanged.
   "fixtures/publication-guest.ts":
     "78619558fa3965ebad62b27063be171cb560a37e6cee4446e7f01ea2e98bd06f",

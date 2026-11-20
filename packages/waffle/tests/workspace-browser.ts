@@ -191,10 +191,7 @@ function directWrites(
       // Snapshot stats carry bigint file times.
       const text = (value: unknown) =>
         JSON.stringify(value, (_, item) => (typeof item === "bigint" ? String(item) : item));
-      check(
-        after && text(after) === text(before),
-        "Rejected write changed file bytes or metadata",
-      );
+      check(after && text(after) === text(before), "Rejected write changed file bytes or metadata");
       check(
         slots.every((value, index) => value === peer.shared.slots[index]),
         "Rejected write changed file slots or their lock owners",
