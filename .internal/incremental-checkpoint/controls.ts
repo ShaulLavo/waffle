@@ -82,6 +82,20 @@ function gate(storage: IndexedDBStorage) {
   return { entered: entered.promise, release: reply.resolve };
 }
 
+async function verifyOrderedReopen(expected: Uint8Array): Promise<void> {
+  const reopened = await IndexedDBStorage.open(WORKSPACE);
+  try {
+    const key = await fileKey(reopened, "/renamed");
+    bytesEqual(
+      await reopened.read(key),
+      expected,
+      "Truncate, regrow, overwrite and append did not survive reopen",
+    );
+  } finally {
+    await reopened.close();
+  }
+}
+
 async function ordered(abort: boolean) {
   const owner = await storeOwner();
   const { backend, storage } = owner;
@@ -129,37 +143,19 @@ async function ordered(abort: boolean) {
       expected.set(seed.subarray(0, CHUNK + 3));
       expected.fill(0x62, CHUNK - 2, CHUNK + 6);
       expected.set([0x63, 0x64], 3 * CHUNK + 11);
-      if (abort) {
-        pause.release("abort");
-        await Promise.all([aRejection, bRejection]);
-        check(
-          (await fileKey(storage)) === firstKey,
-          "Aborted predecessor changed durable namespace",
-        );
-        bytesEqual(await storage.read(firstKey), seed, "Aborted predecessor changed durable bytes");
-      } else {
-        pause.release("commit");
-        await Promise.all([a, b]);
-        bytesEqual(
-          await storage.read(await fileKey(storage, "/renamed")),
-          expected,
-          "Queued cut published later bytes",
-        );
-      }
+      pause.release(abort ? "abort" : "commit");
+      await Promise.all(abort ? [aRejection, bRejection] : [a, b]);
+      const durable = await fileKey(storage, abort ? PATH : "/renamed");
+      check(!abort || durable === firstKey, "Aborted predecessor changed durable namespace");
+      bytesEqual(
+        await storage.read(durable),
+        abort ? seed : expected,
+        abort ? "Aborted predecessor changed durable bytes" : "Queued cut published later bytes",
+      );
       expected[CHUNK] = 0x65;
       await backend.flush();
       await owner.close();
-      const reopened = await IndexedDBStorage.open(WORKSPACE);
-      try {
-        const key = await fileKey(reopened, "/renamed");
-        bytesEqual(
-          await reopened.read(key),
-          expected,
-          "Truncate, regrow, overwrite and append did not survive reopen",
-        );
-      } finally {
-        await reopened.close();
-      }
+      await verifyOrderedReopen(expected);
       return {
         frozenParent: receipt.id,
         predecessor: abort ? "aborted" : "committed",
@@ -510,6 +506,56 @@ function blocked(operation: () => unknown, label: string): void {
   throw new Error(label);
 }
 
+async function verifyLeaseAfterMark(storage: IndexedDBStorage, retired: string): Promise<void> {
+  let lease: ReturnType<IndexedDBStorage["retainPayload"]> | undefined;
+  const afterMark = (keys: readonly IDBValidKey[]) => {
+    check(keys.includes(retired), "Old manifest did not reach the deletion candidates");
+    lease = storage.retainPayload(retired, 2 * CHUNK);
+  };
+  try {
+    const retained = await storage.collectExperiment({ afterMark });
+    check(retained.marked > retained.deleted, "Reclamation missed a lease acquired after mark");
+    bytesEqual(
+      await storage.readRange(retired, { offset: 0, length: 2 }),
+      new Uint8Array([1, 1]),
+      "Cold lease lost its old version",
+    );
+  } finally {
+    lease?.release();
+  }
+}
+
+async function verifyCorruptRecovery(
+  newest: string,
+  retired: string,
+  broken: IDBValidKey,
+): Promise<void> {
+  await removePhysical(broken);
+  const reopened = await IndexedDBStorage.open(WORKSPACE);
+  let sharedChunk: IDBValidKey | undefined;
+  try {
+    const previous = await fileKey(reopened);
+    check(
+      previous !== newest && previous !== retired,
+      "Incomplete newest root did not fall back to the complete previous base",
+    );
+    const expected = new Uint8Array(2 * CHUNK).fill(1);
+    expected[0] = 2;
+    bytesEqual(await reopened.read(previous), expected, "Previous base lost a shared chunk");
+    sharedChunk = reopened.experimentChunkKey(previous, 1);
+  } finally {
+    await reopened.close();
+  }
+  check(sharedChunk, "Previous complete root did not include its reused chunk");
+  await removePhysical(sharedChunk);
+  const corrupt = await IndexedDBStorage.open(WORKSPACE);
+  try {
+    await rejected(corrupt.load(), "no valid snapshot can be recovered");
+  } finally {
+    await corrupt.close();
+  }
+}
+
 async function reclamation() {
   const owner = await storeOwner(1);
   const { backend, storage } = owner;
@@ -526,23 +572,7 @@ async function reclamation() {
     const newest = await fileKey(storage);
     const broken = storage.experimentChunkKey(newest, 0);
     check(broken, "Missing newest physical record");
-    let lease: ReturnType<IndexedDBStorage["retainPayload"]> | undefined;
-    try {
-      const retained = await storage.collectExperiment({
-        afterMark(keys) {
-          check(keys.includes(retired), "Old manifest did not reach the deletion candidates");
-          lease = storage.retainPayload(retired, 2 * CHUNK);
-        },
-      });
-      check(retained.marked > retained.deleted, "Reclamation missed a lease acquired after mark");
-      bytesEqual(
-        await storage.readRange(retired, { offset: 0, length: 2 }),
-        new Uint8Array([1, 1]),
-        "Cold lease lost its old version",
-      );
-    } finally {
-      lease?.release();
-    }
+    await verifyLeaseAfterMark(storage, retired);
     check(
       storage.resources().readerStorageDebt === 2 * CHUNK,
       "Released cold lease lost deletion debt",
@@ -586,30 +616,7 @@ async function reclamation() {
       "Deleted manifest still admitted reads",
     );
     await owner.close();
-    await removePhysical(broken);
-    const reopened = await IndexedDBStorage.open(WORKSPACE);
-    let sharedChunk: IDBValidKey | undefined;
-    try {
-      const previous = await fileKey(reopened);
-      check(
-        previous !== newest && previous !== retired,
-        "Incomplete newest root did not fall back to the complete previous base",
-      );
-      const expected = new Uint8Array(2 * CHUNK).fill(1);
-      expected[0] = 2;
-      bytesEqual(await reopened.read(previous), expected, "Previous base lost a shared chunk");
-      sharedChunk = reopened.experimentChunkKey(previous, 1);
-    } finally {
-      await reopened.close();
-    }
-    check(sharedChunk, "Previous complete root did not include its reused chunk");
-    await removePhysical(sharedChunk);
-    const corrupt = await IndexedDBStorage.open(WORKSPACE);
-    try {
-      await rejected(corrupt.load(), "no valid snapshot can be recovered");
-    } finally {
-      await corrupt.close();
-    }
+    await verifyCorruptRecovery(newest, retired, broken);
     return { guarded, ...deletion, fallbackVerifiedBytes: 2 * CHUNK, corruptRootsRejected: true };
   } finally {
     await owner.close();
