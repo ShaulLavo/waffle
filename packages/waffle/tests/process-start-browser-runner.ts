@@ -34,9 +34,17 @@ function failures(report: ProcessStartReport): string[] {
   else if (times.some((time, index) => index > 0 && time! < times[index - 1]!))
     found.push(`normal start steps out of order: ${JSON.stringify(normal?.at)}`);
   const posted = normal?.at["start-posted"] ?? Infinity;
-  for (const step of ["runtime-loaded", "group-joined", "modules-loaded"] as const)
-    if ((normal?.at[step] ?? posted) < posted)
-      found.push(`worker step ${step} before start-posted: ${JSON.stringify(normal?.at)}`);
+  for (const [index, snapshot] of report.stages.entries()) {
+    const time = snapshot.at[snapshot.step] ?? -Infinity;
+    const previous = report.stages[index - 1];
+    if (
+      time < (previous?.at[previous.step] ?? posted) ||
+      time > (normal?.at["memory-bound"] ?? -Infinity)
+    )
+      found.push(`worker step ${snapshot.step} out of order: ${JSON.stringify(snapshot.at)}`);
+    if (snapshot.at["memory-bound"] !== undefined)
+      found.push(`memory came before ${snapshot.step}: ${JSON.stringify(snapshot.at)}`);
+  }
   if (report.held?.step !== "start-posted") found.push(`held start reached ${report.held?.step}`);
   if (report.heldLater?.step !== "start-posted")
     found.push(`held start later reached ${report.heldLater?.step}`);
@@ -52,7 +60,7 @@ await runIsolatedPages({
   port: 0,
   sources: {
     "/tests.js": "process-start-browser.ts",
-    "/worker.js": "fixtures/stop-order-worker.ts",
+    "/worker.js": "fixtures/process-start-worker.ts",
     "/fs-worker.js": "../browser/fs-worker.ts",
   },
   route(path, headers) {

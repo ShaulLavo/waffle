@@ -13,6 +13,7 @@ export const fdLayout = {
   held: 448,
   replacement: 512,
   after: 576,
+  status: [1024, 1056, 1088, 1120, 1152],
 } as const;
 
 function checked(instructions: number[]): number[] {
@@ -41,6 +42,10 @@ function pipe(byte: number, address: number): number[] {
   return store(address + 32, i32(byte)).concat(checked(io("write", 1, address, 1)));
 }
 
+function stat(address: number): number[] {
+  return checked(i32(4).concat(i32(address), call(6)));
+}
+
 export function descriptorModule(selected: DescriptorCase): Uint8Array<ArrayBuffer> {
   const p = fdLayout;
   return guestModule({
@@ -51,24 +56,29 @@ export function descriptorModule(selected: DescriptorCase): Uint8Array<ArrayBuff
       { name: "fd_seek", params: [0x7f, 0x7e, 0x7f, 0x7f] },
       { name: "fd_tell", params: [0x7f, 0x7f] },
       { name: "fd_close", params: [0x7f] },
+      { name: "fd_fdstat_get", params: [0x7f, 0x7f] },
     ],
-    initial: checked(io("read", 4, p.first, 2)).concat(
+    initial: stat(p.status[0]).concat(
+      checked(io("read", 4, p.first, 2)),
       tell(p.first + 16),
       store(p.spawn, i32(1).concat(call(0))),
       wait32(p.childReady),
+      stat(p.status[2]),
       checked(io("read", 4, p.resumed, 2)),
       tell(p.resumed + 16),
       seek(-9n, p.resumed + 24),
       signal(p.cursorReady),
       store(p.held + 32, i32(0x5655)),
       checked(io(selected, 4, p.held, 2)),
+      stat(p.status[4]),
       tell(p.held + 16),
       checked(io("read", 4, p.after, 1)),
       tell(p.after + 16),
       pipe(77, 704),
       wait32(p.mainRelease),
     ),
-    secondary: checked(io("read", 4, p.child, 2)).concat(
+    secondary: stat(p.status[1]).concat(
+      checked(io("read", 4, p.child, 2)),
       tell(p.child + 16),
       seek(1n, p.child + 24),
       store(672, i32(0x7978)),
@@ -79,6 +89,7 @@ export function descriptorModule(selected: DescriptorCase): Uint8Array<ArrayBuff
       checked(io("read", 0, 768, 1)),
       pipe(80, 832),
       checked(i32(4).concat(call(5))),
+      stat(p.status[3]),
       tell(p.replacement + 16),
       checked(io("read", 4, p.replacement, 2)),
       store(928, i32(81)),

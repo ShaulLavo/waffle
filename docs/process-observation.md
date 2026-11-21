@@ -217,29 +217,36 @@ type ProcessStartState = {
 
 The steps, in order:
 
-| Step                 | Reached when                                                                                       |
-| -------------------- | -------------------------------------------------------------------------------------------------- |
-| `launching`          | The broker invoked the adapter. An embedder launcher that awaits before `launchWorker` stays here. |
-| `worker-constructed` | `launchWorker` constructed the Worker.                                                             |
-| `start-posted`       | The start request and its ports were posted to the Worker.                                         |
-| `worker-started`     | The page received the Worker's first message. Bootstrap posts one on entry.                        |
-| `runtime-loaded`     | Bootstrap loaded the process client modules.                                                       |
-| `group-joined`       | Bootstrap attached the memory group member and took its exit lock, or had no group.                |
-| `modules-loaded`     | Bootstrap loaded the process host modules.                                                         |
-| `memory-bound`       | The guest's linear memory is bound.                                                                |
-| `instantiated`       | The guest module is instantiated, before entry.                                                    |
-| `running`            | Executable entry committed.                                                                        |
+| Step                  | Reached when                                                                                                |
+| --------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `launching`           | The broker invoked the adapter. An embedder launcher that awaits before `launchWorker` stays here.          |
+| `worker-constructed`  | `launchWorker` constructed the Worker.                                                                      |
+| `start-posted`        | The start request and its ports were posted to the Worker.                                                  |
+| `worker-started`      | The page received the Worker's first message. Bootstrap posts one on entry.                                 |
+| `runtime-loaded`      | Bootstrap loaded the process client modules.                                                                |
+| `group-joined`        | Bootstrap attached the memory group member and took its exit lock, or had no group.                         |
+| `modules-loaded`      | Bootstrap loaded the process host modules.                                                                  |
+| `installing-bindings` | The worker is entering installation of inherited descriptors.                                               |
+| `bindings-installed`  | The worker finished installing inherited descriptors.                                                       |
+| `instantiating`       | Imports are ready. The worker is entering the native Wasm constructor or the executor's instantiation hook. |
+| `memory-bound`        | The guest's linear memory is bound.                                                                         |
+| `instantiated`        | The guest module is instantiated, before entry.                                                             |
+| `running`             | Executable entry committed.                                                                                 |
 
-A start stuck at `start-posted` never ran bootstrap: its worker script never loaded or
-its start message never arrived. A worker script that fails to load fires the Worker's
-`error` event and fails the start, so a load that never answers is the usual cause.
+A start stuck at `start-posted` has no observed bootstrap progress. The Worker may
+still be loading its script or waiting for the start message. A worker script that
+fails to load fires the Worker's `error` event and fails the start.
 
 The record costs one small object per launch and adds no message. The page stamps the
-steps it passes itself. The three bootstrap steps share the Worker's memory sample cell
+steps it passes itself. The bootstrap steps share the Worker's memory sample cell
 until memory is bound, so the page sees only the latest when it looks, stamped with the
 Worker's own clock; that time can precede the page's receipt of the first message.
+Imported memory can bind before the constructor or hook runs. When the cell already
+holds bytes, it skips the `instantiating` marker.
 `memory-bound` and `running` are read from shared state and stamped when the page first
-sees them, at a later Worker message or a `startStates()` call. Launches without a
+sees them, at a later Worker message or a `startStates()` call. A snapshot can reach
+`running` before the page processes the Worker's first or instantiation message.
+Those intermediate timestamps can be absent. Launches without a
 worker (host programs, commands and controller launches) stay at `launching` until their
 adapter returns. A process leaves the list when its worker reports its end or the broker
 stops it.

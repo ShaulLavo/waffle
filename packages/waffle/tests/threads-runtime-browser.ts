@@ -6,26 +6,32 @@ import {
   WorkerProcessClient,
   type WorkerProcessMessage,
 } from "../proc/worker-client.js";
-import { PipeController } from "../proc/pipes.js";
+import { PipeController, type PipeEndpoint } from "../proc/pipes.js";
 import { createWorkerPipeCodec } from "../proc/worker-pipes.js";
 import { createThreadRuntime } from "./threads-runtime-host.js";
 import { cleanupThreadRuntime, releaseThreadBarriers } from "./threads-runtime-cleanup.js";
 import type { SharedGuestSnapshot } from "../memory/reservations.js";
-import { stockThreadCase, type RuntimeThreadCase } from "./threads-runtime-cases.js";
+import type { ProcessExit } from "../proc/types.js";
+import {
+  isRuntimeThreadRegression,
+  stockThreadCase,
+  type BrowserRuntimeThreadCase,
+} from "./threads-runtime-cases.js";
+import {
+  check,
+  checkFatalRetirement,
+  deadline,
+  observeThreadOwner,
+  releaseFatalThread,
+  runOverlappingWaits,
+  runReceivingGrowth,
+  runThreadAdmission,
+  runThreadIds,
+  ThreadRegressionObservations,
+  until,
+} from "./threads-runtime-regression-controls.js";
+import { RuntimeDescriptorCase } from "./threads-runtime-fd-browser.js";
 export type { RuntimeThreadCase } from "./threads-runtime-cases.js";
-
-function check(value: unknown, label: string): asserts value {
-  if (!value) throw new Error(label);
-}
-function deadline<T>(promise: Promise<T>, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout>;
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(label)), 15000);
-    }),
-  ]).finally(() => clearTimeout(timer));
-}
 
 function checkStockBackings(
   observations: readonly (readonly SharedGuestSnapshot[])[],
@@ -59,8 +65,61 @@ function peakAliases(observations: readonly (readonly SharedGuestSnapshot[])[]):
     0,
   );
 }
+function expectedOutput(selected: BrowserRuntimeThreadCase): string {
+  if (stockThreadCase(selected))
+    return `threads-ok mode=${selected} main-static=1369948382 main-tls=901\n`;
+  switch (selected) {
+    case "join":
+      return "c";
+    case "fd-read":
+    case "fd-write":
+      return "PRM";
+    case "admission":
+      return "A";
+    case "growth":
+      return "AB";
+    case "overlapping-waits":
+      return "W";
+    default:
+      return "";
+  }
+}
+
+function checkExit(
+  selected: BrowserRuntimeThreadCase,
+  exit: ProcessExit,
+  output: string,
+  errors: readonly string[],
+): void {
+  const signaled = ["kill-start", "cpu", "wait32", "wait64"].includes(selected);
+  const code = signaled ? 9 : selected === "fatal-exit" ? 23 : 0;
+  check(
+    exit.kind === (signaled ? "signaled" : "exited") && exit.code === code,
+    `Runtime ${selected} outcome ${JSON.stringify(exit)}, output ${output}, errors ${errors}`,
+  );
+  check(output === expectedOutput(selected), `Runtime ${selected} stdout ${output}`);
+}
+
+function threadServiceUrl(
+  local: boolean,
+  fence: boolean,
+  descriptor: RuntimeDescriptorCase | undefined,
+) {
+  if (descriptor)
+    return local
+      ? new URL("./threads-runtime-fd-service.ts", import.meta.url).href
+      : "/thread-fd-service.js";
+  if (fence)
+    return local
+      ? new URL("./threads-runtime-service-barrier.ts", import.meta.url).href
+      : "/thread-barrier.js";
+  return local
+    ? new URL("../thread/service-worker.ts", import.meta.url).href
+    : "/thread-service.js";
+}
+
 export async function runThreadsRuntime(
-  selected: RuntimeThreadCase = "pair",
+  selected: BrowserRuntimeThreadCase = "pair",
   local = false,
   expectedFixtureSha256?: string,
 ) {
@@ -71,7 +130,14 @@ export async function runThreadsRuntime(
   let constructionKilled = false;
   let killAtConstruction: (() => void) | undefined;
   let guestReady = 0;
-  let stopped = 0;
+  const stopped = new Set<Worker>();
+  const observations = new ThreadRegressionObservations(stopped);
+  const isRegression = isRuntimeThreadRegression(selected);
+  const allocator = selected === "tid-boundaries" ? await observeThreadOwner() : undefined;
+  const descriptor =
+    selected === "fd-read" || selected === "fd-write"
+      ? new RuntimeDescriptorCase(selected === "fd-read" ? "read" : "write", local)
+      : undefined;
   const barriers = new Set<Worker>();
   let heldSections: Int32Array | undefined;
   let drainRevoked = false;
@@ -105,6 +171,8 @@ export async function runThreadsRuntime(
       workerTargets.set(this, target);
       created.push(this);
       urls.push(target);
+      if (isRegression) observations.attach(this, target);
+      descriptor?.observe(this, target);
       if (
         selected === "kill-start" &&
         (String(url).includes("thread-guest") || String(url).includes("guest-bootstrap"))
@@ -140,6 +208,7 @@ export async function runThreadsRuntime(
       message: unknown,
       transfer?: Transferable[] | StructuredSerializeOptions,
     ): void {
+      descriptor?.observePost(message);
       if (
         message &&
         typeof message === "object" &&
@@ -148,6 +217,7 @@ export async function runThreadsRuntime(
       )
         observeBacking(message.memory);
       const target = workerTargets.get(this) ?? "unknown";
+      if (isRegression) observations.post(this, message);
       recordCausal("worker-post", {
         worker: target,
         messageKind:
@@ -172,11 +242,12 @@ export async function runThreadsRuntime(
     override terminate() {
       if (barriers.has(this) && heldSections && Atomics.load(heldSections, 0) !== 0)
         throw new Error("service terminated with a live filesystem section");
-      stopped++;
+      check(!stopped.has(this), "Worker received a duplicate native stop");
+      stopped.add(this);
       return super.terminate();
     }
   };
-  const runtime = createThreadRuntime(local, errors);
+  const runtime = createThreadRuntime(local, errors, descriptor?.host);
   const descriptors = new DescriptorTable();
   const backingObservations: ReturnType<typeof runtime.sharedMemory.snapshot>["sharedGuests"][] =
     [];
@@ -190,13 +261,86 @@ export async function runThreadsRuntime(
     if (backings.length) backingObservations.push(backings);
   };
   const input = new PipeController({ relay: "manual" });
+  const threadInput = new PipeController({ relay: "manual" });
   const pipe = new PipeController({ relay: "manual" });
   let output = "";
   let drainingOutput: ReturnType<typeof setInterval> | undefined;
+  let failure: unknown;
+
+  async function exerciseFence(pid: number, exited: () => boolean, terminate: () => Promise<void>) {
+    await until(() => !!heldSections, "real filesystem section was entered");
+    const before = runtime.sharedMemory.snapshot().sharedGuests;
+    check(
+      before.length === 1 && before[0]?.chargedBytes === 33554432,
+      "one admitted ceiling before kill",
+    );
+    await terminate();
+    await deadline(drainMarker.promise, "fixture drain marker deadline");
+    check(drainRevoked, "fixture drain started without real filesystem revocation");
+    recordCausal("drain-marker-observed", { pid, revoked: drainRevoked });
+    check(
+      heldSections && Atomics.load(heldSections, 0) === 1,
+      "real section disappeared before release",
+    );
+    check(!exited(), "process collected before filesystem safety");
+    fenceBlocked = true;
+    recordCausal("fixture-probe-post-before", { barriers: barriers.size });
+    for (const worker of barriers) worker.postMessage({ kind: "fixture-probe" });
+    recordCausal("fixture-probe-post-after", { barriers: barriers.size });
+    await deadline(fixtureProbe.promise, "fixture probe deadline");
+    check(fixtureProbeReceived, "same-process fixture probe did not return");
+    recordCausal("fixture-release-post-before", { barriers: barriers.size });
+    for (const worker of barriers) worker.postMessage({ kind: "fixture-release" });
+    recordCausal("fixture-release-post-after", { barriers: barriers.size });
+    await deadline(barrierRelease.promise, "fixture release deadline");
+  }
+
+  async function runRegression(
+    selected: BrowserRuntimeThreadCase,
+    pid: number,
+    inputWriter: PipeEndpoint,
+  ) {
+    if (descriptor) {
+      await until(() => !!backingMemory, "descriptor process backing");
+      check(backingMemory, "descriptor process backing");
+      return descriptor.run({
+        runtime,
+        memory: backingMemory,
+        pid,
+        inputWriter,
+        observations,
+        readOutput: () => output,
+      });
+    }
+    if (selected === "overlapping-waits") return runOverlappingWaits(observations);
+    if (selected === "admission") return runThreadAdmission(observations);
+    if (selected === "growth") return runReceivingGrowth(observations);
+    if (allocator) return runThreadIds(observations, allocator);
+  }
+
+  async function prepareThreadDescriptors(rootPid: number) {
+    const fds = [
+      { parent: 1, child: 1 },
+      { parent: 1, child: 2 },
+    ];
+    const writer = threadInput.retain(rootPid, "write");
+    if (descriptor || selected === "fatal-exit") {
+      descriptors.openAt(6, threadInput.retain(rootPid, "read"), RIGHTS_ALL, RIGHTS_ALL);
+      fds.push({ parent: 6, child: 0 });
+    }
+    if (descriptor) {
+      fds.push({ parent: 4, child: 4 }, { parent: 5, child: 5 });
+      await descriptor.arm();
+    }
+    return { fds, writer };
+  }
+
   try {
     recordCausal("runtime-start", { selected });
     const stock = stockThreadCase(selected);
     const killed = ["kill-start", "cpu", "wait32", "wait64"].includes(selected);
+    const fatal = selected === "fatal-exit";
+    const needsFence = killed || fatal;
     const source = stock
       ? new Uint8Array(await (await fetch("/threads.wasm")).arrayBuffer())
       : generatedRuntimeThreadModule(selected);
@@ -214,16 +358,13 @@ export async function runThreadsRuntime(
           ? new URL("../browser/preview1-worker.ts", import.meta.url).href
           : "/preview1-worker.js",
         threaded: {
-          serviceWorkerUrl: !killed
-            ? local
-              ? new URL("../thread/service-worker.ts", import.meta.url).href
-              : "/thread-service.js"
-            : local
-              ? new URL("./threads-runtime-service-barrier.ts", import.meta.url).href
-              : "/thread-barrier.js",
-          guestWorkerUrl: local
-            ? new URL("../thread/guest-bootstrap.ts", import.meta.url).href
-            : "/thread-guest.js",
+          serviceWorkerUrl: threadServiceUrl(local, needsFence, descriptor),
+          guestWorkerUrl:
+            selected === "growth"
+              ? "/thread-growth.js"
+              : local
+                ? new URL("../thread/guest-bootstrap.ts", import.meta.url).href
+                : "/thread-guest.js",
         },
         request: {
           module: context.module,
@@ -243,7 +384,9 @@ export async function runThreadsRuntime(
       identity: runtime.identities.buffer,
       capacity: 8,
     });
-    root.data = { filesystem: runtime.filesystem.createIdentity() };
+    const rootIdentity = runtime.filesystem.createIdentity();
+    root.data = { filesystem: rootIdentity };
+    await descriptor?.setup(runtime, descriptors, rootIdentity);
     const reader = pipe.retain(root.pid, "read");
     const writer = pipe.retain(root.pid, "write");
     descriptors.openAt(1, writer, RIGHTS_ALL, RIGHTS_ALL);
@@ -253,7 +396,13 @@ export async function runThreadsRuntime(
       descriptors,
       codec: createWorkerPipeCodec(),
       postMessage: (message) => notices.push(message),
-      prepareSpawn: () => ({ data: { filesystem: runtime.filesystem.createIdentity() } }),
+      prepareSpawn: () => {
+        const filesystem = runtime.filesystem.createIdentity();
+        const data = { filesystem };
+        return descriptor
+          ? { data, codec: createWorkerPipeCodec({ fallback: descriptor.codec(filesystem) }) }
+          : { data };
+      },
     });
     await service.adoptRuntimeRoot(root, { memory: [], stop: () => descriptors.dispose() });
     await runtime.filesystem.writeFile("/survivor", "original");
@@ -281,21 +430,21 @@ export async function runThreadsRuntime(
         (url) =>
           !url.includes("thread-service") &&
           !url.includes("thread-guest") &&
+          !url.includes("thread-fd-service") &&
+          !url.includes("thread-growth") &&
           !url.includes("service-worker") &&
           !url.includes("guest-bootstrap"),
       ) && runtime.sharedMemory.snapshot().sharedGuests.length === 0,
       "ordinary launch eagerly created thread resources",
     );
+    const threadDescriptors = await prepareThreadDescriptors(root.pid);
     const pid = client.spawn(root.pid, {
       executable: "/bin/threads",
       argv: ["threads", selected],
       env: {},
       cwd: "/",
       job: -1,
-      fds: [
-        { parent: 1, child: 1 },
-        { parent: 1, child: 2 },
-      ],
+      fds: threadDescriptors.fds,
     });
     killAtConstruction = () => {
       constructionKilled = true;
@@ -308,41 +457,29 @@ export async function runThreadsRuntime(
       const n = reader.tryRead([buffer]);
       if (n > 0) output += new TextDecoder().decode(buffer.subarray(0, n));
     }, 5));
-    if (killed) {
+    if (needsFence) {
       if (selected === "kill-start") await until(() => constructionKilled);
-      if (selected !== "kill-start")
+      if (killed && selected !== "kill-start")
         await until(
           () =>
             client.startStatus(root.pid, pid) === 0 &&
             (selected === "cpu" ? guestReady > 0 : registered > 0),
         );
-      const before = runtime.sharedMemory.snapshot().sharedGuests;
-      check(
-        before.length === 1 && before[0]?.chargedBytes === 33554432,
-        "one admitted ceiling before kill",
+      await exerciseFence(
+        pid,
+        () => client.childExited(root.pid, pid),
+        async () => {
+          if (fatal) return releaseFatalThread(observations, pid);
+          recordCausal("kill-request", { pid });
+          await service.kill(pid, 9);
+        },
       );
-      await until(() => !!heldSections);
-      recordCausal("kill-request", { pid });
-      await service.kill(pid, 9);
-      await deadline(drainMarker.promise, "fixture drain marker deadline");
-      check(drainRevoked, "fixture drain started without real filesystem revocation");
-      recordCausal("drain-marker-observed", { pid, revoked: drainRevoked });
-      check(
-        heldSections && Atomics.load(heldSections, 0) === 1,
-        "real section disappeared before release",
-      );
-      check(!client.childExited(root.pid, pid), "process collected before filesystem safety");
-      fenceBlocked = true;
-      recordCausal("fixture-probe-post-before", { barriers: barriers.size });
-      for (const worker of barriers) worker.postMessage({ kind: "fixture-probe" });
-      recordCausal("fixture-probe-post-after", { barriers: barriers.size });
-      await deadline(fixtureProbe.promise, "fixture probe deadline");
-      check(fixtureProbeReceived, "same-process fixture probe did not return");
-      recordCausal("fixture-release-post-before", { barriers: barriers.size });
-      for (const worker of barriers) worker.postMessage({ kind: "fixture-release" });
-      recordCausal("fixture-release-post-after", { barriers: barriers.size });
-      await deadline(barrierRelease.promise, "fixture release deadline");
     }
+    let regression: object | undefined = await runRegression(
+      selected,
+      pid,
+      threadDescriptors.writer,
+    );
     let exit;
     try {
       exit = await deadline(supervisor.waitForExit(root.pid, pid), "Runtime pair deadline");
@@ -352,21 +489,8 @@ export async function runThreadsRuntime(
     const buffer = new Uint8Array(4096);
     const n = reader.tryRead([buffer]);
     if (n > 0) output += new TextDecoder().decode(buffer.subarray(0, n));
-    check(
-      !killed
-        ? exit.kind === "exited" && exit.code === 0
-        : exit.kind === "signaled" && exit.code === 9,
-      `Runtime pair outcome ${JSON.stringify(exit)}, output ${output}, errors ${errors}`,
-    );
-    check(
-      output ===
-        (stock
-          ? `threads-ok mode=${selected} main-static=1369948382 main-tls=901\n`
-          : selected === "join"
-            ? "c"
-            : ""),
-      `Runtime pair stdout ${output}`,
-    );
+    checkExit(selected, exit, output, errors);
+    if (fatal) regression = await checkFatalRetirement(observations, pid);
     check(
       inputWriter.tryWrite([new Uint8Array([1])]) === 1,
       "could not release ordinary sibling stdin",
@@ -390,6 +514,7 @@ export async function runThreadsRuntime(
       "filesystem continued after thread terminal",
     );
     await deadline(runtime.dispose(), "Runtime disposal deadline");
+    if (descriptor) regression = { ...regression, ...descriptor.checkDisposal() };
     check(errors.length === 0, errors.join("\n"));
     const snapshot = runtime.sharedMemory.snapshot();
     check(
@@ -420,7 +545,18 @@ export async function runThreadsRuntime(
         controlDebts.reduce((sum, holder) => sum + holder.declaredBytes, 0) === snapshot.debtBytes,
       "cleanup retained debt outside consumed controls",
     );
-    check(stopped === created.length, `Worker stop mismatch ${stopped}/${created.length}`);
+    if (descriptor) {
+      const sizes = controlDebts.map((holder) => holder.declaredBytes).sort((a, b) => a - b);
+      const debtSizes = sizes.join(",");
+      check(
+        debtSizes === "88,88" || debtSizes === "4,88,88",
+        `unexpected descriptor control debt: ${sizes}`,
+      );
+    }
+    check(
+      stopped.size === created.length,
+      `Worker stop mismatch ${stopped.size}/${created.length}`,
+    );
     return {
       selected,
       ...hostInfo(),
@@ -428,7 +564,7 @@ export async function runThreadsRuntime(
       fenceBlocked,
       registered,
       guestReady,
-      stopped,
+      stopped: stopped.size,
       fixtureSha256,
       exit,
       output,
@@ -443,36 +579,39 @@ export async function runThreadsRuntime(
         .filter((holder) => holder.label === "guest-control" && holder.state === "debt")
         .map((holder) => holder.declaredBytes),
       causalEvents,
+      regression,
     };
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
     await cleanupThreadRuntime({
       release: [
         () => releaseThreadBarriers(barriers, barrierReleased),
+        () => descriptor?.release(),
         () => clearInterval(drainingOutput),
         () => descriptors.dispose(),
+        () => descriptor?.dispose(),
         () => pipe.dispose(),
         () => input.dispose(),
+        () => threadInput.dispose(),
       ],
       dispose: () => runtime.dispose(),
-      workers: created,
+      workers: created.map((worker) => ({
+        terminate: () => {
+          if (!stopped.has(worker)) NativeWorker.prototype.terminate.call(worker);
+        },
+      })),
       restore: () => {
         backingMemory = undefined;
         globalThis.Worker = NativeWorker;
+        allocator?.restore();
       },
+    }).catch((cleanup: unknown) => {
+      if (!failure) throw cleanup;
+      throw new AggregateError([failure, cleanup], `${String(failure)}\n${String(cleanup)}`);
     });
   }
-}
-
-async function until(predicate: () => boolean): Promise<void> {
-  let timer: ReturnType<typeof setInterval>;
-  await deadline(
-    new Promise<void>((resolve) => {
-      timer = setInterval(() => {
-        if (predicate()) resolve();
-      }, 5);
-    }),
-    "thread entry observation deadline",
-  ).finally(() => clearInterval(timer));
 }
 
 function hostInfo() {

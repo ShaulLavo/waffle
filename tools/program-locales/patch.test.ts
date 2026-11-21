@@ -26,17 +26,17 @@ test("grouped coreutils invocations become explicit single-program Cargo calls",
   ]);
   assert.deepEqual(
     singleProgramBuilds(
-      ["-p", "@waffle-os/coreutils", "--bins", "--features", "cooperative-wasi"],
+      ["-p", "waffle-coreutils", "--bins", "--features", "cooperative-wasi"],
       ["ls", "head"],
     ),
     [
       {
         program: "ls",
-        args: ["--features", "cooperative-wasi", "-p", "@waffle-os/coreutils", "--bin", "ls"],
+        args: ["--features", "cooperative-wasi", "-p", "waffle-coreutils", "--bin", "ls"],
       },
       {
         program: "head",
-        args: ["--features", "cooperative-wasi", "-p", "@waffle-os/coreutils", "--bin", "head"],
+        args: ["--features", "cooperative-wasi", "-p", "waffle-coreutils", "--bin", "head"],
       },
     ],
   );

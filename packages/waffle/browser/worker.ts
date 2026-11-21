@@ -1333,7 +1333,9 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
       adoptStdio(wasi.descriptors, discardedStdio);
+      startStep(memorySampler, "installing-bindings");
       runtimeProcess.installBindings();
+      startStep(memorySampler, "bindings-installed");
       const { observedPoll, wait } = processPollWait(recording, {
         entered: () => started,
         memory: () => boundMemory,
@@ -1407,15 +1409,19 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       throw new TypeError("executor imports hook cannot replace imported memory");
     }
     bindImportedMemory(req.module, linked, bindMemory);
+    const instanceImports = executor.instantiate
+      ? linked
+      : (memorySampler?.imports(req.module, linked) ?? linked);
+    startStep(memorySampler, "instantiating");
     const instance = executor.instantiate
       ? await Promise.race([
-          executor.instantiate(linked, { ...bindingsContext, bindMemory }),
+          executor.instantiate(instanceImports, { ...bindingsContext, bindMemory }),
           startupCancelled.then(() => {
             checkActive();
             throw new Error("startup cancelled");
           }),
         ])
-      : new WebAssembly.Instance(req.module, memorySampler?.imports(req.module, linked) ?? linked);
+      : new WebAssembly.Instance(req.module, instanceImports);
     if (done) return;
     checkActive();
     bindMemory(entryMemory(instance, groupMember.memory));
