@@ -1,6 +1,6 @@
 # Shared-memory reservations
 
-Every page runtime records its shared backing in one page-wide reservation ledger. By default the ledger is unbounded: it records every holder but admits everything, on every browser and user agent. Startup does not probe, read `navigator`, create a measurement Worker or await classification.
+Every page runtime records its shared backing in one page-wide reservation ledger. The default policy records each holder without enforcing a page-wide budget. Individual allocations remain subject to runtime and browser limits. Startup does not probe, read `navigator`, create a measurement Worker or await classification.
 
 ```ts
 import { createRuntime } from "waffle";

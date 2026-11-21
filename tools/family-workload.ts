@@ -118,7 +118,8 @@ async function prepareInput(fs: Runtime["filesystem"]) {
     }
   });
   const reread = await time(() => fs.readFile(inputPath));
-  ok(reread.value?.every((byte, index) => byte === payload[index]));
+  ok(reread.value);
+  ok(reread.value.every((byte, index) => byte === payload[index]));
   assert.equal(reread.value.byteLength, payload.byteLength);
   // Same file and chunk sizes on a seeded tree. This includes VFS publication, not just page search.
   const overwrite = await time(() => fs.writeFile(inputPath, payload));
@@ -265,8 +266,9 @@ async function cancelPartial(
       return exit;
     });
     const final = await fs.readFile(partialPath);
-    assert.equal(final?.length, prefix.length);
-    ok(final?.every((byte, index) => byte === prefix[index]));
+    ok(final);
+    assert.equal(final.length, prefix.length);
+    ok(final.every((byte, index) => byte === prefix[index]));
     assert.deepEqual(session.outputBytes(), { stdout: 0, stderr: 0 });
     return { exit: cancelled.value, ms: cancelled.ms, partialBytes: final.length, before };
   } finally {

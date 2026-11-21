@@ -1035,18 +1035,12 @@ export async function runAcceptance(
   });
   assert.ok(bundle.success, `Acceptance bundle failed: ${bundle.logs.join("\n")}`);
   if (browser) {
-    const { familyBrowser, runPackedWorkload } = await import("../tools/family-browser-runner.ts");
-    const timeout = AbortSignal.timeout(control.timeoutMs);
-    const signal = control.signal ? AbortSignal.any([control.signal, timeout]) : timeout;
-    const report = await runPackedWorkload(
-      consumer,
-      resolve(consumer, "acceptance.js"),
-      familyBrowser(browser),
-      signal,
-    );
+    const runner = resolve(import.meta.dirname, "../tools/family-workload-browser.ts");
+    const result = resolve(consumer, "workload.json");
+    await runCommand(["bun", runner, browser, result], consumer, env, control);
     return {
       script: basename(script),
-      output: JSON.stringify(report),
+      output: readFileSync(result, "utf8"),
       ...(bound ? { source: bound.receipt() } : {}),
     };
   }

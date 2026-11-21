@@ -23,7 +23,6 @@ interface BrowserOptions {
   readonly preview1Worker: string;
   readonly engine: FamilyBrowser;
   readonly workload?: boolean;
-  readonly signal?: AbortSignal;
 }
 
 async function focusControl(page: Page) {
@@ -84,15 +83,8 @@ async function runPage(page: Page, origin: string, workload: boolean) {
 }
 
 export async function runFamilyBrowser(options: BrowserOptions) {
-  const lifecycle = options.signal
-    ? new BrowserRunnerLifecycle(600_000, 5000, undefined, "caller")
-    : new BrowserRunnerLifecycle();
-  const stop = () => {
-    void lifecycle.close().catch(() => {});
-  };
-  options.signal?.addEventListener("abort", stop, { once: true });
+  const lifecycle = new BrowserRunnerLifecycle();
   try {
-    options.signal?.throwIfAborted();
     await lifecycle.init();
     const output = await lifecycle.directory(lifecycle.scratch, "bundle-");
     const entrypoints = [options.entry, options.fsWorker, options.preview1Worker];
@@ -141,17 +133,11 @@ export async function runFamilyBrowser(options: BrowserOptions) {
     }
     return { ...info, samples };
   } finally {
-    options.signal?.removeEventListener("abort", stop);
     await lifecycle.close();
   }
 }
 
-export async function runPackedWorkload(
-  consumer: string,
-  entry: string,
-  engine: FamilyBrowser,
-  signal?: AbortSignal,
-) {
+export async function runPackedWorkload(consumer: string, entry: string, engine: FamilyBrowser) {
   const installed = (await realpath(resolve(consumer, "node_modules"))) + sep;
   async function installedPath(specifier: string) {
     const path = await realpath(Bun.resolveSync(specifier, consumer));
@@ -194,7 +180,6 @@ export async function runPackedWorkload(
     preview1Worker,
     engine,
     workload: true,
-    signal,
   });
   return { guests, ...result };
 }
