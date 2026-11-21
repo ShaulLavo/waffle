@@ -27,12 +27,31 @@ test("WebKit admission uses the original navigation options and removes only its
   expect(page.goto).toHaveBeenCalledTimes(1);
   expect(page.goto).toHaveBeenCalledWith("http://127.0.0.1:1234#fixture", options);
   const [matches, resume, routeOptions] = page.route.mock.calls[0]!;
-  if (typeof matches !== "function") throw new Error("Expected URL predicate");
-  expect(matches(new URL("http://127.0.0.1:1234/"))).toBe(true);
-  expect(matches(new URL("http://127.0.0.1:1234/other"))).toBe(false);
+  // A RegExp is matched in Playwright's server, so the page's other requests are never
+  // intercepted and reported to the client while the route exists. A predicate would be.
+  if (!(matches instanceof RegExp)) throw new Error("Expected a serializable URL pattern");
+  expect(matches.test("http://127.0.0.1:1234/")).toBe(true);
+  expect(matches.test("http://127.0.0.1:1234/other")).toBe(false);
+  expect(matches.test("http://127.0.0.1:1234/?")).toBe(false);
+  expect(matches.test("http://127.0.0.1:12345/")).toBe(false);
   // An expiring route breaks context routes that continue the request (Playwright 1.64.1).
   expect(routeOptions).toBeUndefined();
   expect(page.unroute).toHaveBeenCalledWith(matches, resume);
+});
+
+test("WebKit admission matches query characters literally", async () => {
+  const page = fixture();
+  const target = "http://127.0.0.1:1234/_waffle_observation_bootstrap?token=a.b+c(d)";
+  await navigateTestPage(page, target);
+  const [matches] = page.route.mock.calls[0]!;
+  if (!(matches instanceof RegExp)) throw new Error("Expected a serializable URL pattern");
+  expect(matches.test(new URL(target).href)).toBe(true);
+  expect(matches.test("http://127.0.0.1:1234/_waffle_observation_bootstrap?token=aXb+c(d)")).toBe(
+    false,
+  );
+  expect(matches.test("http://127.0.0.1:1234/_waffle_observation_arrival?token=a.b+c(d)")).toBe(
+    false,
+  );
 });
 
 for (const failure of [

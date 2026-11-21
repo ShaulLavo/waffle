@@ -87,3 +87,64 @@ the historical race as an unresolved timing failure.
 
 Original job logs and browser protocol artifacts remain attached to the named GitHub runs.
 Local reports are under `/work/reports/wasm-performance/next-speed/readlink/landing/`.
+
+## WebKit drops in the browser (serial) job, 2026-11-11 to 2026-11-21
+
+Survey of every attempt of the 400 CI runs created since 2026-11-09 found 23 failed
+`browser (serial)` jobs. The serial group runs one runner process at a time
+(`scripts/test-browser.ts`), so pages or contexts from different runners are never alive
+together. No job logged a kernel OOM kill, and the only WebKit `crash` events came from one
+runner, fixed below. There is no single common cause. The failures sort into these classes.
+
+Bootstrap arrival, missing control (`tests/page-runner/bootstrap-arrival-browser.test.ts`):
+runs 44458468086 (job 135341119555) and 44863392930 attempt 2 (job 136729953309) failed
+inside Playwright with `Object with guid response@... was not bound in the connection`,
+an uncaught error from a context `response` or `requestFinished` event. Only the missing
+control sends its arrival reply (410) while the navigation is still removing the WebKit
+COOP admission route. That route used a predicate. Playwright cannot serialize a predicate,
+so it intercepted every request on the page and reported the arrival fetch to the client.
+The admission route now uses an exact-URL RegExp that Playwright matches in its server,
+so other requests are no longer intercepted and reported. 275 runs of the unchanged missing
+control never reproduced the error on the PC, including six concurrent copies on one core, so
+the exact Playwright mechanism is unproven. Gating the 410 on navigation completion instead brought back the keep-alive
+script-probe timeout (6 of 30 runs on one core), so the test keeps its `Bun.sleep(1)`.
+Run 43897086084 (job 133411378090) is that earlier timeout.
+
+Running member reuse, WebKit page crash during `runningMemberReuse` with 4 pages
+(`{"engine":"webkit","crash":true}`, then `Target page, context or browser has been closed`):
+runs 44379349283, 44451516070 and 44459103051, all before PR 550 moved the busy case into a
+fresh browser. No recurrence since.
+
+Browser controls, `tests/page-runner/browser-controls-runner.ts webkit --prepared`, one
+control each time, all different:
+
+- peer-storage, `collector-failure`, `AbortError: The connection was closed.` on the
+  `indexeddb: contested open waits and reads flushed data` group: run 44863392930 attempt 1.
+- canonical-ownership: `Process browser resource closure did not settle during teardown`,
+  twice, from `process-recycling-browser-runner-control.ts:20`, through the 5 s
+  `BrowserRunnerLifecycle` cleanup cap: run 44150624471 (job 134281761723).
+- worker-capability-in-flight-loss: `Control lost initiating document before settlement`
+  and a leftover owned service worker: runs 43479634957 and 43231333992.
+- framework-extra: `Registered framework context closed timed out`
+  (`page-runner/framework-host.ts:732`): run 43394478779.
+- host-deadline-teardown: `Body timeout extension changed the independent teardown clock`
+  (`page-runner/host-drive-controls.ts:146`): run 43072689064.
+
+Link runner (`tests/link-browser-runner.ts webkit`): `evaluate: Target page, context or
+browser has been closed` right after navigation, without a page `crash` event: runs
+44729859695 and 44132865705.
+
+Others were branch-specific or appeared only once: process-recycling
+`stale checks leave the entire directory untouched` (two runs on one branch,
+43672756188 and 43676204297), publication-cross-tab (43609712880, 43203653200),
+storage (43976877773), asset-load-recovery (44712567168), notification-fairness
+(44451516070).
+
+The only theme shared by several classes is WebKit close and teardown taking longer than
+the harness allows on hosted runners: canonical-ownership and framework-extra both failed
+on close caps. Next step: measure `context.close()` and `browser.close()` durations for
+WebKit in the serial job (log them from `BrowserRunnerLifecycle` cleanup). If they approach
+the 5 s cap, raise the cap for WebKit as a hang cap, not a speed check. The link and
+in-flight-loss drops lost the page with no crash event. For them, record WebKit's stderr
+and the page `close` and `crash` events in the runner, so the next failure shows whether
+the web process died.
