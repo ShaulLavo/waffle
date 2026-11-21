@@ -36,9 +36,11 @@ while the underlying behavior persists.
 ## Worker termination and shared-page reuse
 
 - **Site.** For applicable process Workers, the broker selects SIGKILL and waits for a running
-  guest's unwind report before native termination. The memory group withholds pages while a
-  running member's exit is unproved. On final retirement it closes wait records and notifies
-  their pending addresses. [Broker](../packages/waffle/browser/process-broker.ts),
+  guest's unwind report before native termination. An individual stop with live siblings closes
+  its exact wait record without adding a wake. After native termination has been attempted for
+  every admitted agent and pending admissions have resolved, the owner irreversibly seals the
+  group, closes current and retired wait records, and notifies their pending addresses. This
+  wake can occur before cleanup completes. [Broker](../packages/waffle/browser/process-broker.ts),
   [group owner](../packages/waffle/group/state.ts), and
   [group lifetime contract](../docs/memory-groups.md#lifetime-and-physical-stop).
 - **Evidence.** Reproduced on the Linux PC with Playwright WebKit 27.2, Chromium 156.0.8078.4,
@@ -60,18 +62,24 @@ while the underlying behavior persists.
   after the exit report has unknown cause. The serial CI page losses have their own evidence.
   [Stop-order controls](group-futex-retirement.md#gap-1-a-member-running-guest-code-when-terminated)
   and [CI triage](ci-flakes.md#webkit-drops-in-the-browser-serial-job-2026-11-11-to-2026-11-21).
-- **Cost.** A non-polling guest can consume the one-second unwind cap. Unproved busy exits
-  withhold pages. Final retirement can wake a raw waiter, which must recheck its condition.
+- **Cost.** A non-polling guest can consume the one-second unwind cap. Busy exits remained
+  unproved through the 60-second observation cap on Linux WebKit and the iOS simulator,
+  withholding pages. On the simulator the guest kept a core busy until the tab closed.
+  Group teardown can wake a raw waiter, which must recheck its condition.
 - **Removal check.** Test each affected browser with and without the stop-order mitigation.
-  Require the page to survive the polling stop. Before removing any extra wait retirement or
-  quarantine, prove actual exit without an additional wake, no writes after page reuse, and
-  a live sibling receiving its intended notify. Keep native wake counts and ownership checks.
+  Require the page to survive the polling stop. Before removing the teardown-only wake,
+  prove actual exit without it, no writes after page reuse, and a live sibling receiving
+  its intended notify. Preserve native wake counts and the safety proofs in every case.
+  Pages may be reused only after physical stop and cleanup of the exact incarnation and
+  either its closed parked-wait record or proof that its thread exited. A failed cleanup
+  retains the member's debt.
 
 ## Filesystem backing on demand
 
-- **Site.** The filesystem owner creates each 16 MiB segment as fixed backing on first use.
-  PR 461 replaced 95 eager empty growable segments. The ledger still charges the advertised
-  extra capacity as one promise, with no backing for unused segments.
+- **Site.** The fixed filesystem root includes segment zero at construction. The other
+  95 segments get fixed 16 MiB backing individually on first use. PR 461 replaced the
+  95 eager empty growable segments. The ledger still charges the advertised extra capacity
+  as one promise, with no backing for unused extra segments.
   [Allocator](../packages/waffle/fs/shared.ts),
   [segment constructor](../packages/waffle/fs/protocol.ts), and
   [reservation contract](../docs/shared-memory.md#size-for-safari).
@@ -102,9 +110,9 @@ while the underlying behavior persists.
 - **Evidence.** Compatibility behavior. Bun Worker controls grow real shared Wasm memory
   from another agent and compare fixed views with kept growable ones. The unshared
   `grow(0)` control proves detachment at unchanged length. It covers a different case
-  from the receiving-worker shared-memory hypothesis mentioned in #303. The original
-  missing-or-throwing browser versions and OS, and the scope of that hypothesis in Waffle,
-  are unknown. [Kept-view change and results](https://github.com/ShaulLavo/waffle/pull/528),
+  from the [receiving-worker hypothesis in issue 306](https://github.com/ShaulLavo/waffle/issues/306).
+  The browser versions and OS that lacked conversion or threw are unknown, as is the scope
+  of that hypothesis in Waffle. [Kept-view change and results](https://github.com/ShaulLavo/waffle/pull/528),
   [view tests](../packages/waffle/tests/memory-views.test.ts), and
   [other-agent growth control](../packages/waffle/tests/fixtures/stable-memory-reader.ts).
 - **Cost.** A buffer getter for each fixed read. The cached byte view and DataView also check
