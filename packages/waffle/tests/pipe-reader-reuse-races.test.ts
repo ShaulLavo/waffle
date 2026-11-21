@@ -182,3 +182,47 @@ test("a relay-mode read holds its incarnation through consumption and demand", (
   expect(next.tryRead([output])).toBe(1);
   expect(output[0]).toBe(9);
 });
+
+for (const rollback of [false, true]) {
+  test(`writer hangup waits for a reclaiming reader to ${rollback ? "roll back" : "publish"}`, async () => {
+    const { pipe, reader, writer } = singleReader();
+    const { owner, epoch } = words(reader.handle());
+    reader.close();
+    const cas = A.compareExchange;
+    let hangup: Promise<void> | undefined;
+    let observed = 0;
+    let settled = false;
+    A.compareExchange = ((view: Int32Array, index: number, old: number, next: number) => {
+      if (rollback && sameWord(view, epoch) && hangup) return old + 1;
+      const previous = cas(view, index, old, next);
+      if (sameWord(view, owner) && next === -0x80000000 && previous === old) {
+        expect(writer.tryWrite([new Uint8Array([7])])).toBe(-PipeErrno.AGAIN);
+        expect(writer.readiness().hangup).toBe(false);
+        observed = Atomics.load(writer.notification, 0);
+        hangup = writer.waitReaderHangup().then(() => {
+          settled = true;
+        });
+      }
+      return previous;
+    }) as typeof A.compareExchange;
+    let inherited;
+    try {
+      if (rollback) expect(() => pipe.retain(4, "read")).toThrow("limit reached");
+      else inherited = pipe.retain(4, "read");
+    } finally {
+      A.compareExchange = cas;
+    }
+    expect(hangup).toBeDefined();
+    expect(Atomics.load(writer.notification, 0)).not.toBe(observed);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    if (inherited) {
+      expect(writer.tryWrite([new Uint8Array([7])])).toBe(1);
+      await Bun.sleep(0);
+      expect(settled).toBe(false);
+      inherited.close();
+    }
+    await hangup;
+    expect(writer.tryWrite([new Uint8Array([7])])).toBe(-PipeErrno.PIPE);
+  });
+}

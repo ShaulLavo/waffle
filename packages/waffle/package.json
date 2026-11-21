@@ -588,6 +588,13 @@
       "browser": "./programs/catalog.ts",
       "default": "./programs/catalog.ts"
     },
+    "./command": {
+      "types": "./proc/start-command.ts",
+      "node": "./dist/proc/start-command.js",
+      "bun": "./proc/start-command.ts",
+      "browser": "./proc/start-command.ts",
+      "default": "./proc/start-command.ts"
+    },
     "./proc/command": {
       "types": "./proc/command.ts",
       "node": "./dist/proc/command.js",

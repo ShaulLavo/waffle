@@ -719,10 +719,13 @@ class PipeState {
           ? this.writers[index]!
           : this.readers[index - this.writers.length]!;
       const pid = ring.owner;
+      const reader = index >= this.writers.length;
       if (
-        pid &&
-        (pid === RECLAIMING || !this.registry?.isRevoked(Math.abs(pid))) &&
-        (pid < 0 ? !ring.closed : ring.references > 0)
+        reader
+          ? this.readerPending(ring)
+          : pid &&
+            (pid === RECLAIMING || !this.registry?.isRevoked(Math.abs(pid))) &&
+            (pid < 0 ? !ring.closed : ring.references > 0)
       ) {
         alive = true;
         break;
@@ -751,6 +754,22 @@ class PipeState {
   }
   hasReaders(): boolean {
     return ringSome(this.readers, (ring) => this.readerAlive(ring));
+  }
+  /** A reservation or reclaiming slot may still publish a reader after the last close. */
+  readerHangup(): boolean {
+    const changed = atomicsLoad(this.changed, 0);
+    const generation = atomicsLoad(this.control, 5);
+    if (ringSome(this.readers, (ring) => this.readerPending(ring))) return false;
+    if (atomicsLoad(this.control, 5) === generation && atomicsLoad(this.changed, 0) === changed)
+      return true;
+    this.signal();
+    return false;
+  }
+  private readerPending(ring: Ring): boolean {
+    const pid = ring.owner;
+    if (pid === RECLAIMING) return true;
+    if (pid === 0 || this.registry?.isRevoked(Math.abs(pid))) return false;
+    return pid < 0 || ring.references > 0;
   }
   eof(): boolean {
     const generation = atomicsLoad(this.control, 5);
@@ -950,6 +969,7 @@ class PipeState {
     if (atomicsCompareExchange(ring.pid, 0, owner, RECLAIMING) !== owner) return undefined;
     if (!ring.advance(incarnation)) {
       atomicsStore(ring.pid, 0, owner);
+      this.signal();
       return undefined;
     }
     try {
@@ -1120,7 +1140,8 @@ export class PipeEndpoint implements Stream {
   tryWrite(chunks: readonly Uint8Array[]): number {
     if (this.mode !== "write" || !this.live) return -PipeErrno.BADF;
     if (!length(chunks)) return 0;
-    if (!this.state.hasReaders()) return -PipeErrno.PIPE;
+    if (!this.state.hasReaders())
+      return this.state.readerHangup() ? -PipeErrno.PIPE : -PipeErrno.AGAIN;
     const result = this.ring.write(
       chunks,
       () => this.live,
@@ -1178,12 +1199,24 @@ export class PipeEndpoint implements Stream {
     if (!this.live)
       return { readable: this.mode === "read", writable: false, hangup: true, nbytes: 0 };
     if (this.mode === "write") {
-      const hangup = !this.state.hasReaders();
-      return { readable: false, writable: !hangup && this.ring.writable, hangup, nbytes: 0 };
+      const writable = this.state.hasReaders() && this.ring.writable;
+      return {
+        readable: false,
+        writable,
+        hangup: !writable && this.state.readerHangup(),
+        nbytes: 0,
+      };
     }
     const nbytes = this.state.relay ? this.state.relayAvailable() : this.state.queued();
     const hangup = this.state.relay ? this.ring.closed : this.state.eof();
     return { readable: nbytes > 0 || hangup, writable: false, hangup, nbytes };
+  }
+  async waitReaderHangup(): Promise<void> {
+    for (;;) {
+      const observed = atomicsLoad(this.notification, 0);
+      if (!this.live || this.state.readerHangup()) return;
+      await waitChanged(this.notification, observed);
+    }
   }
   waitReadable(): Promise<void> {
     return this.wait("readable");

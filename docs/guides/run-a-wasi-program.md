@@ -2,6 +2,8 @@
 
 Register a compiled WASI command with a runtime, spawn it from the page, read its output, and wait for its exit status. This guide assumes you finished [Getting started](../getting-started.md) and have the `fs-worker.ts` entry, the build command and the isolation-header server.
 
+To run a packaged command, use [Run an installed Wasm command](run-an-installed-command.md).
+
 The pieces below are low-level. Bash Web and the Bun build use the same calls through their own adapters. Waffle makes no compatibility promise between revisions, so pin a commit.
 
 ## Compile a guest
