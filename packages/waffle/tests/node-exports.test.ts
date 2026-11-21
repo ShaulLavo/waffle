@@ -88,6 +88,9 @@ test("prepared runtime and Worker imports leave operation recorders and the supe
     assert.ok(modules.some((url) => url.endsWith("/dist/runtime.js")));
     assert.ok(!modules.some((url) => url.includes("/operations/")), modules.join("\\n"));
     assert.ok(!modules.some((url) => url.endsWith("/dist/proc/index.js")), modules.join("\\n"));
+    await assert.rejects(import("@waffle-os/runtime/fs/resolve-observation"), {
+      code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+    });
   `;
   expect(() =>
     execFileSync("node", ["--input-type=module", "--eval", script], {

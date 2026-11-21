@@ -88,6 +88,11 @@ const mutations = new Set([
   "remove",
   "move",
 ]);
+let connectObserved: (
+  owner: FilesystemService,
+  connection: FilesystemConnection,
+  acceptResolve: (id: number) => void,
+) => void;
 type ResponsePayload =
   | { kind: "pending" }
   | { kind: "inline" }
@@ -181,6 +186,11 @@ interface PreparedRequest {
 }
 /** One serial owner of the tree. No request ever waits for a guest acknowledgment. */
 export class FilesystemService {
+  static {
+    connectObserved = (owner, connection, acceptResolve) =>
+      owner.#connect(connection, acceptResolve);
+  }
+
   private sessions = new Set<Session>();
   private requestBudget?: SharedArrayBuffer;
   private readBudget?: WorkspaceReadBudget;
@@ -231,7 +241,10 @@ export class FilesystemService {
       throw error;
     }
   }
-  connect(connection: FilesystemConnection, acceptResolve?: (id: number) => void): void {
+  connect(connection: FilesystemConnection): void {
+    this.#connect(connection);
+  }
+  #connect(connection: FilesystemConnection, acceptResolve?: (id: number) => void): void {
     if (this.ownerStopping) {
       this.refuseConnection(connection);
       throw new FilesystemError(11);
@@ -2104,6 +2117,12 @@ async function prepareAcceptance(binding: OperationBinding) {
   }
 }
 
+function backendOptions(data: Record<string, unknown>): Record<string, unknown> {
+  if (data.operations === undefined) return data;
+  const { operations: _, ...options } = data;
+  return options;
+}
+
 /** Installs the service in a browser/Bun worker without importing any app code. */
 export function installFilesystemWorker(
   scope: {
@@ -2155,7 +2174,7 @@ export function installFilesystemWorker(
             scope.postMessage({ type: "filesystem-startup", stage, timestamp });
           reportRuntimeStartup(onStartupStage, "filesystem-connected");
         }
-        return backendFactory(data, onStartupStage, startupAbort.signal, () => {
+        return backendFactory(backendOptions(data), onStartupStage, startupAbort.signal, () => {
           if (!disposing) scope.postMessage({ type: "filesystem-state", status: "waiting" });
         });
       })
@@ -2173,7 +2192,8 @@ export function installFilesystemWorker(
             ? await prepareAcceptance(data.operations)
             : undefined;
           if (disposing) return data.connect.port.close();
-          owner.connect(data.connect, acceptResolve);
+          if (acceptResolve) connectObserved(owner, data.connect, acceptResolve);
+          else owner.connect(data.connect);
           scope.postMessage({ type: "filesystem-state", status: "ready" });
           reportRuntimeStartup(onStartupStage, "filesystem-ready");
           onStartupStage = undefined;

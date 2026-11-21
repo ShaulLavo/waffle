@@ -51,6 +51,7 @@ import {
   sharedRevoked,
   type FilesystemConnection,
 } from "../fs/index.js";
+import { registerResolveObservation } from "../fs/resolve-observation.js";
 import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
 import {
@@ -627,11 +628,12 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   postToHost({ type: "phase", name: "worker-start", duration: 0 });
   let started = false;
   const recording = operations ? await captureOperations(operations) : undefined;
-  const fs = new FilesystemClient(
-    req.filesystem,
-    undefined,
-    recording && { entered: () => started, writer: recording.writers.resolve },
-  );
+  if (recording)
+    registerResolveObservation(req.filesystem, {
+      entered: () => started,
+      writer: recording.writers.resolve,
+    });
+  const fs = new FilesystemClient(req.filesystem);
   const { cancellation, notifications, startupCancelled, cancelStartup } = startupControl(
     req.notifications,
     fs,
