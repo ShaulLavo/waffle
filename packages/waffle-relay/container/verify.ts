@@ -5,10 +5,10 @@ import { once } from "node:events";
 import { createRequire } from "node:module";
 
 const require = createRequire("/app/package.json");
-const nodeEntry = require.resolve("@waffle-os/relay/node");
+const nodeEntry = require.resolve("waffle-relay/node");
 const internal = (file: string) => nodeEntry.replace(/node\.js$/, file);
 const { createNodeRelayServer } = await import(nodeEntry);
-const { mintRelayToken } = await import(require.resolve("@waffle-os/relay/token"));
+const { mintRelayToken } = await import(require.resolve("waffle-relay/token"));
 const { serveConfig } = await import(internal("cli-config.js"));
 const { tcpPolicy, resolveDestination } = await import(internal("tcp-policy.js"));
 const { default: WebSocket } = await import(require.resolve("ws"));
@@ -16,7 +16,7 @@ const secret = randomBytes(32).toString("hex");
 assert.equal(process.version, "v26.12.1");
 assert.equal(process.arch, "x64");
 assert.equal(process.platform, "linux");
-for (const name of ["waffle", "@waffle-os/relay"]) {
+for (const name of ["waffle", "waffle-relay"]) {
   const manifest = JSON.parse(await readFile(`/app/node_modules/${name}/package.json`, "utf8"));
   assert.equal(manifest.version, "0.0.109");
 }

@@ -10,7 +10,10 @@
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "waffle": ["../packages/waffle/index.ts"]
+    }
   },
   "include": [
     "*.ts",

@@ -35,7 +35,7 @@ for (const path of ["/app", "/app/package.json", "/app/relay.json"]) {
   assert.equal(info.gid, 0);
   assert.equal(info.mode & 0o022, 0);
 }
-for (const name of ["waffle", "@waffle-os/relay"]) {
+for (const name of ["waffle", "waffle-relay"]) {
   const manifest = JSON.parse(await readFile(`/app/node_modules/${name}/package.json`, "utf8"));
   assert.equal(manifest.version, input.version);
   assert.equal(manifest.waffleHostInterface, 1);
@@ -52,17 +52,17 @@ const addonHash = createHash("sha256")
   .update(await readFile(addon))
   .digest("hex");
 assert.equal(addonHash, "5592208da56aee0f53615b8d8c5d57c99a87618593c6343787ac9f92761daf1d");
-await import(require.resolve("@waffle-os/relay"));
-await import(require.resolve("@waffle-os/relay/node"));
+await import(require.resolve("waffle-relay"));
+await import(require.resolve("waffle-relay/node"));
 assert.ok(
   !Object.keys(require.cache).some((path) => path.endsWith("webtransport.node")),
   "Ordinary entry loaded the optional native addon",
 );
-await import(require.resolve("@waffle-os/relay/node-webtransport"));
+await import(require.resolve("waffle-relay/node-webtransport"));
 await import(require.resolve("@fails-components/webtransport-transport-http3-quiche"));
-const { mintRelayToken } = await import(require.resolve("@waffle-os/relay/token"));
+const { mintRelayToken } = await import(require.resolve("waffle-relay/token"));
 const { serveConfig } = await import(
-  require.resolve("@waffle-os/relay/node").replace(/node\.js$/, "cli-config.js")
+  require.resolve("waffle-relay/node").replace(/node\.js$/, "cli-config.js")
 );
 const secret = randomBytes(32).toString("hex");
 const config = await serveConfig(["serve", "--config", "/app/relay.json"], {
@@ -161,7 +161,7 @@ async function check(): Promise<string> {
 async function cycle(): Promise<string> {
   const child = spawn(
     process.execPath,
-    ["/app/node_modules/@waffle-os/relay/dist/cli.js", "serve", "--config", "/app/relay.json"],
+    ["/app/node_modules/waffle-relay/dist/cli.js", "serve", "--config", "/app/relay.json"],
     {
       env: { ...process.env, WAFFLE_RELAY_TOKEN_SECRET: secret },
       stdio: "ignore",

@@ -37,9 +37,18 @@ async function archiveFile(path: string, entry: string): Promise<string> {
 async function sourceFile(source: string, path: string): Promise<string> {
   return (await execute("git", ["show", `${source}:${path}`], { cwd: root })).stdout;
 }
-function metadata(text: string, name: string): { version: string; waffleHostInterface: number } {
+function metadata(
+  text: string,
+  allowedNames: readonly string[],
+): { name: string; version: string; waffleHostInterface: number } {
   const value: unknown = JSON.parse(text);
-  assert.ok(value && typeof value === "object" && "name" in value && value.name === name);
+  assert.ok(
+    value &&
+      typeof value === "object" &&
+      "name" in value &&
+      typeof value.name === "string" &&
+      allowedNames.includes(value.name),
+  );
   assert.ok("version" in value && typeof value.version === "string");
   assert.match(value.version, /^0\.0\.\d+$/);
   assert.ok(
@@ -48,26 +57,34 @@ function metadata(text: string, name: string): { version: string; waffleHostInte
       Number.isSafeInteger(value.waffleHostInterface) &&
       value.waffleHostInterface > 0,
   );
-  return { version: value.version, waffleHostInterface: value.waffleHostInterface };
+  return { name: value.name, version: value.version, waffleHostInterface: value.waffleHostInterface };
 }
 
 export async function verifyPairedReleaseArchives(input: Omit<NativeContainerInputs, "prebuild">) {
   assert.match(input.source, /^[0-9a-f]{40}$/, "Expected an exact source commit");
   await checkedArchive(input.runtime);
   await checkedArchive(input.relay);
-  const runtime = metadata(await archiveFile(input.runtime.path, "package.json"), "waffle");
-  const relay = metadata(await archiveFile(input.relay.path, "package.json"), "@waffle-os/relay");
+  const runtime = metadata(await archiveFile(input.runtime.path, "package.json"), [
+    "waffle",
+    "@waffle-os/runtime",
+  ]);
+  const relay = metadata(await archiveFile(input.relay.path, "package.json"), [
+    "waffle-relay",
+    "@waffle-os/relay",
+  ]);
   assert.equal(runtime.version, relay.version, "Runtime and relay must be a paired release");
   assert.equal(
     runtime.waffleHostInterface,
     relay.waffleHostInterface,
     "Runtime and relay host interfaces differ",
   );
-  for (const name of ["waffle", "@waffle-os/relay"]) {
-    const recorded = metadata(
-      await sourceFile(input.source, `packages/${name}/package.json`),
-      name,
-    );
+  for (const [directory, expected] of [
+    ["waffle", runtime],
+    ["waffle-relay", relay],
+  ] as const) {
+    const recorded = metadata(await sourceFile(input.source, `packages/${directory}/package.json`), [
+      expected.name,
+    ]);
     assert.equal(runtime.version, recorded.version, "Archive version differs from source");
     assert.equal(
       runtime.waffleHostInterface,

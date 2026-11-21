@@ -83,7 +83,7 @@ async function fixture(directory: string, interfaces?: { runtime: number; relay:
   await mkdir(join(relay, "package"), { recursive: true });
   const packages: [string, string][] = [
     ["waffle", runtime],
-    ["@waffle-os/relay", relay],
+    ["waffle-relay", relay],
   ];
   for (const [name, path] of packages) {
     let text = (
@@ -209,8 +209,8 @@ test("native pins admit only the final public pair and freeze the install graph"
     "@fails-components/webtransport-transport-http3-quiche",
   ])
     expect(lock.packages[`node_modules/${name}`].version).toBe("1.6.11");
-  expect(lock.packages["node_modules/@waffle-os/runtime"].version).toBe(nativeRelease.version);
-  expect(lock.packages["node_modules/@waffle-os/relay"].version).toBe(nativeRelease.version);
+  expect(lock.packages["node_modules/waffle"].version).toBe(nativeRelease.version);
+  expect(lock.packages["node_modules/waffle-relay"].version).toBe(nativeRelease.version);
 });
 
 test("archive host interfaces must match each other and the selected source", async () => {

@@ -158,7 +158,7 @@ export function packProgramPackage(root: string): string {
   const archive = resolve(
     root,
     ".build",
-    `${manifest.name.replaceAll(/[@/]/g, "-")}-${manifest.version}.tgz`,
+    `${manifest.name.replace(/^@/, "").replaceAll("/", "-")}-${manifest.version}.tgz`,
   );
   mkdirSync(dirname(archive), { recursive: true });
   try {
