@@ -397,7 +397,7 @@ test("native GPU failure remains blocking in its single supervised Chromium invo
 async function discoverCommands(
   group: string | undefined,
   failingRunner?: string,
-): Promise<{ commands: string[]; failures: unknown; failed: boolean }> {
+): Promise<{ commands: string[]; storageObservers: string[]; failures: unknown; failed: boolean }> {
   const root = await mkdtemp(join(tmpdir(), "waffle-native-discovery-"));
   let cleanupError: CommandCleanupError | undefined;
   try {
@@ -411,8 +411,10 @@ async function discoverCommands(
       join(root, "scripts/browser-command.ts"),
       `
 import { appendFileSync } from "node:fs";
-export async function runBrowserSuite(command) {
+export async function runBrowserSuite(command, options) {
   appendFileSync("commands.jsonl", JSON.stringify(command.slice(1)) + "\\n");
+  if (command[1] === "tests/storage-browser-runner.ts")
+    appendFileSync("storage-observers.txt", command.slice(2).join(",") + "=" + (options.env.STORAGE_LIFECYCLE_OBSERVER ?? "") + "\\n");
   const failed = process.env.MATRIX_FAIL === "gpu-async-controls" ? "tests/page-runner/gpu-async-controls-runner.ts" : "tests/" + process.env.MATRIX_FAIL + "-browser-runner.ts";
   if (command[1] === failed) throw Error("GPU control failed");
 }
@@ -431,8 +433,12 @@ export async function runBrowserSuite(command) {
     expect(cleanupError).toBeUndefined();
     const log = Bun.file(join(root, "commands.jsonl"));
     const commands = (await log.exists()) ? (await log.text()).trimEnd().split("\n") : [];
+    const observerLog = Bun.file(join(root, "storage-observers.txt"));
+    const storageObservers = (await observerLog.exists())
+      ? (await observerLog.text()).trimEnd().split("\n")
+      : [];
     const failures: unknown = JSON.parse(await readFile(join(root, "failures.json"), "utf8"));
-    return { commands, failures, failed: failure instanceof Error };
+    return { commands, storageObservers, failures, failed: failure instanceof Error };
   } finally {
     if (cleanupError) console.error(`Retained native discovery scratch: ${root}`, cleanupError);
     else await rm(root, { recursive: true, force: true });
@@ -485,19 +491,28 @@ async function nativeDiscovery(
 }
 
 test("CI shards dispatch each command in the full browser matrix exactly once", async () => {
-  const [full, parallel, serial, reporter] = await Promise.all([
+  const [full, runtime, reporter] = await Promise.all([
     discoverCommands(undefined),
-    discoverCommands("parallel"),
-    discoverCommands("serial"),
+    discoverCommands("runtime"),
     discoverCommands("reporter"),
   ]);
-  for (const run of [full, parallel, serial, reporter]) {
+  for (const run of [full, runtime, reporter]) {
     expect(run.failed).toBe(false);
     expect(run.commands.length).toBeGreaterThan(0);
   }
-  expect(parallel.commands.concat(serial.commands, reporter.commands).sort()).toEqual(
-    full.commands.sort(),
-  );
+  expect(runtime.commands.concat(reporter.commands).sort()).toEqual(full.commands.sort());
+});
+
+test("the runtime shard preserves batch order and storage observer scope after an early failure", async () => {
+  const [parallel, serial, runtime] = await Promise.all([
+    discoverCommands("parallel"),
+    discoverCommands("serial"),
+    discoverCommands("runtime", "gpu-native"),
+  ]);
+  expect(runtime.failed).toBe(true);
+  expect(runtime.failures).toEqual(["tests/gpu-native-browser-runner.ts failed"]);
+  expect(runtime.commands).toEqual(parallel.commands.concat(serial.commands));
+  expect(runtime.storageObservers).toEqual(["chromium,firefox=1", "webkit=0"]);
 });
 
 test("an unknown CI shard fails before dispatch", async () => {

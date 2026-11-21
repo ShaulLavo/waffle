@@ -7,11 +7,12 @@ process.once("SIGTERM", stop);
 const gpuRunner = "tests/gpu-browser-runner.ts";
 const asyncGpuRunner = "tests/gpu-async-browser-runner.ts";
 const reporterControls = "tests/page-runner/browser-controls-runner.ts";
+const storageRunner = "tests/storage-browser-runner.ts";
 const runners = [
   "tests/browser-navigation-browser-runner.ts",
   "tests/link-browser-runner.ts",
   "tests/safe-staging-browser-runner.ts",
-  "tests/storage-browser-runner.ts",
+  storageRunner,
   "tests/storage-lock-browser-runner.ts",
   "tests/process-recycling-browser-runner.ts",
   "tests/network-browser-runner.ts",
@@ -85,13 +86,22 @@ function selectBatches(group: string | undefined) {
       return parallel;
     case "serial":
       return serialBeforeReporter.concat(serialAfterReporter);
+    case "runtime":
+      return parallel.concat(serialBeforeReporter, serialAfterReporter);
     case "reporter":
       return reporter;
     default:
       throw new Error(`Unknown WAFFLE_BROWSER_GROUP: ${group}`);
   }
 }
-const batches = selectBatches(process.env.WAFFLE_BROWSER_GROUP);
+const group = process.env.WAFFLE_BROWSER_GROUP;
+const batches = selectBatches(group);
+
+function invocationEnv(runner: string, engines: readonly string[]) {
+  if (group !== "runtime" || runner !== storageRunner) return process.env;
+  return { ...process.env, STORAGE_LIFECYCLE_OBSERVER: engines.includes("webkit") ? "0" : "1" };
+}
+
 let failures: Error[] = [];
 try {
   for (const batch of batches) {
@@ -99,7 +109,7 @@ try {
       batch.map(({ runner, engines }) =>
         runBrowserSuite([process.execPath, runner].concat(engines), {
           cwd: import.meta.dir + "/..",
-          env: process.env,
+          env: invocationEnv(runner, engines),
           signal: stopped.signal,
         }),
       ),

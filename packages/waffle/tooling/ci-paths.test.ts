@@ -36,9 +36,12 @@ for (const name of ["browser", "libc"]) {
         ? ["changes", "network-wasm", "libc", "threads-fixture"]
         : ["changes", "network-wasm"],
     );
-    const producer = name === "libc" ? " || needs.changes.outputs.browser == 'true'" : "";
+    const selected =
+      name === "libc"
+        ? "needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser == 'true'"
+        : "needs.changes.outputs.browser != 'false'";
     expect(job.if).toBe(
-      `\${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true'${producer})) }}`,
+      `\${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || ${selected})) }}`,
     );
     expect(record(changes.outputs)[name]).toBe(`\${{ steps.paths.outputs.${name} }}`);
   });
@@ -76,7 +79,7 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
-test("browser relay inputs select the normal gate and only its parallel group installs native peers", () => {
+test("browser relay inputs select the normal gate and only the runtime shard installs native peers", () => {
   for (const path of [
     "packages/waffle/tests/network-relay-browser-runner.ts",
     "packages/waffle/tests/network-relay-worker.ts",
@@ -94,7 +97,7 @@ test("browser relay inputs select the normal gate and only its parallel group in
   const native = steps
     .map(record)
     .find((step) => step.name === "Prepare and verify the required native relay prebuild");
-  expect(native?.if).toBe("matrix.group == 'parallel'");
+  expect(native?.if).toBe("matrix.group == 'runtime'");
   expect(native?.run).toBe("bun packages/waffle-relay/scripts/prepare-native.ts");
 });
 
@@ -289,7 +292,7 @@ test("browser groups that run Rust threads verify the producer artifact without 
   expect(inputs["merge-multiple"]).toBe(true);
   for (const field of ["name", "pattern", "run-id", "github-token"])
     expect(inputs[field]).toBeUndefined();
-  expect(download.if).toBe("matrix.group != 'reporter'");
+  expect(download.if).toBe("matrix.group == 'runtime'");
   const guard = steps.find((step) => step.name === "Require the Rust threads fixture artifact ID");
   expect(guard?.if).toBe(download.if);
   expect(record(guard?.env).THREAD_ARTIFACT_ID).toBe(inputs["artifact-ids"]);
@@ -450,10 +453,10 @@ test("reporter controls retain durable process evidence even when the command fa
   expect(record(upload.with)["if-no-files-found"]).toBe("warn");
 });
 
-test("the browser suite dispatches all three groups separately with failures blocking", () => {
+test("the browser suite dispatches the runtime and reporter groups separately with failures blocking", () => {
   expect(record(jobs.browser).strategy).toEqual({
     "fail-fast": false,
-    matrix: { group: ["parallel", "serial", "reporter"] },
+    matrix: { group: ["runtime", "reporter"] },
   });
   const browserTest = stepsFor("browser").find(
     (step) =>
@@ -462,6 +465,14 @@ test("the browser suite dispatches all three groups separately with failures blo
   expect(browserTest?.if).toBeUndefined();
   expect(browserTest?.shell).toBe("bash");
   expect(record(browserTest?.env).WAFFLE_BROWSER_GROUP).toBe("${{ matrix.group }}");
+  const publication = stepsFor("browser").find(
+    (step) =>
+      step.run === "bun packages/waffle/tests/publication-browser-runner.ts --workspace chromium",
+  );
+  expect(browserTest?.id).toBe("browser-tests");
+  expect(publication?.if).toBe(
+    "${{ !cancelled() && matrix.group == 'runtime' && (steps.browser-tests.outcome == 'success' || steps.browser-tests.outcome == 'failure') }}",
+  );
 });
 
 test("missing recovery report does not replace the browser failure", () => {
@@ -907,7 +918,7 @@ test("the browser rejects a missing fixture artifact ID before download", () => 
   expect(record(guard?.env).MEMORY_GROUP_ARTIFACT_ID).toBe(
     "${{ needs.libc.outputs.memory-group-artifact-id }}",
   );
-  expect(guard?.if).toBe("matrix.group == 'serial'");
+  expect(guard?.if).toBe("matrix.group == 'runtime'");
   expect(guard?.["continue-on-error"]).toBeUndefined();
   const downloadIndex = steps.findIndex((step) => step.uses === "actions/download-artifact@v8");
   expect(steps[downloadIndex]?.if).toBe(guard?.if);
@@ -1619,8 +1630,8 @@ test("native relay setup requires prebuilt bytes before package and parallel bro
     expect(record(cache?.with)["restore-keys"]).toBeUndefined();
     if (!cache) throw new Error("Missing prebuild cache step");
     expect(steps.indexOf(cache)).toBeLessThan(prepare);
-    expect(cache?.if).toBe(name === "browser" ? "matrix.group == 'parallel'" : undefined);
-    expect(steps[prepare]?.if).toBe(name === "browser" ? "matrix.group == 'parallel'" : undefined);
+    expect(cache?.if).toBe(name === "browser" ? "matrix.group == 'runtime'" : undefined);
+    expect(steps[prepare]?.if).toBe(name === "browser" ? "matrix.group == 'runtime'" : undefined);
   }
 });
 
