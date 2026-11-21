@@ -1,4 +1,6 @@
 import { CHUNK_SIZE } from "./indexeddb-chunks.js";
+import type { FileIdentity } from "./file-identity.js";
+import type { FileStat } from "../core/filesystem.js";
 
 const WORDS = 8;
 const RECORDS = 2048;
@@ -6,18 +8,24 @@ const HEADER = 2;
 export const MUTATION_BYTES = (HEADER + RECORDS * WORDS) * 4;
 
 export interface CaptureDelta {
-  parent: string | undefined;
-  size: number;
-  inheritedEnd: number;
-  chunks: ReadonlyMap<number, Uint8Array<ArrayBuffer>>;
-  discoveryMs: number;
-  copyMs: number;
+  readonly parent: string | undefined;
+  readonly size: number;
+  readonly inheritedEnd: number;
+  readonly chunks: ReadonlyMap<number, Uint8Array<ArrayBuffer>>;
+  readonly discoveryMs: number;
+  readonly copyMs: number;
+  readonly file?: {
+    readonly handle: number;
+    readonly stat: FileStat;
+    readonly identity: FileIdentity | undefined;
+    readonly revision: number;
+  };
 }
 
 export interface CheckpointCut {
-  id: string;
-  parent: string | undefined;
-  deltas: ReadonlyMap<string, CaptureDelta>;
+  readonly id: string;
+  readonly parent: string | undefined;
+  readonly deltas: ReadonlyMap<string, CaptureDelta>;
 }
 
 interface Effect {
@@ -72,7 +80,11 @@ export class MutationLog {
 
   beforeUnlock(owner: number, holdsFile: (handle: number) => boolean): void {
     for (let at = HEADER; at < HEADER + Atomics.load(this.cells, 0) * WORDS; at += WORDS) {
-      if (this.cells[at] === owner && !Atomics.load(this.cells, at + 7) && holdsFile(this.cells[at + 1]!)) {
+      if (
+        this.cells[at] === owner &&
+        !Atomics.load(this.cells, at + 7) &&
+        holdsFile(this.cells[at + 1]!)
+      ) {
         Atomics.store(this.cells, 1, 1);
         return;
       }
@@ -89,7 +101,6 @@ export class MutationLog {
     for (let at = HEADER; at < HEADER + this.cells[0]! * WORDS; at += WORDS) {
       if (this.cells[at + 1] !== handle) continue;
       const state = this.cells[at + 7];
-      if (state === 2) continue;
       if (state !== 1) throw new Error("Capture reached an unresolved filesystem mutation");
       const revision = this.revision(at);
       if (revision <= after || revision > through) continue;
@@ -107,8 +118,7 @@ export class MutationLog {
     const end = HEADER + this.cells[0]! * WORDS;
     for (let at = HEADER; at < end; at += WORDS) {
       const state = this.cells[at + 7];
-      if (state === 1 && this.revision(at) <= (confirmed.get(this.cells[at + 1]!) ?? -1))
-        continue;
+      if (state === 1 && this.revision(at) <= (confirmed.get(this.cells[at + 1]!) ?? -1)) continue;
       this.cells.copyWithin(next, at, at + WORDS);
       next += WORDS;
     }
@@ -117,7 +127,10 @@ export class MutationLog {
   }
 }
 
-export function dirtyChunks(effects: readonly Effect[]): { dirty: Set<number>; inheritedEnd: number } {
+export function dirtyChunks(effects: readonly Effect[]): {
+  dirty: Set<number>;
+  inheritedEnd: number;
+} {
   const dirty = new Set<number>();
   let inheritedEnd = Number.POSITIVE_INFINITY;
   for (const { kind, start, end } of effects) {

@@ -34,6 +34,7 @@ export const captureMethod = `
       }
       const delta: CaptureDelta = {
         parent, size: stat.size, inheritedEnd, chunks, discoveryMs, copyMs: performance.now() - copyStart,
+        file: { handle, stat, identity, revision },
       };
       return { stat, identity, revision, delta, bytes, hasEffects: effects.length > 0 };
     } finally {
@@ -64,8 +65,9 @@ export const captureExperimentFile = `
     if (node?.kind !== "file") return;
     const detached = this.detached.has(node);
     if (detached && (!durable || (target !== undefined && selected !== node))) return;
-    const parent = this.keys.get(node.ino) ?? this.detachedKeys.get(node.ino);
-    const captured = this.shared.checkpointFile(handle, this.revisions.get(handle), parent, true);
+    const pending = this.experimentDetached.get(handle);
+    const parent = pending?.key ?? this.keys.get(node.ino) ?? this.detachedKeys.get(node.ino);
+    const captured = this.shared.checkpointFile(handle, pending?.revision ?? this.revisions.get(handle), parent, true);
     if (!captured) return;
     const { stat, revision, identity, delta } = captured;
     if (!detached) {
@@ -78,8 +80,11 @@ export const captureExperimentFile = `
     if (!delta) return;
     if (parent && !captured.hasEffects) return;
     const key = \`\${this.nonce}:\${node.ino}:\${++this.sequence}\`;
-    if (detached) detachedSnapshots.set(node, { handle, key, revision });
-    else this.keys.set(node.ino, key);
+    if (detached) {
+      const snapshot = { handle, key, revision };
+      this.experimentDetached.set(handle, snapshot);
+      detachedSnapshots.set(node, snapshot);
+    } else this.keys.set(node.ino, key);
     confirmed.set(handle, revision);
     deltas.set(key, delta);
     data.set(key, new Uint8Array());
