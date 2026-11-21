@@ -57,11 +57,14 @@ retirement and cancellation, then reads its byte and exits successfully.
 Use Rust 1.98.1 with the `wasm32-wasip1` target and edition 2024, wit-bindgen 0.57.1,
 wasm-tools 1.262.0, Bun 1.4.4, Node 26.12.1 and npm 11.20.0. The two Rust builds share
 one source and compiler profile. Playwright 1.64.1 and its browser versions come from the Waffle
-lockfile. The runner uses `curl`, `tar` and `patch` to prepare Microsoft's pinned source in scratch.
-It compiles with the upstream lockfile's TypeScript 6.0.3.
+lockfile. Install the matching browser binaries from the repository root or set
+`PLAYWRIGHT_BROWSERS_PATH` to a cache containing them. The runner uses `curl`, `tar` and `patch`
+to prepare Microsoft's pinned source in scratch. It compiles with the upstream lockfile's
+TypeScript 6.0.3.
 
 ```sh
 bun install --frozen-lockfile
+bun x playwright install chromium firefox webkit
 # Put wasm-tools 1.262.0 on PATH or set WASM_TOOLS to its absolute path.
 # On the owner's PC, use the heavy runner for the browser command.
 bun /work/heavy-runner/current/run.js --host local --class browser waffle-286-surface -- \
@@ -73,7 +76,7 @@ The generator package is `@vscode/wasm-component-model` 1.0.2 at Microsoft revis
 yargs 18 import has no `parserConfiguration` method. The runner passes
 `wasm-tools component wit --json` output to the generator's unchanged `processDocument` export.
 The stock browser entry also fails with `No runtime abstraction layer installed`. The scratch
-patch makes its two connection imports lazy. [Microsoft generator and runtime source](https://github.com/microsoft/vscode-wasm/tree/7585d3902cad4948f2f8852006d3714b2a9afb1f/wasm-component-model)
+patch makes its two connection imports lazy. [Microsoft generator and runtime source](https://github.com/microsoft/vscode-wasm/tree/7585d3902cad4948f2f8852006d3714b2a9afb1f/wasm-component-model) · [Pinned MIT license](https://github.com/microsoft/vscode-wasm/blob/7585d3902cad4948f2f8852006d3714b2a9afb1f/LICENSE)
 
 The handwritten path requires the Rust target and the existing Waffle browser bundle. The WIT
 experiment adds the Rust macro crate, wasm-tools, and Microsoft's generator and host runtime.
