@@ -21,6 +21,44 @@ function sampledCall(call: Function, sample: () => void): Function {
   };
 }
 
+const perfNow = performance.now.bind(performance);
+const timeOrigin = performance.timeOrigin;
+const round = Math.round;
+
+/**
+ * Bootstrap steps between the worker's first message and bound memory. Until memory is bound,
+ * the sample cell holds `-(epochMicroseconds << 4 | step)`; the page's initial -1 is step 1 at
+ * time 0. Readers that want bytes treat every negative value as no sample.
+ */
+const startProgress = {
+  "runtime-loaded": 2,
+  "group-joined": 3,
+  "modules-loaded": 4,
+} as const;
+export type StartProgressStep = keyof typeof startProgress;
+
+/** The step and its `performance.now()` time in the reading realm, or undefined. */
+export function readStartProgress(
+  value: bigint,
+): { readonly step: StartProgressStep; readonly at: number } | undefined {
+  if (value >= -1n) return undefined;
+  const encoded = -value;
+  const code = Number(encoded & 15n);
+  const at = Number(encoded >> 4n) / 1000 - performance.timeOrigin;
+  if (code === startProgress["runtime-loaded"]) return { step: "runtime-loaded", at };
+  if (code === startProgress["group-joined"]) return { step: "group-joined", at };
+  if (code === startProgress["modules-loaded"]) return { step: "modules-loaded", at };
+  return undefined;
+}
+
+/** Records a bootstrap step for the page's start states when the broker gave a sample cell. */
+export function startStep(
+  sampler: ReturnType<typeof createWorkerMemorySampler> | undefined,
+  step: StartProgressStep,
+): void {
+  sampler?.progress(step);
+}
+
 /** Worker-local writer. The page owns the never-reused cell and its retirement. */
 export function createWorkerMemorySampler(buffer: SharedArrayBuffer) {
   if (!isSharedArrayBuffer(buffer) || sharedArrayBufferByteLength(buffer) !== 8)
@@ -44,6 +82,12 @@ export function createWorkerMemorySampler(buffer: SharedArrayBuffer) {
       sample();
     },
     sample,
+    /** Start diagnostics for the page; a no-op once memory is bound. */
+    progress(step: StartProgressStep) {
+      if (readMemoryByteLength) return;
+      const micros = BigIntConstructor(round((timeOrigin + perfNow()) * 1000));
+      atomicsStore(cell, 0, -((micros << 4n) | BigIntConstructor(startProgress[step])));
+    },
     imports(module: WebAssembly.Module, imports: WebAssembly.Imports): WebAssembly.Imports {
       const linked: WebAssembly.Imports = objectCreate(null);
       const entries = wasmModuleImports(module);

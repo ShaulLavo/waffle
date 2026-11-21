@@ -36,6 +36,8 @@ export type {
   RootDescendantPreparation,
   RootPreparationCompletion,
   WorkerMemoryObservation,
+  ProcessStartState,
+  ProcessStartStep,
   ProgramDefinition,
   ProgramLoadState,
   GuestLauncher,

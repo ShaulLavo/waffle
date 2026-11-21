@@ -47,6 +47,10 @@ Read the `error` field of the result:
 
 [Run a WASI program](guides/run-a-wasi-program.md) shows a working root and the `ENOENT` case. Other startup errors are listed in [Host ABI](host-abi.md).
 
+## A spawn never finishes starting
+
+Call `(await runtime.processes()).startStates()` while it hangs. The `step` of its pid names where the start stopped, and `at` has the time of each step. [Start states](process-observation.md#start-states) lists the steps.
+
 ## `Unsupported VFS mode: safe`
 
 `mode: "safe"` throws `VfsError` with code `UNSUPPORTED_VFS`. SAFE is reserved and has no fallback. Use `"fast"` or `"memory"`. See [Filesystem modes](vfs.md).

@@ -48,6 +48,15 @@ import {
   PromiseConstructor,
 } from "../proc/intrinsics.js";
 import { ReadyWorkerPool } from "./worker-pool.js";
+import {
+  markStart,
+  observeStart,
+  processStartRecord,
+  startMessage,
+  startSnapshot,
+  type ProcessStartRecord,
+  type ProcessStartState,
+} from "./process-start.js";
 import { createNotificationBridge, type NotificationBridge } from "./notification-relay.js";
 import { snapshotHostIdentity, type RuntimeHostIdentity } from "./process-context.js";
 import { drainDiagnostic } from "./diagnostic.js";
@@ -312,6 +321,7 @@ export interface WorkerMemoryObservation {
 }
 interface PendingLaunch {
   readonly observation: ProcessObservationTransfer;
+  readonly start: ProcessStartRecord;
   acquiring: boolean;
   readonly acquired: Promise<void>;
   readonly settled: Promise<void>;
@@ -324,6 +334,8 @@ interface RuntimeChild {
   readonly generation: number;
   readonly transport: WorkerProcessTransport;
   readonly launch: RuntimeLaunch;
+  /** Shared with the pending launch that created this child. */
+  readonly start: ProcessStartRecord;
   accesses?: WorkerExecutableAccess;
   controllerStopping?: { pending: Promise<void>; controllerStop: boolean };
   controller?: ProcessController;
@@ -806,6 +818,7 @@ export class BrowserProcessBroker {
     // Retain its cleanup authority before invoking any adapter code.
     const pendingLaunch = {
       observation: context.observation,
+      start: processStartRecord(context),
       acquiring: true,
       acquired: new Promise<void>((resolve) => {
         acquireLaunch = resolve;
@@ -1922,6 +1935,24 @@ export class BrowserProcessBroker {
     });
   }
   /**
+   * The start step each live launch reached, with page timestamps: a hung start names its
+   * stuck step. Fresh authority-free snapshots; see docs/process-observation.md, "Start states".
+   */
+  startStates(): readonly ProcessStartState[] {
+    const states: ProcessStartState[] = [];
+    for (const child of this.children.values()) {
+      if (child.guestEnded || child.failed || child.stopped) continue;
+      observeStart(child.start, child.memory, child.context.outcome);
+      states.push(startSnapshot(child.start));
+    }
+    for (const launch of this.pendingLaunches?.values() ?? []) {
+      // A launch that already constructed its worker is listed (or retired) as that child.
+      if (this.children.get(launch.start.pid)?.start === launch.start) continue;
+      states.push(startSnapshot(launch.start));
+    }
+    return states;
+  }
+  /**
    * Trusted launcher pairing for RuntimeNetwork.createHelper: the live admitted process's own
    * filesystem identity with `directory`. Nothing is attached here; the network authenticates the
    * pair (same filesystem, live identity, a directory the guest's table holds) on the guest's first
@@ -2057,10 +2088,12 @@ export class BrowserProcessBroker {
     this.bindPipeRegistry(transport);
     const memory = new BigInt64Array(allocateSharedControl(8));
     Atomics.store(memory, 0, -1n);
+    const launch = this.launchState(context);
     const child: RuntimeChild = {
       generation: context.generation,
       transport,
-      launch: this.launchState(context),
+      launch,
+      start: launch.pending?.start ?? processStartRecord(context),
       nativeReturned: this.nativeLaunchReturns.get(context.pid),
       memory,
       filesystem,
@@ -2154,10 +2187,12 @@ export class BrowserProcessBroker {
     }
     const filesystem = this.filesystem(transport);
     // Record cleanup ownership before either connection or Worker construction can throw.
+    const launch = this.launchState(context);
     const child: RuntimeChild = {
       generation: context.generation,
       transport,
-      launch: this.launchState(context),
+      launch,
+      start: launch.pending?.start ?? processStartRecord(context),
       nativeReturned: this.nativeLaunchReturns.get(context.pid),
       ticket,
       memory,
@@ -2215,6 +2250,7 @@ export class BrowserProcessBroker {
       if (readOutcome(context.outcome))
         throw new ProcessError(ProcessErrno.SRCH, "process exited before worker construction");
       worker = child.worker = this.workers.take(options.workerUrl);
+      markStart(child.start, "worker-constructed");
       this.imageStops.delete(context.pid);
       child.launched = ticket.launched();
       if (options.graphics)
@@ -2253,6 +2289,7 @@ export class BrowserProcessBroker {
     if (group) Object.assign(request, { memoryGroup: group.request });
     this.watch();
     worker.onmessage = ({ data }: MessageEvent<RuntimeWorkerMessage>) => {
+      startMessage(child.start, data, memory, context.outcome);
       if (guestFinished(data?.type)) guestEnded(child);
       this.childMessage(child, options, data);
     };
@@ -2268,6 +2305,7 @@ export class BrowserProcessBroker {
       if (request.network) ports.push(request.network.port);
       if (request.graphics) ports.push(request.graphics.port);
       worker.postMessage(request, group ? ports.concat(group.transfer) : ports);
+      markStart(child.start, "start-posted");
     } catch (error) {
       child.failed = true;
       this.disposeNotifications(child);

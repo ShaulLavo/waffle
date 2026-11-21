@@ -76,6 +76,8 @@ export default {
         // Broker stop order test (scripts/test-browser.ts). Its runner bundles page and worker.
         "tests/stop-order-browser{,-runner}.ts",
         "tests/fixtures/stop-order-worker.ts",
+        // Process start states test (scripts/test-browser.ts). Its runner bundles the page.
+        "tests/process-start-browser{,-runner}.ts",
         "tests/bootstrap-arrival-browser-runner.ts",
         // Bundled by the link browser runner before the linker imports execute.
         "tests/fixtures/link-relay-worker.ts",

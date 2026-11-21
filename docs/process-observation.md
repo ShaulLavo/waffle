@@ -162,5 +162,52 @@ A terminated unwind still releases already owned resources. It cannot claim a ne
 outcome, infer signal 9, call an executor completion hook, or publish a replacement
 exit. Actual local cleanup failures remain failures.
 
+## Start states
+
+`(await runtime.processes()).startStates()` lists every live process launch with the
+last start step it reached. When a start hangs, the step names where it stopped. Each
+call returns fresh, authority-free snapshots:
+
+```ts
+type ProcessStartState = {
+  readonly pid: number;
+  readonly parentPid: number;
+  readonly job: number;
+  readonly generation: number;
+  readonly executable: string;
+  readonly step: ProcessStartStep;
+  readonly at: Partial<Record<ProcessStartStep, number>>; // performance.now() ms
+};
+```
+
+The steps, in order:
+
+| Step                 | Reached when                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------ |
+| `launching`          | The broker invoked the adapter. An embedder launcher that awaits before `launchWorker` stays here. |
+| `worker-constructed` | `launchWorker` constructed the Worker.                                                           |
+| `start-posted`       | The start request and its ports were posted to the Worker.                                       |
+| `worker-started`     | The page received the Worker's first message. Bootstrap posts one on entry.                      |
+| `runtime-loaded`     | Bootstrap loaded the process client modules.                                                     |
+| `group-joined`       | Bootstrap attached the memory group member and took its exit lock, or had no group.              |
+| `modules-loaded`     | Bootstrap loaded the process host modules.                                                       |
+| `memory-bound`       | The guest's linear memory is bound.                                                              |
+| `instantiated`       | The guest module is instantiated, before entry.                                                  |
+| `running`            | Executable entry committed.                                                                      |
+
+A start stuck at `start-posted` never ran bootstrap: its worker script never loaded or
+its start message never arrived. A worker script that fails to load fires the Worker's
+`error` event and fails the start, so a load that never answers is the usual cause.
+
+The record costs one small object per launch and adds no message. The page stamps the
+steps it passes itself. The three bootstrap steps share the Worker's memory sample cell
+until memory is bound, so the page sees only the latest when it looks, stamped with the
+Worker's own clock; that time can precede the page's receipt of the first message.
+`memory-bound` and `running` are read from shared state and stamped when the page first
+sees them, at a later Worker message or a `startStates()` call. Launches without a
+worker (host programs, commands and controller launches) stay at `launching` until their
+adapter returns. A process leaves the list when its worker reports its end or the broker
+stops it.
+
 For ordinary process and wait signatures, see [Host ABI](host-abi.md).
 For the captured-intrinsic boundary, see [Private process authority](private-authority.md).

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { bootstrap, type WorkerExecutor, type WorkerBindingsContext } from "../browser/worker.js";
+import { readStartProgress } from "../browser/worker-memory.js";
 import { createFilesystemConnection } from "../fs/protocol.js";
 import {
   failingMemoryObservationGuest,
@@ -58,7 +59,13 @@ for (const imported of [false, true])
     });
     await f.pending;
     expect(f.errors).toHaveLength(1);
-    expect(Atomics.load(f.bytes, 0)).toBe(imported ? 65536n : -1n);
+    const sample = Atomics.load(f.bytes, 0);
+    if (imported) expect(sample).toBe(65536n);
+    else {
+      // No bytes were observable: the cell holds only the last bootstrap start step.
+      expect(sample < 0n).toBe(true);
+      expect(readStartProgress(sample)?.step).toBe("group-joined");
+    }
   });
 
 test("cancellation fences late memory binding and completion", async () => {

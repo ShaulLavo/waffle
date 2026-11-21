@@ -40,6 +40,7 @@ import type {
   BrowserProcessBrokerOptions,
 } from "./browser/process-broker.js";
 export type { WorkerMemoryObservation } from "./browser/process-broker.js";
+export type { ProcessStartState, ProcessStartStep } from "./browser/process-start.js";
 export type { MemoryGroupLaunch, RootMemoryGroupMember } from "./browser/process-broker.js";
 import type { MemoryGroupPolicyOptions } from "./group/state.js";
 export type {
@@ -255,6 +256,7 @@ const processCapabilities = {
   networkPathScope: "method",
   outputDrained: "method",
   workerMemory: "method",
+  startStates: "method",
   memoryGroupOf: "method",
   memoryGroups: "method",
   admitRootMemoryGroup: "method",
