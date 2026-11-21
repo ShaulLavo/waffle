@@ -11,9 +11,6 @@ Waffle owns `core/`, `fs/`, `proc/`, `interrupt/` and generic `browser/` service
 guest engines, native bindings, module caches, service-worker registration policy and application
 adapters. Consumers pin one exact Waffle Git commit and use the matching package exports.
 
-See [Browser workaround evidence](browser-workarounds.md) for observed engine behavior and the
-checks each workaround needs before removal.
-
 ## Automatic shared-memory defaults
 
 Status: Idea, deferred by the owner on November 6, 2026. Owner: Waffle runtime track.
@@ -222,6 +219,8 @@ passed 200 fresh WebKit contexts: 4,000 quiet writes and 40,000 socket-ordered w
 The native reproducer and rerunnable context loop are retained in the owner report
 `/work/reports/wave-20261106/guest-watch-race/`. Actual Safari acceptance remains separate.
 
+See [Browser workaround evidence](browser-workarounds.md) for the relay's removal check and
+other active workarounds.
 
 ## Recovering quarantined pipe slots
 
