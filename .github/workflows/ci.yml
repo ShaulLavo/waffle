@@ -1132,7 +1132,7 @@ jobs:
       memory-group-artifact-id: ${{ steps.memory-group-artifact.outputs.artifact-id }}
       gpu-artifact-id: ${{ steps.gpu-artifact.outputs.artifact-id }}
     # Also the single producer of the memory group fixture that the browser gate consumes.
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser == 'true')) }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser != 'false' || needs.changes.outputs.libc == 'true')) }}
     runs-on: ubuntu-latest
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
@@ -1290,13 +1290,13 @@ jobs:
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   threads-fixture:
     needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true')) }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser != 'false')) }}
     uses: ./.github/workflows/threads-fixture.yml
   browser:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
     needs: [changes, network-wasm, libc, threads-fixture]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.browser != 'false')) }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser != 'false')) }}
     # A matrix result can report success when a shard never acquired a runner.
     outputs:
       runtime: ${{ steps.browser-result.outputs.runtime }}
@@ -1716,7 +1716,7 @@ jobs:
       - name: Reject failed or cancelled CI jobs
         env:
           RESULTS: ${{ toJSON(needs) }}
-          BROWSER_REQUIRED: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.browser != 'false' }}
+          BROWSER_REQUIRED: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser != 'false' }}
         run: |
           jq -e --arg browser_required "$BROWSER_REQUIRED" '
             type == "object" and has("browser") and

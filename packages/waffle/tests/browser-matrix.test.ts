@@ -504,14 +504,21 @@ test("CI shards dispatch each command in the full browser matrix exactly once", 
 });
 
 test("the runtime shard preserves batch order and storage observer scope after an early failure", async () => {
-  const [parallel, serial, runtime] = await Promise.all([
+  const [parallel, serial, reporter, runtime] = await Promise.all([
     discoverCommands("parallel"),
     discoverCommands("serial"),
+    discoverCommands("reporter"),
     discoverCommands("runtime", "gpu-native"),
   ]);
+  const reporterCommands = new Set(reporter.commands);
+  expect(serial.commands.filter((command) => reporterCommands.has(command))).toEqual(
+    reporter.commands,
+  );
   expect(runtime.failed).toBe(true);
   expect(runtime.failures).toEqual(["tests/gpu-native-browser-runner.ts failed"]);
-  expect(runtime.commands).toEqual(parallel.commands.concat(serial.commands));
+  expect(runtime.commands).toEqual(
+    parallel.commands.concat(serial.commands.filter((command) => !reporterCommands.has(command))),
+  );
   expect(runtime.storageObservers).toEqual(["chromium,firefox=1", "webkit=0"]);
 });
 

@@ -85,7 +85,7 @@ function selectBatches(group: string | undefined) {
     case "parallel":
       return parallel;
     case "serial":
-      return serialBeforeReporter.concat(serialAfterReporter);
+      return serialBeforeReporter.concat(reporter, serialAfterReporter);
     case "runtime":
       return parallel.concat(serialBeforeReporter, serialAfterReporter);
     case "reporter":

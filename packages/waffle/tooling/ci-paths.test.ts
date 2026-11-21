@@ -36,10 +36,12 @@ for (const name of ["browser", "libc"]) {
         ? ["changes", "network-wasm", "libc", "threads-fixture"]
         : ["changes", "network-wasm"],
     );
+    const browserSelection =
+      "needs.changes.result != 'success' || needs.changes.outputs.browser != 'false'";
     const selected =
       name === "libc"
-        ? "needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser == 'true'"
-        : "needs.changes.outputs.browser != 'false'";
+        ? browserSelection + " || needs.changes.outputs.libc == 'true'"
+        : browserSelection;
     expect(job.if).toBe(
       `\${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || ${selected})) }}`,
     );
@@ -249,7 +251,12 @@ test("thread, memory and producer inputs select the browser and all its fixture 
   const producer = record(jobs["threads-fixture"]);
   expect(producer.needs).toBe("changes");
   expect(producer.if).toBe(record(jobs.browser).if);
-  expect(String(record(jobs.libc).if)).toContain("needs.changes.outputs.browser == 'true'");
+  const reject = stepsFor("gate").find(
+    (step) => step.name === "Reject failed or cancelled CI jobs",
+  );
+  const selection = String(record(reject?.env).BROWSER_REQUIRED).slice(4, -3);
+  expect(selection).toContain("needs.changes.outputs.browser != 'false'");
+  expect(String(record(jobs.libc).if)).toContain(selection);
   expect(producer.uses).toBe("./.github/workflows/threads-fixture.yml");
   const triggers = record(threadsWorkflow.on);
   expect(Object.keys(triggers).sort()).toEqual(["workflow_call", "workflow_dispatch"]);
