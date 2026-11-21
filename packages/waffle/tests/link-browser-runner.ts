@@ -1,12 +1,15 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { chromium, firefox, webkit, type Browser } from "playwright";
+import type { Browser, Page } from "playwright";
 import { navigateTestPage } from "./browser-navigation.js";
+import { observeWebKitPage, webKitDebugFilter } from "./webkit-diagnostics.js";
 
 const root = process.env.PROCESS_SCRATCH_ROOT;
 if (!root) throw new Error("PROCESS_SCRATCH_ROOT must name an owned data-drive directory");
-const engines = { chromium, firefox, webkit };
 const requested = process.argv.slice(2);
+if (requested.includes("webkit")) process.env.DEBUG = webKitDebugFilter(process.env.DEBUG);
+const { chromium, firefox, webkit } = await import("playwright");
+const engines = { chromium, firefox, webkit };
 const names = requested.length ? requested : Object.keys(engines);
 const profiles: string[] = [];
 let browser: Browser | undefined;
@@ -39,6 +42,25 @@ async function bundle(path: string) {
   if (!result.success || !result.outputs[0])
     throw new AggregateError(result.logs, `bundle ${path}`);
   return result.outputs[0];
+}
+
+async function runLink(page: Page, url: string, engine: string) {
+  const diagnostics = engine === "webkit" ? observeWebKitPage(page, "link") : undefined;
+  try {
+    diagnostics?.enter("navigation");
+    await navigateTestPage(page, url);
+    diagnostics?.enter("evaluation");
+    return await page.evaluate(async () => {
+      const path = "/page.js";
+      const fixture: typeof import("./link-browser.js") = await import(path);
+      return fixture.sharedLinkBrowser();
+    });
+  } catch (error) {
+    diagnostics?.fail();
+    throw error;
+  } finally {
+    diagnostics?.enter("runner cleanup");
+  }
 }
 
 try {
@@ -76,13 +98,7 @@ try {
     browser = await engines[name].launch({
       env: { ...process.env, TMPDIR: process.env.TMPDIR ?? scratch },
     });
-    const tab = await browser.newPage();
-    await navigateTestPage(tab, `http://127.0.0.1:${server.port}/`);
-    const result = await tab.evaluate(async () => {
-      const path = "/page.js";
-      const page: typeof import("./link-browser.js") = await import(path);
-      return page.sharedLinkBrowser();
-    });
+    const result = await runLink(await browser.newPage(), `http://127.0.0.1:${server.port}/`, name);
     console.log(JSON.stringify({ engine: name, ...result }));
     await browser.close();
     browser = undefined;

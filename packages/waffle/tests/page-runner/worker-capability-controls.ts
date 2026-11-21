@@ -1,6 +1,7 @@
 import { runPageSuite, type SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
 import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 import { browserBundle } from "../browser-runner-lifecycle.js";
+import { observeWebKitPage } from "../webkit-diagnostics.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { record } from "./protocol.js";
@@ -21,6 +22,12 @@ export const workerControlModes = [
 ];
 const installingWorker = `const identity = crypto.randomUUID(); self.addEventListener('message', e => e.ports[0]?.postMessage(identity)); self.addEventListener('install', e => e.waitUntil(self.skipWaiting())); self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));`;
 const foreignWorker = `const identity = crypto.randomUUID(); self.addEventListener('install', e => e.waitUntil(self.skipWaiting())); self.addEventListener('activate', e => e.waitUntil(self.clients.claim())); self.addEventListener('message', e => e.ports[0]?.postMessage(identity));`;
+const cleanupStepPrefix = "worker capability verification: ";
+const verificationPage = `<!doctype html><script>
+  Object.defineProperty(ServiceWorkerRegistration.prototype, "unregister", {
+    value() { throw new Error("Verification document attempted to unregister a worker"); },
+  });
+</script>`;
 function assert(value: unknown, detail: string): asserts value {
   if (!value) throw new Error(detail);
 }
@@ -30,12 +37,25 @@ class ControlDriver extends PlaywrightDriver {
   rootIdentity = "";
   foreignIdentity = "";
   verified = false;
+  private diagnostics?: ReturnType<typeof observeWebKitPage>;
   constructor(
-    engine: "chromium" | "webkit",
+    private readonly controlEngine: "chromium" | "webkit",
     scratch: string,
     readonly mode: string,
   ) {
-    super(engine, scratch);
+    super(controlEngine, scratch);
+  }
+  override async start(signal: AbortSignal): Promise<void> {
+    await super.start(signal);
+    if (this.controlEngine !== "webkit" || this.mode !== "in-flight-loss") return;
+    const page = this.current();
+    const diagnostics = observeWebKitPage(page, "worker-capability-in-flight-loss");
+    this.diagnostics = diagnostics;
+    page.on("console", (message) => {
+      const text = message.text();
+      if (message.type() === "debug" && text.startsWith(cleanupStepPrefix))
+        diagnostics.enter(text.slice(cleanupStepPrefix.length));
+    });
   }
   override async navigate(url: string, signal: AbortSignal): Promise<void> {
     const parsed = new URL(url);
@@ -74,7 +94,9 @@ class ControlDriver extends PlaywrightDriver {
     }
     if (this.mode === "in-flight-loss") {
       await this.stage("in-flight", signal);
+      this.diagnostics?.enter("navigate away from initiating document");
       await super.navigate(this.origin + "/foreign.html", signal);
+      this.diagnostics?.enter("discarded initiating document");
       throw new Error("Control lost initiating document before settlement");
     }
     await this.stage("registered", signal);
@@ -136,19 +158,43 @@ class ControlDriver extends PlaywrightDriver {
     try {
       if (this.origin) await this.verifyCleanup(signal);
     } catch (error) {
+      this.diagnostics?.fail();
       failure = error;
     }
+    this.diagnostics?.enter("runner cleanup");
     const cleanup = await super.stop();
     if (failure) throw failure;
     return cleanup;
   }
   private async verifyCleanup(signal: AbortSignal): Promise<void> {
-    await super.navigate(this.origin + "/foreign.html", signal);
+    this.diagnostics?.enter("navigate to verification document");
+    await super.navigate(this.origin + "/verify.html", signal);
+    this.diagnostics?.enter("start verification script");
     const foreign = ["collision-before", "collision-after", "replacement", "in-place"].includes(
       this.mode,
     );
     const value = await this.script(
-      `return (async () => { const regs = await navigator.serviceWorker.getRegistrations(); const root = regs.find(r=>r.scope===location.origin+'/'); const owned = regs.find(r=>r.scope===${JSON.stringify(this.scope)}); const ch = new MessageChannel(); const id = new Promise(r=>ch.port1.onmessage=e=>r(e.data)); root.active.postMessage('id',[ch.port2]); const rootIdentity = await id; let foreignIdentity = null; if(${foreign} && owned?.active) { const other = new MessageChannel(); const value = new Promise(resolve=>other.port1.onmessage=e=>resolve(e.data)); owned.active.postMessage('id',[other.port2]); foreignIdentity = await value; } const result = {root:rootIdentity, foreignIdentity, current:owned?.active?.scriptURL ?? null}; for(const r of regs) await r.unregister(); return result; })()`,
+      `return (async () => {
+        const step = ${this.diagnostics ? `name => console.debug(${JSON.stringify(cleanupStepPrefix)} + name)` : "() => {}"};
+        step("enumerate registrations");
+        const regs = await navigator.serviceWorker.getRegistrations();
+        const root = regs.find(r => r.scope === location.origin + "/");
+        const owned = regs.find(r => r.scope === ${JSON.stringify(this.scope)});
+        const ch = new MessageChannel();
+        const id = new Promise(r => ch.port1.onmessage = e => r(e.data));
+        step("await root worker identity");
+        root.active.postMessage("id", [ch.port2]);
+        const rootIdentity = await id;
+        let foreignIdentity = null;
+        if (${foreign} && owned?.active) {
+          const other = new MessageChannel();
+          const value = new Promise(resolve => other.port1.onmessage = e => resolve(e.data));
+          owned.active.postMessage("id", [other.port2]);
+          foreignIdentity = await value;
+        }
+        step("verify worker identities");
+        return {root: rootIdentity, foreignIdentity, current: owned?.active?.scriptURL ?? null};
+      })()`,
       signal,
     );
     assert(record(value) && value.root === this.rootIdentity, "Foreign root active Worker changed");
@@ -185,6 +231,7 @@ export async function workerCapabilityControl(
     assets: async () => ({
       "/page.js": await browserBundle(join(import.meta.dir, "worker-capability-control-page.ts")),
       "/foreign.html": new Blob(["<!doctype html>"], { type: "text/html" }),
+      "/verify.html": new Blob([verificationPage], { type: "text/html" }),
       "/root-sw.js": foreignWorker,
       "/foreign-sw.js": foreignWorker,
       [script]:
@@ -206,6 +253,10 @@ export async function workerCapabilityControl(
   assert(
     driver?.verified,
     `Worker cleanup control not verified: ${JSON.stringify(result.failures)}`,
+  );
+  assert(
+    result.cleanup.session.status === "confirmed" && result.cleanup.launcher.status === "confirmed",
+    `Worker capability browser teardown unconfirmed: ${JSON.stringify(result.cleanup)}`,
   );
   assert(
     result.cleanup.storage.status !== "not-created",

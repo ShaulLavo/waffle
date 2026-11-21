@@ -1,10 +1,14 @@
 import { open } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { withStorageCleanup } from "../storage-allocation.js";
+import { webKitDebugFilter } from "../webkit-diagnostics.js";
 import { writeResult } from "./result-file.js";
 
 function spawnControls(command: string[], controlsPath: string) {
   return Bun.spawn(command.concat(["--result", controlsPath]), {
+    env: command.includes("webkit")
+      ? { ...process.env, DEBUG: webKitDebugFilter(process.env.DEBUG) }
+      : process.env,
     stdin: "ignore",
     stdout: "inherit",
     stderr: "pipe",
