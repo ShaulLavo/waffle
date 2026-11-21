@@ -20,6 +20,7 @@ const runners = [
   "threads-runtime",
   "running-member-reuse",
   "stop-order",
+  "process-start",
   "gpu",
 ];
 const continuity = "workspace-continuity";

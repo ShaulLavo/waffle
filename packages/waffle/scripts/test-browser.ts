@@ -23,6 +23,7 @@ const runners = [
   "tests/threads-runtime-browser-runner.ts",
   "tests/running-member-reuse-browser-runner.ts",
   "tests/stop-order-browser-runner.ts",
+  "tests/process-start-browser-runner.ts",
   gpuRunner,
 ];
 const parallel = [

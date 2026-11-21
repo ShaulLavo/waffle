@@ -19,7 +19,7 @@ import {
 } from "../memory/control.js";
 import type { Preview1NetworkConnection } from "./preview1-network-types.js";
 import { assertTerminalWaitAllowed } from "../proc/terminal-turn.js";
-import { bindImportedMemory, createWorkerMemorySampler } from "./worker-memory.js";
+import { bindImportedMemory, createWorkerMemorySampler, startStep } from "./worker-memory.js";
 import { NotificationWaitScope } from "./notification-wait.js";
 import type { NotificationConnection } from "./notification-relay.js";
 import {
@@ -964,6 +964,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       releaseStartupStderr = () => endpoint.close();
     }
     const runtime = processModules ? await processModules.client : null;
+    startStep(memorySampler, "runtime-loaded");
     const runtimeState = req.runtimeProcess
       ? acquire(() => runtime!.workerProcessState(req.runtimeProcess!))
       : null;
@@ -1084,6 +1085,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     const namespaces = executor.namespaces?.(context);
     if (done) return;
     groupMember = await attachGroupMember(req, checkActive, runtime);
+    startStep(memorySampler, "group-joined");
     // Launch descriptors, snapshotted after bindings and before the guest can open its own.
     let inherited: readonly number[] = [];
     const processImports: Record<string, (...args: number[]) => number | void> = {
@@ -1196,6 +1198,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         { ProcessABI, ProcessSignalExit },
         { createRuntimeTerminalCodec },
       ] = await processModules!.host;
+      startStep(memorySampler, "modules-loaded");
       processSignalExit = ProcessSignalExit;
       const postMessage = (message: WorkerProcessMessage) => postToHost(message);
       const pipes = new WorkerPipeHost({

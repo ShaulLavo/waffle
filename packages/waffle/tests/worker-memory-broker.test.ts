@@ -15,6 +15,9 @@ import { nodeWorkerTransfers } from "./fixtures/node-worker-transfers.js";
 import { expect, test } from "bun:test";
 import { Worker as NodeWorker } from "node:worker_threads";
 import { BrowserProcessBroker, type WorkerLaunchOptions } from "../browser/process-broker.js";
+import type { ProcessStartStep } from "../browser/process-start.js";
+import { createWorkerMemorySampler } from "../browser/worker-memory.js";
+import type { ProcessContext } from "../proc/types.js";
 import type { RuntimeWorkerRequest, RuntimeWorkerMessage } from "../browser/worker.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { MemoryBackend } from "../fs/backend.js";
@@ -52,6 +55,8 @@ async function fixture(
     module?: WebAssembly.Module;
     linkPlan?: import("../link/index.js").SharedLinkPlan;
     inheritGroup?: boolean;
+    /** Holds an asynchronous launcher before it reaches launchWorker, like an embedder's. */
+    launchGate?: () => Promise<void> | undefined;
   } = {},
 ) {
   const previousWorker = globalThis.Worker;
@@ -91,6 +96,27 @@ async function fixture(
     registry = new ExecutableRegistry();
   const module = launchOptions.module ?? memoryObservationGuest();
   registry.register("fixture", { module, adapter: "preview1" });
+  const { launchGate, ...workerOptions } = launchOptions;
+  const launch = (context: ProcessContext) =>
+    broker.launchWorker<
+      RuntimeWorkerRequest & {
+        readonly linkPlan?: SharedLinkPlan;
+        readonly worker?: Readonly<Record<string, unknown>>;
+      }
+    >(context, {
+      ...workerOptions,
+      workerUrl: "generic",
+      memoryGroup: launchOptions.inheritGroup
+        ? (broker.memoryGroupOf(context.parentPid) ?? "new")
+        : launchOptions.memoryGroup,
+      request: {
+        module,
+        args: context.request.argv,
+        env: {},
+        linkPlan: launchOptions.linkPlan,
+        worker: context.request.worker,
+      },
+    });
   const broker = new BrowserProcessBroker({
     reservations,
     memoryGroups: { maximumPages: 64, stackBytes: 65_536 },
@@ -99,26 +125,10 @@ async function fixture(
     registry,
     onError: (error) => errors.push(error),
     filesystem: processFilesystem(filesystem, reservations, ports),
-    launch: (context) =>
-      broker.launchWorker<
-        RuntimeWorkerRequest & {
-          readonly linkPlan?: SharedLinkPlan;
-          readonly worker?: Readonly<Record<string, unknown>>;
-        }
-      >(context, {
-        ...launchOptions,
-        workerUrl: "generic",
-        memoryGroup: launchOptions.inheritGroup
-          ? (broker.memoryGroupOf(context.parentPid) ?? "new")
-          : launchOptions.memoryGroup,
-        request: {
-          module,
-          args: context.request.argv,
-          env: {},
-          linkPlan: launchOptions.linkPlan,
-          worker: context.request.worker,
-        },
-      }),
+    launch: (context) => {
+      const gate = launchGate?.();
+      return gate ? gate.then(() => launch(context)) : launch(context);
+    },
   });
   const root = createWorkerProcessTransport({
     pid: identities.pid(),
@@ -547,5 +557,102 @@ test("real nested and inherited-thread launches reuse the admitted compiled grou
     await f?.dispose();
     if (previous === undefined) delete process.env.WAFFLE_MEMORY_WORKER_ENTRY;
     else process.env.WAFFLE_MEMORY_WORKER_ENTRY = previous;
+  }
+});
+
+// Steps the page stamps itself, so their times are ordered. Worker bootstrap steps carry the
+// worker's own time and only follow start-posted.
+const pageStartOrder: readonly ProcessStartStep[] = [
+  "launching",
+  "worker-constructed",
+  "start-posted",
+  "worker-started",
+  "memory-bound",
+  "instantiated",
+  "running",
+];
+
+test("start states record every step of a real worker start in order", async () => {
+  const stop = Promise.withResolvers<void>();
+  const f = await fixture(true, stop.promise);
+  try {
+    const state = () => f.broker.startStates().find((entry) => entry.pid === f.pid);
+    await until(() => state()?.step === "running");
+    const started = state()!;
+    expect(started).toMatchObject({
+      pid: f.pid,
+      parentPid: f.root.pid,
+      generation: 1,
+      executable: "fixture",
+    });
+    const times = pageStartOrder.map((step) => started.at[step]);
+    expect(times.every((time) => typeof time === "number")).toBe(true);
+    expect(times).toEqual(times.toSorted((a, b) => a! - b!));
+    for (const step of ["runtime-loaded", "group-joined", "modules-loaded"] as const)
+      if (started.at[step] !== undefined)
+        expect(started.at[step]).toBeGreaterThanOrEqual(started.at["start-posted"]!);
+    await f.broker.kill(f.pid, 9);
+    await f.supervisor.waitForExit(f.root.pid, f.pid);
+    await until(() => !f.broker.startStates().some((entry) => entry.pid === f.pid));
+    expect(f.errors).toEqual([]);
+  } finally {
+    stop.resolve();
+    await f.dispose();
+  }
+});
+
+test("a start whose worker never answers stays at start-posted until its first message", async () => {
+  const f = await fixture(false);
+  try {
+    const state = () => f.broker.startStates().find((entry) => entry.pid === f.pid);
+    expect(state()?.step).toBe("start-posted");
+    expect(Object.keys(state()!.at).toSorted()).toEqual(
+      ["launching", "start-posted", "worker-constructed"].toSorted(),
+    );
+    const worker = f.workers.find((entry) => entry.request)!;
+    worker.onmessage?.({ data: { type: "phase", name: "worker-start", duration: 0 } });
+    expect(state()?.step).toBe("worker-started");
+    // Bootstrap progress and binding share the memory sample cell: visible without a message.
+    const sampler = createWorkerMemorySampler(worker.request!.memoryObservation!);
+    const before = performance.now();
+    sampler.progress("group-joined");
+    const joined = state()!;
+    expect(joined.step).toBe("group-joined");
+    expect(joined.at["group-joined"]).toBeGreaterThanOrEqual(before - 1);
+    expect(joined.at["group-joined"]).toBeLessThanOrEqual(performance.now() + 1);
+    expect(f.broker.workerMemory().find((sample) => sample.pid === f.pid)?.bytes).toBeNull();
+    Atomics.store(new BigInt64Array(worker.request!.memoryObservation!), 0, 65536n);
+    expect(state()?.step).toBe("memory-bound");
+    expect(state()?.at["group-joined"]).toBe(joined.at["group-joined"]);
+    worker.onmessage?.({ data: { type: "exit", code: 0 } });
+    await f.supervisor.waitForExit(f.root.pid, f.pid);
+    expect(state()).toBeUndefined();
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("an embedder launch still preparing its worker is listed at launching", async () => {
+  let gate: Promise<void> | undefined;
+  const held = Promise.withResolvers<void>();
+  const f = await fixture(false, Promise.resolve(), undefined, testReservations(), {
+    launchGate: () => gate,
+  });
+  try {
+    gate = held.promise;
+    const starting = f.spawn();
+    await until(() => f.broker.startStates().some((entry) => entry.pid !== f.pid));
+    const pending = f.broker.startStates().find((entry) => entry.pid !== f.pid)!;
+    expect(pending.step).toBe("launching");
+    expect(Object.keys(pending.at)).toEqual(["launching"]);
+    held.resolve();
+    const pid = await starting;
+    expect(pid).toBe(pending.pid);
+    const launched = f.broker.startStates().find((entry) => entry.pid === pid);
+    expect(launched?.step).toBe("start-posted");
+    expect(launched?.at.launching).toBe(pending.at.launching);
+  } finally {
+    held.resolve();
+    await f.dispose();
   }
 });
