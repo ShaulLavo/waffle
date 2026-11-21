@@ -1,4 +1,7 @@
 import { allocateSharedControl } from "../memory/control.js";
+import type { OperationWriter } from "../browser/operations/writer.js";
+import type { ResultName } from "../browser/operations/cells.js";
+import { isInstance, reflectApply } from "../proc/intrinsics/core.js";
 import type { WalkPlan, WalkCursor, WalkPage, WalkPageOptions } from "./walk.js";
 import { FilesystemWatch, type WatchOptions } from "./watch.js";
 import { checkDirectoryPage } from "./directory-pages.js";
@@ -170,6 +173,9 @@ function transferList(payload: ArrayBuffer): Transferable[] {
   return { __proto__: null, [symbolIterator]: () => iterator } as unknown as Transferable[];
 }
 
+/** Created only by the cancellation branch, even when another failure also uses errno 11. */
+class FilesystemWaitCancelled extends FilesystemError {}
+
 export class FilesystemCompletion {
   readonly cells: Int32Array;
   private changed: (() => void)[] = [];
@@ -249,7 +255,7 @@ export class FilesystemCompletion {
       requestCancelled(this.buffer) ||
       this.cells[0] === State.Cancelled
     )
-      throw new FilesystemError(11);
+      throw new FilesystemWaitCancelled(11);
     if (this.cells[0] === State.Failed) throw new FilesystemError(this.cells[3]!);
   }
   private decode(bytes: Uint8Array): unknown {
@@ -391,6 +397,34 @@ export interface FilesystemClientOptions {
   /** Trusted host capability; never included in a serialized connection or supplied to a guest. */
   readonly connect?: (identity: FilesystemIdentity) => FilesystemConnection;
 }
+
+type ResolveObservation = { readonly entered: () => boolean; readonly writer: OperationWriter };
+
+function waitFailure(error: unknown): ResultName {
+  if (isInstance(error, FilesystemTransportError)) return "transportError";
+  if (isInstance(error, FilesystemWaitCancelled)) return "filesystemCancelled";
+  return "resolveError";
+}
+
+function observeResolveWait(completion: FilesystemCompletion, writer: OperationWriter): void {
+  const wait = completion.wait;
+  writer.begin(completion.id);
+  completion.wait = () => {
+    let value: ResolvedPath | number;
+    try {
+      value = reflectApply(wait, completion, []);
+    } catch (error) {
+      writer.settle(waitFailure(error));
+      throw error;
+    }
+    writer.settle(
+      value && typeof value === "object" && typeof value.parent === "number"
+        ? "completed"
+        : "resolveError",
+    );
+    return value;
+  };
+}
 function retiredLocalRelease(connection: FilesystemConnection, error: unknown): boolean {
   if (!(error instanceof FilesystemTransportError) || error.reason !== "stale") return false;
   if (atomicsLoad(new Int32ArrayConstructor(connection.revocations[0]!), 0) !== 2) return false;
@@ -446,10 +480,17 @@ export class FilesystemClient implements FileSystem {
   private watchingRevocation = false;
   private resident: ResidentAttachment | undefined;
   private workspaceStop: Promise<void> | undefined;
+  readonly #resolveSubmit: "submit" | "submitObservedResolve";
+  declare private readonly submitObservedResolve?: FilesystemClient["submit"];
   constructor(
     readonly connection: FilesystemConnection,
     private readonly options: FilesystemClientOptions = {},
+    resolveObservation?: ResolveObservation,
   ) {
+    this.#resolveSubmit = resolveObservation ? "submitObservedResolve" : "submit";
+    if (resolveObservation)
+      this.submitObservedResolve = (operation, args) =>
+        this.observeResolveSubmission(operation, args, resolveObservation);
     this.requests = new FilesystemRequestAllocator(connection.requests);
     this.capabilities = new Int32ArrayConstructor(connection.capabilities, 0, CAPABILITY_LENGTH);
     this.epoch = new Int32ArrayConstructor(connection.epoch);
@@ -483,6 +524,24 @@ export class FilesystemClient implements FileSystem {
       connection.port.close();
     };
     connection.port.start();
+  }
+  private observeResolveSubmission(
+    operation: string,
+    args: unknown[] | undefined,
+    { entered, writer }: ResolveObservation,
+  ): FilesystemCompletion {
+    if (!entered()) return this.submit(operation, args);
+    let completion: FilesystemCompletion;
+    try {
+      completion = this.submit(operation, args);
+    } catch (error) {
+      writer.submissionFailed(
+        isInstance(error, FilesystemTransportError) ? "transportError" : "submissionError",
+      );
+      throw error;
+    }
+    observeResolveWait(completion, writer);
+    return completion;
   }
   transportError() {
     return requestTransportError(this.requests.memory);
@@ -1585,7 +1644,7 @@ export class FilesystemClient implements FileSystem {
       const cached = this.paths.get(key);
       if (!this.resident && !this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
         return typeof cached.path === "number" ? cached.path : { ...cached.path };
-      const completion = this.submit("resolve", [directory, path, followFinal]);
+      const completion = this[this.#resolveSubmit]!("resolve", [directory, path, followFinal]);
       try {
         const resolved: ResolvedPath | number = completion.wait();
         if (this.paths.size >= 256) this.paths.clear();

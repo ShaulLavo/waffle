@@ -42,3 +42,11 @@ export function matchesProgram(program: PackageProgram, name: string): boolean {
     (program.aliases?.includes(name) ?? false)
   );
 }
+const preview1Launches = new WeakSet<object>();
+export function markPreview1Launch<T extends object>(options: T): T {
+  preview1Launches.add(options);
+  return options;
+}
+export function isPreview1Launch(options: object): boolean {
+  return preview1Launches.has(options);
+}

@@ -97,7 +97,9 @@ import {
   wasmMemoryBuffer,
   listenAbort,
   unlistenAbort,
+  isInstance,
 } from "../proc/intrinsics.ts";
+import type { GuestOperationBinding, ObservedPreview1Bootstrap } from "./operations/protocol.js";
 
 import type { MemoryGroupMemberRequest } from "../group/protocol.js";
 import type { GroupMember } from "../group/member.js";
@@ -578,10 +580,29 @@ function requestProcessObserver<R extends RuntimeWorkerRequest>(
 }
 
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
-export async function bootstrap<R extends RuntimeWorkerRequest>(
+export function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
   executor: WorkerExecutor<R> | HostProgramExecutor<R>,
   host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
+): Promise<void> {
+  return bootstrapWorker(req, executor, host);
+}
+
+/** Internal entry point for the broker envelope. Executor requests never contain the binding. */
+export function bootstrapObservedPreview1(envelope: ObservedPreview1Bootstrap): Promise<void> {
+  return bootstrapWorker(
+    envelope[0],
+    preview1Executor,
+    globalThis as unknown as RuntimeWorkerHost,
+    envelope[1],
+  );
+}
+
+async function bootstrapWorker<R extends RuntimeWorkerRequest>(
+  req: R,
+  executor: WorkerExecutor<R> | HostProgramExecutor<R>,
+  host: RuntimeWorkerHost,
+  operations?: GuestOperationBinding,
 ): Promise<void> {
   const hooks = captureWorkerHost(host);
   if (!req.controlGrant) throw new TypeError("Worker bootstrap requires a shared control grant");
@@ -590,7 +611,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   );
   const restoreAllocator = installSharedControlAllocator(allocateShared);
   try {
-    await bootstrapAllocated(req, executor, host, hooks, allocateShared);
+    await bootstrapAllocated(req, executor, host, hooks, allocateShared, operations);
   } finally {
     restoreAllocator();
   }
@@ -601,9 +622,16 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   host: RuntimeWorkerHost,
   { postToHost, addListener, removeListener }: ReturnType<typeof captureWorkerHost>,
   allocateShared: (length: number) => SharedArrayBuffer,
+  operations?: GuestOperationBinding,
 ): Promise<void> {
   postToHost({ type: "phase", name: "worker-start", duration: 0 });
-  const fs = new FilesystemClient(req.filesystem);
+  let started = false;
+  const recording = operations ? await captureOperations(operations) : undefined;
+  const fs = new FilesystemClient(
+    req.filesystem,
+    undefined,
+    recording && { entered: () => started, writer: recording.writers.resolve },
+  );
   const { cancellation, notifications, startupCancelled, cancelStartup } = startupControl(
     req.notifications,
     fs,
@@ -715,7 +743,6 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   let groupMember: GroupAttachment = noGroup;
   let releaseStartupStderr: (() => void) | undefined;
   let done = false;
-  let started = false;
   let socketNetwork:
     | ReturnType<(typeof import("./preview1-socket.js"))["attachPreview1Sockets"]>
     | undefined;
@@ -1305,6 +1332,17 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       if (done) return;
       adoptStdio(wasi.descriptors, discardedStdio);
       runtimeProcess.installBindings();
+      const { observePipePoll, writers } = recording ?? {};
+      const observedPoll =
+        writers &&
+        observePipePoll?.({
+          writer: writers.pipe,
+          entered: () => started,
+          memory: () => boundMemory,
+          descriptors,
+          checkActive,
+          stopped: (error) => isInstance(error, WasiExit) || isInstance(error, RuntimeWorkerSignal),
+        });
       process = new ProcessABI({
         memory: () => {
           checkActive();
@@ -1320,18 +1358,28 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         wake: runtimeProcess.wake,
         futexReady: groupMember.watchReady,
         createPipe: () => runtimeProcess!.createPipe(),
-        wait: (ms, word, expected) => {
-          checkActive();
-          assertTerminalWaitAllowed();
-          controlWait(word, 0, expected, ms);
-          checkActive();
-        },
+        wait:
+          observedPoll?.wait ??
+          ((ms, word, expected) => {
+            checkActive();
+            assertTerminalWaitAllowed();
+            controlWait(word, 0, expected, ms);
+            checkActive();
+          }),
       });
       const entries = objectEntries(process.imports);
       for (let index = 0; index < entries.length; index++) {
         const entry = entries[index]!,
           name = entry[0],
           call = entry[1];
+        if (name === "poll" && observedPoll) {
+          const poll = observedPoll.wrap(call);
+          processImports[name] = (ptr, count, timeout, out) => {
+            checkActive();
+            return poll(ptr!, count!, timeout!, out!);
+          };
+          continue;
+        }
         processImports[name] = (...args) => {
           checkActive();
           return call(...args);
@@ -1423,6 +1471,15 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       if (removeListener) reflectApply(removeListener, host, ["error", onError]);
       if (removeListener) reflectApply(removeListener, host, ["unhandledrejection", onRejection]);
     }
+  }
+}
+
+async function captureOperations(binding: GuestOperationBinding) {
+  try {
+    const { createOperationWriters, observePipePoll } = await import("./operations/guest.js");
+    return { writers: createOperationWriters(binding), observePipePoll };
+  } catch {
+    return undefined;
   }
 }
 

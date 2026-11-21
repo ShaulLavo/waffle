@@ -1,4 +1,5 @@
 import { WalkTable, type WalkTransaction } from "./walk.js";
+import type { OperationBinding } from "../browser/operations/protocol.js";
 import {
   requestMemorySections,
   waitForRequestQuiescence,
@@ -230,7 +231,7 @@ export class FilesystemService {
       throw error;
     }
   }
-  connect(connection: FilesystemConnection): void {
+  connect(connection: FilesystemConnection, acceptResolve?: (id: number) => void): void {
     if (this.ownerStopping) {
       this.refuseConnection(connection);
       throw new FilesystemError(11);
@@ -308,16 +309,39 @@ export class FilesystemService {
     // The launch snapshot can be older than the tree. Every segment that exists now is offered
     // again, so an agent that reaches its event loop attaches what its snapshot lacked.
     this.announceSegments(this.backend.sharedSegments?.() ?? [], [session]);
-    connection.port.onmessage = ({ data }: MessageEvent<RequestMessage>) => {
+    const receive = ({ data }: MessageEvent<RequestMessage>) => {
       try {
         this.receive(session, data);
       } catch {
         this.signalTransportFailure(session, "protocol");
       }
     };
+    connection.port.onmessage = acceptResolve
+      ? (event: MessageEvent<RequestMessage>) => {
+          receive(event);
+          this.observeAcceptedResolve(session, event.data, acceptResolve);
+        }
+      : receive;
     connection.port.onmessageerror = () => this.signalTransportFailure(session);
     connection.port.start();
     if (!session.closed) this.trackWork(session, this.watchTransport(session));
+  }
+  private observeAcceptedResolve(
+    session: Session,
+    data: RequestMessage,
+    accept: (id: number) => void,
+  ): void {
+    try {
+      if (!("id" in data)) return;
+      if (requestTransportError(session.requests)) return;
+      const buffer = session.pending.get(data.id);
+      if (!buffer) return;
+      const bytes = requestInput(session, data.id, requestBytes(buffer));
+      const { inputLength } = requestLengths(buffer, bytes);
+      if (unpack(bytes.subarray(0, inputLength)).operation === "resolve") accept(data.id);
+    } catch {
+      // Receipt observation cannot fail the transport or affect the queued request.
+    }
   }
   /** Offers segments by index. Delivery is never awaited or acknowledged: a blocked agent
    * cannot receive it, and reaches those pages through the owner until it can. */
@@ -2070,6 +2094,16 @@ function diagnosticField(error: unknown, key: string): string | undefined {
     return;
   }
 }
+
+async function prepareAcceptance(binding: OperationBinding) {
+  try {
+    const { captureAcceptance } = await import("../browser/operations/writer.js");
+    return captureAcceptance(binding);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Installs the service in a browser/Bun worker without importing any app code. */
 export function installFilesystemWorker(
   scope: {
@@ -2127,7 +2161,7 @@ export function installFilesystemWorker(
       })
       .then((backend) => new FilesystemService(backend));
     void service
-      .then((owner) => {
+      .then(async (owner) => {
         if (disposing) {
           data.connect?.port.close();
           return;
@@ -2135,7 +2169,14 @@ export function installFilesystemWorker(
         if (data.socketScope && data.connect && data.reply) {
           attachSocketScopeControl(owner, data);
         } else if (data.connect) {
-          owner.connect(data.connect);
+          const acceptResolve = data.operations
+            ? await prepareAcceptance(data.operations)
+            : undefined;
+          if (disposing) {
+            data.connect.port.close();
+            return;
+          }
+          owner.connect(data.connect, acceptResolve);
           scope.postMessage({ type: "filesystem-state", status: "ready" });
           reportRuntimeStartup(onStartupStage, "filesystem-ready");
           onStartupStage = undefined;

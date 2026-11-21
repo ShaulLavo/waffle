@@ -40,6 +40,14 @@ import type {
   BrowserProcessBrokerOptions,
 } from "./browser/process-broker.js";
 export type { WorkerMemoryObservation } from "./browser/process-broker.js";
+import type { OperationDiagnostics } from "./browser/operations/types.js";
+export type {
+  OperationDiagnostics,
+  OperationImage,
+  OperationPhase,
+  OperationResult,
+  OperationSummary,
+} from "./browser/operations/types.js";
 export type { ProcessStartState, ProcessStartStep } from "./browser/process-start.js";
 export type { MemoryGroupLaunch, RootMemoryGroupMember } from "./browser/process-broker.js";
 import type { MemoryGroupPolicyOptions } from "./group/state.js";
@@ -92,7 +100,10 @@ export interface RuntimeConsumer {
 }
 
 /** Filesystem authority is borrowed. Only the page runtime can close its service. */
-export type RuntimeFilesystem = Omit<SharedFilesystem, "client" | "dispose" | "attachSocketScope">;
+export type RuntimeFilesystem = Omit<
+  SharedFilesystem,
+  "client" | "dispose" | "attachSocketScope" | "connectObserved"
+>;
 export type RuntimeSupervisor = Omit<
   ProcessSupervisor,
   | "dispose"
@@ -105,7 +116,13 @@ export type RuntimeSupervisor = Omit<
 >;
 export type ProcessService = Omit<
   BrowserProcessBroker,
-  "dispose" | "suspend" | "quiesce" | "ready" | "retainRootGraphics"
+  | "dispose"
+  | "suspend"
+  | "quiesce"
+  | "ready"
+  | "retainRootGraphics"
+  | "operationDiagnostics"
+  | "prepareOperationDiagnostics"
 > & {
   ready(): Promise<RuntimeSupervisor>;
 };
@@ -178,6 +195,8 @@ export interface RuntimeOptions {
   /** Optional admission metadata; retain a bounded history in the consumer if needed.
    * Observers must not reenter process control. Throws and rejected async returns are ignored. */
   onProcessAdmission?: ProcessAdmissionObserver;
+  /** Capture bounded post-entry operation observations for eligible Preview 1 commands. */
+  readonly observeOperations?: boolean;
   /** Optional filesystem startup milestones, never awaited. See docs/runtime-startup.md. */
   onStartupStage?: RuntimeStartupObserver;
   /** Memory group limits: members, parallelism, page budget. See docs/memory-groups.md. */
@@ -207,6 +226,8 @@ export interface Runtime {
   /** Lazy display ownership. Does not activate processes or start a GPU service. */
   display(): Promise<RuntimeDisplay>;
   processes(): Promise<ProcessService>;
+  /** Pull a scalar snapshot without activating process services. */
+  operationDiagnostics(): OperationDiagnostics;
   dispose(): Promise<void>;
 }
 
@@ -422,6 +443,7 @@ function sourceTime(): number | undefined {
 }
 
 export function createRuntime(options: RuntimeOptions = {}): Runtime {
+  const observeOperations = options.observeOperations === true;
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
   const token: { display?: Promise<RuntimeDisplayOwner | undefined>; disposal?: Promise<void> } =
     {};
@@ -647,6 +669,11 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     get disposed() {
       return disposed;
     },
+    operationDiagnostics() {
+      assertLive();
+      if (!observeOperations) return { status: "disabled" };
+      return host?.operationDiagnostics() ?? { status: "empty" };
+    },
     registerAdapter(name, launch) {
       return registerAdapter(name, "guest", launch);
     },
@@ -815,7 +842,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           reservations,
           hostIdentity,
           filesystem: {
-            connect: (identity, headroom) => filesystem.connect(identity, headroom),
+            connect: (identity, headroom, operations) =>
+              operations
+                ? filesystem.connectObserved(identity, headroom, operations)
+                : filesystem.connect(identity, headroom),
             revoke: (identity) => filesystem.revoke(identity),
             reap: (identity) => filesystem.reap(identity),
             quiesce: (identity) => filesystem.quiesce(identity),
@@ -825,6 +855,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           registry: activeRegistry,
           table,
           onProcessAdmission: options.onProcessAdmission,
+          observeOperations,
           memoryGroups: options.memoryGroups,
           launchCommand: (context, capabilities) =>
             ownLaunch(async () => {
@@ -843,6 +874,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           : import("./browser/process-broker.js").then(
               ({ BrowserProcessBroker }) => new BrowserProcessBroker(hostOptions),
             ));
+        if (observeOperations) await created.prepareOperationDiagnostics();
         host = created;
         return created;
       });

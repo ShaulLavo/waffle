@@ -158,10 +158,22 @@ import {
 } from "../proc/command.js";
 import type { CommandCapabilities } from "../proc/command-runner.js";
 import type { FileHandle } from "../core/filesystem.js";
+import { isPreview1Launch } from "../programs/catalog.js";
+import type { OperationOwner } from "./operations/owner.js";
+import type {
+  GuestOperationBinding,
+  ObservedPreview1Bootstrap,
+  OperationBinding,
+} from "./operations/protocol.js";
+import type { OperationDiagnostics } from "./operations/types.js";
 
 export interface ProcessFilesystem {
   fork?(): FilesystemConnection;
-  connect(identity: FilesystemIdentity, headroom?: Headroom | null): FilesystemConnection;
+  connect(
+    identity: FilesystemIdentity,
+    headroom?: Headroom | null,
+    operations?: OperationBinding,
+  ): FilesystemConnection;
   revoke(identity: FilesystemIdentity): void;
   reap(identity: FilesystemIdentity): void;
   quiesce(identity: FilesystemIdentity): Promise<void>;
@@ -200,6 +212,7 @@ export interface BrowserProcessBrokerOptions {
   onError?(error: unknown): void;
   /** Opt-in metadata only; observers must not reenter process control. Exceptions are ignored. */
   onProcessAdmission?: ProcessAdmissionObserver;
+  observeOperations?: boolean;
   /** Memory group policy (W1-W3). Groups are created only by a launch that asks for one. */
   memoryGroups?: MemoryGroupPolicyOptions;
 }
@@ -332,6 +345,7 @@ interface RuntimeLaunch {
 }
 interface RuntimeChild {
   readonly generation: number;
+  operationCapture?: number;
   readonly transport: WorkerProcessTransport;
   readonly launch: RuntimeLaunch;
   /** Shared with the pending launch that created this child. */
@@ -477,6 +491,8 @@ export class BrowserProcessBroker {
   private readonly terminalOutputs = new Map<number, TerminalOutputBudget>();
   private readonly registries = new Map<number, PipePublicationRegistry>();
   private readonly children = new Map<number, RuntimeChild>();
+  #operations?: OperationOwner;
+  #operationsUnavailable = false;
   private readonly launchStates = new WeakMap<object, RuntimeLaunch>();
   private readonly fences = new Map<number, Promise<void>>();
   private readonly startupDiagnostics = new Set<Promise<void>>();
@@ -1934,6 +1950,51 @@ export class BrowserProcessBroker {
       return { ...child.identity, bytes: bytes < 0n ? null : Number(bytes) };
     });
   }
+  async prepareOperationDiagnostics(): Promise<void> {
+    try {
+      const { OperationOwner } = await import("./operations/owner.js");
+      this.#operations = new OperationOwner(
+        (length) =>
+          this.options.reservations.buffer("control", {
+            kind: "fixed-buffer",
+            length: bytes(length),
+          }),
+        ({ pid, generation, captureId }) => {
+          const child = this.children.get(pid);
+          return child?.generation === generation && child.operationCapture === captureId;
+        },
+      );
+    } catch {
+      this.#operationsUnavailable = true;
+    }
+  }
+  operationDiagnostics(): OperationDiagnostics {
+    if (!this.options.observeOperations) return { status: "disabled" };
+    try {
+      return (
+        this.#operations?.snapshot() ?? {
+          status: this.#operationsUnavailable ? "unavailable" : "empty",
+        }
+      );
+    } catch {
+      return { status: "unavailable" };
+    }
+  }
+  private captureOperations(
+    child: RuntimeChild,
+    options: WorkerLaunchOptions,
+  ): GuestOperationBinding | undefined {
+    if (!this.#operations || options.memoryGroup || options.memories?.length) return;
+    const memories = moduleMemoryDeclarations(options.request.module);
+    if (memories?.length !== 1 || memories[0]?.kind !== "private") return;
+    try {
+      const binding = this.#operations.enroll(child.identity.pid, child.generation);
+      if (binding) child.operationCapture = binding.captureId;
+      return binding;
+    } catch {
+      return;
+    }
+  }
   /**
    * The start step each live launch reached, with page timestamps: a hung start names its
    * stuck step. Fresh authority-free snapshots; see docs/process-observation.md, "Start states".
@@ -2042,7 +2103,11 @@ export class BrowserProcessBroker {
         )
       )
         throw new Error("Threaded Preview 1 requires validated source bytes");
-      return this.launchOwnedWorker(context, { ...options, network, graphics });
+      return this.launchOwnedWorker(
+        context,
+        { ...options, network, graphics },
+        !!this.#operations && isPreview1Launch(options),
+      );
     } catch (error) {
       if (
         !this.children.has(context.pid) &&
@@ -2148,6 +2213,7 @@ export class BrowserProcessBroker {
   private launchOwnedWorker<T extends RuntimeWorkerRequest>(
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,
+    observeOperations: boolean,
   ): ProcessHandle {
     if (this.suspended) {
       options.network?.dispose();
@@ -2177,7 +2243,7 @@ export class BrowserProcessBroker {
         throw error;
       }
     }
-    let memory: BigInt64Array;
+    let memory: BigInt64Array<SharedArrayBuffer>;
     try {
       memory = new BigInt64Array(allocateSharedControl(8));
       Atomics.store(memory, 0, -1n);
@@ -2215,6 +2281,7 @@ export class BrowserProcessBroker {
     };
     this.captureImageState(child);
     this.children.set(context.pid, child);
+    const operations = observeOperations ? this.captureOperations(child, options) : undefined;
     context.registerRevocation(() => this.disposeNetwork(child));
     let connection: FilesystemConnection | undefined;
     let worker: Worker;
@@ -2246,7 +2313,16 @@ export class BrowserProcessBroker {
           options.memoryGroup,
           ticket.group,
         );
-      connection = this.options.filesystem.connect(filesystem, ticket.arena);
+      if (operations) {
+        const { buffer, slot, captureId } = operations;
+        connection = this.options.filesystem.connect(filesystem, ticket.arena, {
+          buffer,
+          slot,
+          captureId,
+        });
+      } else {
+        connection = this.options.filesystem.connect(filesystem, ticket.arena);
+      }
       if (readOutcome(context.outcome))
         throw new ProcessError(ProcessErrno.SRCH, "process exited before worker construction");
       worker = child.worker = this.workers.take(options.workerUrl);
@@ -2304,7 +2380,10 @@ export class BrowserProcessBroker {
       if (request.notifications) ports.push(request.notifications.port);
       if (request.network) ports.push(request.network.port);
       if (request.graphics) ports.push(request.graphics.port);
-      worker.postMessage(request, group ? ports.concat(group.transfer) : ports);
+      const bootstrap: RuntimeWorkerRequest | ObservedPreview1Bootstrap = operations
+        ? [request, operations]
+        : request;
+      worker.postMessage(bootstrap, group ? ports.concat(group.transfer) : ports);
       markStart(child.start, "start-posted");
     } catch (error) {
       child.failed = true;
