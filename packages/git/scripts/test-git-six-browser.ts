@@ -74,7 +74,7 @@ try {
   const files: Record<string, string> = {
     "/git-cli.js": join(root, "dist/git-cli.js"),
     "/dist/git-cli.js": join(root, "dist/git-cli.js"),
-    "/network.wasm": join(root, "node_modules/waffle/browser/net/network.wasm"),
+    "/network.wasm": join(root, "node_modules/@waffle-os/runtime/browser/net/network.wasm"),
   };
   if (bunGuest) files["/bun.wasm"] = bunGuest;
   if (shellGuest) files["/shell-engine.wasm"] = shellGuest;

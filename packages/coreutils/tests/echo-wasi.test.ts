@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { test } from "bun:test";
-import { createRuntime } from "waffle";
-import { installPrograms, type ProgramPackage } from "waffle/programs";
+import { createRuntime } from "@waffle-os/runtime";
+import { installPrograms, type ProgramPackage } from "@waffle-os/runtime/programs";
 import { coreutils } from "../src/index.ts";
 import { basePackages, basePrograms } from "../../base/src/index.ts";
 import {

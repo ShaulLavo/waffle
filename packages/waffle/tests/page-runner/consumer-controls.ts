@@ -6,8 +6,8 @@ import {
   type SuiteAdapter,
   type PreparationContext,
   type SuiteResult,
-} from "waffle/testing/page-runner";
-import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+} from "@waffle-os/runtime/testing/page-runner";
+import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 
 export const consumerControlModes = [
   "pass",

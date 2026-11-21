@@ -1,4 +1,4 @@
-import { startPage, cleanupStorage } from "waffle/testing/page-runner/page";
+import { startPage, cleanupStorage } from "@waffle-os/runtime/testing/page-runner/page";
 
 startPage({
   list: async () => ["shell", "unheld-shell", "unheld-guest", "guest"],

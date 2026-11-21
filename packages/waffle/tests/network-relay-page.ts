@@ -1,4 +1,4 @@
-import { startPage, cleanupStorage } from "waffle/testing/page-runner/page";
+import { startPage, cleanupStorage } from "@waffle-os/runtime/testing/page-runner/page";
 import { networkRelayBrowserCases } from "./network-relay-browser.js";
 import { relayId } from "./network-page-contract.js";
 

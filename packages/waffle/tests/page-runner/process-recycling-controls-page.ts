@@ -1,4 +1,4 @@
-import { startPage } from "waffle/testing/page-runner/page";
+import { startPage } from "@waffle-os/runtime/testing/page-runner/page";
 import type { ProcessRecyclingRequest } from "./process-recycling-suite.js";
 import { forbidDurableProcessStorage } from "./process-recycling-storage-control.js";
 

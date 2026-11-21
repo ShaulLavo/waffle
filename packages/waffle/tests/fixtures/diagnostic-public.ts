@@ -1,5 +1,8 @@
 // NodeNext must resolve the same narrow public helper entry that Node imports at runtime.
-import { DIAGNOSTIC_STALL_TIMEOUT_MS, drainDiagnostic } from "waffle/browser/diagnostic";
+import {
+  DIAGNOSTIC_STALL_TIMEOUT_MS,
+  drainDiagnostic,
+} from "@waffle-os/runtime/browser/diagnostic";
 /** @compileFixture Called outside the import graph by generated pages or compiler probes. */
 export const diagnosticStallTimeout: number = DIAGNOSTIC_STALL_TIMEOUT_MS;
 /** @compileFixture Called outside the import graph by generated pages or compiler probes. */

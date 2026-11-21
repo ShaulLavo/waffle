@@ -1,5 +1,5 @@
 {
-  "name": "waffle-diffutils",
+  "name": "@waffle-os/diffutils",
   "version": "0.0.0",
   "private": true,
   "description": "GNU diff and cmp WASI programs for Waffle runtimes.",
@@ -37,10 +37,10 @@
   "devDependencies": {
     "@types/bun": "^1.4.3",
     "typescript": "7.0.2",
-    "waffle": "workspace:*"
+    "@waffle-os/runtime": "workspace:*"
   },
   "peerDependencies": {
-    "waffle": "*"
+    "@waffle-os/runtime": "*"
   },
   "waffleHostInterface": 3
 }

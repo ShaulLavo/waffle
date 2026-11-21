@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { runPageSuite, type HostCase } from "waffle/testing/page-runner";
+import { runPageSuite, type HostCase } from "@waffle-os/runtime/testing/page-runner";
 import { FakeDriver } from "./fake-driver.js";
 import { bounded } from "./driver.js";
 import { observeFilesystemWorkers } from "./filesystem-transport-observation.js";

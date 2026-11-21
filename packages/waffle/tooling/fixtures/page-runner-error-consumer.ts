@@ -3,16 +3,19 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { writeResult } from "waffle/testing/page-runner";
-import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+import { writeResult } from "@waffle-os/runtime/testing/page-runner";
+import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 
 for (const [specifier, suffix] of [
-  ["waffle/testing/page-runner", "/tests/page-runner/consumer.ts"],
-  ["waffle/testing/page-runner/playwright", "/tests/page-runner/playwright-driver.ts"],
+  ["@waffle-os/runtime/testing/page-runner", "/tests/page-runner/consumer.ts"],
+  ["@waffle-os/runtime/testing/page-runner/playwright", "/tests/page-runner/playwright-driver.ts"],
 ]) {
   assert(specifier && suffix);
   const entry = import.meta.resolve(specifier);
-  assert(entry.startsWith(pathToFileURL(resolve("node_modules/waffle")).href + "/"), entry);
+  assert(
+    entry.startsWith(pathToFileURL(resolve("node_modules/@waffle-os/runtime")).href + "/"),
+    entry,
+  );
   assert(entry.endsWith(suffix), entry);
 }
 

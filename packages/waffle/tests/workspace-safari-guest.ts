@@ -1,4 +1,8 @@
-import { FilesystemClient, createWorkspaceVfs, type FilesystemConnection } from "waffle/fs";
+import {
+  FilesystemClient,
+  createWorkspaceVfs,
+  type FilesystemConnection,
+} from "@waffle-os/runtime/fs";
 
 export type WorkspaceSafariGuestRequest =
   | { connection: FilesystemConnection }

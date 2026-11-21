@@ -1,4 +1,4 @@
-import type { HostCommand, HostCommandContext } from "waffle";
+import type { HostCommand, HostCommandContext } from "@waffle-os/runtime";
 import type { createCurlCommand } from "./command.ts";
 import type { CurlInvocation, CurlOutput } from "./types.ts";
 

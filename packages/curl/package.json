@@ -1,5 +1,5 @@
 {
-  "name": "waffle-curl",
+  "name": "@waffle-os/curl",
   "version": "0.0.0",
   "private": true,
   "description": "Optional Fetch-based curl command for caller-owned Waffle runtimes.",
@@ -35,10 +35,10 @@
   "devDependencies": {
     "@types/bun": "^1.4.3",
     "typescript": "7.0.2",
-    "waffle": "workspace:*"
+    "@waffle-os/runtime": "workspace:*"
   },
   "peerDependencies": {
-    "waffle": "*"
+    "@waffle-os/runtime": "*"
   },
   "waffleHostInterface": 3
 }

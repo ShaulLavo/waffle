@@ -1,5 +1,5 @@
-import { createRuntime } from "waffle";
-import { basePackages } from "waffle-base";
+import { createRuntime } from "@waffle-os/runtime";
+import { basePackages } from "@waffle-os/base";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
@@ -7,12 +7,12 @@ import { runLazyBaseAcceptance } from "./family-integration.ts";
 
 const modules = [
   "waffle",
-  "waffle-base",
-  "waffle-coreutils",
-  "waffle-findutils",
-  "waffle-grep",
-  "waffle-ripgrep",
-  "waffle-sed",
+  "@waffle-os/base",
+  "@waffle-os/coreutils",
+  "@waffle-os/findutils",
+  "@waffle-os/grep",
+  "@waffle-os/ripgrep",
+  "@waffle-os/sed",
 ];
 const expected = resolve(process.cwd(), "node_modules") + "/";
 for (const name of modules) {
@@ -31,13 +31,13 @@ for (const family of basePackages) {
 const runtime = createRuntime({
   filesystem: {
     mode: "memory",
-    workerURL: new URL(import.meta.resolve("waffle/browser/fs-worker")),
+    workerURL: new URL(import.meta.resolve("@waffle-os/runtime/browser/fs-worker")),
   },
 });
 try {
   const result = await runLazyBaseAcceptance(
     runtime,
-    new URL(import.meta.resolve("waffle/browser/preview1-worker")),
+    new URL(import.meta.resolve("@waffle-os/runtime/browser/preview1-worker")),
   );
   console.log(JSON.stringify({ consumer: process.cwd(), modules, result }));
 } finally {

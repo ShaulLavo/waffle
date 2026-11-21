@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { SuiteAdapter } from "waffle/testing/page-runner";
+import type { SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
 import { runtimeNativeSources, runtimeFixture } from "../threads-runtime-safari-packet.js";
 import {
   runtimeThreadCases,

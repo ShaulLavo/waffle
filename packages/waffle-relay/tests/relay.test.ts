@@ -8,7 +8,7 @@ import {
   responseMeta,
   type RelayServerOptions,
 } from "../src/protocol.ts";
-import { readNetFetchResponseMetadata } from "waffle/browser/net/transport";
+import { readNetFetchResponseMetadata } from "@waffle-os/runtime/browser/net/transport";
 import { isPublicAddress } from "../src/address.ts";
 
 const TOKEN = "owned-fixture-token-not-a-secret";

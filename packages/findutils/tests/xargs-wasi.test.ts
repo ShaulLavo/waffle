@@ -3,8 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "bun:test";
-import { createRuntime } from "waffle";
-import type { ProgramPackage } from "waffle/programs";
+import { createRuntime } from "@waffle-os/runtime";
+import type { ProgramPackage } from "@waffle-os/runtime/programs";
 import {
   runFamilyAcceptance,
   type FamilyAcceptanceCase,

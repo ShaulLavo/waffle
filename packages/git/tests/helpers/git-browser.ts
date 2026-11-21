@@ -1,4 +1,4 @@
-import { createRuntime, type Runtime } from "waffle";
+import { createRuntime, type Runtime } from "@waffle-os/runtime";
 import { installGit } from "../../src/git";
 import { gitFilesystem } from "../../src/git-filesystem";
 import type { GitInstallation } from "../../src/git-types";

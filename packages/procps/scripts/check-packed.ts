@@ -19,7 +19,7 @@ try {
     join(scratch, "package", "node_modules", "waffle"),
   );
   await mkdir(join(scratch, "node_modules"));
-  await symlink(join(scratch, "package"), join(scratch, "node_modules", "waffle-procps"));
+  await symlink(join(scratch, "package"), join(scratch, "node_modules", "@waffle-os/procps"));
   await run([
     process.execPath,
     new URL("packed-acceptance.ts", import.meta.url).pathname,

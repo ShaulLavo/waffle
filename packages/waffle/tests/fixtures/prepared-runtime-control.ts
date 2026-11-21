@@ -26,13 +26,16 @@ globalThis.Worker = new Proxy(nativeWorker, {
     return worker;
   },
 });
-const api: typeof import("../../index.js") = await import("waffle");
-assert(import.meta.resolve("waffle").includes("/dist/"), "must exercise the prepared package root");
+const api: typeof import("../../index.js") = await import("@waffle-os/runtime");
+assert(
+  import.meta.resolve("@waffle-os/runtime").includes("/dist/"),
+  "must exercise the prepared package root",
+);
 const { testSharedMemory } = await import("./shared-memory-platform.js");
 const options = {
   filesystem: {
     mode: "memory" as const,
-    workerURL: new URL("browser/fs-worker.js", import.meta.resolve("waffle")),
+    workerURL: new URL("browser/fs-worker.js", import.meta.resolve("@waffle-os/runtime")),
   },
 };
 assert.throws(() => api.createRuntime({ ...options, sharedMemory: testSharedMemory }), TypeError);

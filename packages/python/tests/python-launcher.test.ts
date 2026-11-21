@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { RuntimeProcessContext } from "waffle";
+import type { RuntimeProcessContext } from "@waffle-os/runtime";
 import { pythonLaunchContext } from "../src/launcher.ts";
 
 const environments: Record<string, string>[] = [

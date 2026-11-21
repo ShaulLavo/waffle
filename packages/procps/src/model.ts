@@ -1,4 +1,4 @@
-import type { ProcessRecord } from "waffle/proc/table";
+import type { ProcessRecord } from "@waffle-os/runtime/proc/table";
 
 export type ProcessInput = Pick<ProcessRecord, "pid" | "parentPid" | "state" | "result"> & {
   readonly image: Pick<ProcessRecord["image"], "request">;

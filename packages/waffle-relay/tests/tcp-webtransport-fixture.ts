@@ -7,8 +7,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium, type JSHandle } from "playwright";
-import type { createNodeRelayServer, TcpLog } from "waffle-relay/node";
-import { mintRelayToken } from "waffle-relay/token";
+import type { createNodeRelayServer, TcpLog } from "@waffle-os/relay/node";
+import { mintRelayToken } from "@waffle-os/relay/token";
 import type { TcpQueueCounters } from "../src/tcp-server-stream.js";
 
 const scratch = mkdtempSync(join(process.env.NETWORK_SCRATCH_ROOT ?? "/work/tmp", "wn3-"));

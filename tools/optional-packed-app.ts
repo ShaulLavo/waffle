@@ -1,29 +1,29 @@
 import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { createRuntime } from "waffle";
-import { installGit } from "waffle-git";
-import { GIT_CLI_URL } from "waffle-git/program";
+import { createRuntime } from "@waffle-os/runtime";
+import { installGit } from "@waffle-os/git";
+import { GIT_CLI_URL } from "@waffle-os/git/program";
 import { qualifyPython } from "../packages/python/test/qualification.ts";
 
 const expected = resolve(process.cwd(), "node_modules") + "/";
 for (const name of [
   "waffle",
-  "waffle-git",
-  "waffle-git/program",
-  "@waffle/python",
-  "@waffle/python/install",
+  "@waffle-os/git",
+  "@waffle-os/git/program",
+  "@waffle-os/python",
+  "@waffle-os/python/install",
 ])
   assert.ok(realpathSync(new URL(import.meta.resolve(name))).startsWith(expected), name);
 assert.ok(realpathSync(GIT_CLI_URL).startsWith(expected));
-const pythonEntry = new URL(import.meta.resolve("@waffle/python"));
-const nodeRoot = new URL(".", import.meta.resolve("waffle"));
+const pythonEntry = new URL(import.meta.resolve("@waffle-os/python"));
+const nodeRoot = new URL(".", import.meta.resolve("@waffle-os/runtime"));
 const runtime = createRuntime({
   filesystem: { mode: "memory", workerURL: new URL("browser/fs-worker.js", nodeRoot) },
 });
 try {
   const python = await qualifyPython(runtime, {
-    workerUrl: new URL(import.meta.resolve("waffle/browser/preview1-worker")),
+    workerUrl: new URL(import.meta.resolve("@waffle-os/runtime/browser/preview1-worker")),
     wasmUrl: new URL("../assets/python.wasm", pythonEntry),
     payloadUrl: new URL("../assets/python-stdlib.json", pythonEntry),
   });

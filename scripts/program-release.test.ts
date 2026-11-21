@@ -134,14 +134,14 @@ describe("base closure", () => {
   test("orders dependencies before base and records every asset", () => {
     expect(manifest.operation).toBe("release");
     expect(manifest.installCheck.runtimeRoots).toBe(1);
-    expect(manifest.order.at(-1)).toBe("waffle-base");
+    expect(manifest.order.at(-1)).toBe("@waffle-os/base");
     expect(manifest.order.toSorted()).toEqual([
-      "waffle-base",
-      "waffle-coreutils",
-      "waffle-findutils",
-      "waffle-grep",
-      "waffle-ripgrep",
-      "waffle-sed",
+      "@waffle-os/base",
+      "@waffle-os/coreutils",
+      "@waffle-os/findutils",
+      "@waffle-os/grep",
+      "@waffle-os/ripgrep",
+      "@waffle-os/sed",
     ]);
     expect(manifest.schema).toBe("waffle-program-release/2");
     expect(manifest.runtime).toMatchObject({
@@ -177,7 +177,7 @@ describe("base closure", () => {
       expect(brotli.bytes).toBeGreaterThan(0);
       expect(new Set([artifact.sha256, gzip.sha256, brotli.sha256]).size).toBe(3);
     }
-    const base = manifest.packages.find((item) => item.name === "waffle-base");
+    const base = manifest.packages.find((item) => item.name === "@waffle-os/base");
     expect(
       base?.artifacts.filter((artifact) => /\.wasm(?:\.gz|\.br)?$/.test(artifact.path)),
     ).toEqual([]);
@@ -204,11 +204,11 @@ describe("base closure", () => {
     expect(base.waffleHostInterface).toBe(runtimeHostInterface);
     expect(base.peerDependencies).toEqual({ waffle: "*" });
     expect(Object.keys(base.dependencies).toSorted()).toEqual([
-      "waffle-coreutils",
-      "waffle-findutils",
-      "waffle-grep",
-      "waffle-ripgrep",
-      "waffle-sed",
+      "@waffle-os/coreutils",
+      "@waffle-os/findutils",
+      "@waffle-os/grep",
+      "@waffle-os/ripgrep",
+      "@waffle-os/sed",
     ]);
   });
 
@@ -217,16 +217,16 @@ describe("base closure", () => {
     expect(check.registry).toBe("none");
     const served = new Set(check.requests);
     for (const item of manifest.packages) expect(served.has(`/${item.filename}`)).toBe(true);
-    expect(served.has(`/waffle-${runtimeVersion}.tgz`)).toBe(true);
-    expect(check.imports).toContain("waffle-base");
+    expect(served.has(`/waffle-os-runtime-${runtimeVersion}.tgz`)).toBe(true);
+    expect(check.imports).toContain("@waffle-os/base");
     const wasm = manifest.packages.flatMap(packedGuests);
     expect(wasm).toHaveLength(baseGuestCount);
     const reached = new Set(check.wasm.map((item) => item.path));
     for (const path of wasm) expect(reached.has(path)).toBe(true);
     const guests = new Map(manifest.packages.map((item) => [item.name, item.guests]));
     const coreutilsGuests = recipeGuests("coreutils");
-    expect(guests.get("waffle-coreutils")?.descriptor).toEqual(coreutilsGuests);
-    const coreutils = manifest.packages.find((item) => item.name === "waffle-coreutils");
+    expect(guests.get("@waffle-os/coreutils")?.descriptor).toEqual(coreutilsGuests);
+    const coreutils = manifest.packages.find((item) => item.name === "@waffle-os/coreutils");
     if (!coreutils) throw new Error("coreutils is missing from the release");
     expect(
       coreutils.artifacts
@@ -237,11 +237,11 @@ describe("base closure", () => {
     const echo = coreutils.artifacts.find((file) => file.path === "dist/echo.wasm");
     if (!echo) throw new Error("echo is missing from admitted coreutils assets");
     expect(check.wasm).toContainEqual({
-      specifier: "waffle-coreutils",
-      path: "node_modules/waffle-coreutils/dist/echo.wasm",
+      specifier: "@waffle-os/coreutils",
+      path: "node_modules/@waffle-os/coreutils/dist/echo.wasm",
       sha256: echo.sha256,
     });
-    expect(guests.get("waffle-base")).toEqual({ descriptor: [], staticReference: [] });
+    expect(guests.get("@waffle-os/base")).toEqual({ descriptor: [], staticReference: [] });
   });
 
   test("a symlinked output directory still proves guest containment in the real install", async () => {
@@ -263,7 +263,7 @@ describe("base closure", () => {
     expect(git(root, ["status", "--porcelain"])).toBe("");
     const source = JSON.parse(readFileSync(resolve(root, "packages/base/package.json"), "utf8"));
     expect(source.version).toBe("0.0.0");
-    expect(source.dependencies["waffle-coreutils"]).toBe("workspace:*");
+    expect(source.dependencies["@waffle-os/coreutils"]).toBe("workspace:*");
   });
 });
 
@@ -506,7 +506,7 @@ describe("review r621 refusals", () => {
   test("asset and runtime URLs are bound to their release tags and the runtime version", async () => {
     expect(releaseAssetBase("ShaulLavo/waffle", tag)).toBe(assetBase);
     expect(runtimeReleaseUrl("ShaulLavo/waffle", "0.0.91")).toBe(
-      "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.91/waffle-0.0.91.tgz",
+      "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.91/waffle-os-runtime-0.0.91.tgz",
     );
     expect(() => releaseAssetBase("https://example.invalid/latest", tag)).toThrow(/owner\/name/);
     expect(() => runtimeReleaseUrl("ShaulLavo/waffle", "latest")).toThrow(/not exact/);

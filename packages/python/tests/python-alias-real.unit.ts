@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import type { GuestLauncher } from "waffle";
+import type { GuestLauncher } from "@waffle-os/runtime";
 import { PYTHON_ARGV0 } from "../src/python-payload.ts";
 import { serveTestFiles } from "../test/assets-server.ts";
 import { installNodeWorkers, liveNodeWorkers, stopNodeWorkers } from "../test/node-worker-host.ts";
@@ -62,7 +62,7 @@ test(
   },
   async (context) => {
     assert.ok(artifact);
-    const { createRuntime } = await import("waffle");
+    const { createRuntime } = await import("@waffle-os/runtime");
     const { createPythonPackage } = await import("../src/index.ts");
     const { createProgramTestRoot } = await import("../../../tools/program-test-root.ts");
     const server = await serveTestFiles(resolve(artifact));
@@ -77,12 +77,12 @@ test(
       assert.equal(liveNodeWorkers(), 0);
     });
     installNodeWorkers();
-    const nodeRoot = new URL(".", import.meta.resolve("waffle"));
+    const nodeRoot = new URL(".", import.meta.resolve("@waffle-os/runtime"));
     const launches: Parameters<GuestLauncher>[0][] = [];
     const launcher: GuestLauncher = (guest, service) => {
       launches.push(guest);
       return service.launchWorker(guest, {
-        workerUrl: import.meta.resolve("waffle/browser/preview1-worker"),
+        workerUrl: import.meta.resolve("@waffle-os/runtime/browser/preview1-worker"),
         request: {
           module: guest.module,
           args: guest.request.argv,

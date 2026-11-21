@@ -1,1 +1,1 @@
-import "waffle/browser/fs-worker";
+import "@waffle-os/runtime/browser/fs-worker";

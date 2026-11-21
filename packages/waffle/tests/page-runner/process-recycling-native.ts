@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { nativeMain, writeResult } from "waffle/testing/page-runner";
+import { nativeMain, writeResult } from "@waffle-os/runtime/testing/page-runner";
 import { record } from "./protocol.js";
 import { processRecyclingAdapter } from "./process-recycling-suite.js";
 

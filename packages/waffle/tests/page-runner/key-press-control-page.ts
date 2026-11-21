@@ -1,4 +1,4 @@
-import { startPage } from "waffle/testing/page-runner/page";
+import { startPage } from "@waffle-os/runtime/testing/page-runner/page";
 import { installKeyControl } from "./key-press-fixture.js";
 import { keyControlId } from "./key-press-observation.js";
 

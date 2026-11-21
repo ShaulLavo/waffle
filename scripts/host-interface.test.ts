@@ -74,7 +74,7 @@ test("new release recipes reject historical exact peers, dependencies, and missi
 
 test("installed consumers reject missing, invalid, or mismatched runtime metadata", () => {
   ownedFixture((root) => {
-    const runtime = resolve(root, "node_modules/waffle");
+    const runtime = resolve(root, "node_modules/@waffle-os/runtime");
     for (const value of [undefined, "1", 1.1, 0, -1, Number.MAX_SAFE_INTEGER + 1, 2]) {
       writeManifest(runtime, { name: "waffle", version: "0.0.106", waffleHostInterface: value });
       expect(() => assertOnePhysicalRuntime(root, "0.0.106", provided)).toThrow();
@@ -86,7 +86,7 @@ test("installed consumers reject missing, invalid, or mismatched runtime metadat
 
 test("installed consumers validate real family manifests before importing family code", () => {
   ownedFixture((root) => {
-    const runtime = resolve(root, "node_modules/waffle");
+    const runtime = resolve(root, "node_modules/@waffle-os/runtime");
     writeManifest(runtime, {
       name: "waffle",
       version: "0.0.106",

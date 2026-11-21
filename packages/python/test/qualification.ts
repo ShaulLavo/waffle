@@ -1,8 +1,8 @@
-import type { Runtime, GuestLauncher } from "waffle";
+import type { Runtime, GuestLauncher } from "@waffle-os/runtime";
 import assert from "../../../tools/test-assert.ts";
 import { createProgramTestRoot } from "../../../tools/program-test-root.ts";
-import { installPython } from "@waffle/python/install";
-import { PYTHON_ARGV0 } from "@waffle/python";
+import { installPython } from "@waffle-os/python/install";
+import { PYTHON_ARGV0 } from "@waffle-os/python";
 import { cases, sources } from "./cases.ts";
 import type { PublicUsageCase } from "./cases.ts";
 import { qualifyPublicUsage } from "./public-usage.ts";

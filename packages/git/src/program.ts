@@ -1,7 +1,7 @@
-import { defineProgramPackage } from "waffle/programs/catalog";
-import type { Runtime } from "waffle";
-import { FilesystemClient } from "waffle/fs/client";
-import { FilesystemError } from "waffle/fs/protocol";
+import { defineProgramPackage } from "@waffle-os/runtime/programs/catalog";
+import type { Runtime } from "@waffle-os/runtime";
+import { FilesystemClient } from "@waffle-os/runtime/fs/client";
+import { FilesystemError } from "@waffle-os/runtime/fs/protocol";
 
 /** Bundler-visible URL for the prepared CLI script. */
 export const GIT_CLI_URL = new URL("../dist/git-cli.js", import.meta.url);

@@ -1,4 +1,4 @@
-import { getFrameworkObservation } from "waffle/testing/page-runner/framework-page";
+import { getFrameworkObservation } from "@waffle-os/runtime/testing/page-runner/framework-page";
 declare const FRAMEWORK_DOM_MODE: string;
 declare const FRAMEWORK_DOM_FILE: string;
 declare const FRAMEWORK_DOM_TIMEOUT: number;

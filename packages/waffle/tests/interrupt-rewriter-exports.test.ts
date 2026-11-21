@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import * as rewriter from "waffle/interrupt/rewriter";
-import type { InterruptRewriteOptions } from "waffle/interrupt/rewriter";
+import * as rewriter from "@waffle-os/runtime/interrupt/rewriter";
+import type { InterruptRewriteOptions } from "@waffle-os/runtime/interrupt/rewriter";
 
 test("the public rewriter package entry exports only the defensive wrapper", () => {
   expect(rewriter).not.toHaveProperty("rewriteInterruptsOwned");

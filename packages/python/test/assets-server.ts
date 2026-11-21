@@ -18,7 +18,7 @@ function contentType(path: string): string {
 export async function serveTestFiles(root: string): Promise<TestServer> {
   const server = createServer(async (request, response) => {
     const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
-    const runtimeRoot = new URL(".", import.meta.resolve("waffle")).pathname;
+    const runtimeRoot = new URL(".", import.meta.resolve("@waffle-os/runtime")).pathname;
     const base = resolve(pathname.startsWith("/waffle-dist/") ? runtimeRoot : root);
     const suffix = pathname.startsWith("/waffle-dist/")
       ? pathname.slice("/waffle-dist".length)

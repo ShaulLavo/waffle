@@ -22,9 +22,9 @@ registerHooks({
     };
   },
 });
-const entry = realpathSync(new URL(import.meta.resolve("waffle-git/program")));
-assert.equal(entry, resolve("node_modules/waffle-git/src/program.ts"));
-const { GitProgramConflictError, installGitProgram, GIT_CLI_URL } = await import("waffle-git/program");
+const entry = realpathSync(new URL(import.meta.resolve("@waffle-os/git/program")));
+assert.equal(entry, resolve("node_modules/@waffle-os/git/src/program.ts"));
+const { GitProgramConflictError, installGitProgram, GIT_CLI_URL } = await import("@waffle-os/git/program");
 const error = new GitProgramConflictError("/usr/bin/git");
 assert.ok(error instanceof Error);
 assert.equal(error.name, "GitProgramConflictError");
@@ -32,13 +32,13 @@ assert.equal(error.code, "GIT_PROGRAM_CONFLICT");
 assert.equal(error.path, "/usr/bin/git");
 assert.equal(error.message, "Cannot install git: a different filesystem entry already exists at /usr/bin/git");
 assert.equal(typeof installGitProgram, "function");
-const prepared = await import("waffle/programs/catalog");
+const prepared = await import("@waffle-os/runtime/programs/catalog");
 const source = await import("./source-catalog.ts");
 const family = source.defineProgramPackage({ name: "mixed", programs: [{ path: "/bin/mixed", source: async () => new Uint8Array() }] });
 const selected = family.pick("mixed");
 assert.equal(prepared.packageIdentity(selected), source.packageIdentity(family));
 assert.equal(prepared.packageIdentity(prepared.defineProgramPackage({ ...selected })), source.packageIdentity(family));
-assert.equal(GIT_CLI_URL.pathname, resolve("node_modules/waffle-git/dist/git-cli.js"));
+assert.equal(GIT_CLI_URL.pathname, resolve("node_modules/@waffle-os/git/dist/git-cli.js"));
 `;
 
 test("installed Git program export imports with Node's strip-only TypeScript loader", async (context) => {
@@ -46,8 +46,8 @@ test("installed Git program export imports with Node's strip-only TypeScript loa
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const gitRoot = resolve(import.meta.dirname, "..");
   const runtimeRoot = resolve(gitRoot, "../waffle");
-  const git = resolve(root, "node_modules/waffle-git");
-  const runtime = resolve(root, "node_modules/waffle");
+  const git = resolve(root, "node_modules/@waffle-os/git");
+  const runtime = resolve(root, "node_modules/@waffle-os/runtime");
   mkdirSync(git, { recursive: true });
   mkdirSync(runtime, { recursive: true });
   cpSync(resolve(gitRoot, "src"), resolve(git, "src"), { recursive: true });

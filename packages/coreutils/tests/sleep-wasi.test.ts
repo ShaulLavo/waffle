@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { createRuntime } from "waffle";
-import type { ProgramPackage } from "waffle/programs";
+import { createRuntime } from "@waffle-os/runtime";
+import type { ProgramPackage } from "@waffle-os/runtime/programs";
 import { coreutils } from "../src/index.ts";
 import { sleepCases } from "../fixtures/sleep-cases.ts";
 import {

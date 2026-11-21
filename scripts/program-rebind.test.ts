@@ -179,7 +179,7 @@ function createFixture(
   writeFileSync(acceptance, 'import {accept} from "./acceptance-helper.ts";\naccept();\n');
   writeFileSync(
     resolve(acceptanceRoot, "tools/acceptance-helper.ts"),
-    'import assert from "node:assert/strict";\nimport {runtime} from "waffle";\nexport function accept() { assert.equal(runtime, true); console.log("accepted local runtime bytes"); }\n',
+    'import assert from "node:assert/strict";\nimport {runtime} from "@waffle-os/runtime";\nexport function accept() { assert.equal(runtime, true); console.log("accepted local runtime bytes"); }\n',
   );
   commit(acceptanceRoot, "matching runtime acceptance");
   writeFileSync(
@@ -197,7 +197,7 @@ function createFixture(
     "base",
     {
       ...packageManifest(
-        "waffle-base",
+        "@waffle-os/base",
         {
           ...(schema === 1 ? { waffle: sourceRuntimeUrl } : {}),
           "waffle-child":
@@ -222,7 +222,7 @@ function createFixture(
   git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
   git(root, ["tag", fromTag]);
   const child = sourcePackage(root, "child", "waffle-child", true, archiveRoot);
-  const base = sourcePackage(root, "base", "waffle-base", false, archiveRoot);
+  const base = sourcePackage(root, "base", "@waffle-os/base", false, archiveRoot);
   if (config.mutate) config.mutate(root, archiveRoot);
   const packages = [child, base].map((item) => {
     const archive = resolve(archiveRoot, item.filename);
@@ -553,7 +553,7 @@ describe("program peer rebind", () => {
       expect(result.installCheck.runtimeLockEntries).toBe(1);
       expect(result.installCheck.hostInterfaces).toEqual([
         { name: "waffle-child", waffleHostInterface: reboundHostInterface },
-        { name: "waffle-base", waffleHostInterface: reboundHostInterface },
+        { name: "@waffle-os/base", waffleHostInterface: reboundHostInterface },
       ]);
       expect(result.packages.map((item) => item.artifacts)).toEqual(
         source.packages.map((item: { artifacts: unknown }) => item.artifacts),
@@ -798,7 +798,7 @@ describe("program peer rebind", () => {
     await expect(buildRebind(tracked.options)).rejects.toThrow(/changed tracked index.js/);
 
     const extra = createFixture();
-    repackSourceArchive(extra, "waffle-base", (root) => {
+    repackSourceArchive(extra, "@waffle-os/base", (root) => {
       const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
       manifest.files.push("extra.txt");
       writeFileSync(resolve(root, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -831,7 +831,7 @@ describe("program peer rebind", () => {
   test("refuses an old URL, a dirty historical root, and a tag naming another commit", async () => {
     scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const oldUrl = createFixture();
-    repackSourceArchive(oldUrl, "waffle-base", (root) => {
+    repackSourceArchive(oldUrl, "@waffle-os/base", (root) => {
       const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
       manifest.metadata = `programs-v0.0.13/${manifest.name}`;
       writeFileSync(resolve(root, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -871,7 +871,7 @@ describe("program peer rebind", () => {
     expect(result.schema).toBe("waffle-program-release/2");
     expect(result.tagState).toBe("tagged");
     expect(result.dirty).toBe(false);
-    const base = result.packages.find((item) => item.name === "waffle-base");
+    const base = result.packages.find((item) => item.name === "@waffle-os/base");
     expect(base).toMatchObject({
       version: "0.0.14",
       sourceDirectory: "packages/base",
@@ -982,12 +982,12 @@ describe("program peer rebind", () => {
   test("shared runtime checker rejects two physical runtimes", () => {
     scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const consumer = resolve(scratch, "consumer");
-    mkdirSync(resolve(consumer, "node_modules/waffle"), { recursive: true });
-    mkdirSync(resolve(consumer, "node_modules/child/node_modules/waffle"), { recursive: true });
+    mkdirSync(resolve(consumer, "node_modules/@waffle-os/runtime"), { recursive: true });
+    mkdirSync(resolve(consumer, "node_modules/child/node_modules/@waffle-os/runtime"), { recursive: true });
     const packageJson = JSON.stringify({ name: "waffle", version: "0.0.106" });
-    writeFileSync(resolve(consumer, "node_modules/waffle/package.json"), packageJson);
+    writeFileSync(resolve(consumer, "node_modules/@waffle-os/runtime/package.json"), packageJson);
     writeFileSync(
-      resolve(consumer, "node_modules/child/node_modules/waffle/package.json"),
+      resolve(consumer, "node_modules/child/node_modules/@waffle-os/runtime/package.json"),
       packageJson,
     );
     expect(() => assertOnePhysicalRuntime(consumer, "0.0.106", hostInterface)).toThrow(

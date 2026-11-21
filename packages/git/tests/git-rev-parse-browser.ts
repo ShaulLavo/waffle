@@ -20,7 +20,7 @@ const cleanup = async () => {
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.once(signal, () => void cleanup().finally(() => process.exit(1)));
 try {
-  const network = join(root, "node_modules/waffle/browser/net/network.wasm");
+  const network = join(root, "node_modules/@waffle-os/runtime/browser/net/network.wasm");
   assert.ok(
     await Bun.file(network).exists(),
     "prepare Waffle's real network asset before the browser smoke",

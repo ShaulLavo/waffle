@@ -1,4 +1,4 @@
-import type { Runtime } from "waffle";
+import type { Runtime } from "@waffle-os/runtime";
 import type { GitInstallation, GitInvocation } from "./git-types";
 export type { GitInstallation, GitInvocation } from "./git-types";
 const installed = new WeakSet<Runtime>();

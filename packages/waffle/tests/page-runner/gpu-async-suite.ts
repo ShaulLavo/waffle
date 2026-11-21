@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { HostCase, SuiteAdapter } from "waffle/testing/page-runner";
+import type { HostCase, SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
 import { asyncFixture, asyncRoutes } from "../gpu-async-assets.js";
 import { browserBundle } from "../browser-runner-lifecycle.js";
 import {

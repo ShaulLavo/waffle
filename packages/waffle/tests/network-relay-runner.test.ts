@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { relayAdapter } from "./network-page-suite.js";
 import { networkInputs } from "./network-page-inputs.js";
-import { runPageSuite } from "waffle/testing/page-runner";
+import { runPageSuite } from "@waffle-os/runtime/testing/page-runner";
 import { FakeDriver } from "./page-runner/fake-driver.js";
 import { relayId } from "./network-page-contract.js";
 import { createRelayBrowserFixture } from "./network-relay-fixture.js";

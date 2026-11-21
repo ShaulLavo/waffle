@@ -1,6 +1,6 @@
-import { createRuntime } from "waffle";
-import { installPrograms } from "waffle/programs";
-import { coreutils } from "waffle-coreutils";
+import { createRuntime } from "@waffle-os/runtime";
+import { installPrograms } from "@waffle-os/runtime/programs";
+import { coreutils } from "@waffle-os/coreutils";
 import { createProgramTestRoot } from "../../../tools/program-test-root.ts";
 import assert from "../../../tools/test-assert.ts";
 

@@ -27,6 +27,7 @@
     "duplicates": "bun run --cwd packages/waffle duplicates",
     "pack:check": "bun run --cwd packages/waffle pack:check",
     "prepare:package": "bun run --cwd packages/waffle prepare",
+    "release:publish": "bun scripts/publish-runtime.ts",
     "programs:routes": "bun run --cwd packages/coreutils test:build-routes && bun run --cwd packages/grep test:build-route && bun run --cwd packages/findutils test:build-route && bun run --cwd packages/sed test:build-routes",
     "programs:source": "bun run --cwd packages/findutils test:source && bun run --cwd packages/sed test:source && bun run --cwd packages/ripgrep test:source && bun run --cwd packages/tar test:source",
     "programs:diffutils": "bun run --cwd packages/diffutils prepare:package && bun run --cwd packages/diffutils test:source && bun run --cwd packages/diffutils test && bun run --cwd packages/diffutils test:wasi && bun run --cwd packages/diffutils typecheck && bun run --cwd packages/diffutils pack",
@@ -49,19 +50,20 @@
     "size:gpu": "bun run --cwd packages/waffle size:gpu"
   },
   "devDependencies": {
-    "@waffle/python": "workspace:*",
+    "@changesets/cli": "^3.0.3",
+    "@waffle-os/base": "workspace:*",
+    "@waffle-os/curl": "workspace:*",
+    "@waffle-os/gh": "workspace:*",
+    "@waffle-os/git": "workspace:*",
+    "@waffle-os/python": "workspace:*",
+    "@waffle-os/runtime": "workspace:*",
     "playwright": "^1.64.1",
-    "typescript-api": "npm:typescript@6.0.3",
-    "waffle": "workspace:*",
-    "waffle-base": "workspace:*",
-    "waffle-curl": "workspace:*",
-    "waffle-gh": "workspace:*",
-    "waffle-git": "workspace:*"
+    "typescript-api": "npm:typescript@6.0.3"
   },
   "trustedDependencies": [
     "bun-wasm",
     "esbuild",
-    "waffle",
+    "@waffle-os/runtime",
     "@fails-components/webtransport-transport-http3-quiche"
   ]
 }

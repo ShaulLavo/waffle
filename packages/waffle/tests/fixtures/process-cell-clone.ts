@@ -1,12 +1,12 @@
-import { captureNativeReturn } from "waffle/proc/observation";
+import { captureNativeReturn } from "@waffle-os/runtime/proc/observation";
 import assert from "node:assert/strict";
 import { MessageChannel, MessagePort, Worker, isMainThread, workerData } from "node:worker_threads";
-import { DescriptorTable } from "waffle/core/descriptors";
-import * as control from "waffle/proc/control";
-import * as outcome from "waffle/proc/outcome";
-import { ExecutableRegistry } from "waffle/proc/registry";
-import { ProcessSupervisor } from "waffle/proc/supervisor";
-import { WorkerProcessBroker } from "waffle/proc/worker-broker";
+import { DescriptorTable } from "@waffle-os/runtime/core/descriptors";
+import * as control from "@waffle-os/runtime/proc/control";
+import * as outcome from "@waffle-os/runtime/proc/outcome";
+import { ExecutableRegistry } from "@waffle-os/runtime/proc/registry";
+import { ProcessSupervisor } from "@waffle-os/runtime/proc/supervisor";
+import { WorkerProcessBroker } from "@waffle-os/runtime/proc/worker-broker";
 import {
   createWorkerProcessTransport,
   WorkerProcessClient,
@@ -14,8 +14,8 @@ import {
   type WorkerDescriptorCodec,
   type WorkerProcessMessage,
   type WorkerProcessTransport,
-} from "waffle/proc/worker-client";
-import { ProcessErrno, ProcessError } from "waffle/proc/types";
+} from "@waffle-os/runtime/proc/worker-client";
+import { ProcessErrno, ProcessError } from "@waffle-os/runtime/proc/types";
 import {
   collectDirectoryJob,
   collectDirectoryProcess,

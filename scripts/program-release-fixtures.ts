@@ -90,7 +90,7 @@ export async function prepareRuntimeFixture(scratch: string, version = String(ru
     env: { ...process.env, WAFFLE_NETWORK_PREBUILT: "1" },
     stdio: "pipe",
   });
-  const archive = resolve(destination, `waffle-${version}.tgz`);
+  const archive = resolve(destination, `waffle-os-runtime-${version}.tgz`);
   const digest = createHash("sha256").update(readFileSync(archive)).digest("hex");
   return { archive, sha256: digest, version };
 }

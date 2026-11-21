@@ -7,7 +7,7 @@ import {
   createFrameworkHost,
   createFrameworkControl,
   type FrameworkOptions,
-} from "waffle/testing/page-runner/framework";
+} from "@waffle-os/runtime/testing/page-runner/framework";
 const options = (resultPath: string): FrameworkOptions => ({
   suite: "framework-unit",
   native: { udid: "not-launched" },

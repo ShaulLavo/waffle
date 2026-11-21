@@ -1,4 +1,4 @@
-import { defineProgramPackage } from "waffle/programs/catalog";
+import { defineProgramPackage } from "@waffle-os/runtime/programs/catalog";
 
 /** Optional upstream tar. The WASI metadata limits are explicit command failures. */
 export const tar = defineProgramPackage({

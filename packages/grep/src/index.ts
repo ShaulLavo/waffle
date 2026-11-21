@@ -1,6 +1,6 @@
-import type { SearchWorkers, SearchWorkerRequest } from "waffle/search";
-import { defineProgramPackage, type ProgramCatalog } from "waffle/programs/catalog";
-import type { ProgramLaunch } from "waffle/programs";
+import type { SearchWorkers, SearchWorkerRequest } from "@waffle-os/runtime/search";
+import { defineProgramPackage, type ProgramCatalog } from "@waffle-os/runtime/programs/catalog";
+import type { ProgramLaunch } from "@waffle-os/runtime/programs";
 
 export const grep = defineProgramPackage({
   name: "grep",

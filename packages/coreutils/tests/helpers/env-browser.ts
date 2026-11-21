@@ -1,4 +1,4 @@
-import { createRuntime, type Runtime } from "waffle";
+import { createRuntime, type Runtime } from "@waffle-os/runtime";
 import { createShell, type Shell } from "../../src/shell.ts";
 import { installEnv } from "../../src/utilities/env.ts";
 import { type UtilityInstallation } from "../../src/utilities/install.ts";

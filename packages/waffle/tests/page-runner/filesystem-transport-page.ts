@@ -1,4 +1,4 @@
-import { startPage } from "waffle/testing/page-runner/page";
+import { startPage } from "@waffle-os/runtime/testing/page-runner/page";
 import { observeFilesystemWorkers } from "./filesystem-transport-observation.js";
 
 const id = "filesystem-transport: complete command";

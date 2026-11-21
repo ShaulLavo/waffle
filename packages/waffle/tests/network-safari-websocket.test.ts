@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runPageSuite } from "waffle/testing/page-runner";
+import { runPageSuite } from "@waffle-os/runtime/testing/page-runner";
 import { createRelayConnect } from "../../waffle-relay/src/tcp-client.js";
 import { createNodeWebSocket } from "../../waffle-relay/src/node-websocket.js";
 import * as fixtures from "./network-relay-fixture.js";

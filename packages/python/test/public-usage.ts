@@ -1,7 +1,7 @@
-import type { Runtime } from "waffle";
+import type { Runtime } from "@waffle-os/runtime";
 import assert from "../../../tools/test-assert.ts";
 import type { TestExecution, TestRequest } from "../../../tools/program-test-root.ts";
-import { PYTHON_ARGV0 } from "@waffle/python";
+import { PYTHON_ARGV0 } from "@waffle-os/python";
 import { publicUsageCases, publicUsageSources, type PublicUsageCase } from "./cases.ts";
 
 type UsageRoot = {

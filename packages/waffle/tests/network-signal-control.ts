@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
-import { runPageSuite, type SuiteAdapter } from "waffle/testing/page-runner";
-import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+import { runPageSuite, type SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
+import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 
 const root = process.argv[2];
 if (!root) throw new Error("Missing signal control scratch");

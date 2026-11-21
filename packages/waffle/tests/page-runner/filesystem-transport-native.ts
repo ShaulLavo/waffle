@@ -1,4 +1,4 @@
-import { nativeMain } from "waffle/testing/page-runner";
+import { nativeMain } from "@waffle-os/runtime/testing/page-runner";
 import { filesystemTransportAdapter } from "./filesystem-transport-suite.js";
 
 export function filesystemTransportNative(args: string[], startedAt: number): Promise<number> {

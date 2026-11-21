@@ -1,7 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createRuntime, type Runtime } from "../../waffle/runtime.ts";
 import { defineProgramPackage } from "../../waffle/programs/catalog.ts";
-import type { HostCommandContext } from "waffle/proc/command";
+import type { HostCommandContext } from "@waffle-os/runtime/proc/command";
 import { PipeController } from "../../waffle/proc/pipes.ts";
 import { commandShell } from "../../waffle/tests/program-host-command-fixture.ts";
 import { procps } from "../src/catalog.ts";

@@ -1,6 +1,6 @@
 import { mkdir, readdir, rmdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { runPageSuite } from "waffle/testing/page-runner";
+import { runPageSuite } from "@waffle-os/runtime/testing/page-runner";
 import { swiftShaderArgs } from "../gpu-browser-qualification.js";
 import { gpuAsyncAdapter } from "./gpu-async-suite.js";
 import { PlaywrightDriver } from "./playwright-driver.js";

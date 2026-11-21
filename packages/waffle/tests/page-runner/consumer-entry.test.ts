@@ -16,8 +16,12 @@ import {
   type HostPeer,
   type HostVerdict,
   type SuiteCase,
-} from "waffle/testing/page-runner";
-import { isHostedPage, type HostPageRun, type PageSuite } from "waffle/testing/page-runner/page";
+} from "@waffle-os/runtime/testing/page-runner";
+import {
+  isHostedPage,
+  type HostPageRun,
+  type PageSuite,
+} from "@waffle-os/runtime/testing/page-runner/page";
 import { Collector, type CollectorPolicy } from "./collector.js";
 import { FakeDriver } from "./fake-driver.js";
 import { serveCollector } from "./suite-host.js";

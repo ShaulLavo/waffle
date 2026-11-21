@@ -56,7 +56,7 @@ test("Node resolves every documented Node package entry to prepared JavaScript",
 test("Node hosts can use the bounded diagnostic drain through its public entry", () => {
   const script = `
     import assert from "node:assert/strict";
-    import { DIAGNOSTIC_STALL_TIMEOUT_MS, drainDiagnostic } from "waffle/browser/diagnostic";
+    import { DIAGNOSTIC_STALL_TIMEOUT_MS, drainDiagnostic } from "@waffle-os/runtime/browser/diagnostic";
     assert.equal(DIAGNOSTIC_STALL_TIMEOUT_MS, 5000);
     const chunks = [];
     const bytes = new TextEncoder().encode("node diagnostic λ");
@@ -74,8 +74,8 @@ test("Node hosts can use the bounded diagnostic drain through its public entry",
 test("Node adapters can read and write tagged process controls through the public helper entry", () => {
   const script = `
     import assert from "node:assert/strict";
-    import { controlLoad, controlStore } from "waffle/proc/control";
-    import { createWorkerProcessTransport, workerProcessState } from "waffle/proc/worker-client";
+    import { controlLoad, controlStore } from "@waffle-os/runtime/proc/control";
+    import { createWorkerProcessTransport, workerProcessState } from "@waffle-os/runtime/proc/worker-client";
     const state = workerProcessState(createWorkerProcessTransport());
     controlStore(state.signals.requestedSignal, 0, 15);
     assert.equal(controlLoad(state.signals.requestedSignal), 15);
@@ -94,7 +94,7 @@ test("Node adapters can read and write tagged process controls through the publi
 test("Node hosts normalize startup failures through the public process entry", () => {
   const script = `
     import assert from "node:assert/strict";
-    import { startFailure, ExecutableFormatError, ProcessError, ProcessErrno } from "waffle/proc";
+    import { startFailure, ExecutableFormatError, ProcessError, ProcessErrno } from "@waffle-os/runtime/proc";
     for (const [error, name, code] of [
       [new ExecutableFormatError("bad executable"), "ENOEXEC", 8],
       [new RangeError("allocation failed"), "ENOMEM", 12],
@@ -114,8 +114,8 @@ test("Node hosts normalize startup failures through the public process entry", (
 test("Node process hosts expose fd_kind against their current descriptor bindings", () => {
   const script = `
     import assert from "node:assert/strict";
-    import { DescriptorTable } from "waffle/core";
-    import { ProcessABI } from "waffle/proc";
+    import { DescriptorTable } from "@waffle-os/runtime/core";
+    import { ProcessABI } from "@waffle-os/runtime/proc";
     const descriptors = new DescriptorTable();
     const unused = () => { throw new Error("fd_kind must only consult the descriptor table"); };
     const inaccessible = new Proxy({}, { get: unused });
@@ -190,9 +190,9 @@ for (const [command, entry] of [
 test("installed root and filesystem entries share the public workspace stream contract", () => {
   const script = `
     import assert from "node:assert/strict";
-    import * as root from "waffle";
-    import * as fs from "waffle/fs";
-    import { MemFS } from "waffle/fs/memory";
+    import * as root from "@waffle-os/runtime";
+    import * as fs from "@waffle-os/runtime/fs";
+    import { MemFS } from "@waffle-os/runtime/fs/memory";
     assert.equal(root.openWorkspaceRead, fs.openWorkspaceRead);
     assert.equal(root.WorkspaceReadContractError, fs.WorkspaceReadContractError);
     const seed = new MemFS();

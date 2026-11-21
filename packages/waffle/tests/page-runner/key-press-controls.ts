@@ -1,7 +1,7 @@
 import { keyPressAdapter } from "./key-press-suite.js";
 import { join } from "node:path";
-import { runPageSuite } from "waffle/testing/page-runner";
-import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+import { runPageSuite } from "@waffle-os/runtime/testing/page-runner";
+import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 import {
   keyControls,
   checkKeyEdges,

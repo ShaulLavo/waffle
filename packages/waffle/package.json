@@ -1,7 +1,6 @@
 {
-  "name": "waffle",
+  "name": "@waffle-os/runtime",
   "version": "0.0.145",
-  "private": true,
   "files": [
     "dist",
     "scripts",
@@ -636,6 +635,10 @@
       "browser": "./tests/page-runner/framework-page.ts",
       "node": "./dist/tests/page-runner/framework-page.js"
     }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "build": "bun build.ts",

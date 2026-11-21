@@ -1,4 +1,4 @@
-import { InterruptModuleCache, rewriteInterrupts } from "waffle/interrupt";
+import { InterruptModuleCache, rewriteInterrupts } from "@waffle-os/runtime/interrupt";
 
 const shared = new Uint8Array(new SharedArrayBuffer(16));
 shared.set([0, 97, 115, 109, 1, 0, 0, 0], 4);

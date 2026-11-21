@@ -1,4 +1,4 @@
-import type { HostCommand, HostCommandContext, SignalSend } from "waffle/proc/command";
+import type { HostCommand, HostCommandContext, SignalSend } from "@waffle-os/runtime/proc/command";
 import { planProcps } from "./index.ts";
 import type { Command, ProcessRow, SignalPlan } from "./model.ts";
 

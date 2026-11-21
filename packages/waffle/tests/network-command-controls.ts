@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { runPageSuite, type SuiteAdapter } from "waffle/testing/page-runner";
+import { runPageSuite, type SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
 import { NetworkDesktopDriver } from "./network-desktop-driver.js";
 import { networkInputs } from "./network-page-inputs.js";
 import { networkBudgets } from "./network-page-contract.js";

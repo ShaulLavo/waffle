@@ -1,5 +1,5 @@
 {
-  "name": "waffle-git",
+  "name": "@waffle-os/git",
   "version": "0.0.1",
   "private": true,
   "description": "Local Git commands for Waffle runtimes, backed by isomorphic-git",
@@ -42,16 +42,16 @@
     "bun-wasm": "git+https://github.com/ShaulLavo/bun-wasm.git#59c88f03dc887fcafa9fa873fabcddca5e23cfa8",
     "esbuild": "0.28.2",
     "typescript": "7.0.2",
-    "waffle": "workspace:*"
+    "@waffle-os/runtime": "workspace:*"
   },
   "peerDependencies": {
-    "waffle": "*"
+    "@waffle-os/runtime": "*"
   },
   "engines": {
     "node": ">=26.12.1"
   },
   "trustedDependencies": [
-    "waffle",
+    "@waffle-os/runtime",
     "bun-wasm",
     "esbuild"
   ],

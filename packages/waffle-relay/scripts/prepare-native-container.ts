@@ -56,14 +56,14 @@ export async function verifyPairedReleaseArchives(input: Omit<NativeContainerInp
   await checkedArchive(input.runtime);
   await checkedArchive(input.relay);
   const runtime = metadata(await archiveFile(input.runtime.path, "package.json"), "waffle");
-  const relay = metadata(await archiveFile(input.relay.path, "package.json"), "waffle-relay");
+  const relay = metadata(await archiveFile(input.relay.path, "package.json"), "@waffle-os/relay");
   assert.equal(runtime.version, relay.version, "Runtime and relay must be a paired release");
   assert.equal(
     runtime.waffleHostInterface,
     relay.waffleHostInterface,
     "Runtime and relay host interfaces differ",
   );
-  for (const name of ["waffle", "waffle-relay"]) {
+  for (const name of ["waffle", "@waffle-os/relay"]) {
     const recorded = metadata(
       await sourceFile(input.source, `packages/${name}/package.json`),
       name,

@@ -36,10 +36,10 @@ try {
     external: [
       "waffle",
       "waffle/*",
-      "waffle-git",
-      "waffle-git/*",
-      "@waffle/python",
-      "@waffle/python/*",
+      "@waffle-os/git",
+      "@waffle-os/git/*",
+      "@waffle-os/python",
+      "@waffle-os/python/*",
     ],
   });
   assert.ok(built.success, String(built.logs));

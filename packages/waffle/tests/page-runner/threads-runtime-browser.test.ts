@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runPageSuite } from "waffle/testing/page-runner";
-import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+import { runPageSuite } from "@waffle-os/runtime/testing/page-runner";
+import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 import { runtimeThreadCases } from "../threads-runtime-cases.js";
 import { threadsRuntimeAdapter, threadRuntimeId } from "./threads-runtime-suite.js";
 

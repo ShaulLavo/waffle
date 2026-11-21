@@ -1,4 +1,4 @@
-import type { Runtime } from "waffle";
+import type { Runtime } from "@waffle-os/runtime";
 import { createProgramTestRoot } from "../../../../tools/program-test-root.ts";
 export type { TestExecution as Result } from "../../../../tools/program-test-root.ts";
 
