@@ -1,4 +1,4 @@
-function ok(value: unknown, message?: string): asserts value {
+export function ok(value: unknown, message?: string): asserts value {
   if (!value) throw new Error(message ?? "Acceptance assertion failed");
 }
 function equal(actual: unknown, expected: unknown, message?: string) {

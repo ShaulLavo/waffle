@@ -67,6 +67,7 @@ export interface ReleaseOptions {
   readonly registry?: string;
   /** Optional consumer program, bundled against the installed closure and run after install. */
   readonly acceptance?: string;
+  readonly acceptanceBrowser?: string;
   /** Refuse an untagged candidate; the release workflow packs only an existing tag. */
   readonly requireTag?: boolean;
   /** Cancels fetches and terminates owned child process groups before staging is removed. */
@@ -825,6 +826,7 @@ export interface InstallInputs {
   readonly work: string;
   readonly requests: string[];
   readonly acceptance: string | undefined;
+  readonly acceptanceBrowser?: string;
   readonly acceptanceRoot?: string;
   readonly runtimeVersion: string;
   readonly runtimeHostInterface: HostInterface;
@@ -909,6 +911,7 @@ export async function verifyInstall(inputs: InstallInputs): Promise<InstallRecei
     env,
     control,
     inputs.acceptanceRoot,
+    inputs.acceptanceBrowser,
   );
   return { ...receipt, acceptance };
 }
@@ -1018,6 +1021,7 @@ export async function runAcceptance(
   env: NodeJS.ProcessEnv,
   control: Control,
   sourceRoot?: string,
+  browser?: string,
 ) {
   const bound = sourceRoot ? boundAcceptance(sourceRoot, script) : undefined;
   const bundle = await Bun.build({
@@ -1030,6 +1034,22 @@ export async function runAcceptance(
     external: names.concat(names.map((name) => `${name}/*`)),
   });
   assert.ok(bundle.success, `Acceptance bundle failed: ${bundle.logs.join("\n")}`);
+  if (browser) {
+    const { familyBrowser, runPackedWorkload } = await import("../tools/family-browser-runner.ts");
+    const timeout = AbortSignal.timeout(control.timeoutMs);
+    const signal = control.signal ? AbortSignal.any([control.signal, timeout]) : timeout;
+    const report = await runPackedWorkload(
+      consumer,
+      resolve(consumer, "acceptance.js"),
+      familyBrowser(browser),
+      signal,
+    );
+    return {
+      script: basename(script),
+      output: JSON.stringify(report),
+      ...(bound ? { source: bound.receipt() } : {}),
+    };
+  }
   // exec keeps the program as the owned group leader; its stdout lands in a file we read back.
   const command = ["sh", "-c", "exec bun acceptance.js > acceptance.out"];
   await runCommand(command, consumer, env, control);
@@ -1223,6 +1243,8 @@ async function verifyClosure(
       work,
       requests,
       acceptance,
+      acceptanceBrowser: options.acceptanceBrowser,
+      acceptanceRoot: options.acceptanceBrowser ? options.root : undefined,
       runtimeVersion: runtime.version,
       runtimeHostInterface,
       control,
@@ -1336,6 +1358,7 @@ function cliOptions(argv: string[]): ReleaseOptions {
       "allow-dirty": { type: "boolean", default: false },
       registry: { type: "string" },
       acceptance: { type: "string" },
+      "workload-browser": { type: "string" },
       "require-tag": { type: "boolean", default: false },
       "timeout-ms": { type: "string" },
     },
@@ -1344,6 +1367,8 @@ function cliOptions(argv: string[]): ReleaseOptions {
   const runtimeUrl = values["runtime-url"];
   const runtimeSha256 = values["runtime-sha256"];
   assert.ok(tag && out && runtimeUrl && runtimeSha256, usage);
+  const acceptanceBrowser = values["workload-browser"];
+  assert.ok(!acceptanceBrowser || !values.acceptance, "Choose --acceptance or --workload-browser");
   return {
     root: values.root,
     tag,
@@ -1359,7 +1384,10 @@ function cliOptions(argv: string[]): ReleaseOptions {
     out,
     allowDirty: values["allow-dirty"],
     registry: values.registry,
-    acceptance: values.acceptance,
+    acceptance: acceptanceBrowser
+      ? resolve(values.root, "tools/family-workload.ts")
+      : values.acceptance,
+    acceptanceBrowser,
     requireTag: values["require-tag"],
     commandTimeoutMs: values["timeout-ms"] ? Number(values["timeout-ms"]) : undefined,
   };
@@ -1369,7 +1397,8 @@ const usage = `Usage: bun scripts/program-release.ts --list [--families F]
        bun scripts/program-release.ts --tag programs-vX.Y.Z --out DIR \\
   --runtime-url URL --runtime-sha256 HEX [--runtime-tarball FILE] \\
   [--families base,python,git] [--repository OWNER/NAME] [--registry URL] \\
-  [--acceptance FILE] [--require-tag] [--timeout-ms MS] [--allow-dirty]`;
+  [--acceptance FILE | --workload-browser chromium|firefox|webkit]
+  [--require-tag] [--timeout-ms MS] [--allow-dirty]`;
 
 /** `--list --families F` prints the dependency-ordered package directories to prepare. */
 function listClosure(argv: string[]) {
