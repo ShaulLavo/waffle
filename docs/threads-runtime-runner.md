@@ -104,12 +104,12 @@ threaded process exits.
 
 ### Original cases on Playwright and native Safari
 
-| Thread plan slice | Case and guest operations                                                                          | Outcome                                                                                   |
-| ----------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| S0, S2, S4        | `pair`, `repeat`, `nested`. The producer receipt lists the Rust guests' Preview 1 imports.         | Rust spawn and join preserve the expected TLS, stacks and results after child return.     |
-| S0, S2            | `join` uses `fd_write` and wait32/notify.                                                          | A secondary writes `c` before the initial guest returns.                                  |
-| S2                | `child-exit` uses `proc_exit` and wait64.                                                          | Secondary `proc_exit(0)` ends the process while the initial guest is waiting.             |
-| S2, S3            | `kill-start`, `cpu`, `wait32`, `wait64` use the supervised startup, polling and native wait paths. | SIGKILL stops the target, and collection waits for the held filesystem section to finish. |
+| Thread plan slice | Case and guest operations                                                                                                                                                      | Outcome                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| S0, S2, S4        | `pair`, `repeat`, `nested`. The Rust guest uses `args_get`, `args_sizes_get`, `environ_get`, `environ_sizes_get`, `clock_time_get`, `fd_write`, `proc_exit` and `sched_yield`. | Rust spawn and join preserve the expected TLS, stacks and results after child return.     |
+| S0, S2            | `join` uses `fd_write` and wait32/notify.                                                                                                                                      | A secondary writes `c` before the initial guest returns.                                  |
+| S2                | `child-exit` uses `proc_exit` and wait64.                                                                                                                                      | Secondary `proc_exit(0)` ends the process while the initial guest is waiting.             |
+| S2, S3            | `kill-start`, `cpu`, `wait32`, `wait64` use the supervised startup, polling and native wait paths.                                                                             | SIGKILL stops the target, and collection waits for the held filesystem section to finish. |
 
 ### Additional Playwright cases
 
