@@ -49,6 +49,7 @@ export const fatalLayout = {
   bytes: 72,
   count: 76,
 } as const;
+export const fatalReadSentinels = { payload: 0x11223344, count: 0x55667788 } as const;
 
 export function fatalThreadModule() {
   const p = fatalLayout;
@@ -63,6 +64,8 @@ export function fatalThreadModule() {
     secondary: role(
       1,
       setupIo(p.iov, p.bytes, 1).concat(
+        store(p.bytes, i32(fatalReadSentinels.payload)),
+        store(p.count, i32(fatalReadSentinels.count)),
         io(1, 0, p.iov, p.count),
         drop,
         store(p.sentinels + 4, i32(1)),

@@ -5,6 +5,7 @@ import type { GrowthObservation } from "./threads-runtime-growth-worker.js";
 import {
   admissionLayout,
   fatalLayout,
+  fatalReadSentinels,
   growthLayout,
   maxThreadId,
   overlapLayout,
@@ -152,14 +153,12 @@ export async function releaseFatalThread(control: Observations, pid: number): Pr
 
 function checkFatalWrites(control: Observations): void {
   const p = fatalLayout;
-  for (const address of [
-    p.bytes,
-    p.count,
-    p.sentinels,
-    p.sentinels + 4,
-    p.sentinels + 8,
-    p.sentinels + 12,
-  ])
+  check(
+    control.word(p.bytes) === fatalReadSentinels.payload &&
+      control.word(p.count) === fatalReadSentinels.count,
+    "terminal stdin call wrote to the guest",
+  );
+  for (const address of [p.sentinels, p.sentinels + 4, p.sentinels + 8, p.sentinels + 12])
     check(control.word(address) === 0, `terminal guest published a write at ${address}`);
 }
 
