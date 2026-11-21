@@ -11,6 +11,9 @@ Waffle owns `core/`, `fs/`, `proc/`, `interrupt/` and generic `browser/` service
 guest engines, native bindings, module caches, service-worker registration policy and application
 adapters. Consumers pin one exact Waffle Git commit and use the matching package exports.
 
+See [Browser workaround evidence](browser-workarounds.md) for observed engine behavior and the
+checks each workaround needs before removal.
+
 ## Automatic shared-memory defaults
 
 Status: Idea, deferred by the owner on November 6, 2026. Owner: Waffle runtime track.
