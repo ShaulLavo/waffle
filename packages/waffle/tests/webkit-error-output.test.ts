@@ -48,6 +48,7 @@ for (const runner of ["link", "controls"] as const) {
             PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1",
             PAGE_RUNNER_CONTROL_FILTER: "worker-capability-success",
             PROCESS_SCRATCH_ROOT: scratch,
+            SCRATCH: scratch,
             STORAGE_SCRATCH_ROOT: scratch,
             TMPDIR: scratch,
           },
