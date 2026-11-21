@@ -1,3 +1,4 @@
+import { commandDisposals, commandOwners } from "./proc/command-owner.js";
 import { installSharedControlAllocator } from "./memory/control.js";
 import { defaultSharedMemoryPlatform, validateDeclaration } from "./memory/platform.js";
 import {
@@ -100,12 +101,22 @@ export type RuntimeSupervisor = Omit<
   | "onJobRetirement"
   | "jobRetired"
   | "retireFencedProcesses"
+  | "rootConsumersRetired"
   | "beginReplacement"
   | "acknowledgeReplacement"
 >;
 export type ProcessService = Omit<
   BrowserProcessBroker,
-  "dispose" | "suspend" | "quiesce" | "ready" | "retainRootGraphics"
+  | "dispose"
+  | "suspend"
+  | "quiesce"
+  | "ready"
+  | "retainRootGraphics"
+  | "adoptCommandRoot"
+  | "retireCommandRoot"
+  | "commandPipeHost"
+  | "checkCommandCleanup"
+  | "stopCommandRoot"
 > & {
   ready(): Promise<RuntimeSupervisor>;
 };
@@ -867,6 +878,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           assertLive,
           new Map([["ready", ready]]),
         );
+        commandOwners.set(service, owner);
         return service;
       });
       return activation;
@@ -962,6 +974,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         throwFailures();
       });
       token.disposal = disposal;
+      commandDisposals.get(runtime)?.abort();
       // Publish owned process outcomes before consumer callbacks or display revocation can wake
       // guests. Physical stops still wait for terminationFence and the existing quiescence gates.
       suspend(failures);

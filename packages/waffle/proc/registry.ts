@@ -133,6 +133,8 @@ export class ExecutableNotRunnable extends Error {
 /** Generic names -> compiled module + adapter, with one compilation per module source.
  * Instances and used workers are deliberately not cached.
  */
+type AdmissionMode = "access" | "execute" | "byte-backed-guest";
+
 export class ExecutableRegistry {
   private readonly entries = new Map<string, RegisteredExecutable | ScriptExecutable>();
   private readonly modules = new WeakMap<Executable["module"], Promise<WebAssembly.Module>>();
@@ -179,8 +181,15 @@ export class ExecutableRegistry {
     cwd = "/",
     assertActive: () => void = () => {},
     argv?: readonly string[],
+    byteBackedGuestOnly = false,
   ): Promise<ResolvedExecutable> {
-    const admitted = await this.admit(name, cwd, assertActive, argv, "execute");
+    const admitted = await this.admit(
+      name,
+      cwd,
+      assertActive,
+      argv,
+      byteBackedGuestOnly ? "byte-backed-guest" : "execute",
+    );
     const entry = admitted.entry;
     assertActive();
     if ("command" in entry) return this.resolveCommand(entry, admitted.argv, assertActive);
@@ -269,7 +278,7 @@ export class ExecutableRegistry {
     cwd: string,
     assertActive: () => void,
     argv: readonly string[] | undefined,
-    mode: "access" | "execute",
+    mode: AdmissionMode,
   ): Promise<AdmittedExecutable> {
     const seen = new Set<string>();
     return this.admitScript(name, cwd, assertActive, argv, mode, 0, seen, 0);
@@ -280,7 +289,7 @@ export class ExecutableRegistry {
     cwd: string,
     assertActive: () => void,
     argv: readonly string[] | undefined,
-    mode: "access" | "execute",
+    mode: AdmissionMode,
     depth: number,
     seen: Set<string>,
     symlinks: number,
@@ -338,6 +347,12 @@ export class ExecutableRegistry {
       );
     }
     const resolved = file.path === predicted ? registered : this.entries.get(file.path);
+    if (mode === "byte-backed-guest")
+      return this.admitByteBackedGuest(
+        file.kind === "file" ? resolved : undefined,
+        file.path,
+        argv,
+      );
     const admitted =
       resolved &&
       !(
@@ -391,12 +406,13 @@ export class ExecutableRegistry {
     cwd: string,
     assertActive: () => void,
     argv: readonly string[] | undefined,
-    mode: "access" | "execute",
+    mode: AdmissionMode,
     depth: number,
     seen: Set<string>,
     symlinks: number,
     scriptName: string,
   ): Promise<AdmittedExecutable> {
+    if (mode === "byte-backed-guest") return this.admitByteBackedGuest(entry, path, argv);
     if (!entry) throw new ExecutableNotFound(path);
     if ("script" in entry)
       return this.admitRegisteredScript(
@@ -415,13 +431,29 @@ export class ExecutableRegistry {
     return { entry, ...(argv ? { argv } : {}) };
   }
 
+  private admitByteBackedGuest(
+    entry: RegisteredExecutable | ScriptExecutable | undefined,
+    path: string,
+    argv?: readonly string[],
+  ): AdmittedExecutable {
+    if (
+      !entry ||
+      "script" in entry ||
+      "command" in entry ||
+      !entry.interruptible ||
+      entry.execution?.kind !== "guest"
+    )
+      throw new ExecutableNotRunnable(path, false);
+    return { entry, ...(argv ? { argv } : {}) };
+  }
+
   private async admitRegisteredScript(
     executable: ScriptExecutable,
     path: string,
     cwd: string,
     assertActive: () => void,
     argv: readonly string[] | undefined,
-    mode: "access" | "execute",
+    mode: AdmissionMode,
     depth: number,
     seen: Set<string>,
     symlinks: number,
@@ -471,7 +503,7 @@ export class ExecutableRegistry {
     return bytes?.length === marker.length && bytes.every((byte, index) => byte === marker[index]);
   }
 
-  private notRunnable(path: string, mode: "access" | "execute", invalid = false): Error {
+  private notRunnable(path: string, mode: AdmissionMode, invalid = false): Error {
     if (mode === "access") return new ExecutableNotRunnable(path, false);
     return invalid
       ? new ExecutableFormatError(`invalid executable: ${path}`)

@@ -68,6 +68,9 @@ export interface WorkerProcessBrokerOptions {
   /** Captures the exact lifetime once the supervisor owns its process record. */
   nativeReturn?(transport: WorkerProcessTransport): () => void;
   onAdmitted?(transport: WorkerProcessTransport): void;
+  beforeAdmit?(transport: WorkerProcessTransport): void;
+  transferCleanup?(transport: WorkerProcessTransport, cleanup: () => Promise<void>): Promise<void>;
+  retireRejected?(transport: WorkerProcessTransport): Promise<void> | undefined;
   canExec?(transport: WorkerProcessTransport): boolean;
   discardExec?(transport: WorkerProcessTransport): void | Promise<void>;
 }
@@ -454,13 +457,57 @@ export class WorkerProcessBroker {
   private async discardExec(
     message: Extract<WorkerProcessMessage, { operation: "exec" }>,
     error: unknown,
+    descriptors?: DescriptorTable,
   ): Promise<void> {
     try {
-      this.discardResources(message.transport);
-      await this.options.discardExec?.(message.transport);
+      if (this.currentExecTransfer(message.transport))
+        await this.cleanupTransfer(message.transport, () =>
+          this.releaseExec(message.transport, descriptors),
+        );
     } finally {
       this.completeExec(message, -spawnError(error).errno, error);
     }
+  }
+  private currentExecTransfer(transport: WorkerProcessTransport): boolean {
+    if (!transport.commandTransfer) return true;
+    try {
+      return controlLoad(workerProcessState(transport).execTransfer) === transport.generation;
+    } catch (error) {
+      if (!isCollectedProcess(error)) throw error;
+      return false;
+    }
+  }
+  private confirmExec(transport: WorkerProcessTransport): void {
+    if (!transport.commandTransfer) return;
+    const handoff = workerProcessState(transport).execTransfer;
+    controlCas(handoff, 0, transport.generation, 0);
+    wakeWorkerProcess(transport);
+  }
+  private async releaseExec(
+    transport: WorkerProcessTransport,
+    descriptors?: DescriptorTable,
+    codec?: WorkerDescriptorCodec,
+  ) {
+    const errors = this.discardResources(transport, codec);
+    try {
+      descriptors?.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await this.options.discardExec?.(transport);
+    } catch (error) {
+      errors.push(error);
+    }
+    this.throwCleanupErrors(errors, "Exec transfer cleanup failed");
+    this.confirmExec(transport);
+  }
+  private cleanupTransfer(transport: WorkerProcessTransport, cleanup: () => Promise<void>) {
+    return this.options.transferCleanup?.(transport, cleanup) ?? cleanup();
+  }
+  private throwCleanupErrors(errors: unknown[], message: string): void {
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, message);
   }
   private async exec(
     message: Extract<WorkerProcessMessage, { operation: "exec" }>,
@@ -485,6 +532,10 @@ export class WorkerProcessBroker {
       if (state.pid !== sender.pid || state.parentPid === 0 || !this.options.canExec?.(sender))
         throw new ProcessError(ProcessErrno.NOTSUP, "exec requires an owned worker image");
       const supervisor = await this.ready();
+      this.options.beforeAdmit?.(transport);
+      const handoff = transport.commandTransfer ? state.execTransfer : undefined;
+      if (handoff && controlLoad(handoff) !== transport.generation)
+        throw new ProcessError(ProcessErrno.INVAL, "exec transfer is not current");
       codec = this.codec(transport);
       descriptors = new DescriptorTable();
       installWorkerBindings(transport, descriptors, codec);
@@ -501,18 +552,13 @@ export class WorkerProcessBroker {
           );
           this.accesses.revoke(transport.pid, workerProcessDirectoryId(transport));
           this.transports.set(transport.pid, transport);
+          this.confirmExec(transport);
         },
-        discard: () => {
-          this.discardResources(transport, codec);
-          return this.options.discardExec?.(transport);
-        },
+        discard: (staged) =>
+          this.cleanupTransfer(transport, () => this.releaseExec(transport, staged, codec)),
       });
     } catch (error) {
-      try {
-        descriptors?.dispose();
-      } finally {
-        await this.discardExec(message, error);
-      }
+      await this.discardExec(message, error, descriptors);
     }
   }
   private checkSpawnKind(
@@ -577,6 +623,7 @@ export class WorkerProcessBroker {
         reason = "broker-disposed";
         throw new ProcessError(ProcessErrno.SRCH, "process broker is disposed");
       }
+      this.options.beforeAdmit?.(transport);
       // Reserve the authoritative leader/owner before a codec can fail. Transferred
       // endpoints belong to this child, not the parent's mutable or already-reaped table.
       this.transports.set(state.pid, transport);
@@ -640,7 +687,9 @@ export class WorkerProcessBroker {
       this.pump();
     } catch (error) {
       this.trace(transport, "rejected", reason);
-      await this.rejectSpawn(transport, error, codec, admitted, existing);
+      await this.cleanupTransfer(transport, () =>
+        this.rejectSpawn(transport, error, codec, admitted, existing),
+      );
 
       throw error;
     }
@@ -818,8 +867,11 @@ export class WorkerProcessBroker {
     const state = workerProcessState(transport);
     if (admitted) {
       // Discard is idempotent with imported descriptions released by failStart.
-      if (!this.discardResources(transport, codec)) this.failedCleanup.add(state.pid);
+      const errors = this.discardResources(transport, codec);
+      if (errors.length) this.failedCleanup.add(state.pid);
       this.supervisor!.failStart(state.pid, error);
+      if (transport.commandTransfer)
+        this.throwCleanupErrors(errors, "Spawn transfer cleanup failed");
       return;
     }
     if (!existing) {
@@ -827,11 +879,22 @@ export class WorkerProcessBroker {
       this.failedCleanup.add(state.pid);
     }
     claimOutcome(state.signals.outcome, startFailure(error), undefined, describeStartError(error));
-    const cleanup = { resourcesReleased: this.discardResources(transport, codec), fenced: false };
+    const errors = this.discardResources(transport, codec);
+    const cleanup = { resourcesReleased: errors.length === 0, fenced: false };
     if (!existing) this.rejectedCleanup.set(state.pid, cleanup);
-    const returned = this.options.nativeReturn?.(transport) ?? captureNativeReturn(transport);
-    await this.options.quiesce?.(state.pid, transport);
-    returned();
+    if (transport.commandTransfer) {
+      try {
+        await this.options.quiesce?.(state.pid, transport);
+      } catch (error) {
+        errors.push(error);
+      }
+      this.throwCleanupErrors(errors, "Spawn transfer cleanup failed");
+      await this.options.retireRejected?.(transport);
+    } else {
+      const returned = this.options.nativeReturn?.(transport) ?? captureNativeReturn(transport);
+      await this.options.quiesce?.(state.pid, transport);
+      returned();
+    }
     cleanup.fenced = true;
     if (!cleanup.resourcesReleased) return;
     if (!existing) {
@@ -845,18 +908,18 @@ export class WorkerProcessBroker {
   private discardResources(
     transport: WorkerProcessTransport,
     codec?: WorkerDescriptorCodec,
-  ): boolean {
-    let released = true;
+  ): unknown[] {
+    const errors: unknown[] = [];
     for (const token of transport.resources) {
       try {
         if (this.options.discard) this.options.discard(token);
         else (codec ??= this.codec(transport)).discard(token);
       } catch (error) {
-        released = false;
+        errors.push(error);
         this.report(error);
       }
     }
-    return released;
+    return errors;
   }
   dispose(): void {
     if (this.disposed) return;
@@ -909,7 +972,7 @@ export class WorkerProcessBroker {
         wakeWorkerProcess(transport);
         continue;
       }
-      const released = this.discardResources(transport);
+      const released = this.discardResources(transport).length === 0;
       const gate = cleanup.get(pid);
       if (gate && !released) gate.complete = false;
       const rejected = this.rejectedCleanup.get(pid);

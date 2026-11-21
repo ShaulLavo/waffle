@@ -50,6 +50,10 @@ const trustedModules: Readonly<Record<string, string>> = {
   "browser/gpu/handles.ts": "Dedicated native GPU object table.",
   "browser/gpu/lowering.ts": "Dedicated native descriptor lowering.",
   "browser/gpu/codec.ts": "Service-only schema decoder and encoder.",
+  "proc/command-owner.ts": "Page-only mapping from borrowed process service to its command owner.",
+  "proc/start-command.ts": "Page-only lazy installed command entry.",
+  "browser/run-command.ts": "Page-only command root and I/O ownership.",
+  "browser/command-input.ts": "Page-only stream and stdin relay consumer.",
   "proc/command.ts": "Trusted page-command data contract, not imported by the guest bootstrap.",
   "proc/command-runner.ts": "Page-only trusted command execution and physical task ownership.",
   "proc/command-stdio.ts": "Page-only asynchronous descriptor I/O for trusted host callbacks.",
@@ -203,6 +207,7 @@ export const enforcedModules = [
   "proc/wait-status.ts",
   "proc/worker-access.ts",
   "proc/worker-client.ts",
+  "proc/command-transfer.ts",
   "proc/worker-pipes.ts",
 ];
 

@@ -1263,9 +1263,9 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
             throw error;
           }
         },
+        beginSpawnTransfer: () => fs.beginTransfer(),
         prepareSpawn: (pid) => {
           checkActive();
-          const end = fs.beginTransfer();
           let filesystem: ReturnType<typeof createProcessFilesystemIdentity> | undefined;
           let enrolled = false;
           const cancel = () => {
@@ -1287,14 +1287,9 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
               codec: createRuntimeTerminalCodec({
                 fallback: pipes.codec(createFilesystemDescriptorCodec(fs, filesystem)),
               }),
-              release: end,
             };
           } catch (error) {
-            try {
-              cancel();
-            } finally {
-              end();
-            }
+            cancel();
             throw error;
           }
         },

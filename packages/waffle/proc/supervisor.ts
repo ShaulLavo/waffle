@@ -106,6 +106,7 @@ interface ProcessAccesses {
 
 export interface SupervisorOptions {
   registry: ExecutableRegistry;
+  byteBackedGuestOnly?(rootPid: number | undefined): boolean;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
   launchCommand?(context: CommandProcessContext): ProcessHandle | Promise<ProcessHandle>;
   /** Emit while inherited output is owned; an asynchronous sink must stop when active is false.
@@ -272,6 +273,19 @@ export class ProcessSupervisor {
     }
     return complete;
   }
+  /** A guest wait can consume its job while its physical stops remain in this owner. */
+  rootConsumersRetired(rootPid: number): boolean {
+    let complete = true;
+    for (const records of this.consumers.values()) {
+      for (const record of records) {
+        if (record.rootPid !== rootPid || record.pid === rootPid) continue;
+        if (record.retirement?.kind === "failed") throw record.retirement.error;
+        if (!record.retirement) complete = false;
+      }
+    }
+    return complete;
+  }
+
   cwd(pid: number): string {
     return this.accessOwner(pid).image.cwd;
   }
@@ -834,6 +848,7 @@ export class ProcessSupervisor {
             throw new Error("process exited before executable admission completed");
         },
         image.request!.argv,
+        this.options.byteBackedGuestOnly?.(record.rootPid),
       );
       if (record.result || record.revoked) return;
       const settled = readOutcome(record.outcome);
@@ -930,7 +945,7 @@ export class ProcessSupervisor {
       descriptors: DescriptorTable;
       complete(result: number, error?: unknown): void;
       install(): void;
-      discard(): void | Promise<void>;
+      discard(descriptors: DescriptorTable): void | Promise<void>;
     },
   ): ProcessReplacement {
     const record = this.accessOwner(pid);
@@ -956,10 +971,7 @@ export class ProcessSupervisor {
       },
       discard: () => {
         if (transferred) return Promise.resolve();
-        return (discarded ??= Promise.resolve().then(async () => {
-          this.disposeDescriptors(staged.descriptors);
-          await staged.discard();
-        }));
+        return (discarded ??= Promise.resolve().then(() => staged.discard(staged.descriptors)));
       },
       cancel: async (error = new ProcessError(ProcessErrno.SRCH, "replacement cancelled")) => {
         if (replacement.state.phase === "done") return;
@@ -1007,6 +1019,7 @@ export class ProcessSupervisor {
         replacement.request.cwd,
         active,
         replacement.request.argv,
+        this.options.byteBackedGuestOnly?.(record.rootPid),
       );
       active();
       if (record.processKind === "thread")

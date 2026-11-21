@@ -51,7 +51,8 @@ const PROCESS_ID = 79 + START_DIAGNOSTIC_WORDS;
 const PROCESS_PARENT = PROCESS_ID + 1;
 const PROCESS_KIND = PROCESS_ID + 2;
 const IMAGE_ADMISSION = PROCESS_ID + 3;
-const PROCESS_WORDS = PROCESS_ID + 4;
+const EXEC_TRANSFER = PROCESS_ID + 4;
+const PROCESS_WORDS = PROCESS_ID + 5;
 const JOB_WORDS = 10;
 const INTENT_STEP = 0x100000000n;
 
@@ -81,6 +82,12 @@ export function directoryAdmissionVersion(directory: SharedArrayBuffer): bigint 
   return version;
 }
 
+/** The page scope can observe an idle stamp without treating an in-flight spawn as an error. */
+export function idleDirectoryAdmission(directory: SharedArrayBuffer): bigint | undefined {
+  const version = atomicsLoad(new BigInt64ArrayConstructor(directory, 16, 1), 0);
+  if ((version & 0xffffffffn) === 0n) return version;
+}
+
 /** Linearize the owner decision against every concurrent earlier spawn intent. No freeze. */
 export function commitDirectoryAdmission(directory: SharedArrayBuffer, version: bigint): void {
   const word = new BigInt64ArrayConstructor(directory, 16, 1);
@@ -92,7 +99,7 @@ export interface DirectoryHandle {
   readonly slot: number;
   readonly pid: number;
 }
-function directoryCapacity(directory: SharedArrayBuffer): number {
+export function directoryCapacity(directory: SharedArrayBuffer): number {
   const capacity =
     (sharedArrayBufferByteLength(directory) - HEADER_BYTES) / ((PROCESS_WORDS + JOB_WORDS) * 8);
   if (!Number.isInteger(capacity) || capacity < 1) throw new TypeError("invalid process directory");
@@ -224,6 +231,9 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
     // Spawn/exec alone need this view; ordinary lookup keeps its existing construction bound.
     get imageAdmission() {
       return liveCells(raw, pid, IMAGE_ADMISSION);
+    },
+    get execTransfer() {
+      return liveCells(raw, pid, EXEC_TRANSFER);
     },
     job,
     jobSlot,
