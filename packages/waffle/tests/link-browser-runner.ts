@@ -2,7 +2,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { chromium, firefox, webkit, type Page } from "playwright";
 import { navigateTestPage } from "./browser-navigation.js";
-import { captureWebKitDiagnostics, observeWebKitPage } from "./webkit-diagnostics.js";
+import {
+  boundWebKitError,
+  captureWebKitDiagnostics,
+  observeWebKitPage,
+} from "./webkit-diagnostics.js";
 
 const root = process.env.PROCESS_SCRATCH_ROOT;
 if (!root) throw new Error("PROCESS_SCRATCH_ROOT must name an owned data-drive directory");
@@ -136,7 +140,12 @@ try {
       throw new Error(`unknown browser ${name}`);
     const scratch = await mkdtemp(join(root, "link-"));
     profiles.push(scratch);
-    const result = await runLink(name, `http://127.0.0.1:${server.port}/`, scratch);
+    const result = await runLink(name, `http://127.0.0.1:${server.port}/`, scratch).catch(
+      (error: unknown) => {
+        if (name === "webkit") boundWebKitError(error);
+        throw error;
+      },
+    );
     interrupted.signal.throwIfAborted();
     console.log(JSON.stringify({ engine: name, ...result }));
   }

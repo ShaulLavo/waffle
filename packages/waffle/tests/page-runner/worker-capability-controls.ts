@@ -4,7 +4,7 @@ import { browserBundle } from "../browser-runner-lifecycle.js";
 import { observeWebKitPage } from "../webkit-diagnostics.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bounded, type DriverCleanup } from "./driver.js";
+import type { DriverCleanup } from "./driver.js";
 import { record } from "./protocol.js";
 import type { SuiteResult } from "./suite-host.js";
 
@@ -24,12 +24,16 @@ export const workerControlModes = [
 ];
 export const webKitWorkerVerificationModes = [
   "verification-navigation-held",
+  "verification-slow-native-close",
   "verification-startup-failure",
 ];
+function holdsVerificationNavigation(mode: string): boolean {
+  return mode === "verification-navigation-held" || mode === "verification-slow-native-close";
+}
 const installingWorker = `const identity = crypto.randomUUID(); self.addEventListener('message', e => e.ports[0]?.postMessage(identity)); self.addEventListener('install', e => e.waitUntil(self.skipWaiting())); self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));`;
 const foreignWorker = `const identity = crypto.randomUUID(); self.addEventListener('install', e => e.waitUntil(self.skipWaiting())); self.addEventListener('activate', e => e.waitUntil(self.clients.claim())); self.addEventListener('message', e => e.ports[0]?.postMessage(identity));`;
 const cleanupStepPrefix = "worker capability verification: ";
-const verificationTimeout = "worker capability verification timed out";
+const verificationTimeout = "driver cleanup verification timed out";
 const startupFailure = "Control failed startup after allocating the browser";
 const missingRoot = "No active root Worker in verification document";
 const verificationPage = `<!doctype html><script>
@@ -47,8 +51,8 @@ class ControlDriver extends PlaywrightDriver {
   foreignIdentity = "";
   verified = false;
   verificationNavigationHeld = false;
+  nativeCloses = 0;
   private diagnostics?: ReturnType<typeof observeWebKitPage>;
-  private stoppingControl?: Promise<DriverCleanup>;
   constructor(
     private readonly controlEngine: "chromium" | "webkit",
     scratch: string,
@@ -62,14 +66,32 @@ class ControlDriver extends PlaywrightDriver {
     if (this.controlEngine !== "webkit") return;
     if (this.mode === "in-flight-loss" || webKitWorkerVerificationModes.includes(this.mode))
       this.observeVerification();
-    if (this.mode === "verification-navigation-held")
+    if (holdsVerificationNavigation(this.mode))
       await this.current().route("**/verify.html", () => {
         this.verificationNavigationHeld = true;
       });
+    if (this.mode === "verification-slow-native-close") this.delayNativeClose();
     if (this.startupFailureOrigin) {
       this.origin = this.startupFailureOrigin;
       throw new Error(startupFailure);
     }
+  }
+  private delayNativeClose(): void {
+    const context = this.current().context();
+    const browser = context.browser();
+    assert(browser, "Expected WebKit launcher for persistent context");
+    const closeContext = context.close.bind(context);
+    const closeBrowser = browser.close.bind(browser);
+    context.close = async (options) => {
+      await Bun.sleep(4250);
+      await closeContext(options);
+      this.nativeCloses++;
+    };
+    browser.close = async (options) => {
+      await Bun.sleep(3650);
+      await closeBrowser(options);
+      this.nativeCloses++;
+    };
   }
   private observeVerification(): void {
     const page = this.current();
@@ -181,31 +203,21 @@ class ControlDriver extends PlaywrightDriver {
       );
   }
   override stop(): Promise<DriverCleanup> {
-    return (this.stoppingControl ??= this.stopControl());
-  }
-  private async stopControl(): Promise<DriverCleanup> {
-    const cancel = new AbortController();
-    const verification = this.origin ? this.verifyCleanup(cancel.signal) : undefined;
-    let verificationFailure: string | undefined;
-    try {
-      // Leave time for browser closure and settlement within the host's teardown budget.
-      if (verification) await bounded(verification, 5000, "worker capability verification");
-    } catch (error) {
-      cancel.abort(error);
-      this.diagnostics?.fail();
-      verificationFailure = String(error);
-    }
     this.diagnostics?.shutdown("runner cleanup");
-    const cleanup = await super.stop();
-    if (!verificationFailure || !verification) return cleanup;
-    // Close cancels an admitted Playwright navigation. Join its teardown before publishing.
-    const settled = Promise.allSettled([verification]);
+    return super.stop();
+  }
+  async verifyBeforeStop(signal: AbortSignal): Promise<void> {
+    if (!this.origin) return;
+    const fail = () => this.diagnostics?.fail();
+    signal.addEventListener("abort", fail, { once: true });
     try {
-      await bounded(settled, 1000, "worker capability verification settlement");
+      await this.verifyCleanup(signal);
     } catch (error) {
-      verificationFailure += `\n${String(error)}`;
+      if (!signal.aborted) fail();
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", fail);
     }
-    return { ...cleanup, verificationFailure };
   }
   private async verifyCleanup(signal: AbortSignal): Promise<void> {
     this.diagnostics?.enter("navigate to verification document");
@@ -260,13 +272,13 @@ class ControlDriver extends PlaywrightDriver {
   }
 }
 function assertVerificationFailure(driver: ControlDriver, result: SuiteResult): void {
-  const held = driver.mode === "verification-navigation-held";
+  const held = holdsVerificationNavigation(driver.mode);
   assert(!driver.verified && result.exit === 2, "Verification failure did not fail the suite");
   assert(driver.browserStopped, "Verification failure left the WebKit browser connected");
   const failure = result.failures.find(({ category }) => category === "cleanup-verification");
   assert(
     failure?.detail.includes(held ? verificationTimeout : missingRoot) &&
-      !failure.detail.includes("verification settlement timed out"),
+      !result.failures.some(({ detail }) => detail.includes("verification settlement timed out")),
     `Wrong verification failure: ${JSON.stringify(result.failures)}`,
   );
   if (held) {
@@ -277,6 +289,8 @@ function assertVerificationFailure(driver: ControlDriver, result: SuiteResult): 
         result.outcomes.worker?.status === "pass",
       "Verification hold did not follow a completed worker case",
     );
+    if (driver.mode === "verification-slow-native-close")
+      assert(driver.nativeCloses === 2, "Suite returned before both real close calls settled");
   } else {
     assert(
       result.failures.some(
@@ -300,7 +314,7 @@ export async function workerCapabilityControl(
       {
         id: "worker",
         label: mode,
-        request: () => ({ mode: mode === "verification-navigation-held" ? "success" : mode }),
+        request: () => ({ mode: holdsVerificationNavigation(mode) ? "success" : mode }),
       },
     ],
     serviceWorker: { caseId: "worker", script },

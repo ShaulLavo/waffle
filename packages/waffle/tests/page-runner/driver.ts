@@ -24,7 +24,6 @@ export type DriverCleanup = {
   session: CleanupStep;
   launcher: CleanupStep;
   serviceDisposition: string;
-  verificationFailure?: string;
 };
 export interface DriverPressControl {
   /** Admission/waiter lifetime, not cancellation of an already-admitted action. */
@@ -90,6 +89,8 @@ export interface Driver {
   handles(signal: AbortSignal): Promise<string[]>;
   url(signal: AbortSignal): Promise<string>;
   script(source: string, signal: AbortSignal): Promise<unknown>;
+  /** Optional read-only check while the session is still live. Stop must settle admitted work. */
+  verifyBeforeStop?(signal: AbortSignal): Promise<void>;
   stop(): Promise<DriverCleanup>;
   readonly uncertain: boolean;
 }

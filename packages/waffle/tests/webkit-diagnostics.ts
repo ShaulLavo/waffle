@@ -11,6 +11,9 @@ const browserPrefix = "pw:browser ";
 const colorReset = "\x1b[0m";
 const nativeOutput = /^\[pid=\d+\]\[(?:out|err)\] /;
 const nativeOutputLimit = 64 * 1024;
+const nativeOutputTruncated = `pw:browser native stdout/stderr truncated (limit ${nativeOutputLimit} bytes)`;
+const callLogDim = "\x1b[2m";
+const callLogPrefix = /^ *(?:(?:-|\d+ ×) )?/;
 
 function isNativeOutput(line: string): boolean {
   const index = line.indexOf(browserPrefix);
@@ -19,6 +22,46 @@ function isNativeOutput(line: string): boolean {
   return nativeOutput.test(
     line.slice(start + (line.startsWith(colorReset, start) ? colorReset.length : 0)),
   );
+}
+
+function isReplayedNativeOutput(line: string): boolean {
+  const plain = line.startsWith(callLogDim) ? line.slice(callLogDim.length) : line;
+  return nativeOutput.test(plain.replace(callLogPrefix, ""));
+}
+
+export function boundWebKitLogReplay(message: string): string {
+  if (!message.includes("[pid=")) return message;
+  let bytes = 0;
+  let truncated = false;
+  const lines: string[] = [];
+  for (const line of message.split("\n")) {
+    if (!isReplayedNativeOutput(line)) {
+      lines.push(line);
+      continue;
+    }
+    if (truncated) continue;
+    bytes += Buffer.byteLength(line) + 1;
+    truncated = bytes > nativeOutputLimit;
+    lines.push(truncated ? nativeOutputTruncated : line);
+  }
+  return truncated ? lines.join("\n") : message;
+}
+
+export function boundWebKitError(error: unknown): void {
+  if (!(error instanceof Error) || !error.message.includes("[pid=")) return;
+  const original = error.message;
+  const message = boundWebKitLogReplay(original);
+  if (message !== original) {
+    const stack = error.stack;
+    error.message = message;
+    if (stack) error.stack = boundWebKitLogReplay(stack);
+  }
+  if (original.includes("\nCall log:\n") && "log" in error && Array.isArray(error.log)) {
+    // Playwright puts the call log in the message and on the Error object.
+    error.log = error.log.filter(
+      (line: unknown) => typeof line !== "string" || !isReplayedNativeOutput(line),
+    );
+  }
 }
 
 export function captureWebKitDiagnostics(): () => void {
@@ -40,9 +83,7 @@ export function captureWebKitDiagnostics(): () => void {
     if (bytes <= nativeOutputLimit) process.stderr.write(line);
     else {
       truncated = true;
-      process.stderr.write(
-        `pw:browser native stdout/stderr truncated (limit ${nativeOutputLimit} bytes)\n`,
-      );
+      process.stderr.write(`${nativeOutputTruncated}\n`);
     }
   };
   return () => {
