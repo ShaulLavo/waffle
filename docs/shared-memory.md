@@ -10,8 +10,6 @@ const runtime = createRuntime();
 
 ## Size for Safari
 
-Safari allocates requested WebAssembly memory ahead of time; Chrome and Firefox commit lazily. Size memories, shared buffers and workers for Safari.
-
 Safari, especially on iOS, reserves the whole `maxByteLength` of a growable `SharedArrayBuffer` and the whole maximum of a shared WebAssembly memory when it is constructed. A zero initial length is not zero cost. So do not create growable backing ahead of the data it will hold, and count the full declared maximum against the iPhone reservation budget, never `byteLength` or the initial pages. This is a budgeting rule for new code, not an explanation of any particular past failure.
 
 On WebKit a terminated Worker still parked in an untimed native wait can keep shared backing reserved. [Memory groups](memory-groups.md#lifetime-and-physical-stop) describes the provider futex teardown boundary and its limits.

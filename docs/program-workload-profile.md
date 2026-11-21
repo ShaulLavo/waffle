@@ -10,9 +10,9 @@ route participates in this workload.
 
 ## Run the profile
 
-Prepare the runtime and Coreutils with the ordinary pinned tools and package
-routes. Set `WASI_SDK_PATH` and `WASM_OPT` as described in
-[program builds](program-package-builds.md).
+Prepare the runtime and Coreutils with the ordinary package routes. Set
+`WASI_SDK_PATH` to WASI SDK 34.0 with wasi-libc `2e6fb9d8ee0c`. Set
+`WASM_OPT` to the [pinned Binaryen executable](program-optimization.md).
 
 ```sh
 bun run prepare:package
