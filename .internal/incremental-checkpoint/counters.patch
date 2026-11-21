@@ -1,0 +1,174 @@
+diff --git i/packages/waffle/fs/indexeddb-chunks.ts w/packages/waffle/fs/indexeddb-chunks.ts
+index 920c6d8d..247c1927 100644
+--- i/packages/waffle/fs/indexeddb-chunks.ts
++++ w/packages/waffle/fs/indexeddb-chunks.ts
+@@ -1,3 +1,4 @@
++import { probePreparedChunks, probePut } from "./checkpoint-probe.js";
+ import { VfsError } from "./vfs.js";
+ import { validInteger } from "./storage.js";
+ 
+@@ -81,6 +82,7 @@ export async function preparePayload(
+     const part = bytes.slice(offset, offset + CHUNK_SIZE);
+     chunks.push({ bytes: part, checksum: await chunkChecksum(part) });
+   }
++  probePreparedChunks(bytes, chunks);
+   return {
+     manifest: { version: 2, size: bytes.length, chunkSize: CHUNK_SIZE, count: chunks.length },
+     chunks,
+@@ -102,6 +104,7 @@ export function deletePayload(store: IDBObjectStore, key: string): void {
+ function putPayload(store: IDBObjectStore, key: string, payload: PreparedPayload): void {
+   for (const [index, chunk] of payload.chunks.entries()) store.put(chunk, [key, index]);
+   store.put(payload.manifest, key);
++  probePut(key, payload.chunks, store.transaction);
+ }
+ /** Scheduling stays inside the publishing transaction; no digest or task awaits here. */
+ export function checkPayload(
+diff --git i/packages/waffle/fs/indexeddb.ts w/packages/waffle/fs/indexeddb.ts
+index 6835e58c..3e4c4403 100644
+--- i/packages/waffle/fs/indexeddb.ts
++++ w/packages/waffle/fs/indexeddb.ts
+@@ -1,3 +1,4 @@
++import { probeJournal } from "./checkpoint-probe.js";
+ import {
+   STAGED_FORMAT,
+   STAGING_LIMITS,
+@@ -1522,6 +1523,7 @@ export class IndexedDBStorage implements StorageBackend {
+       publication: batch.publication,
+     };
+     const encodedJournal = entry && (await encodeSelection(entry));
++    if (encodedJournal) probeJournal(encodedJournal.json);
+     let snapshot: PersistedIndex | undefined;
+     const bases: State["bases"] = old ? [old.bases[0], old.bases[1]] : [undefined, undefined];
+     let slot: 0 | 1 = 0;
+diff --git i/packages/waffle/fs/shared.ts w/packages/waffle/fs/shared.ts
+index aec18260..ca0bc153 100644
+--- i/packages/waffle/fs/shared.ts
++++ w/packages/waffle/fs/shared.ts
+@@ -1,3 +1,4 @@
++import { probeCapture } from "./checkpoint-probe.js";
+ import { WatchRing } from "./watch-ring.js";
+ import type { MemoryBudget } from "./memory-budget.js";
+ import { allocateStartupRoot } from "./root-memory-budget.js";
+@@ -1141,6 +1142,7 @@ export class SharedFilesystemStateystemState {
+         );
+         data.set(count === DATA_PAGE_BYTES ? page : page.subarray(0, count), position);
+       }
++      probeCapture(data, this);
+       return { stat, data, revision: this.getRevision(slot) };
+     } finally {
+       this.unlock(this.at(slot, FILE_LOCK));
+diff --git i/packages/waffle/fs/storage.ts w/packages/waffle/fs/storage.ts
+index e2f49e7a..05e0b467 100644
+--- i/packages/waffle/fs/storage.ts
++++ w/packages/waffle/fs/storage.ts
+@@ -1,3 +1,4 @@
++import { probeBatch } from "./checkpoint-probe.js";
+ import {
+   snapshotPublicationCheckpoint,
+   type PublicationCut,
+@@ -83,7 +84,11 @@ export function snapshotBatch(batch: PersistenceBatch): PersistenceBatch {
+       retainedData: batch.retainedData,
+     }),
+     ...(batch.publication ? { publication: snapshotPublicationCheckpoint(batch.publication) } : {}),
+-    data: new Map(Array.from(batch.data, ([key, bytes]) => [key, new Uint8Array(bytes)])),
++    data: new Map(Array.from(batch.data, ([key, bytes]) => {
++      const copy = new Uint8Array(bytes);
++      probeBatch(bytes, copy);
++      return [key, copy];
++    })),
+   };
+ }
+ 
+diff --git 1/packages/waffle/fs/checkpoint-probe.ts 2/packages/waffle/fs/checkpoint-probe.ts
+new file mode 100644
+index 00000000..b22a09fe
+--- /dev/null
++++ 2/packages/waffle/fs/checkpoint-probe.ts
+@@ -0,0 +1,87 @@
++import type { SharedFilesystemState } from "./shared.js";
++
++type Capture = {
++  snapshot: WeakRef<Uint8Array>;
++  batch?: WeakRef<Uint8Array>;
++  snapshotBytes: number;
++  batchBytes: number;
++  slices: number;
++  sliceBytes: number;
++  digests: number;
++  digestBytes: number;
++  puts: number;
++  putBytes: number;
++  manifestPuts: number;
++  journalJsonBytes: number;
++  key?: string;
++  resident: ReturnType<SharedFilesystemState["resources"]>;
++  liveAtSubmission?: {
++    captureBytes: number;
++    batchBytes: number;
++    preparedChunkBytes: number;
++    residentPoolBytes: number;
++  };
++};
++
++let capture: Capture | undefined;
++
++export function probeCapture(data: Uint8Array, shared: SharedFilesystemState): void {
++  if (data.byteLength !== 64 * 1024 ** 2) return;
++  capture = {
++    snapshot: new WeakRef(data),
++    snapshotBytes: data.byteLength,
++    batchBytes: 0,
++    slices: 0,
++    sliceBytes: 0,
++    digests: 0,
++    digestBytes: 0,
++    puts: 0,
++    putBytes: 0,
++    manifestPuts: 0,
++    journalJsonBytes: 0,
++    resident: shared.resources(),
++  };
++}
++
++export function probeBatch(original: Uint8Array, copy: Uint8Array): void {
++  if (!capture || capture.snapshot.deref() !== original) return;
++  capture.batch = new WeakRef(copy);
++  capture.batchBytes = copy.byteLength;
++}
++
++export function probePreparedChunks(bytes: Uint8Array, chunks: readonly { bytes: Uint8Array }[]): void {
++  if (!capture || capture.batch?.deref() !== bytes) return;
++  // preparePayload returns only after every slice and its SHA-256 completed.
++  capture.slices = chunks.length;
++  capture.sliceBytes = chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0);
++  capture.digests = chunks.length;
++  capture.digestBytes = capture.sliceBytes;
++}
++
++export function probePut(
++  key: string,
++  chunks: readonly { bytes: Uint8Array }[],
++  tx: IDBTransaction,
++): void {
++  if (!capture || capture.slices !== chunks.length || !capture.slices) return;
++  const sample = capture;
++  sample.puts = chunks.length;
++  sample.putBytes = chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0);
++  sample.manifestPuts = 1;
++  sample.key = key;
++  sample.liveAtSubmission = {
++    captureBytes: sample.snapshot.deref()?.buffer.byteLength ?? 0,
++    batchBytes: sample.batch?.deref()?.buffer.byteLength ?? 0,
++    preparedChunkBytes: sample.putBytes,
++    residentPoolBytes: sample.resident.poolBytes,
++  };
++  tx.addEventListener("complete", () => {
++    const { snapshot: _snapshot, batch: _batch, ...support } = sample;
++    console.log("CHECKPOINT_PROBE " + JSON.stringify({ ...support, durability: tx.durability }));
++  }, { once: true });
++  capture = undefined;
++}
++
++export function probeJournal(json: string): void {
++  if (capture) capture.journalJsonBytes = new TextEncoder().encode(json).byteLength;
++}
