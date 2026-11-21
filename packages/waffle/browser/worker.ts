@@ -627,12 +627,9 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
 ): Promise<void> {
   postToHost({ type: "phase", name: "worker-start", duration: 0 });
   let started = false;
-  const recording = operations ? await captureOperations(operations) : undefined;
-  if (recording)
-    registerResolveObservation(req.filesystem, {
-      entered: () => started,
-      writer: recording.writers.resolve,
-    });
+  const recording = operations
+    ? await captureOperations(operations, req.filesystem, () => started)
+    : undefined;
   const fs = new FilesystemClient(req.filesystem);
   const { cancellation, notifications, startupCancelled, cancelStartup } = startupControl(
     req.notifications,
@@ -1453,10 +1450,16 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   }
 }
 
-async function captureOperations(binding: GuestOperationBinding) {
+async function captureOperations(
+  binding: GuestOperationBinding,
+  filesystem: FilesystemConnection,
+  entered: () => boolean,
+) {
   try {
     const { createOperationWriters, observePipePoll } = await import("./operations/guest.js");
-    return { writers: createOperationWriters(binding), observePipePoll };
+    const { pipe, resolve } = createOperationWriters(binding);
+    registerResolveObservation(filesystem, { entered, writer: resolve });
+    return { observePipePoll, writer: pipe };
   } catch {
     return undefined;
   }
@@ -1486,11 +1489,11 @@ function setupPipeObservation(
   recording: NonNullable<Awaited<ReturnType<typeof captureOperations>>>,
   options: Omit<Parameters<PipeObserver>[0], "writer" | "stopped">,
 ): ReturnType<PipeObserver> | undefined {
-  const { observePipePoll, writers } = recording;
+  const { observePipePoll, writer } = recording;
   try {
     return observePipePoll({
       ...options,
-      writer: writers.pipe,
+      writer,
       stopped: (error) => isInstance(error, WasiExit) || isInstance(error, RuntimeWorkerSignal),
     });
   } catch {

@@ -2119,7 +2119,8 @@ async function prepareAcceptance(binding: OperationBinding) {
 
 function backendOptions(data: Record<string, unknown>): Record<string, unknown> {
   if (data.operations === undefined) return data;
-  const { operations: _, ...options } = data;
+  const options = { ...data };
+  delete options.operations;
   return options;
 }
 
