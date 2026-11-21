@@ -932,6 +932,35 @@ test("worker job wait requires confirmed descendants and retains the directly-re
   expect(f.broker.get(descendantPid)).toBeUndefined();
 });
 
+test("pump skips a shared job collected after listing and before its lifetime load", async () => {
+  const f = fixture();
+  const pid = f.root.spawn(1, request());
+  await f.flush();
+  const child = f.client(f.broker.get(pid)!);
+  child.exit(0);
+  await f.flush();
+  expect(f.root.jobEmpty(1, child.job)).toBe(true);
+  expect(f.supervisor.job(child.job)).toBeDefined();
+  // Another worker's wait consumes the job after pump() listed it but before pump()
+  // reads its lifetime word. pump() looks up the host job record in between.
+  const lookup = f.supervisor.job.bind(f.supervisor);
+  let collected: ReturnType<typeof f.root.waitJob> | undefined;
+  f.supervisor.job = (id: number) => {
+    if (id === child.job && collected === undefined) collected = f.root.waitJob(1, child.job);
+    return lookup(id);
+  };
+  expect(() => f.broker.pump()).not.toThrow();
+  f.supervisor.job = lookup;
+  expect(collected?.status).toBe(0);
+  expect(findDirectoryJob(f.transport.directory, child.job)).toBeUndefined();
+  // The consumed job still retires on the host; nothing it owned is dropped early.
+  await f.flush();
+  f.broker.pump();
+  expect(f.supervisor.job(child.job)).toBeUndefined();
+  expect(f.supervisor.get(pid)).toBeUndefined();
+  expect(f.broker.get(pid)).toBeUndefined();
+});
+
 test("worker process and job completion both await the host-work fence", async () => {
   let finish!: () => void;
   const fence = new Promise<void>((resolve) => {

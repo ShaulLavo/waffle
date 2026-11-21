@@ -23,7 +23,7 @@ import {
   isCollectedProcess,
   settleDirectoryJobLifetimes,
 } from "./directory.js";
-import { controlLoad, controlStore, controlCas } from "./control.js";
+import { controlLoad, controlStore, controlCas, type ControlCells } from "./control.js";
 import { DescriptorTable, type Resource } from "../core/descriptors.js";
 import { claimOutcome, readOutcome } from "./outcome.js";
 import {
@@ -654,7 +654,8 @@ export class WorkerProcessBroker {
       settleDirectoryJobLifetimes(root.directory);
       for (const group of directoryGroups(root.directory)) {
         const local = supervisor.job(group.id);
-        if (local) local.lifetimeState = sharedLifetimeState(controlLoad(group.lifetime));
+        const lifetime = local ? loadUnlessCollected(group.lifetime) : undefined;
+        if (local && lifetime !== undefined) local.lifetimeState = sharedLifetimeState(lifetime);
       }
       helpDirectoryJobs(root.directory);
     }
@@ -738,7 +739,7 @@ export class WorkerProcessBroker {
     pending: Promise<void>[],
   ): void {
     for (const group of directoryGroups(root.directory)) {
-      if (group.ownerPid !== owner || controlLoad(group.lifetime) !== 3) continue;
+      if (group.ownerPid !== owner || loadUnlessCollected(group.lifetime) !== 3) continue;
       pending.push(this.ownedJobWork(root, group));
     }
   }
@@ -751,10 +752,12 @@ export class WorkerProcessBroker {
     if (previous) return previous;
     const work = this.closeSharedJob(root, group);
     this.ownedJobs.set(key, work);
-    void work.then(
-      () => this.ownedJobs.delete(key),
-      () => {},
-    );
+    // Settled work leaves the map either way. Its callers still see a failure, and a later
+    // cleanup of the same job starts afresh instead of replaying that failure.
+    const settle = () => {
+      if (this.ownedJobs.get(key) === work) this.ownedJobs.delete(key);
+    };
+    void work.then(settle, settle);
     return work;
   }
   private async closeSharedJob(
@@ -765,28 +768,43 @@ export class WorkerProcessBroker {
     const stop = this.supervisor!.onJobRetirement((job) => {
       if (job === group.id) wakeWorkerProcess(root);
     });
+    let live: boolean;
     try {
-      await this.waitSharedRetirement(root, group);
+      live = await this.waitSharedRetirement(root, group);
     } finally {
       stop();
     }
-    if (!group.outcome.valid()) return;
-    controlStore(group.retirement, 0, 1);
-    const job = this.supervisor!.job(group.id);
-    if (job) this.supervisor!.reapJob(job.controlParent, job.id);
-    if (group.outcome.valid()) collectDirectoryJob(root.directory, group.slot, group.id);
+    // Another worker's wait may collect the job at any step below. That job is done.
+    if (!live) return;
+    this.storeRetirement(group.retirement, 1);
+    this.reapSharedJob(group);
+    if (group.outcome.valid()) collectUnlessCollected(root.directory, group);
   }
+  /** When another worker's wait claimed or collected the job first, its host record retires
+   * through reconcileCollectedJob instead. A reap failure while the job is unclaimed escapes. */
+  private reapSharedJob(group: NonNullable<ReturnType<typeof findDirectoryJob>>): void {
+    const job = this.supervisor!.job(group.id);
+    if (!job) return;
+    try {
+      this.supervisor!.reapJob(job.controlParent, job.id);
+    } catch (error) {
+      if (!isCollectedProcess(error) || !sharedJobConsumed(group)) throw error;
+    }
+  }
+  /** False when another worker collected the job first. */
   private async waitSharedRetirement(
     root: WorkerProcessTransport,
     group: NonNullable<ReturnType<typeof findDirectoryJob>>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const wake = new Int32ArrayConstructor(root.directory, 4, 1);
     for (;;) {
       const expected = atomicsLoad(wake, 0);
       this.pump();
-      const retired = this.supervisor!.jobRetired(group.id);
-      if (retired && !group.outcome.valid()) return;
-      if (retired && controlLoad(group.pending) === 0) break;
+      if (this.supervisor!.jobRetired(group.id)) {
+        const pending = loadUnlessCollected(group.pending);
+        if (pending === undefined) return false;
+        if (pending === 0) return true;
+      }
       await atomicsWaitAsync(wake, 0, expected).value;
     }
   }
@@ -928,6 +946,36 @@ export class WorkerProcessBroker {
     } catch {
       /* Diagnostics never own cleanup. */
     }
+  }
+}
+
+/** A listed directory job can be collected by another worker before its words are read.
+ * A collected job is gone, so callers skip it. Every other failure still escapes. */
+function loadUnlessCollected(cells: ControlCells): number | undefined {
+  try {
+    return controlLoad(cells);
+  } catch (error) {
+    if (!isCollectedProcess(error)) throw error;
+    return undefined;
+  }
+}
+
+/** A collector publishes its claim (pending -1) before it frees the header, so a claimed job
+ * still looks valid until then. Either state means another worker consumed it. */
+function sharedJobConsumed(group: NonNullable<ReturnType<typeof findDirectoryJob>>): boolean {
+  const pending = loadUnlessCollected(group.pending);
+  return pending === undefined || pending < 0;
+}
+
+/** CHILD here means another worker's wait won the collection, which finishes this job too. */
+function collectUnlessCollected(
+  directory: SharedArrayBuffer,
+  group: NonNullable<ReturnType<typeof findDirectoryJob>>,
+): void {
+  try {
+    collectDirectoryJob(directory, group.slot, group.id);
+  } catch (error) {
+    if (!isCollectedProcess(error)) throw error;
   }
 }
 
