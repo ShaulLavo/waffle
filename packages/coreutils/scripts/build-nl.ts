@@ -7,7 +7,7 @@ import {
 } from "./build-family.ts";
 
 export function buildNl(options: ProgramBuildOptions = {}) {
-  buildFamilyPrograms(["-p", "@waffle-os/coreutils", "--bin", "nl"], ["nl"], options);
+  buildFamilyPrograms(["-p", "waffle-coreutils", "--bin", "nl"], ["nl"], options);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

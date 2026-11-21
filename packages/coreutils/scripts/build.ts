@@ -15,7 +15,7 @@ if (artifacts) {
   );
   buildWc();
   buildFamilyPrograms(
-    ["-p", "@waffle-os/coreutils", "--bins", "--features", "cooperative-wasi"],
+    ["-p", "waffle-coreutils", "--bins", "--features", "cooperative-wasi"],
     coreutilsPackageNames,
   );
 }
