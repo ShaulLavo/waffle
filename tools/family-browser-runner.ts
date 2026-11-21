@@ -120,7 +120,10 @@ export async function runFamilyBrowser(options: BrowserOptions) {
       arch: arch(),
       cpu: cpus()[0]?.model,
       playwright: playwright.version,
-      browserBuild: engines[options.engine].executablePath().split(sep).at(-3),
+      browserBuild: engines[options.engine]
+        .executablePath()
+        .split(sep)
+        .find((part) => part.startsWith(options.engine + "-")),
       bun: Bun.version,
       headers: { coop: "same-origin", coep: "require-corp", cacheControl: "no-store" },
     };
