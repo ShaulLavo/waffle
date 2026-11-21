@@ -22,15 +22,19 @@ export interface OperationWriter {
 const staleCapture = new Error("Operation capture was retired");
 
 class Writer implements OperationWriter {
-  #sequence = 0;
+  #sequence: number;
   #started: number | undefined;
   constructor(
     readonly cells: OperationCells,
     readonly offset: number,
     readonly origin: number,
-  ) {}
+  ) {
+    const previous = cells.read(offset + Field.sequence);
+    this.#sequence = previous !== undefined && previous % 2 === 0 ? previous : MAX_VALUE;
+  }
   begin(id: number): void {
-    if (this.#started !== undefined) return;
+    // Both begin and settlement use an odd and an even sequence value.
+    if (this.#started !== undefined || this.#sequence > MAX_VALUE - 5) return;
     try {
       const started = operationClock();
       if (!this.open()) return;
@@ -73,7 +77,6 @@ class Writer implements OperationWriter {
     }
   }
   private open(): boolean {
-    // Leave enough sequence values to publish both edges without reuse.
     if (this.#sequence >= MAX_VALUE - 1) return false;
     this.put(Field.sequence, ++this.#sequence);
     return true;

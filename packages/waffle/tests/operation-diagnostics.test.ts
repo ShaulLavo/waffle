@@ -160,6 +160,27 @@ test("the last capture tag works and enrollment stops before tag reuse", () => {
   expect(enroll(2)).toBeUndefined();
 });
 
+test("the sequence limit leaves room to settle every published wait", () => {
+  const { enroll, sample } = setup();
+  const binding = enroll(1)!;
+  const cells = new OperationCells(binding);
+  expect(cells.write(PIPE_OFFSET + Field.sequence, MAX_VALUE - 5)).toBe(true);
+  expect(cells.write(RESOLVE_OFFSET + Field.sequence, MAX_VALUE - 3)).toBe(true);
+  const { pipe, resolve } = createOperationWriters(binding);
+
+  pipe.begin(1);
+  expect(sample().owned[0]?.pipeReadWait?.active?.phase).toBe("waiting");
+  pipe.settle("completed");
+  expect(cells.read(PIPE_OFFSET + Field.sequence)).toBe(MAX_VALUE - 1);
+  expect(sample().owned[0]?.pipeReadWait?.completed).toBe(1);
+  expect(sample().owned[0]?.pipeReadWait?.active).toBeUndefined();
+
+  resolve.begin(42);
+  resolve.settle("completed");
+  expect(cells.read(RESOLVE_OFFSET + Field.sequence)).toBe(MAX_VALUE - 3);
+  expect(sample().owned[0]?.fsResolve).toEqual({ completed: 0, cancelled: 0, failed: 0 });
+});
+
 test("zero-time, mixed, pre-entry, and write-end subscriptions leave the pipe recorder idle", () => {
   const { enroll, sample } = setup();
   const descriptors = new DescriptorTable();
