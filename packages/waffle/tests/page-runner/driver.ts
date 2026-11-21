@@ -24,6 +24,7 @@ export type DriverCleanup = {
   session: CleanupStep;
   launcher: CleanupStep;
   serviceDisposition: string;
+  verificationFailure?: string;
 };
 export interface DriverPressControl {
   /** Admission/waiter lifetime, not cancellation of an already-admitted action. */

@@ -4,7 +4,9 @@ import { browserBundle } from "../browser-runner-lifecycle.js";
 import { observeWebKitPage } from "../webkit-diagnostics.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { bounded, type DriverCleanup } from "./driver.js";
 import { record } from "./protocol.js";
+import type { SuiteResult } from "./suite-host.js";
 
 export const workerControlModes = [
   "success",
@@ -20,9 +22,16 @@ export const workerControlModes = [
   "controller-mismatch",
   "absent-current",
 ];
+export const webKitWorkerVerificationModes = [
+  "verification-navigation-held",
+  "verification-startup-failure",
+];
 const installingWorker = `const identity = crypto.randomUUID(); self.addEventListener('message', e => e.ports[0]?.postMessage(identity)); self.addEventListener('install', e => e.waitUntil(self.skipWaiting())); self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));`;
 const foreignWorker = `const identity = crypto.randomUUID(); self.addEventListener('install', e => e.waitUntil(self.skipWaiting())); self.addEventListener('activate', e => e.waitUntil(self.clients.claim())); self.addEventListener('message', e => e.ports[0]?.postMessage(identity));`;
 const cleanupStepPrefix = "worker capability verification: ";
+const verificationTimeout = "worker capability verification timed out";
+const startupFailure = "Control failed startup after allocating the browser";
+const missingRoot = "No active root Worker in verification document";
 const verificationPage = `<!doctype html><script>
   Object.defineProperty(ServiceWorkerRegistration.prototype, "unregister", {
     value() { throw new Error("Verification document attempted to unregister a worker"); },
@@ -37,25 +46,44 @@ class ControlDriver extends PlaywrightDriver {
   rootIdentity = "";
   foreignIdentity = "";
   verified = false;
+  verificationNavigationHeld = false;
   private diagnostics?: ReturnType<typeof observeWebKitPage>;
+  private stoppingControl?: Promise<DriverCleanup>;
   constructor(
     private readonly controlEngine: "chromium" | "webkit",
     scratch: string,
     readonly mode: string,
+    private readonly startupFailureOrigin?: string,
   ) {
     super(controlEngine, scratch);
   }
   override async start(signal: AbortSignal): Promise<void> {
     await super.start(signal);
-    if (this.controlEngine !== "webkit" || this.mode !== "in-flight-loss") return;
+    if (this.controlEngine !== "webkit") return;
+    if (this.mode === "in-flight-loss" || webKitWorkerVerificationModes.includes(this.mode))
+      this.observeVerification();
+    if (this.mode === "verification-navigation-held")
+      await this.current().route("**/verify.html", () => {
+        this.verificationNavigationHeld = true;
+      });
+    if (this.startupFailureOrigin) {
+      this.origin = this.startupFailureOrigin;
+      throw new Error(startupFailure);
+    }
+  }
+  private observeVerification(): void {
     const page = this.current();
-    const diagnostics = observeWebKitPage(page, "worker-capability-in-flight-loss");
+    const diagnostics = observeWebKitPage(page, `worker-capability-${this.mode}`);
     this.diagnostics = diagnostics;
     page.on("console", (message) => {
       const text = message.text();
       if (message.type() === "debug" && text.startsWith(cleanupStepPrefix))
         diagnostics.enter(text.slice(cleanupStepPrefix.length));
     });
+  }
+  get browserStopped(): boolean {
+    const page = this.current();
+    return page.isClosed() && page.context().browser()?.isConnected() === false;
   }
   override async navigate(url: string, signal: AbortSignal): Promise<void> {
     const parsed = new URL(url);
@@ -152,19 +180,32 @@ class ControlDriver extends PlaywrightDriver {
         "Stale A worker identity was not retained",
       );
   }
-  override async stop() {
-    const signal = AbortSignal.timeout(5000);
-    let failure: unknown;
+  override stop(): Promise<DriverCleanup> {
+    return (this.stoppingControl ??= this.stopControl());
+  }
+  private async stopControl(): Promise<DriverCleanup> {
+    const cancel = new AbortController();
+    const verification = this.origin ? this.verifyCleanup(cancel.signal) : undefined;
+    let verificationFailure: string | undefined;
     try {
-      if (this.origin) await this.verifyCleanup(signal);
+      // Leave time for browser closure and settlement within the host's teardown budget.
+      if (verification) await bounded(verification, 5000, "worker capability verification");
     } catch (error) {
+      cancel.abort(error);
       this.diagnostics?.fail();
-      failure = error;
+      verificationFailure = String(error);
     }
-    this.diagnostics?.enter("runner cleanup");
+    this.diagnostics?.shutdown("runner cleanup");
     const cleanup = await super.stop();
-    if (failure) throw failure;
-    return cleanup;
+    if (!verificationFailure || !verification) return cleanup;
+    // Close cancels an admitted Playwright navigation. Join its teardown before publishing.
+    const settled = Promise.allSettled([verification]);
+    try {
+      await bounded(settled, 1000, "worker capability verification settlement");
+    } catch (error) {
+      verificationFailure += `\n${String(error)}`;
+    }
+    return { ...cleanup, verificationFailure };
   }
   private async verifyCleanup(signal: AbortSignal): Promise<void> {
     this.diagnostics?.enter("navigate to verification document");
@@ -180,6 +221,7 @@ class ControlDriver extends PlaywrightDriver {
         const regs = await navigator.serviceWorker.getRegistrations();
         const root = regs.find(r => r.scope === location.origin + "/");
         const owned = regs.find(r => r.scope === ${JSON.stringify(this.scope)});
+        if (!root?.active) throw new Error(${JSON.stringify(missingRoot)});
         const ch = new MessageChannel();
         const id = new Promise(r => ch.port1.onmessage = e => r(e.data));
         step("await root worker identity");
@@ -197,6 +239,7 @@ class ControlDriver extends PlaywrightDriver {
       })()`,
       signal,
     );
+    signal.throwIfAborted();
     assert(record(value) && value.root === this.rootIdentity, "Foreign root active Worker changed");
     const unknownOperation = this.mode === "in-flight-loss";
     assert(
@@ -216,17 +259,64 @@ class ControlDriver extends PlaywrightDriver {
     this.verified = true;
   }
 }
+function assertVerificationFailure(driver: ControlDriver, result: SuiteResult): void {
+  const held = driver.mode === "verification-navigation-held";
+  assert(!driver.verified && result.exit === 2, "Verification failure did not fail the suite");
+  assert(driver.browserStopped, "Verification failure left the WebKit browser connected");
+  const failure = result.failures.find(({ category }) => category === "cleanup-verification");
+  assert(
+    failure?.detail.includes(held ? verificationTimeout : missingRoot) &&
+      !failure.detail.includes("verification settlement timed out"),
+    `Wrong verification failure: ${JSON.stringify(result.failures)}`,
+  );
+  if (held) {
+    assert(
+      driver.verificationNavigationHeld &&
+        result.runComplete &&
+        result.cleanup.storage.status === "confirmed" &&
+        result.outcomes.worker?.status === "pass",
+      "Verification hold did not follow a completed worker case",
+    );
+  } else {
+    assert(
+      result.failures.some(
+        ({ category, detail }) => category === "host" && detail.includes(startupFailure),
+      ),
+      `Original startup failure was lost: ${JSON.stringify(result.failures)}`,
+    );
+  }
+}
 export async function workerCapabilityControl(
   engine: "chromium" | "webkit",
   mode: string,
   root: string,
 ): Promise<void> {
   let driver: ControlDriver | undefined;
+  let startupOrigin: string | undefined;
   const script = mode === "nested-script" ? "/assets/owned-sw.js" : "/owned-sw.js";
   const a: SuiteAdapter<{ mode: string }> = {
     suite: "worker-capability",
-    inventory: () => [{ id: "worker", label: mode, request: () => ({ mode }) }],
+    inventory: () => [
+      {
+        id: "worker",
+        label: mode,
+        request: () => ({ mode: mode === "verification-navigation-held" ? "success" : mode }),
+      },
+    ],
     serviceWorker: { caseId: "worker", script },
+    fixture:
+      mode === "verification-startup-failure"
+        ? {
+            caseId: "worker",
+            create: () => ({
+              async start({ origin }) {
+                startupOrigin = origin;
+                return [];
+              },
+              async close() {},
+            }),
+          }
+        : undefined,
     policy: { listIds: () => ["worker"], check() {} },
     assets: async () => ({
       "/page.js": await browserBundle(join(import.meta.dir, "worker-capability-control-page.ts")),
@@ -243,20 +333,24 @@ export async function workerCapabilityControl(
   };
   const result = await runPageSuite(
     a,
-    (scratch) => (driver = new ControlDriver(engine, scratch, mode)),
+    (scratch) => (driver = new ControlDriver(engine, scratch, mode, startupOrigin)),
     {
       scratchRoot: process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(),
       resultPath: join(root, `worker-${engine}-${mode}.json`),
       port: "ephemeral",
     },
   );
+  const { session, launcher, server, scratch } = result.cleanup;
   assert(
-    driver?.verified,
-    `Worker cleanup control not verified: ${JSON.stringify(result.failures)}`,
-  );
-  assert(
-    result.cleanup.session.status === "confirmed" && result.cleanup.launcher.status === "confirmed",
+    [session, launcher, server, scratch].every((step) => step.status === "confirmed"),
     `Worker capability browser teardown unconfirmed: ${JSON.stringify(result.cleanup)}`,
+  );
+  assert(driver, "Worker capability driver did not start");
+  if (webKitWorkerVerificationModes.includes(mode))
+    return assertVerificationFailure(driver, result);
+  assert(
+    driver.verified,
+    `Worker cleanup control not verified: ${JSON.stringify(result.failures)}`,
   );
   assert(
     result.cleanup.storage.status !== "not-created",

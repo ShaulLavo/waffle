@@ -538,7 +538,9 @@ export async function runPageSuite<R>(
       consumers.join(cleanupMs),
       driver
         ? stopDriver(driver, cleanupMs).then((result) => {
-            driverCleanup = result;
+            const { verificationFailure, ...disposition } = result;
+            driverCleanup = disposition;
+            if (verificationFailure) collector.fail("cleanup-verification", verificationFailure);
           })
         : undefined,
       application

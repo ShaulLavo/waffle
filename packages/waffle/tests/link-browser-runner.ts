@@ -1,23 +1,20 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { Browser, Page } from "playwright";
+import { chromium, firefox, webkit, type Page } from "playwright";
 import { navigateTestPage } from "./browser-navigation.js";
-import { observeWebKitPage, webKitDebugFilter } from "./webkit-diagnostics.js";
+import { captureWebKitDiagnostics, observeWebKitPage } from "./webkit-diagnostics.js";
 
 const root = process.env.PROCESS_SCRATCH_ROOT;
 if (!root) throw new Error("PROCESS_SCRATCH_ROOT must name an owned data-drive directory");
 const requested = process.argv.slice(2);
-if (requested.includes("webkit")) process.env.DEBUG = webKitDebugFilter(process.env.DEBUG);
-const { chromium, firefox, webkit } = await import("playwright");
 const engines = { chromium, firefox, webkit };
 const names = requested.length ? requested : Object.keys(engines);
 const profiles: string[] = [];
-let browser: Browser | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
+const interrupted = new AbortController();
 
 async function cleanup() {
   const errors: unknown[] = [];
-  await browser?.close().catch((error) => errors.push(error));
   try {
     server?.stop(true);
   } catch (error) {
@@ -30,9 +27,12 @@ async function cleanup() {
   if (errors.length) throw new AggregateError(errors, "link browser cleanup failed");
 }
 
-const onSignal = () => void cleanup().finally(() => process.exit(1));
-process.once("SIGINT", onSignal);
-process.once("SIGTERM", onSignal);
+const onSignal = (signal: NodeJS.Signals) => {
+  process.exitCode = 1;
+  interrupted.abort(new Error(`Link runner interrupted by ${signal}`));
+};
+process.on("SIGINT", onSignal);
+process.on("SIGTERM", onSignal);
 
 async function bundle(path: string) {
   const result = await Bun.build({
@@ -44,11 +44,16 @@ async function bundle(path: string) {
   return result.outputs[0];
 }
 
-async function runLink(page: Page, url: string, engine: string) {
-  const diagnostics = engine === "webkit" ? observeWebKitPage(page, "link") : undefined;
+async function evaluateLink(
+  page: Page,
+  url: string,
+  signal: AbortSignal,
+  diagnostics: ReturnType<typeof observeWebKitPage> | undefined,
+) {
   try {
     diagnostics?.enter("navigation");
     await navigateTestPage(page, url);
+    signal.throwIfAborted();
     diagnostics?.enter("evaluation");
     return await page.evaluate(async () => {
       const path = "/page.js";
@@ -58,8 +63,43 @@ async function runLink(page: Page, url: string, engine: string) {
   } catch (error) {
     diagnostics?.fail();
     throw error;
+  }
+}
+
+async function runLink(engine: keyof typeof engines, url: string, scratch: string) {
+  const signal = interrupted.signal;
+  signal.throwIfAborted();
+  const restore = engine === "webkit" ? captureWebKitDiagnostics() : undefined;
+  const startup = engines[engine].launch({
+    handleSIGINT: false,
+    handleSIGTERM: false,
+    env: { ...process.env, TMPDIR: process.env.TMPDIR ?? scratch },
+  });
+  let diagnostics: ReturnType<typeof observeWebKitPage> | undefined;
+  let closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= startup.then(
+      (browser) => browser.close(),
+      () => {},
+    ));
+  const stop = () => {
+    diagnostics?.shutdown("signal shutdown");
+    void close().catch(() => {});
+  };
+  signal.addEventListener("abort", stop, { once: true });
+  try {
+    const browser = await startup;
+    signal.throwIfAborted();
+    const page = await browser.newPage();
+    signal.throwIfAborted();
+    if (engine === "webkit") diagnostics = observeWebKitPage(page, "link");
+    return await evaluateLink(page, url, signal, diagnostics);
   } finally {
-    diagnostics?.enter("runner cleanup");
+    if (!signal.aborted) diagnostics?.shutdown("runner cleanup");
+    await close().finally(() => {
+      signal.removeEventListener("abort", stop);
+      restore?.();
+    });
   }
 }
 
@@ -70,6 +110,7 @@ try {
     bundle("fixtures/link-relay-worker.ts"),
     bundle("../browser/fs-worker.ts"),
   ]);
+  interrupted.signal.throwIfAborted();
   const headers = {
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Embedder-Policy": "require-corp",
@@ -95,16 +136,13 @@ try {
       throw new Error(`unknown browser ${name}`);
     const scratch = await mkdtemp(join(root, "link-"));
     profiles.push(scratch);
-    browser = await engines[name].launch({
-      env: { ...process.env, TMPDIR: process.env.TMPDIR ?? scratch },
-    });
-    const result = await runLink(await browser.newPage(), `http://127.0.0.1:${server.port}/`, name);
+    const result = await runLink(name, `http://127.0.0.1:${server.port}/`, scratch);
+    interrupted.signal.throwIfAborted();
     console.log(JSON.stringify({ engine: name, ...result }));
-    await browser.close();
-    browser = undefined;
   }
 } finally {
-  process.removeListener("SIGINT", onSignal);
-  process.removeListener("SIGTERM", onSignal);
-  await cleanup();
+  await cleanup().finally(() => {
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+  });
 }
