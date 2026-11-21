@@ -28,10 +28,13 @@ export const i64 = (value: bigint) => [0x42].concat(signed(value));
 export const call = (index: number) => [0x10].concat(unsigned(index));
 export const store = (address: number, value: number[]) => i32(address).concat(value, [0x36, 2, 0]);
 export const notify = (address: number) => i32(address).concat(i32(8), [0xfe, 0, 2, 0, 0x1a]);
+export const wait32Result = (address: number, timeout: bigint, expected = 0) =>
+  i32(address).concat(i32(expected), i64(timeout), [0xfe, 1, 2, 0]);
+export const wait64Result = (address: number, timeout: bigint) =>
+  i32(address).concat(i64(0n), i64(timeout), [0xfe, 2, 3, 0]);
 export const wait32 = (address: number, expected = 0) =>
-  i32(address).concat(i32(expected), i64(-1n), [0xfe, 1, 2, 0, 0x1a]);
-export const wait64 = (address: number) =>
-  i32(address).concat(i64(0n), i64(-1n), [0xfe, 2, 3, 0, 0x1a]);
+  wait32Result(address, -1n, expected).concat([0x1a]);
+export const wait64 = (address: number) => wait64Result(address, -1n).concat([0x1a]);
 export interface GuestFunctionImport {
   module?: string;
   name: string;

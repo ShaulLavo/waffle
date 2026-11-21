@@ -30,7 +30,11 @@ export async function cleanupThreadRuntime(resources: ThreadRuntimeCleanup): Pro
   } finally {
     resources.restore();
   }
-  if (errors.length) throw new AggregateError(errors, "Runtime thread cleanup failed");
+  if (errors.length)
+    throw new AggregateError(
+      errors,
+      `Runtime thread cleanup failed: ${errors.map(String).join(", ")}`,
+    );
 }
 
 export function releaseThreadBarriers(barriers: Iterable<Worker>, released: boolean): void {
