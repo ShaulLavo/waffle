@@ -61,3 +61,42 @@ for (const safari of [true, false]) {
     }
   });
 }
+
+test("cleanup verification failure survives an unconfirmed driver stop", async () => {
+  const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "startup-"));
+  const driver = new FakeDriver("pass", { list: ["control"], result: true });
+  const release = Promise.withResolvers<void>();
+  const stopping = release.promise.then(driver.stop.bind(driver));
+  driver.start = async () => {
+    throw new Error("startup failed");
+  };
+  driver.stop = () => stopping;
+  Object.assign(driver, {
+    async verifyBeforeStop() {
+      throw new Error("root worker missing during verification");
+    },
+  });
+  try {
+    const result = await runPageSuite(adapter, () => driver, {
+      scratchRoot: root,
+      resultPath: join(root, "result.json"),
+      port: "ephemeral",
+      cleanupTimeoutMs: 100,
+    });
+    expect(result.exit).toBe(2);
+    expect(result.cleanup.session).toEqual({
+      status: "unconfirmed",
+      detail: "Error: driver teardown timed out",
+    });
+    expect(result.failures).toContainEqual(
+      expect.objectContaining({
+        category: "cleanup-verification",
+        detail: "Error: root worker missing during verification",
+      }),
+    );
+  } finally {
+    release.resolve();
+    await stopping;
+    await rm(root, { recursive: true, force: true });
+  }
+});

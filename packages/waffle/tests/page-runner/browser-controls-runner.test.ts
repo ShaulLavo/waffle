@@ -103,6 +103,10 @@ const fixture = join(import.meta.dir, "browser-controls-process-fixture.ts");
 async function synthetic(root: string, mode: string) {
   const resultPath = join(root, "result.json");
   const child = Bun.spawn([process.execPath, fixture, "supervise", mode, resultPath], {
+    env:
+      mode === "native-diagnostics"
+        ? { ...process.env, DEBUG: "pw:protocol", DEBUG_COLORS: "1" }
+        : process.env,
     timeout: 4000,
     stdout: "pipe",
     stderr: "pipe",
@@ -127,6 +131,22 @@ async function synthetic(root: string, mode: string) {
     await child.exited;
   }
 }
+
+test("native capture bounds browser output and keeps launcher and control diagnostics", async () => {
+  await temporary(async (root) => {
+    const { code, stderr } = await synthetic(root, "native-diagnostics");
+    expect(code).toBe(0);
+    expect(Buffer.byteLength(stderr)).toBeLessThan(64 * 1024);
+    expect(stderr).toContain("PROTOCOL_BEFORE_CAPTURE");
+    expect(stderr).toContain("NATIVE_RETAINED");
+    expect(stderr).not.toContain("NATIVE_OVER_LIMIT");
+    expect(stderr).not.toContain("NATIVE_DROPPED");
+    expect(stderr.match(/native stdout\/stderr truncated/g)).toHaveLength(1);
+    expect(stderr).toContain("<process did exit: exitCode=0, signal=null>");
+    expect(stderr).toContain("NON_NATIVE_FAILURE");
+    expect(stderr).not.toContain("BROWSER_LOGGING_RESTORED");
+  });
+});
 
 async function assertProcessOutcome(mode: string, expected: number): Promise<void> {
   await temporary(async (root) => {
