@@ -119,7 +119,7 @@ function copy(summary: OperationSummary | undefined): OperationSummary | undefin
 export class OperationOwner {
   private buffer?: SharedArrayBuffer;
   private unavailable = false;
-  private readonly slots = new Array<Capture | undefined>(OPERATION_SLOTS).fill(undefined);
+  private readonly slots = Array.from<Capture | undefined>({ length: OPERATION_SLOTS });
   private readonly history: OperationImage[] = [];
   private nextHistory = 0;
   private captureId = 0;

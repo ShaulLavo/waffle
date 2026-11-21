@@ -71,6 +71,32 @@ test("Node hosts can use the bounded diagnostic drain through its public entry",
   ).not.toThrow();
 });
 
+test("prepared runtime and Worker imports leave operation recorders and the supervisor lazy", () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import { registerHooks } from "node:module";
+    const modules = [];
+    registerHooks({
+      load(url, context, nextLoad) {
+        modules.push(url);
+        return nextLoad(url, context);
+      },
+    });
+    await import("@waffle-os/runtime");
+    await import("@waffle-os/runtime/browser/worker");
+    await import("@waffle-os/runtime/fs");
+    assert.ok(modules.some((url) => url.endsWith("/dist/runtime.js")));
+    assert.ok(!modules.some((url) => url.includes("/operations/")), modules.join("\\n"));
+    assert.ok(!modules.some((url) => url.endsWith("/dist/proc/index.js")), modules.join("\\n"));
+  `;
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], {
+      cwd: resolve(import.meta.dir, ".."),
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
+});
+
 test("Node adapters can read and write tagged process controls through the public helper entry", () => {
   const script = `
     import assert from "node:assert/strict";

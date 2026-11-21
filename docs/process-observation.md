@@ -185,12 +185,15 @@ Elapsed times cover the guest's observed interval in milliseconds. Pipe time
 runs from the first wait attempt through poll settlement, including any
 rescans. Filesystem time runs from successful submission through completion,
 including reply decoding. A submission failure has no elapsed time. The
-acceptance mark provides no separate backend duration.
+acceptance mark provides no separate backend duration. Measured times saturate
+at 4,294,967,295 milliseconds. An active operation that starts after its clock
+offset saturates has no readable elapsed time.
 
 Counters saturate and count confirmed results. Sampling does not change them.
 If the broker releases an image with an observed active operation and no
 confirmed result, the departed row records `retired-unconfirmed` and keeps
-the last confirmed result and counts. Snapshots are scalar copies. They can
+the last confirmed result and counts. Its elapsed time comes from the last
+readable sample and can include time after a native stop. Snapshots are scalar copies. They can
 miss fast transitions or old images as history rotates. Startup, admission,
 worker memory, and thread observations have their own scopes.
 

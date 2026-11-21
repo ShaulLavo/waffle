@@ -1332,17 +1332,12 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       if (done) return;
       adoptStdio(wasi.descriptors, discardedStdio);
       runtimeProcess.installBindings();
-      const { observePipePoll, writers } = recording ?? {};
-      const observedPoll =
-        writers &&
-        observePipePoll?.({
-          writer: writers.pipe,
-          entered: () => started,
-          memory: () => boundMemory,
-          descriptors,
-          checkActive,
-          stopped: (error) => isInstance(error, WasiExit) || isInstance(error, RuntimeWorkerSignal),
-        });
+      const { observedPoll, wait } = processPollWait(recording, {
+        entered: () => started,
+        memory: () => boundMemory,
+        descriptors,
+        checkActive,
+      });
       process = new ProcessABI({
         memory: () => {
           checkActive();
@@ -1358,33 +1353,9 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         wake: runtimeProcess.wake,
         futexReady: groupMember.watchReady,
         createPipe: () => runtimeProcess!.createPipe(),
-        wait:
-          observedPoll?.wait ??
-          ((ms, word, expected) => {
-            checkActive();
-            assertTerminalWaitAllowed();
-            controlWait(word, 0, expected, ms);
-            checkActive();
-          }),
+        wait,
       });
-      const entries = objectEntries(process.imports);
-      for (let index = 0; index < entries.length; index++) {
-        const entry = entries[index]!,
-          name = entry[0],
-          call = entry[1];
-        if (name === "poll" && observedPoll) {
-          const poll = observedPoll.wrap(call);
-          processImports[name] = (ptr, count, timeout, out) => {
-            checkActive();
-            return poll(ptr!, count!, timeout!, out!);
-          };
-          continue;
-        }
-        processImports[name] = (...args) => {
-          checkActive();
-          return call(...args);
-        };
-      }
+      installProcessImports(processImports, process.imports, checkActive, observedPoll);
     } else {
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
@@ -1480,6 +1451,68 @@ async function captureOperations(binding: GuestOperationBinding) {
     return { writers: createOperationWriters(binding), observePipePoll };
   } catch {
     return undefined;
+  }
+}
+
+type PipeObserver = typeof import("./operations/guest.js").observePipePoll;
+function processPollWait(
+  recording: Awaited<ReturnType<typeof captureOperations>>,
+  options: Omit<Parameters<PipeObserver>[0], "writer" | "stopped">,
+) {
+  const observedPoll = recording && setupPipeObservation(recording, options);
+  const { checkActive } = options;
+  return {
+    observedPoll,
+    wait:
+      observedPoll?.wait ??
+      ((ms: number, word: Int32Array, expected: number) => {
+        checkActive();
+        assertTerminalWaitAllowed();
+        controlWait(word, 0, expected, ms);
+        checkActive();
+      }),
+  };
+}
+
+function setupPipeObservation(
+  recording: NonNullable<Awaited<ReturnType<typeof captureOperations>>>,
+  options: Omit<Parameters<PipeObserver>[0], "writer" | "stopped">,
+): ReturnType<PipeObserver> | undefined {
+  const { observePipePoll, writers } = recording;
+  try {
+    return observePipePoll({
+      ...options,
+      writer: writers.pipe,
+      stopped: (error) => isInstance(error, WasiExit) || isInstance(error, RuntimeWorkerSignal),
+    });
+  } catch {
+    return;
+  }
+}
+
+function installProcessImports(
+  target: Record<string, (...args: number[]) => number | void>,
+  imports: ProcessABI["imports"],
+  checkActive: () => void,
+  observedPoll: ReturnType<PipeObserver> | undefined,
+): void {
+  const entries = objectEntries(imports);
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index]!;
+    const name = entry[0];
+    const call = entry[1];
+    if (name === "poll" && observedPoll) {
+      const poll = observedPoll.wrap(call);
+      target[name] = (ptr, count, timeout, out) => {
+        checkActive();
+        return poll(ptr!, count!, timeout!, out!);
+      };
+      continue;
+    }
+    target[name] = (...args) => {
+      checkActive();
+      return call(...args);
+    };
   }
 }
 

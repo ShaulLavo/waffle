@@ -6,13 +6,10 @@ import {
   type ProgramInstallation,
   type ProgramPackage,
 } from "./index.js";
-import {
-  matchesProgram,
-  packageIdentity,
-  defineProgramPackage,
-  markPreview1Launch,
-} from "./catalog.js";
-import type { WorkerLaunchOptions } from "../browser/process-broker.js";
+import { matchesProgram, packageIdentity, defineProgramPackage } from "./catalog.js";
+
+/** Internal marker shared only with the broker and its built-in Preview 1 entry. */
+export const preview1Launch = Symbol("Preview 1 package launch");
 
 export type ProgramMode = "onDemand" | "preload";
 export type ProgramState = ProgramLoadState | { readonly kind: "removed" };
@@ -330,18 +327,16 @@ export class ProgramCollection implements RuntimePrograms {
 }
 
 const preview1Launcher: GuestLauncher = (context, service) =>
-  service.launchWorker(
-    context,
-    markPreview1Launch<WorkerLaunchOptions>({
-      workerUrl: new URL("../browser/preview1-worker.ts", import.meta.url).href,
-      request: {
-        module: context.module,
-        args: context.request.argv,
-        env: context.request.env,
-        interruptible: context.interruptible,
-      },
-    }),
-  );
+  service.launchWorker(context, {
+    [preview1Launch]: true,
+    workerUrl: new URL("../browser/preview1-worker.ts", import.meta.url).href,
+    request: {
+      module: context.module,
+      args: context.request.argv,
+      env: context.request.env,
+      interruptible: context.interruptible,
+    },
+  });
 
 function programView(owner: ProgramCollection): RuntimePrograms {
   return Object.freeze({

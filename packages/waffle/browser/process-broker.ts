@@ -150,6 +150,7 @@ import type { RuntimeWorkerRequest, RuntimeWorkerMessage } from "./worker.js";
 import type { RuntimeNetworkPathScope } from "./net/runtime.js";
 import type { SignalDelegation } from "../programs/index.js";
 import { packageIdentity } from "../programs/catalog.js";
+import { preview1Launch } from "../programs/collection.js";
 import {
   CommandStdioError,
   type ProcessQuery,
@@ -158,7 +159,6 @@ import {
 } from "../proc/command.js";
 import type { CommandCapabilities } from "../proc/command-runner.js";
 import type { FileHandle } from "../core/filesystem.js";
-import { isPreview1Launch } from "../programs/catalog.js";
 import type { OperationOwner } from "./operations/owner.js";
 import type {
   GuestOperationBinding,
@@ -276,6 +276,7 @@ export interface RuntimeRootOptions {
 export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   /** Module entry stays inert until its first request. A fresh worker is created on demand. */
   workerUrl: string;
+  readonly [preview1Launch]?: true;
   notificationWorkerUrl?: string;
   /** Explicit internal proof profile. Source admission is still mandatory. */
   threaded?: ThreadLaunchOptions;
@@ -1983,8 +1984,9 @@ export class BrowserProcessBroker {
   private captureOperations(
     child: RuntimeChild,
     options: WorkerLaunchOptions,
+    enabled: boolean,
   ): GuestOperationBinding | undefined {
-    if (!this.#operations || options.memoryGroup || options.memories?.length) return;
+    if (!enabled || !this.#operations || options.memoryGroup || options.memories?.length) return;
     const memories = moduleMemoryDeclarations(options.request.module);
     if (memories?.length !== 1 || memories[0]?.kind !== "private") return;
     try {
@@ -1994,6 +1996,15 @@ export class BrowserProcessBroker {
     } catch {
       return;
     }
+  }
+  private connectWorkerFilesystem(
+    filesystem: FilesystemIdentity,
+    arena: Headroom | null,
+    binding: GuestOperationBinding | undefined,
+  ): FilesystemConnection {
+    if (!binding) return this.options.filesystem.connect(filesystem, arena);
+    const { buffer, slot, captureId } = binding;
+    return this.options.filesystem.connect(filesystem, arena, { buffer, slot, captureId });
   }
   /**
    * The start step each live launch reached, with page timestamps: a hung start names its
@@ -2106,7 +2117,7 @@ export class BrowserProcessBroker {
       return this.launchOwnedWorker(
         context,
         { ...options, network, graphics },
-        !!this.#operations && isPreview1Launch(options),
+        !!this.#operations && options[preview1Launch] === true,
       );
     } catch (error) {
       if (
@@ -2281,7 +2292,7 @@ export class BrowserProcessBroker {
     };
     this.captureImageState(child);
     this.children.set(context.pid, child);
-    const operations = observeOperations ? this.captureOperations(child, options) : undefined;
+    const operations = this.captureOperations(child, options, observeOperations);
     context.registerRevocation(() => this.disposeNetwork(child));
     let connection: FilesystemConnection | undefined;
     let worker: Worker;
@@ -2313,16 +2324,7 @@ export class BrowserProcessBroker {
           options.memoryGroup,
           ticket.group,
         );
-      if (operations) {
-        const { buffer, slot, captureId } = operations;
-        connection = this.options.filesystem.connect(filesystem, ticket.arena, {
-          buffer,
-          slot,
-          captureId,
-        });
-      } else {
-        connection = this.options.filesystem.connect(filesystem, ticket.arena);
-      }
+      connection = this.connectWorkerFilesystem(filesystem, ticket.arena, operations);
       if (readOutcome(context.outcome))
         throw new ProcessError(ProcessErrno.SRCH, "process exited before worker construction");
       worker = child.worker = this.workers.take(options.workerUrl);
