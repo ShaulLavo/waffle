@@ -344,7 +344,7 @@ test("Complete CI gate requires successful browser shards whenever the browser m
   const step = stepsFor("gate").find((step) => step.name === "Reject failed or cancelled CI jobs");
   const selection = record(step?.env).BROWSER_REQUIRED;
   expect(record(jobs.browser).if).toContain(String(selection).slice(4, -3));
-  for (const [result, required, expected] of [
+  const outcomes = [
     ["success", "true", 0],
     ["failure", "true", 1],
     ["cancelled", "true", 1],
@@ -354,11 +354,12 @@ test("Complete CI gate requires successful browser shards whenever the browser m
     ["cancelled", "false", 1],
     [undefined, "true", 1],
     [undefined, "false", 1],
-  ]) {
+  ] satisfies [string | undefined, string, number][];
+  for (const [result, required, expected] of outcomes) {
     const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(step?.run)], {
       env: {
         ...process.env,
-        BROWSER_REQUIRED: String(required),
+        BROWSER_REQUIRED: required,
         RESULTS: JSON.stringify({
           changes: { result: "success" },
           browser: result === undefined ? undefined : { result },
