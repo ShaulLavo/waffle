@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "description": "WASI core utilities for Waffle runtimes.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShaulLavo/waffle.git",
+    "directory": "packages/coreutils"
+  },
   "files": [
     "dist",
     "src",
