@@ -34,6 +34,9 @@ const startProgress = {
   "runtime-loaded": 2,
   "group-joined": 3,
   "modules-loaded": 4,
+  "installing-bindings": 5,
+  "bindings-installed": 6,
+  instantiating: 7,
 } as const;
 export type StartProgressStep = keyof typeof startProgress;
 
@@ -48,6 +51,9 @@ export function readStartProgress(
   if (code === startProgress["runtime-loaded"]) return { step: "runtime-loaded", at };
   if (code === startProgress["group-joined"]) return { step: "group-joined", at };
   if (code === startProgress["modules-loaded"]) return { step: "modules-loaded", at };
+  if (code === startProgress["installing-bindings"]) return { step: "installing-bindings", at };
+  if (code === startProgress["bindings-installed"]) return { step: "bindings-installed", at };
+  if (code === startProgress.instantiating) return { step: "instantiating", at };
   return undefined;
 }
 

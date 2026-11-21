@@ -1,6 +1,6 @@
 # Shared-memory reservations
 
-Every page runtime records its shared backing in one page-wide reservation ledger. By default the ledger is unbounded: it records every holder but admits everything, on every browser and user agent. Startup does not probe, read `navigator`, create a measurement Worker or await classification.
+Every page runtime records its shared backing in one page-wide reservation ledger. The default policy records each holder without enforcing a page-wide budget. Individual allocations remain subject to runtime and browser limits. Startup does not probe, read `navigator`, create a measurement Worker or await classification.
 
 ```ts
 import { createRuntime } from "waffle";
@@ -9,8 +9,6 @@ const runtime = createRuntime();
 ```
 
 ## Size for Safari
-
-Safari allocates requested WebAssembly memory ahead of time; Chrome and Firefox commit lazily. Size memories, shared buffers and workers for Safari.
 
 Safari, especially on iOS, reserves the whole `maxByteLength` of a growable `SharedArrayBuffer` and the whole maximum of a shared WebAssembly memory when it is constructed. A zero initial length is not zero cost. So do not create growable backing ahead of the data it will hold, and count the full declared maximum against the iPhone reservation budget, never `byteLength` or the initial pages. This is a budgeting rule for new code, not an explanation of any particular past failure.
 

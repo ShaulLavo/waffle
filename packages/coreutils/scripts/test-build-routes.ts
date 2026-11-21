@@ -52,7 +52,7 @@ test("coreutils Cargo route uses the singular recipe and verifies every bin", ()
   const { calls, execute } = capture();
   const checks: { path: string; options: WasiGuestVerification }[] = [];
   buildFamilyPrograms(
-    ["-p", "@waffle-os/coreutils", "--bins", "--features", "cooperative-wasi"],
+    ["-p", "waffle-coreutils", "--bins", "--features", "cooperative-wasi"],
     coreutilsPackageNames,
     { execute, environment, locales, verifier: verifier(checks) },
   );
@@ -76,6 +76,10 @@ test("coreutils Cargo route uses the singular recipe and verifies every bin", ()
     coreutilsPackageNames.map((name) => (usesProgramCatalogs(name) ? name : undefined)),
   );
   assert.ok(calls.every((call) => !call.args.includes("--bins")));
+  assert.deepEqual(
+    calls.map((call) => call.args.slice(-4)),
+    coreutilsPackageNames.map((name) => ["-p", "waffle-coreutils", "--bin", name]),
+  );
   for (const check of checks) {
     const cooperative = /\/(?:cat|mkdir|seq|tail)\.wasm$/.test(check.path);
     assert.equal(

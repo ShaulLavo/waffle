@@ -25,6 +25,7 @@ import { FilesystemService } from "../fs/service.js";
 import { createFilesystemIdentity } from "../fs/protocol.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { ExecutableRegistry } from "../proc/registry.js";
+import { markStarted } from "../proc/outcome.js";
 import { ProcessTable } from "../proc/table.js";
 import {
   createWorkerProcessTransport,
@@ -560,19 +561,15 @@ test("real nested and inherited-thread launches reuse the admitted compiled grou
   }
 });
 
-// Steps the page stamps itself, so their times are ordered. Worker bootstrap steps carry the
-// worker's own time and only follow start-posted.
-const pageStartOrder: readonly ProcessStartStep[] = [
+// Port messages and shared observations can arrive in either order after start-posted.
+const requiredPageStartOrder: readonly ProcessStartStep[] = [
   "launching",
   "worker-constructed",
   "start-posted",
-  "worker-started",
-  "memory-bound",
-  "instantiated",
   "running",
 ];
 
-test("start states record every step of a real worker start in order", async () => {
+test("start states report a real worker running even when intermediate observations coalesce", async () => {
   const stop = Promise.withResolvers<void>();
   const f = await fixture(true, stop.promise);
   try {
@@ -585,9 +582,15 @@ test("start states record every step of a real worker start in order", async () 
       generation: 1,
       executable: "fixture",
     });
-    const times = pageStartOrder.map((step) => started.at[step]);
+    const times = requiredPageStartOrder.map((step) => started.at[step]);
     expect(times.every((time) => typeof time === "number")).toBe(true);
     expect(times).toEqual(times.toSorted((a, b) => a! - b!));
+    for (const step of ["worker-started", "memory-bound", "instantiated"] as const) {
+      const observed = started.at[step];
+      if (observed === undefined) continue;
+      expect(observed).toBeGreaterThanOrEqual(started.at["start-posted"]!);
+      expect(observed).toBeLessThanOrEqual(started.at.running!);
+    }
     for (const step of ["runtime-loaded", "group-joined", "modules-loaded"] as const)
       if (started.at[step] !== undefined)
         expect(started.at[step]).toBeGreaterThanOrEqual(started.at["start-posted"]!);
@@ -624,6 +627,11 @@ test("a start whose worker never answers stays at start-posted until its first m
     Atomics.store(new BigInt64Array(worker.request!.memoryObservation!), 0, 65536n);
     expect(state()?.step).toBe("memory-bound");
     expect(state()?.at["group-joined"]).toBe(joined.at["group-joined"]);
+    expect(markStarted(f.supervisor.get(f.pid)!.outcome)).toBe(true);
+    expect(state()).toMatchObject({ step: "running", pid: f.pid });
+    expect(state()?.at.instantiated).toBeUndefined();
+    worker.onmessage?.({ data: { type: "phase", name: "instantiate", duration: 0 } });
+    expect(state()?.step).toBe("running");
     worker.onmessage?.({ data: { type: "exit", code: 0 } });
     await f.supervisor.waitForExit(f.root.pid, f.pid);
     expect(state()).toBeUndefined();

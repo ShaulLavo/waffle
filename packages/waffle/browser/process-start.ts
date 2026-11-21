@@ -4,8 +4,8 @@ import type { ProcessLifecycle } from "../proc/types.js";
 
 /**
  * Steps of one process start, in order. See docs/process-observation.md, "Start states".
- * The worker's bootstrap steps (`runtime-loaded`, `group-joined`, `modules-loaded`) share one
- * cell, so the page sees only the latest when it looks, stamped with the worker's own time.
+ * The worker's bootstrap steps share one cell until memory is bound. The page sees only the
+ * latest when it looks, stamped with the worker's own time.
  * `memory-bound` and `running` are stamped when the page first saw them.
  */
 export type ProcessStartStep =
@@ -26,6 +26,9 @@ const steps: readonly ProcessStartStep[] = [
   "runtime-loaded",
   "group-joined",
   "modules-loaded",
+  "installing-bindings",
+  "bindings-installed",
+  "instantiating",
   "memory-bound",
   "instantiated",
   "running",

@@ -30,15 +30,13 @@ for (const tamper of [false, true]) {
         });
         if (tamper)
           assets["/threads.wasm"] = new Blob(["changed bytes"], { type: "application/wasm" });
+        const resultsDir = process.env.THREAD_RUNTIME_RESULTS_DIR;
         const result = await runPageSuite(
           adapter,
           (path) => (driver = new PlaywrightDriver("chromium", path)),
           {
-            resultPath: process.env.THREAD_RUNTIME_RESULTS_DIR
-              ? join(
-                  process.env.THREAD_RUNTIME_RESULTS_DIR,
-                  `typed-page-${tamper ? "tamper" : "complete"}.json`,
-                )
+            resultPath: resultsDir
+              ? join(resultsDir, `typed-page-${tamper ? "tamper" : "complete"}.json`)
               : join(root, "result.json"),
             scratchRoot: root,
             port: "ephemeral",
@@ -59,7 +57,7 @@ for (const tamper of [false, true]) {
         }
         expect(result.cleanup.scratch.status).toBe("confirmed");
         expect(result.cleanup.server.status).toBe("confirmed");
-        expect(await readdir(root)).toEqual([]);
+        expect(await readdir(root)).toEqual(resultsDir ? [] : ["result.json"]);
       } finally {
         await driver?.stop();
         await rm(root, { recursive: true, force: true });

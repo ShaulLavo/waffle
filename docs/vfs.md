@@ -33,7 +33,8 @@ without whole-file hydration. The checkpoint engine
 descriptors truthfully report `pendingDataBound: "not-yet-enforced"` and
 `multiTab: "exclusive-owner"`. The API/identity step does not certify a new engine.
 
-FAST currently uses IndexedDB in every browser to preserve saved workspace identity.
+IndexedDB is the default FAST backend. The browser must provide the APIs listed
+in the mode descriptor and allow access to IndexedDB in the current context.
 Browser-specific adapters may win later experiments; changing adapters must include
 an explicit reopen/migration/export story, never silently start an empty workspace.
 Implementation overrides are internal Symbol-keyed test controls, not exported

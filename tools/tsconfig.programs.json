@@ -12,6 +12,7 @@
     "noEmit": true,
     "skipLibCheck": true,
     "paths": {
+      "@waffle-os/coreutils": ["../packages/coreutils/src/index.ts"],
       "waffle": ["../packages/waffle/index.ts"]
     }
   },

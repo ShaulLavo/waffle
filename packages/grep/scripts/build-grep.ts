@@ -49,7 +49,7 @@ export function buildGrep(options: GrepBuildOptions = {}) {
       resolve(packageRoot, "Cargo.toml"),
       "-j2",
       "-p",
-      "@waffle-os/grep",
+      "waffle-grep",
       "--bin",
       "grep",
       "--features",

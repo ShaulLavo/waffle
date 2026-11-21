@@ -1,7 +1,7 @@
 # Storage ownership and lifecycle
 
 Select product guarantees with `createRuntime({ filesystem: { mode: "fast", name, whenBusy } })`.
-FAST currently preserves the existing IndexedDB workspace in every browser. SAFE is
+FAST preserves existing IndexedDB workspaces in contexts that admit the FAST backend. SAFE is
 reserved and rejects with typed `UNSUPPORTED_VFS` until its durable-ACK engine lands.
 Backend names are diagnostics and internal test controls, not public product choices.
 See [vfs.md](vfs.md) for immutable descriptors, limitations and format identities.

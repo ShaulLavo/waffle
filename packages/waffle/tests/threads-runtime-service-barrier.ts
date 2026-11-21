@@ -45,5 +45,12 @@ self.onmessage = ({
     void command.then(() => event("drain-command-resolved"), failure).catch(failure);
     return;
   }
-  void threadServiceCommand(data).catch(failure);
+  const pending = threadServiceCommand(data);
+  if (data.kind === "call" && data.request.kind === "read" && data.request.fd === 0) {
+    const { pid, tid } = data.call.thread;
+    event("fixture-stdin-pending", { pid, tid });
+    void pending.then(() => event("fixture-stdin-settled", { pid, tid }), failure);
+    return;
+  }
+  void pending.catch(failure);
 };

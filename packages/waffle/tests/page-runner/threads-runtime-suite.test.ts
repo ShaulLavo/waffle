@@ -6,8 +6,10 @@ import { runPageSuite } from "@waffle-os/runtime/testing/page-runner";
 import { parseRuntimeThreadCommand } from "../threads-runtime-browser-runner.js";
 import {
   runtimeThreadCases,
+  runtimeThreadRegressions,
   stockThreadCase,
   isRuntimeThreadCase,
+  type BrowserRuntimeThreadCase,
 } from "../threads-runtime-cases.js";
 import {
   threadsRuntimeAdapter,
@@ -61,23 +63,30 @@ function adapter() {
   return threadsRuntimeAdapter("", { fixtureSha256, assets: {} });
 }
 
-test("browser CLI defaults to all nine, preserves focused selectors and dispatches native first", () => {
+test("browser CLI defaults to the full matrix, supports focused cases and dispatches native first", () => {
+  const cases =
+    Array.from<BrowserRuntimeThreadCase>(runtimeThreadCases).concat(runtimeThreadRegressions);
   expect(parseRuntimeThreadCommand([])).toEqual({
     kind: "browser",
     engines: ["chromium"],
-    cases: runtimeThreadCases,
+    cases,
   });
   expect(parseRuntimeThreadCommand(["chromium", "firefox", "webkit"])).toEqual({
     kind: "browser",
     engines: ["chromium", "firefox", "webkit"],
-    cases: runtimeThreadCases,
+    cases,
   });
-  for (const selected of runtimeThreadCases)
+  for (const selected of cases)
     expect(parseRuntimeThreadCommand(["--case", selected, "webkit"])).toEqual({
       kind: "browser",
       engines: ["webkit"],
       cases: [selected],
     });
+  expect(parseRuntimeThreadCommand(["--case", "growth", "--case", "join"])).toEqual({
+    kind: "browser",
+    engines: ["chromium"],
+    cases: ["growth", "join"],
+  });
   expect(parseRuntimeThreadCommand(["ios-safari", "--result", "/result.json"])).toEqual({
     kind: "native",
     args: ["--result", "/result.json"],
@@ -87,7 +96,7 @@ test("browser CLI defaults to all nine, preserves focused selectors and dispatch
     ["--case", "unknown"],
     ["chromium", "--result", "/result.json"],
     ["safari"],
-    ["--case", "pair", "--case", "repeat"],
+    ["--case", "pair", "--case", "pair"],
   ])
     expect(() => parseRuntimeThreadCommand(args)).toThrow();
 });
