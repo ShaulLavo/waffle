@@ -23,7 +23,7 @@ import {
   isCollectedProcess,
   settleDirectoryJobLifetimes,
 } from "./directory.js";
-import { controlLoad, controlStore, controlCas } from "./control.js";
+import { controlLoad, controlStore, controlCas, type ControlCells } from "./control.js";
 import { DescriptorTable, type Resource } from "../core/descriptors.js";
 import { claimOutcome, readOutcome } from "./outcome.js";
 import {
@@ -654,7 +654,8 @@ export class WorkerProcessBroker {
       settleDirectoryJobLifetimes(root.directory);
       for (const group of directoryGroups(root.directory)) {
         const local = supervisor.job(group.id);
-        if (local) local.lifetimeState = sharedLifetimeState(controlLoad(group.lifetime));
+        const lifetime = local ? loadUnlessCollected(group.lifetime) : undefined;
+        if (local && lifetime !== undefined) local.lifetimeState = sharedLifetimeState(lifetime);
       }
       helpDirectoryJobs(root.directory);
     }
@@ -738,7 +739,7 @@ export class WorkerProcessBroker {
     pending: Promise<void>[],
   ): void {
     for (const group of directoryGroups(root.directory)) {
-      if (group.ownerPid !== owner || controlLoad(group.lifetime) !== 3) continue;
+      if (group.ownerPid !== owner || loadUnlessCollected(group.lifetime) !== 3) continue;
       pending.push(this.ownedJobWork(root, group));
     }
   }
@@ -928,6 +929,17 @@ export class WorkerProcessBroker {
     } catch {
       /* Diagnostics never own cleanup. */
     }
+  }
+}
+
+/** A listed directory job can be collected by another worker before its words are read.
+ * A collected job is gone, so callers skip it. Every other failure still escapes. */
+function loadUnlessCollected(cells: ControlCells): number | undefined {
+  try {
+    return controlLoad(cells);
+  } catch (error) {
+    if (!isCollectedProcess(error)) throw error;
+    return undefined;
   }
 }
 
