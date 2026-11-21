@@ -10,12 +10,14 @@ import {
   engines,
 } from "../packages/waffle/tests/browser-runner-lifecycle.ts";
 import { navigateTestPage } from "../packages/waffle/tests/browser-navigation.ts";
+import { bounded } from "../packages/waffle/tests/page-runner/driver.ts";
 import { parseModuleMemory } from "../packages/waffle/memory/declarations.ts";
 import { programBytesIdentity } from "./program-derivation.ts";
 
 export type FamilyBrowser = keyof typeof engines;
 
 const shell = '<!doctype html><body><script type="module" src="/app.js"></script>';
+const expectedWorkers = { created: 14, closed: 14, fs: 2, preview1: 12 };
 
 interface BrowserOptions {
   readonly entry: string;
@@ -51,11 +53,15 @@ async function focusControl(page: Page) {
 async function runPage(page: Page, origin: string, workload: boolean) {
   const errors: string[] = [];
   const workers = { created: 0, closed: 0, fs: 0, preview1: 0 };
+  const nativeWorkersClosed = Promise.withResolvers<void>();
   page.on("worker", (worker) => {
     workers.created++;
     if (worker.url().endsWith("/fs-worker.js")) workers.fs++;
     if (worker.url().endsWith("/preview1-worker.js")) workers.preview1++;
-    worker.on("close", () => workers.closed++);
+    worker.once("close", () => {
+      workers.closed++;
+      if (workers.closed === expectedWorkers.closed) nativeWorkersClosed.resolve();
+    });
   });
   page.on("pageerror", (error) => errors.push(String(error)));
   page.on("console", (message) => {
@@ -76,11 +82,14 @@ async function runPage(page: Page, origin: string, workload: boolean) {
   );
   const disposed = await page.locator("body").getAttribute("data-disposed");
   assert.equal(disposed, "true");
+  if (workload) {
+    await bounded(nativeWorkersClosed.promise, 30_000, "packed workload Worker teardown");
+  }
   assert.deepEqual(errors, []);
   if (!workload) return { result, disposed, errors };
   const heapAfter = cdp && (await cdp.send("Runtime.getHeapUsage"));
   await cdp?.detach();
-  assert.deepEqual(workers, { created: 14, closed: 14, fs: 2, preview1: 12 });
+  assert.deepEqual(workers, expectedWorkers);
   return { result, disposed, workers, focus, heapBefore, heapAfter };
 }
 
@@ -127,6 +136,10 @@ export async function runFamilyBrowser(options: BrowserOptions) {
     if (!options.workload) {
       return { engine: "Chromium", ...(await runPage(await browser.newPage(), origin, false)) };
     }
+    const browserBuild = engines[options.engine]
+      .executablePath()
+      .split(sep)
+      .find((part) => part.startsWith(options.engine + "-"));
     const info = {
       engine: options.engine,
       version: browser.version(),
@@ -136,10 +149,7 @@ export async function runFamilyBrowser(options: BrowserOptions) {
       arch: arch(),
       cpu: cpus()[0]?.model,
       playwright: playwright.version,
-      browserBuild: engines[options.engine]
-        .executablePath()
-        .split(sep)
-        .find((part) => part.startsWith(options.engine + "-")),
+      browserBuild: browserBuild?.replace(/^chromium-/, "chromium_headless_shell-"),
       bun: Bun.version,
       headers: { coop: "same-origin", coep: "require-corp", cacheControl: "no-store" },
     };

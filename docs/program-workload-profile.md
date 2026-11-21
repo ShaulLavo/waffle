@@ -13,6 +13,10 @@ route participates in this workload.
 Prepare the runtime and Coreutils with the ordinary package routes. Set
 `WASI_SDK_PATH` to WASI SDK 34.0 with wasi-libc `2e6fb9d8ee0c`. Set
 `WASM_OPT` to the [pinned Binaryen executable](program-optimization.md).
+When building Coreutils from source, use a checkout containing the
+[Cargo crate name fix](https://github.com/ShaulLavo/waffle/pull/580). If the
+expected Coreutils archive already exists in the package output directory,
+skip the two Coreutils preparation and packing commands.
 
 ```sh
 bun run prepare:package
