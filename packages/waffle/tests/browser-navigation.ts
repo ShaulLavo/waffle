@@ -26,9 +26,13 @@ export async function navigateTestPage(
   // No `times: 1`: in Playwright 1.64.1 an expiring page route that falls back to a context
   // route makes that context handler's `route.continue()` reject with "Route is already
   // handled!". The exact-URL matcher and the removal below bound the route instead.
+  // The matcher is a RegExp, not a predicate: Playwright cannot serialize a predicate, so it
+  // would intercept and report every request the page makes while the route exists. A late
+  // subresource response reported during that window raced the route's removal and failed
+  // inside Playwright with "Object with guid response@... was not bound in the connection".
   const url = new URL(target);
   url.hash = "";
-  const matches = (candidate: URL) => candidate.href === url.href;
+  const matches = new RegExp(`^${url.href.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&")}$`);
   const resume = (route: Route) => route.fallback();
   await page.route(matches, resume);
   let failed = false;
