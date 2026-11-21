@@ -60,11 +60,15 @@ const server = Bun.serve({
 async function run(name: keyof typeof engines) {
   const profile = await mkdtemp(resolve(tmpdir(), "waffle-command-"));
   try {
-    const browser = await engines[name].launchPersistentContext(profile);
+    // Playwright Firefox can leave a fresh profile's CacheStorage initialization pending.
+    const contextOptions =
+      name === "firefox" ? { firefoxUserPrefs: { "dom.caches.enabled": false } } : {};
+    const browser = await engines[name].launchPersistentContext(profile, contextOptions);
     try {
       const page = browser.pages()[0] ?? (await browser.newPage());
       const errors: string[] = [];
-      page.on("pageerror", (error) => errors.push(String(error)));
+      const pageErrors: string[] = [];
+      page.on("pageerror", (error) => pageErrors.push(String(error)));
       page.on("console", (line) => {
         if (line.type() === "error") errors.push(line.text());
       });
@@ -78,14 +82,9 @@ async function run(name: keyof typeof engines) {
         result && typeof result === "object" && "ok" in result && result.ok && "line" in result,
       );
       assert.equal(result.line, "hello from cat\n");
-      const unexpected = errors.filter(
-        (error) =>
-          !/runtime: process controller failed (ExecutableNotFound|ExecutableNotRunnable|ExecutableFormatError|Error: Truncated declaration section)/.test(
-            error,
-          ),
-      );
+      assert.deepEqual(pageErrors, []);
       assert.equal(errors.length, 7);
-      assert.deepEqual(unexpected, []);
+      assert.ok(errors.every((error) => error.startsWith("runtime: process controller failed ")));
     } finally {
       await browser.close();
     }

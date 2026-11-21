@@ -2,7 +2,7 @@ import { allocateSharedControl } from "../memory/control.js";
 import { COMMAND_TRANSFER_BYTES } from "../proc/command-transfer.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import type { Runtime } from "../runtime.js";
-import { commandDisposals, commandOwners } from "../proc/command-owner.js";
+import { commandDisposals, commandOwners } from "./command-owner.js";
 import { controlLoad } from "../proc/control.js";
 import { directoryJob } from "../proc/directory.js";
 import type { PipeEndpoint } from "../proc/pipes.js";

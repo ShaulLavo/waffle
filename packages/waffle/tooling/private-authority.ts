@@ -50,7 +50,8 @@ const trustedModules: Readonly<Record<string, string>> = {
   "browser/gpu/handles.ts": "Dedicated native GPU object table.",
   "browser/gpu/lowering.ts": "Dedicated native descriptor lowering.",
   "browser/gpu/codec.ts": "Service-only schema decoder and encoder.",
-  "proc/command-owner.ts": "Page-only mapping from borrowed process service to its command owner.",
+  "browser/command-owner.ts":
+    "Page-only mapping from borrowed process service to its command owner.",
   "proc/start-command.ts": "Page-only lazy installed command entry.",
   "browser/run-command.ts": "Page-only command root and I/O ownership.",
   "browser/command-input.ts": "Page-only stream and stdin relay consumer.",

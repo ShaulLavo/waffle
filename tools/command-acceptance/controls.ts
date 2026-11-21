@@ -264,6 +264,7 @@ async function repeat(runtime: Runtime) {
       ).length,
   });
   const before = counts();
+  const debtBefore = runtime.sharedMemory.snapshot().debtBytes;
   assert.deepEqual(before, { workers: 0, processes: 0, jobs: 0, liveTickets: 0 });
   for (let repeat = 0; repeat < 3; repeat++) {
     const cases = [`batch ${repeat} left`, `batch ${repeat} right`];
@@ -280,6 +281,7 @@ async function repeat(runtime: Runtime) {
   return {
     live: counts(),
     debtBytes,
+    repeatedRunDebtBytes: debtBytes - debtBefore,
     reservedBytes,
     registryMaxBytes: Math.max(
       0,

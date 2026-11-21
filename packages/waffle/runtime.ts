@@ -1,4 +1,4 @@
-import { commandDisposals, commandOwners } from "./proc/command-owner.js";
+import { commandDisposals, commandOwners } from "./browser/command-owner.js";
 import { installSharedControlAllocator } from "./memory/control.js";
 import { defaultSharedMemoryPlatform, validateDeclaration } from "./memory/platform.js";
 import {
