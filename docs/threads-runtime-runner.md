@@ -93,3 +93,19 @@ then rejects changed fixture bytes. It validates the adapter, not native Safari:
 THREAD_FIXTURE_DIR=/absolute/fixture THREAD_RUNTIME_BROWSER_CONTROLS=1 \
   bun test packages/waffle/tests/page-runner/threads-runtime-browser.test.ts
 ```
+
+## Regression coverage
+
+The experimental Runtime admits a defined subset of WASI Preview 1 alongside `wasi:thread-spawn` and shared memory. The [thread plan](../plans/wasi-threads.md) defines the remaining slices.
+
+| Contract | Plan slice | Existing Runtime browser control |
+| --- | --- | --- |
+| Ordinary thread return and join | S0, S2, M1 | `pair`, `repeat`, `nested`, `join` |
+| Process-wide exit from a secondary thread | S2, M1 | `child-exit` |
+| Cancellation during admission | S2, S3, M1 | `kill-start` |
+| Shutdown of running and waiting workers | S2, M1 | `cpu`, `wait32`, `wait64` |
+
+The later shared descriptor slice owns threaded `path_open` and `fd_fdstat_set_flags`. The later
+lifecycle slice owns any explicit `thread_exit` import. The streams and readiness work owns
+threaded `poll_oneoff`. Those imports are outside the experimental admission list. Ordinary
+thread return, inherited descriptors, and finite Wasm atomic waits exercise the supported paths.
