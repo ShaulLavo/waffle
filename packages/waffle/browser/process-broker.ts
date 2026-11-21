@@ -1,3 +1,9 @@
+import {
+  commandExecTransfer,
+  commandTransferFailed,
+  initializeCommandExec,
+  readCommandTransferFailure,
+} from "../proc/command-transfer.js";
 import { WorkerStartError } from "../proc/start-diagnostic.ts";
 import { requireGroupPlan } from "../link/issuance.js";
 import type { SharedLinkPlan } from "../link/image.js";
@@ -71,6 +77,9 @@ import type { MemoryGroupMemberRequest } from "../group/protocol.js";
 import { WorkerExecutableAccess, rejectWorkerAccess } from "../proc/worker-access.js";
 import {
   directoryGroups,
+  directoryCapacity,
+  collectDirectoryJob,
+  idleDirectoryAdmission,
   directoryProcesses,
   directoryAdmissionVersion,
   commitDirectoryAdmission,
@@ -132,7 +141,7 @@ import {
   type WorkerProcessTransport,
 } from "../proc/worker-client.js";
 import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec.js";
-import { WorkerPipeBroker } from "../proc/worker-pipes.js";
+import { WorkerPipeBroker, WorkerPipeHost } from "../proc/worker-pipes.js";
 import {
   attachPipePublicationRegistry,
   PipeEndpoint,
@@ -451,6 +460,13 @@ function senderRevoked(
   return result?.kind === "signaled" || (!result && filesystemRevoked);
 }
 
+interface CommandRootState {
+  readonly root: WorkerProcessTransport;
+  readonly pending: Set<Promise<void>>;
+  readonly failures: Map<WorkerProcessTransport, unknown>;
+  stopped: boolean;
+}
+
 export class BrowserProcessBroker {
   private readonly hostIdentity: RuntimeHostIdentity | null;
   private suspended = false;
@@ -473,6 +489,7 @@ export class BrowserProcessBroker {
       }
   >();
   private readonly completedRoots = new Set<number>();
+  private commandRoots?: Map<number, CommandRootState>;
   private readonly rootLeases = new Map<number, number>();
   private readonly controllers = new Map<number, ProcessController>();
   private readonly signalPolicies = new Map<
@@ -545,10 +562,14 @@ export class BrowserProcessBroker {
       nativeReturn: (transport) => this.processNativeReturn(transport),
       onAdmitted: (transport) => this.acquireProcess(transport),
       quiesce: (_pid, transport) => this.quiesceUnstarted(transport),
+      beforeAdmit: (transport) => this.checkCommandAdmission(transport),
+      transferCleanup: (transport, cleanup) => this.trackCommandTransfer(transport, cleanup),
+      retireRejected: (transport) => this.retireRejectedCommand(transport),
       canExec: (transport) => this.canExec(transport),
       discardExec: (transport) => {
         const filesystem = this.filesystem(transport);
         this.options.filesystem.revoke(filesystem);
+        if (this.commandScope(transport)) return this.options.filesystem.quiesce(filesystem);
         this.options.filesystem.reap(filesystem);
       },
     });
@@ -563,6 +584,8 @@ export class BrowserProcessBroker {
       (proc) => {
         const supervisor = (this.supervisor = new proc.ProcessSupervisor({
           registry: this.options.registry,
+          byteBackedGuestOnly: (rootPid) =>
+            rootPid !== undefined && !!this.commandRoots?.has(rootPid),
           table: this.options.table,
           launch: (context) => this.launchPrepared(context),
           launchCommand: (context) => this.launchPrepared(context),
@@ -795,6 +818,12 @@ export class BrowserProcessBroker {
     context: ProcessContext | CommandProcessContext,
   ): ProcessHandle | Promise<ProcessHandle> {
     if (this.suspended) throw new Error("Process broker is disposed");
+    const transport = this.transport.get(context.pid);
+    const command = transport && this.commandScope(transport);
+    if (command) {
+      this.traceProcess(context, "launching");
+      this.checkCommandAdmission(transport);
+    }
     this.acquireObservation(context.observation, true);
     const observation = this.observationOwners.get(context.pid);
     const nativeReturned = this.nativeLaunchReturns.get(context.pid) ?? observation?.acquire();
@@ -816,7 +845,7 @@ export class BrowserProcessBroker {
     };
     const invokeLauncher = (): ProcessHandle | Promise<ProcessHandle> => {
       if ("command" in context) return this.launchCommand(context);
-      if (context.execution?.kind === "host") return this.options.launch(context);
+      if (command || context.execution?.kind === "host") return this.options.launch(context);
       const controller = this.controllerFor(context.pid);
       if (!controller?.launch) return this.options.launch(context);
       controllerReturn = this.controllerNativeReturnFor(context.pid);
@@ -826,7 +855,7 @@ export class BrowserProcessBroker {
       return this.options.launch(context);
     };
     if (nativeReturned) this.nativeLaunchReturns.set(context.pid, nativeReturned);
-    this.traceProcess(context, "launching");
+    if (!command) this.traceProcess(context, "launching");
     const launch = this.launchState(context);
     launch.active = true;
     (this.launches ??= new Set()).add(context.pid);
@@ -1185,6 +1214,7 @@ export class BrowserProcessBroker {
       if (root && !this.options.table.job(root.job)?.members.size)
         this.options.table.removeJob(root.job);
       this.completedRoots.delete(pid);
+      this.commandRoots?.delete(pid);
       this.reservedRoots.delete(pid);
       this.descendantHooks.delete(pid);
       this.signalPolicies.delete(pid);
@@ -1270,6 +1300,7 @@ export class BrowserProcessBroker {
       !this.options.reservations.ownsBuffer("pipe-registry", data.pipeRegistry.buffer)
     )
       throw new TypeError("Root bootstrap requires a ledger-charged registry");
+    const guestControls = this.commandRoots?.get(state.pid)?.root !== transport;
     const ticket = this.options.reservations.admit({
       pid: workerProcessState(transport).pid,
       executable: "adopted root",
@@ -1279,7 +1310,7 @@ export class BrowserProcessBroker {
           : { kind: "declared", memories: options.memory },
       group: "none",
       connection: false,
-      controls: true,
+      controls: guestControls,
     });
     const previousData = transport.data;
     let changedData = false;
@@ -1328,7 +1359,7 @@ export class BrowserProcessBroker {
       if (descendant) this.descendantHooks.set(state.pid, descendant);
       this.rootAdmissions.set(state.pid, ticket);
       this.rootTickets.set(state.pid, ticket.launched());
-      this.rootGrants.set(state.pid, ticket.control);
+      if (guestControls) this.rootGrants.set(state.pid, ticket.control);
     } catch (error) {
       if (changedData) transport.data = previousData;
       registeredRegistry?.collectProcess(state.pid);
@@ -1341,6 +1372,210 @@ export class BrowserProcessBroker {
       this.activateRuntimeRoot(supervisor, transport);
     }
   }
+  async adoptCommandRoot(
+    transport: WorkerProcessTransport,
+    options: RuntimeRootOptions,
+  ): Promise<void> {
+    if (this.suspended || !this.supervisor) throw new Error("Process broker is unavailable");
+    const processCapacity = directoryCapacity(transport.directory);
+    const registry = new PipePublicationRegistry({
+      processCapacity,
+      cellsPerProcess: 16,
+      maxCells: processCapacity * 128,
+      wake: workerProcessState(transport).wake,
+      allocate: (length, maximum) =>
+        this.options.reservations.buffer("pipe-registry", {
+          kind: "growable-buffer",
+          initial: length,
+          maximum: bytes(maximum),
+        }),
+    });
+    initializeCommandExec(transport);
+    transport.data = { filesystem: options.filesystem, pipeRegistry: registry.handle() };
+    (this.commandRoots ??= new Map()).set(transport.pid, {
+      root: transport,
+      pending: new Set(),
+      failures: new Map(),
+      stopped: false,
+    });
+    try {
+      await this.adoptRuntimeRoot(transport, options);
+    } catch (error) {
+      if (!this.roots.has(transport.pid)) this.commandRoots?.delete(transport.pid);
+      throw error;
+    }
+  }
+  private commandScope(transport: WorkerProcessTransport): CommandRootState | undefined {
+    if (!this.commandRoots?.size) return;
+    let rootPid: number;
+    try {
+      rootPid = workerProcessState(transport).rootPid;
+    } catch (error) {
+      if (!isCollectedProcess(error)) throw error;
+      return;
+    }
+    const scope = this.commandRoots.get(rootPid);
+    if (scope && workerProcessDirectoryId(scope.root) === workerProcessDirectoryId(transport))
+      return scope;
+  }
+  private checkCommandAdmission(transport: WorkerProcessTransport): void {
+    const scope = this.commandScope(transport);
+    if (scope && this.commandAdmissionClosed(scope))
+      throw new ProcessError(ProcessErrno.SRCH, "Command is stopping");
+  }
+  private commandAdmissionClosed(scope: CommandRootState): boolean {
+    return (
+      scope.stopped ||
+      scope.failures.size !== 0 ||
+      commandTransferFailed(scope.root.commandTransfer)
+    );
+  }
+  private trackCommandTransfer(
+    transport: WorkerProcessTransport,
+    cleanup: () => Promise<void>,
+  ): Promise<void> {
+    const scope = this.commandScope(transport);
+    if (!scope) return cleanup();
+    const pending = Promise.resolve().then(cleanup);
+    scope.pending.add(pending);
+    const settle = () => {
+      scope.pending.delete(pending);
+      wakeWorkerProcess(scope.root);
+    };
+    void pending.then(settle, (error) => {
+      scope.failures.set(transport, error);
+      settle();
+    });
+    return pending;
+  }
+  private async retireRejectedCommand(transport: WorkerProcessTransport): Promise<void> {
+    const returned = this.processNativeReturn(transport);
+    if (this.acquiredProcesses.get(transport.pid) === this.processLifetime(transport)) {
+      await this.retireProcess(transport.pid, true);
+      this.retireChildController(transport.pid);
+    }
+    returned();
+  }
+  private commandCleanupFailure(scope: CommandRootState): Error | undefined {
+    if (scope.failures.size) {
+      const [cause] = scope.failures.values();
+      return new Error("Command transfer cleanup failed", { cause });
+    }
+    const buffer = scope.root.commandTransfer;
+    return buffer ? readCommandTransferFailure(buffer)?.error : undefined;
+  }
+  private async joinCommandExec(transport: WorkerProcessTransport): Promise<void> {
+    const scope = this.commandScope(transport);
+    const handoff = commandExecTransfer(transport);
+    if (!scope || !handoff) return;
+    const state = workerProcessState(transport);
+    for (;;) {
+      const expected = Atomics.load(state.wake, 0);
+      const buffer = scope.root.commandTransfer;
+      const local = buffer && readCommandTransferFailure(buffer);
+      if (
+        local?.kind === "exec" &&
+        local.pid === transport.pid &&
+        local.generation === transport.generation
+      )
+        throw local.error;
+      const staged = controlLoad(handoff);
+      if (staged === 0) return;
+      for (const [transfer, cause] of scope.failures) {
+        if (transfer.pid === transport.pid && transfer.generation === staged)
+          throw new Error("Exec transfer cleanup failed", { cause });
+      }
+      await atomicsWaitAsync(state.wake, 0, expected).value;
+    }
+  }
+
+  commandPipeHost(
+    transport: WorkerProcessTransport,
+    postMessage: (message: WorkerProcessMessage) => void,
+  ): WorkerPipeHost {
+    const registry = this.registries.get(transport.pid);
+    if (!registry || !this.commandRoots?.has(transport.pid))
+      throw new Error("Command root is not admitted");
+    return new WorkerPipeHost({
+      transport,
+      registry,
+      postMessage,
+      allocateShared: (length) =>
+        this.options.reservations.buffer("control", {
+          kind: "fixed-buffer",
+          length: bytes(length),
+        }),
+    });
+  }
+  stopCommandRoot(root: WorkerProcessTransport): void {
+    const scope = this.commandRoots?.get(root.pid);
+    if (!scope || scope.stopped) return;
+    scope.stopped = true;
+    this.stopCommandMembers(root);
+    wakeWorkerProcess(root);
+  }
+  private stopCommandMembers(root: WorkerProcessTransport): void {
+    const members = Array.from(directoryProcesses(root.directory)).filter((state) => {
+      try {
+        return state.pid !== root.pid && !readOutcome(state.signals.outcome);
+      } catch (error) {
+        if (!isCollectedProcess(error)) throw error;
+        return false;
+      }
+    });
+    for (const state of members) this.requestSignalIfPresent(state.signals, 9);
+    for (const state of members) {
+      try {
+        this.revokeRuntimeProcess(state.pid, workerProcessDirectoryId(root));
+      } catch (error) {
+        if (!isCollectedProcess(error)) throw error;
+      }
+    }
+  }
+  checkCommandCleanup(root: WorkerProcessTransport, mayCollect: boolean): boolean {
+    const scope = this.commandRoots?.get(root.pid);
+    const supervisor = this.supervisor;
+    if (!scope || !supervisor) throw new Error("Command root is not admitted");
+    const version = idleDirectoryAdmission(root.directory);
+    if (scope.stopped) this.stopCommandMembers(root);
+    this.transport.pump();
+    this.serviceTerminalOutput(root.pid);
+    const failure = this.commandCleanupFailure(scope);
+    if (failure) throw failure;
+    const retired = supervisor.rootConsumersRetired(root.pid);
+    if (!mayCollect) return false;
+    const ownJob = workerProcessState(root).job;
+    for (const group of directoryGroups(root.directory)) {
+      if (group.id === ownJob) continue;
+      try {
+        if (supervisor.job(group.id)) {
+          if (supervisor.jobCleanupReady(root.pid, group.id))
+            supervisor.reapJob(root.pid, group.id);
+        } else if (controlLoad(group.pending) === 0) {
+          collectDirectoryJob(root.directory, group.slot, group.id);
+        }
+      } catch (error) {
+        if (!isCollectedProcess(error)) throw error;
+      }
+    }
+    return (
+      retired &&
+      scope.pending.size === 0 &&
+      !Array.from(directoryGroups(root.directory)).some((group) => group.id !== ownJob) &&
+      !this.terminalOutputs.get(root.pid)?.pending() &&
+      version !== undefined &&
+      idleDirectoryAdmission(root.directory) === version
+    );
+  }
+  async retireCommandRoot(root: WorkerProcessTransport): Promise<void> {
+    const owner = this.observationOwners.get(root.pid);
+    await this.quiesceProcess(root.pid);
+    await this.rootExit(root.pid, 0);
+    this.rootStopped(root.pid);
+    await owner?.join();
+    this.pipes.pump();
+  }
+
   private bindPipeRegistry(transport: WorkerProcessTransport): void {
     const state = workerProcessState(transport);
     const registry = this.registries.get(state.rootPid);
@@ -1695,7 +1930,8 @@ export class BrowserProcessBroker {
       }
     }
     const revoked = !consumingReceipt && senderRevoked(result, filesystemRevoked);
-    if ((!sender && !retainedNotice) || this.suspended || revoked) {
+    const stopping = this.commandMessageStopped(message);
+    if ((!sender && !retainedNotice) || this.suspended || revoked || stopping) {
       this.rejectMessage(
         message,
         senderPid,
@@ -1705,7 +1941,9 @@ export class BrowserProcessBroker {
             ? "unknown-sender"
             : result?.kind === "signaled"
               ? "sender-signaled"
-              : "sender-revoked",
+              : stopping
+                ? "external-rejection"
+                : "sender-revoked",
       );
       return;
     }
@@ -1716,6 +1954,16 @@ export class BrowserProcessBroker {
     await this.transport.handle(message, senderPid);
     this.retireRoots();
     if (message.operation !== "pipe") this.watch();
+  }
+  private commandMessageStopped(message: WorkerProcessMessage): boolean {
+    if (message.operation !== "spawn" && message.operation !== "exec") return false;
+    try {
+      const scope = this.commandScope(message.transport);
+      return scope !== undefined && this.commandAdmissionClosed(scope);
+    } catch (error) {
+      if (!isCollectedProcess(error)) throw error;
+      return false;
+    }
   }
   private async accessMessage(
     message: Extract<WorkerProcessMessage, { operation: "access" | "access-cancel" }>,
@@ -1827,26 +2075,34 @@ export class BrowserProcessBroker {
       reject = fail;
     });
     this.rejectedTransfers.set(key, pending);
-    void this.releaseRejectedTransfer(transport).then(resolve, reject);
+    void this.trackCommandTransfer(transport, () => this.releaseRejectedTransfer(transport)).then(
+      resolve,
+      reject,
+    );
     void pending.then(
       () => this.rejectedTransfers.delete(key),
       (error) => this.report(error),
     );
   }
   private async releaseRejectedTransfer(transport: WorkerProcessTransport): Promise<void> {
-    let cleaned = true;
+    const errors: unknown[] = [];
     const codec = this.discardCodec();
     for (const token of transport.resources) {
       try {
         codec.discard(token);
       } catch (error) {
-        cleaned = false;
+        errors.push(error);
         this.report(error);
       }
     }
     wakeWorkerProcess(transport);
     await this.quiesceUnstarted(transport);
-    if (!cleaned) return;
+    const scope = this.commandScope(transport);
+    if (errors.length) {
+      if (scope) throw new AggregateError(errors, "Rejected spawn descriptor cleanup failed");
+      return;
+    }
+    if (scope) await this.retireRejectedCommand(transport);
     controlStore(workerProcessState(transport).confirmed, 0, 1);
     confirmWorkerProcessJob(transport);
   }
@@ -2768,10 +3024,12 @@ export class BrowserProcessBroker {
     if (child && !this.roots.has(pid) && !this.reservedRoots.has(pid)) {
       if (child.finalQuiet) return;
       const terminal = this.terminalLifetimes.get(pid)?.quiesce();
-      return (child.finalFence ??= Promise.all([this.imageFence(child), terminal]).then(() => {
-        this.collectRuntimeProcess(pid);
-        child.finalQuiet = true;
-      }));
+      return (child.finalFence ??= Promise.all([this.imageFence(child), terminal])
+        .then(() => this.joinCommandExec(child.transport))
+        .then(() => {
+          this.collectRuntimeProcess(pid);
+          child.finalQuiet = true;
+        }));
     }
     const pending = this.fences.get(pid);
     if (pending) return pending;
@@ -2851,6 +3109,9 @@ export class BrowserProcessBroker {
         }
       }
     }
+    const transport = this.transport.get(pid);
+    if (transport && this.commandScope(transport))
+      return Promise.all(pending).then(() => this.joinCommandExec(transport));
     if (pending.length) return Promise.all(pending).then(() => {});
   }
   private quiesceChild(child: RuntimeChild): void | Promise<void> {
@@ -3270,10 +3531,12 @@ export class BrowserProcessBroker {
     (this.controllerStops ??= new Map()).set(pid, { pending: stopping, controllerStop: true });
     return stopping;
   }
-  private async retireProcess(pid: number): Promise<void> {
+  private async retireProcess(pid: number, rejectedTransferFenced = false): Promise<void> {
     await (this.children.get(pid)?.launch.pending ?? this.pendingLaunches?.get(pid))?.acquired;
     this.observationOwners.get(pid)?.close();
-    if (this.suspended) {
+    // A rejected transfer never entered a guest adapter. Its own fence is already
+    // complete, and shutdown waits for that rejection before it opens the global stop gate.
+    if (this.suspended && !rejectedTransferFenced) {
       await this.retirementGate.promise;
       return;
     }
@@ -3493,6 +3756,11 @@ export class BrowserProcessBroker {
   async quiesce(): Promise<void> {
     await this.transport.settled();
     await Promise.all(this.rejectedTransfers.values());
+    for (const scope of this.commandRoots?.values() ?? []) {
+      await Promise.all(scope.pending);
+      const failure = this.commandCleanupFailure(scope);
+      if (failure) throw failure;
+    }
     const pids = new Set(
       Array.from(this.options.table.values(), (record) => record.pid).concat(
         Array.from(this.controllers.keys()),
@@ -3653,6 +3921,7 @@ export class BrowserProcessBroker {
       this.completedRoots.clear();
       this.rootLeases.clear();
       this.roots.clear();
+      this.commandRoots?.clear();
       this.outputs.clear();
       this.terminalOutputs.clear();
       this.registries.clear();

@@ -1259,7 +1259,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
           listenAbort(cancellation.signal, hook);
           return () => unlistenAbort(cancellation.signal, hook);
         },
-        prepareExec: () => {
+        prepareExec: (_pid, cleanupFailed) => {
           checkActive();
           const end = fs.beginTransfer();
           let filesystem: ReturnType<typeof createProcessFilesystemIdentity> | undefined;
@@ -1283,15 +1283,17 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
           } catch (error) {
             try {
               cancel();
+            } catch (cleanup) {
+              cleanupFailed?.(cleanup);
             } finally {
               end();
             }
             throw error;
           }
         },
-        prepareSpawn: (pid) => {
+        beginSpawnTransfer: () => fs.beginTransfer(),
+        prepareSpawn: (pid, cleanupFailed) => {
           checkActive();
-          const end = fs.beginTransfer();
           let filesystem: ReturnType<typeof createProcessFilesystemIdentity> | undefined;
           let enrolled = false;
           const cancel = () => {
@@ -1313,13 +1315,12 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
               codec: createRuntimeTerminalCodec({
                 fallback: pipes.codec(createFilesystemDescriptorCodec(fs, filesystem)),
               }),
-              release: end,
             };
           } catch (error) {
             try {
               cancel();
-            } finally {
-              end();
+            } catch (cleanup) {
+              cleanupFailed?.(cleanup);
             }
             throw error;
           }

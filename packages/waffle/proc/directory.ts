@@ -81,6 +81,12 @@ export function directoryAdmissionVersion(directory: SharedArrayBuffer): bigint 
   return version;
 }
 
+/** The page scope can observe an idle stamp without treating an in-flight spawn as an error. */
+export function idleDirectoryAdmission(directory: SharedArrayBuffer): bigint | undefined {
+  const version = atomicsLoad(new BigInt64ArrayConstructor(directory, 16, 1), 0);
+  if ((version & 0xffffffffn) === 0n) return version;
+}
+
 /** Linearize the owner decision against every concurrent earlier spawn intent. No freeze. */
 export function commitDirectoryAdmission(directory: SharedArrayBuffer, version: bigint): void {
   const word = new BigInt64ArrayConstructor(directory, 16, 1);
@@ -92,7 +98,7 @@ export interface DirectoryHandle {
   readonly slot: number;
   readonly pid: number;
 }
-function directoryCapacity(directory: SharedArrayBuffer): number {
+export function directoryCapacity(directory: SharedArrayBuffer): number {
   const capacity =
     (sharedArrayBufferByteLength(directory) - HEADER_BYTES) / ((PROCESS_WORDS + JOB_WORDS) * 8);
   if (!Number.isInteger(capacity) || capacity < 1) throw new TypeError("invalid process directory");
@@ -124,6 +130,9 @@ function validity(raw: BigInt64Array, id: number): CellValidity {
     byteOffset: typedArrayByteOffset(raw),
     id,
   };
+}
+export function directoryProcessValidity(handle: DirectoryHandle): CellValidity {
+  return validity(row(handle.directory, handle.slot), handle.pid);
 }
 function cells(raw: BigInt64Array, id: number, offset: number, count = 1): TaggedCells {
   return new TaggedCells(typedArraySubarray(raw, offset, offset + count), id);

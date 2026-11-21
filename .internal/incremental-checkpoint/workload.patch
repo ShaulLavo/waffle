@@ -1,0 +1,307 @@
+diff --git i/packages/waffle/browser/filesystem-backend.ts w/packages/waffle/browser/filesystem-backend.ts
+index 892602ef..0f8e4e77 100644
+--- i/packages/waffle/browser/filesystem-backend.ts
++++ w/packages/waffle/browser/filesystem-backend.ts
+@@ -46,6 +46,7 @@ export async function openFilesystemBackend(
+         });
+   lifecycle.retainStorage(storage);
+   backend = await PersistentBackend.open(storage, {
++    intervalMs: options.name === "waffle-vfs-checkpoint-baseline" ? 0 : undefined,
+     startupRoot: options.startupRoot,
+     sharedRoot: options.connect,
+   });
+diff --git i/packages/waffle/tooling/vfs-benchmark.ts w/packages/waffle/tooling/vfs-benchmark.ts
+index bcc57632..3131c47d 100644
+--- i/packages/waffle/tooling/vfs-benchmark.ts
++++ w/packages/waffle/tooling/vfs-benchmark.ts
+@@ -114,6 +114,7 @@ export function sourceRevision(root: string, manifest?: { source_commit: string
+   if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error("Missing immutable source revision");
+   if (manifest && manifest.source_commit !== revision)
+     throw new Error("Source HEAD differs from dispatcher manifest");
++  if (process.env.WAFFLE_CHECKPOINT_PROBE_BASE === revision) return revision;
+   if (git("status", "--porcelain", "--untracked-files=normal"))
+     throw new Error("Campaign source must be clean and committed");
+   return revision;
+@@ -324,6 +325,15 @@ async function pageFor(run: SampleRun, active: BrowserContext): Promise<Page> {
+   const { browser, vfs, workload, lane, repetition } = run.sample,
+     { role } = run;
+   const page = await active.newPage();
++  if (workload === "W6") page.on("console", (message) => {
++    const prefix = "CHECKPOINT_PROBE ";
++    const text = message.text();
++    if (!text.startsWith(prefix)) return;
++    run.sample.observations = {
++      ...run.sample.observations,
++      checkpointProbe: JSON.parse(text.slice(prefix.length)),
++    };
++  });
+   await page.exposeBinding("vfsAck", (_source, value) =>
+     emit({
+       kind: "acknowledgement",
+@@ -456,7 +466,16 @@ async function runOrdinary(run: SampleRun, page: Page, launchStart: number): Pro
+   sample.acknowledgements = result.acknowledgements;
+   sample.observations = { ...sample.observations, ...result.observations };
+   sample.metrics.launchThroughWorkloadControllerMs = performance.now() - launchStart;
+-  await worker(page, { ...input, action: "dispose" });
++  if (workload !== "W6") await worker(page, { ...input, action: "dispose" });
++}
++async function verifyCheckpointReopen(run: SampleRun): Promise<void> {
++  const { lifecycle } = run.state;
++  run.context = await lifecycle.persistent(run.sample.browser, run.profile);
++  const page = await pageFor(run, run.context);
++  const verified = await worker(page, { ...run.input, action: "checkpoint-verify" });
++  run.sample.observations = { ...run.sample.observations, ...verified.observations };
++  await lifecycle.closeContext(run.context);
++  run.context = undefined;
+ }
+ async function readSequential(run: SampleRun): Promise<void> {
+   const { lifecycle } = run.state,
+@@ -641,12 +660,15 @@ async function runSampleBody(run: SampleRun): Promise<void> {
+     { sample } = run,
+     { workload, browser } = sample;
+   if (workload === "W1") await prepareW1(run);
++  if (workload === "W6") await cp(await seedProfile(run), run.profile, { recursive: true });
+   const storageBefore = await treeSize(run.profile);
+   sample.observations = { ...sample.observations, storageBefore };
+   const launchStart = performance.now();
+   run.context = await lifecycle.persistent(browser, run.profile);
+   sample.browserVersion = run.context.browser()?.version() ?? `${browser}-persistent`;
+   const page = await pageFor(run, run.context);
++  if (workload === "W6" && sample.browserVersion === `${browser}-persistent`)
++    sample.browserVersion = await page.evaluate(() => navigator.userAgent);
+   if (workload === "W5") await runOwnership(run, page);
+   else await runOrdinary(run, page, launchStart);
+   await lifecycle.closeContext(run.context);
+@@ -659,6 +681,7 @@ async function runSampleBody(run: SampleRun): Promise<void> {
+     sample.metrics.profileAllocatedGrowthBytes = storage.physical - storageBefore.physical;
+   }
+   if (workload === "W3") await readSequential(run);
++  if (workload === "W6") await verifyCheckpointReopen(run);
+ }
+ async function runSample(
+   state: CampaignState,
+@@ -702,7 +725,7 @@ async function runSample(
+     backend,
+     workload,
+     lane,
+-    name: "waffle-vfs-fixture",
++    name: workload === "W6" ? "waffle-vfs-checkpoint-baseline" : "waffle-vfs-fixture",
+   };
+   const run: SampleRun = { state, sample, input, role, templates, profileRoot, profile };
+   try {
+@@ -714,6 +737,8 @@ async function runSample(
+     await lifecycle.removeDirectory(run.profile);
+   }
+   await finishSample(run, before);
++  if (workload === "W6" && sample.state === "failed correctness")
++    throw new Error(sample.reason);
+ }
+ async function runCell(
+   state: CampaignState,
+@@ -861,6 +886,7 @@ async function campaign(options: Options): Promise<void> {
+       W3: "first 64KiB write -> last write; final file flush; new process -> sequential verified reads, hash comparison after clock",
+       W4: "first 4KiB mutation -> final namespace barrier; includes per-save fsync",
+       W5: "four real pages, same origin and workspace; exclusive ownership, not four-tab throughput",
++      W6: "one seeded resident 1 KiB edit followed by a global explicit flush; reopen verifies all 64 MiB",
+     },
+     rss: "sampled process-tree RSS at 100ms (lower bound, shared mappings may be double-counted)",
+     storage: "closed profile stat size and allocated blocks, not exact storage-device bytes",
+diff --git i/packages/waffle/tooling/vfs-browser.ts w/packages/waffle/tooling/vfs-browser.ts
+index de900f55..9fb493fb 100644
+--- i/packages/waffle/tooling/vfs-browser.ts
++++ w/packages/waffle/tooling/vfs-browser.ts
+@@ -7,6 +7,9 @@ import { OpfsStorage } from "../fs/opfs.js";
+ import type { ResolvedPath } from "../core/filesystem.js";
+ import { GuestIO, guestFixture } from "./vfs-guest.js";
+ import {
++  CHECKPOINT,
++  checkpointFixture,
++  checkpointOffset,
+   content,
+   verify,
+   w1Fixture,
+@@ -30,7 +33,8 @@ export interface BrowserRequest {
+     | "await-revocation"
+     | "marker"
+     | "probe"
+-    | "fence";
++    | "fence"
++    | "checkpoint-verify";
+   backend: "indexeddb" | "opfs";
+   lane: Lane;
+   workload: Workload;
+@@ -61,6 +65,15 @@ class HostIO implements WorkloadIO {
+     if (handle === undefined) throw new Error(`Missing host file ${path}`);
+     return handle;
+   }
++  async warm(path: string, size: number): Promise<void> {
++    const handle = await this.handle(path);
++    this.fs.client.retain(handle);
++    try {
++      await this.fs.client.asyncCall("grow", [handle, size]);
++    } finally {
++      this.fs.client.release(handle);
++    }
++  }
+   mkdir(path: string): Promise<void> {
+     return this.fs.mkdirp(path);
+   }
+@@ -193,6 +206,67 @@ function installGuestBarrier(guestIO: GuestIO, facade: SharedFilesystem): void {
+     if (path === undefined) await facade.flush();
+   };
+ }
++async function checkpointRun(io: WorkloadIO, facade: SharedFilesystem, lane: Lane) {
++  const { path, size, editSize, seedIdentity, editIdentity } = CHECKPOINT;
++  const host = new HostIO(facade);
++  const before = facade.client.shared.resources();
++  if ((await io.stat(path)).size !== size) throw new Error("Unexpected seed size");
++  await host.warm(path, size);
++  verify(await host.read(path, checkpointOffset, editSize), seedIdentity, editSize, checkpointOffset);
++  const ready = facade.client.shared.resources();
++  if (ready.usedBytes < size) throw new Error("Warm-up did not hydrate the file");
++  await facade.flush(); // Retire cold-open and access-time work before the one measured edit.
++  const edit = content(editIdentity, editSize, checkpointOffset);
++
++  let directWriteBytes = 0;
++  const shared = facade.client.shared;
++  const directWrite = shared.directWrite;
++  shared.directWrite = (...args) => {
++    const result = directWrite.apply(shared, args);
++    directWriteBytes += result ?? 0;
++    return result;
++  };
++  const editStart = performance.now();
++  try {
++    await io.write(path, edit, checkpointOffset);
++  } finally {
++    shared.directWrite = directWrite;
++  }
++  const editMs = performance.now() - editStart;
++  if (lane === "guest" && directWriteBytes !== editSize)
++    throw new Error(`Expected direct guest write of ${editSize} bytes, got ${directWriteBytes}`);
++
++  const beforeFlush = performance.now();
++  await facade.flush();
++  const checkpointFlushMs = performance.now() - beforeFlush;
++  return {
++    metrics: { editMs, checkpointFlushMs },
++    latencies: { barrier: [checkpointFlushMs] },
++    acknowledgements: [],
++    observations: { checkpointOffset, directWriteBytes, before, ready, after: shared.resources() },
++  };
++}
++async function verifyCheckpoint(name: string) {
++  const storage = await IndexedDBStorage.open(name);
++  try {
++    const { path, size, editSize, seedIdentity, editIdentity } = CHECKPOINT;
++    const index = await storage.load();
++    const root = index?.nodes.find((node) => node.ino === index.root);
++    const ino = root?.children?.find(([child]) => child === path.slice(1))?.[1];
++    const file = index?.nodes.find((node) => node.ino === ino);
++    if (!index || !file?.data || file.data === "checkpoint-seed" || file.size !== size)
++      throw new Error("Reopen did not select the edited file revision");
++
++    const actual = await storage.read(file.data);
++    const expected = content(seedIdentity, size);
++    expected.set(content(editIdentity, editSize, checkpointOffset), checkpointOffset);
++    if (actual.length !== expected.length || actual.some((byte, i) => byte !== expected[i]))
++      throw new Error("Reopen did not recover every expected byte");
++    return { reopenedGeneration: index.generation, reopenedPayload: file.data, verifiedBytes: size };
++  } finally {
++    await storage.close();
++  }
++}
+ async function request(input: BrowserRequest): Promise<BrowserResult> {
+   const empty = (): BrowserResult => ({
+     metrics: {},
+@@ -200,6 +274,8 @@ async function request(input: BrowserRequest): Promise<BrowserResult> {
+     acknowledgements: [],
+     observations: {},
+   });
++  if (input.action === "checkpoint-verify")
++    return { ...empty(), observations: await verifyCheckpoint(input.name) };
+   if (input.action === "delete-empty") {
+     if (fs || input.backend !== "indexeddb")
+       throw new Error("Delete only a closed diagnostic IndexedDB workspace");
+@@ -212,7 +288,7 @@ async function request(input: BrowserRequest): Promise<BrowserResult> {
+         ? await IndexedDBStorage.open(input.name)
+         : await OpfsStorage.open(input.name);
+     try {
+-      const batch = w1Fixture();
++      const batch = input.workload === "W6" ? checkpointFixture() : w1Fixture();
+       await storage.persist(batch);
+       await storage.flush();
+     } finally {
+@@ -269,6 +345,7 @@ async function request(input: BrowserRequest): Promise<BrowserResult> {
+     },
+   });
+   try {
++    if (input.workload === "W6") return await checkpointRun(measured, facade, input.lane);
+     if (input.action === "marker") {
+       await io.write("/ownership-marker", content(12345, 4096));
+       await io.barrier();
+diff --git i/packages/waffle/tooling/vfs-score-config.ts w/packages/waffle/tooling/vfs-score-config.ts
+index cf0aae3a..9bcfb9c9 100644
+--- i/packages/waffle/tooling/vfs-score-config.ts
++++ w/packages/waffle/tooling/vfs-score-config.ts
+@@ -3,7 +3,7 @@ export const SCORE_PROTOCOL = "waffle-vfs-1";
+ export const FIXTURE_SEED = 0x57414646;
+ export const BROWSERS = ["chromium", "firefox", "webkit"] as const;
+ export const VFS_NAMES = ["indexeddb", "opfs-memory", "opfs-safe", "opfs-wal"] as const;
+-export const WORKLOADS = ["W1", "W2", "W3", "W4", "W5"] as const;
++export const WORKLOADS = ["W1", "W2", "W3", "W4", "W5", "W6"] as const;
+ export const LANES = ["host", "guest"] as const;
+ export type BrowserName = (typeof BROWSERS)[number];
+ export type VfsName = (typeof VFS_NAMES)[number];
+@@ -38,6 +38,8 @@ export function primaryMetrics(workload: Workload, vfs: VfsName): readonly Metri
+       return [rate("durableWriteMiBs", "MiB/s"), rate("readMiBs", "MiB/s")];
+     case "W4":
+       return [rate("durableSavesPerSecond", "ops/s"), latency("saveP95Ms")];
++    case "W6":
++      return [latency("checkpointFlushMs")];
+     case "W5":
+       return vfs === "opfs-wal"
+         ? [rate("durableOpsPerSecond", "ops/s"), latency("readerP95Ms"), latency("writerP95Ms")]
+@@ -47,7 +49,7 @@ export function primaryMetrics(workload: Workload, vfs: VfsName): readonly Metri
+   }
+ }
+ export const SAMPLING = {
+-  screening: { warmups: 2, repetitions: 5 },
++  screening: { warmups: 2, repetitions: 9 },
+   promotion: { warmups: 3, repetitions: 9 },
+ } as const;
+ /** A pair is always adjacent; both revisions must implement this same protocol. */
+diff --git i/packages/waffle/tooling/vfs-workloads.ts w/packages/waffle/tooling/vfs-workloads.ts
+index c9944ed2..693c0b7e 100644
+--- i/packages/waffle/tooling/vfs-workloads.ts
++++ w/packages/waffle/tooling/vfs-workloads.ts
+@@ -86,6 +86,29 @@ export function w1Fixture(): PersistenceBatch {
+   }
+   return { generation: 1, root: 1, upserts: nodes, removes: [], data };
+ }
++export const CHECKPOINT = {
++  path: "/checkpoint-file",
++  size: 64 * 1024 ** 2,
++  editSize: 1024,
++  seedIdentity: 294,
++  editIdentity: 295,
++} as const;
++export const checkpointOffset = random()() % (CHECKPOINT.size - CHECKPOINT.editSize + 1);
++
++export function checkpointFixture(): PersistenceBatch {
++  const { size, path, seedIdentity } = CHECKPOINT;
++  const key = "checkpoint-seed";
++  return {
++    generation: 1,
++    root: 1,
++    upserts: [
++      { ino: 1, kind: "dir", ...TIMES, size: 0, mode: 0o700, children: [[path.slice(1), 2]] },
++      { ino: 2, kind: "file", ...TIMES, size, mode: 0o600, data: key },
++    ],
++    removes: [],
++    data: new Map([[key, content(seedIdentity, size)]]),
++  };
++}
+ export type TraceOperation = {
+   kind:
+     | "mkdir"
