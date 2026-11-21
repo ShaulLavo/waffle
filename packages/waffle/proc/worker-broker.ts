@@ -780,15 +780,15 @@ export class WorkerProcessBroker {
     this.reapSharedJob(group);
     if (group.outcome.valid()) collectUnlessCollected(root.directory, group);
   }
-  /** When another worker's wait collected the job first, its host record retires through
-   * reconcileCollectedJob instead. A reap failure while the job is still live escapes. */
+  /** When another worker's wait claimed or collected the job first, its host record retires
+   * through reconcileCollectedJob instead. A reap failure while the job is unclaimed escapes. */
   private reapSharedJob(group: NonNullable<ReturnType<typeof findDirectoryJob>>): void {
     const job = this.supervisor!.job(group.id);
     if (!job) return;
     try {
       this.supervisor!.reapJob(job.controlParent, job.id);
     } catch (error) {
-      if (!isCollectedProcess(error) || group.outcome.valid()) throw error;
+      if (!isCollectedProcess(error) || !sharedJobConsumed(group)) throw error;
     }
   }
   /** False when another worker collected the job first. */
@@ -958,6 +958,13 @@ function loadUnlessCollected(cells: ControlCells): number | undefined {
     if (!isCollectedProcess(error)) throw error;
     return undefined;
   }
+}
+
+/** A collector publishes its claim (pending -1) before it frees the header, so a claimed job
+ * still looks valid until then. Either state means another worker consumed it. */
+function sharedJobConsumed(group: NonNullable<ReturnType<typeof findDirectoryJob>>): boolean {
+  const pending = loadUnlessCollected(group.pending);
+  return pending === undefined || pending < 0;
 }
 
 /** CHILD here means another worker's wait won the collection, which finishes this job too. */

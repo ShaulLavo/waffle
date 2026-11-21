@@ -22,7 +22,12 @@ import {
   type WorkerProcessTransport,
   type WorkerDescriptorCodec,
 } from "../proc/worker-client.js";
-import { collectDirectoryJob, findDirectoryJob, directoryGroups } from "../proc/directory.js";
+import {
+  collectDirectoryJob,
+  findDirectoryJob,
+  directoryGroups,
+  helpDirectoryJobs,
+} from "../proc/directory.js";
 import {
   createFilesystemIdentity,
   FilesystemSection,
@@ -1003,10 +1008,24 @@ test("a shared legacy job collection keeps the late child handle in its fatal ow
   await starting;
 });
 
+/** complete: the other worker's wait claims and frees the job at once. claimed: it has
+ * published its consuming claim (pending -1) but frees the header only on a later turn. */
+type Collection = "complete" | "claimed";
+function claimDirectoryJob(directory: SharedArrayBuffer, pending: BigInt64Array, job: number) {
+  const empty = packedControl(job, 0);
+  if (Atomics.compareExchange(pending, 0, empty, packedControl(job, -1)) !== empty)
+    throw new Error("test claim lost its job");
+  setTimeout(() => helpDirectoryJobs(directory), 0);
+}
 /** Another worker's consuming wait can land between any two host reads of a job header.
  * This collects the job just before the host's k-th checked read of that header, counting
  * only reads made once the job is collectable. */
-function collectBeforeHeaderCheck(directory: SharedArrayBuffer, job: number, k: number) {
+function collectBeforeHeaderCheck(
+  directory: SharedArrayBuffer,
+  job: number,
+  k: number,
+  collection: Collection,
+) {
   const header = findDirectoryJob(directory, job)!;
   const { byteOffset } = header.outcome.validity;
   const pending = new BigInt64Array(directory, byteOffset + 4 * 8, 1);
@@ -1019,7 +1038,8 @@ function collectBeforeHeaderCheck(directory: SharedArrayBuffer, job: number, k: 
     if (++injection.seen !== k) return;
     busy = true;
     try {
-      collectDirectoryJob(directory, header.slot, job);
+      if (collection === "complete") collectDirectoryJob(directory, header.slot, job);
+      else claimDirectoryJob(directory, pending, job);
       injection.collected = true;
     } finally {
       busy = false;
@@ -1061,7 +1081,11 @@ function hangCap<T>(work: Promise<T>, errors: readonly unknown[] = []): Promise<
  * so it is collectable while the owner's exit lists its owned jobs. queued: the child's
  * spawn notice reaches the host only after the owner died. */
 type OwnedChildState = "running" | "exited" | "queued";
-async function closeOwnedJobWithCollection(k: number, state: OwnedChildState) {
+async function closeOwnedJobWithCollection(
+  k: number,
+  state: OwnedChildState,
+  collection: Collection,
+) {
   const errors: unknown[] = [];
   const f = sharedFixture({ onError: (error) => errors.push(error) });
   const ownerPid = f.root.spawn(f.root.pid, spec());
@@ -1079,7 +1103,7 @@ async function closeOwnedJobWithCollection(k: number, state: OwnedChildState) {
     while (f.messages.length) await f.broker.handle(f.messages.shift()!);
     await hangCap(f.s.waitForExit(ownerPid, childPid), errors);
   }
-  const injection = collectBeforeHeaderCheck(f.transport.directory, job, k);
+  const injection = collectBeforeHeaderCheck(f.transport.directory, job, k, collection);
   f.root.kill(ownerPid, 9);
   await f.broker.handle(f.messages.shift()!, f.root.pid);
   if (state === "queued") await f.broker.handle(notice, ownerPid).catch(() => {});
@@ -1088,18 +1112,21 @@ async function closeOwnedJobWithCollection(k: number, state: OwnedChildState) {
   );
   return { f, errors, result, injection, ownerPid, childPid, job };
 }
-test.each(["running", "exited", "queued"] as const)(
-  "owned closure retires cleanly when another worker collects its job at any header read (child %s)",
-  async (state) => {
-    const dry = await closeOwnedJobWithCollection(Infinity, state);
+const closureCases = (["running", "exited", "queued"] as const).flatMap((state) =>
+  (["complete", "claimed"] as const).map((collection) => [state, collection] as const),
+);
+test.each(closureCases)(
+  "owned closure retires cleanly when another worker collects its job at any header read (child %s, %s collection)",
+  async (state, collection) => {
+    const dry = await closeOwnedJobWithCollection(Infinity, state, collection);
     expect(dry.errors).toEqual([]);
     expect(dry.injection.seen).toBeGreaterThan(0);
-    for (let k = 1; k <= dry.injection.seen; k++) await expectCleanClosure(k, state);
+    for (let k = 1; k <= dry.injection.seen; k++) await expectCleanClosure(k, state, collection);
   },
   30_000,
 );
-async function expectCleanClosure(k: number, state: OwnedChildState) {
-  const run = await closeOwnedJobWithCollection(k, state);
+async function expectCleanClosure(k: number, state: OwnedChildState, collection: Collection) {
+  const run = await closeOwnedJobWithCollection(k, state, collection);
   expect({ k, collected: run.injection.collected, errors: run.errors }).toEqual({
     k,
     collected: true,
