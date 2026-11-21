@@ -55,6 +55,17 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `tools/ci-native-prebuild.ts`                                                                                                               | Adapted code          | Cache filename calculation from `prebuild-install` 7.1.3 `util.js`, with Waffle-owned archive checksum validation. See [CI release downloads](#ci-release-downloads).                                                                                                                                                                                                                                                        |
 | `tools/ci-release-cache.ts`, Wasmtime action, CI coverage tests                                                                             | Original adapter      | Waffle-owned complete-asset inventory, pinned Wasmtime setup, and CI download guards. No external implementation copied. See [CI release downloads](#ci-release-downloads).                                                                                                                                                                                                                                                  |
 | `fs/{storage-maintenance,idle-owner,publication-attachment}.ts`                                                                             | Original adapter      | Same-context broker release confirmation. No upstream implementation copied. See [Web Locks release confirmation](#web-locks-release-confirmation).                                                                                                                                                                                                                                                                          |
+| `.internal/wit-surface/microsoft-browser-init.patch` | Adaptation | Microsoft vscode-wasm `wasm-component-model/src/browser/ril.ts` at `7585d3902cad4948f2f8852006d3714b2a9afb1f`, MIT. Defer the connection imports until their factories are called so the browser entry can initialize. See [WIT surface experiment](#wit-surface-experiment). |
+
+## WIT surface experiment
+
+The experiment applies a small patch to Microsoft's browser runtime abstraction in scratch.
+The stock module loads the connection implementation before installing its runtime abstraction.
+The patch moves two imports into the connection factories so initialization can finish. The
+experiment calls the generator and its synchronous import adapter. The connection factories stay
+unused. The Waffle adapter and the WIT interface are original. The generator output retains its
+Microsoft header in scratch, and the upstream source tree carries the MIT notice.
+[Pinned source and notice](https://github.com/microsoft/vscode-wasm/tree/7585d3902cad4948f2f8852006d3714b2a9afb1f/wasm-component-model)
 
 ## Web Locks release confirmation
 

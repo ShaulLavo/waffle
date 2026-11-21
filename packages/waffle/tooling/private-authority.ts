@@ -153,6 +153,7 @@ const payloadReturnScopes = new Set(["proc/abi.ts:ProcessABI.span", "proc/abi.ts
 export const enforcedModules = [
   "browser/display/protocol.ts",
   "browser/display/guest.ts",
+  "browser/display/surface-info.ts",
   "browser/gpu/guest.ts",
   "browser/gpu/ring.ts",
   "browser/gpu/payload.ts",

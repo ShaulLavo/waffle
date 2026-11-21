@@ -183,8 +183,8 @@ the callbacks retain private wait ownership. No payload exception is added for e
 
 ## GPU guest boundary
 
-`browser/display/guest.ts`, `browser/gpu/guest.ts`, `browser/gpu/ring.ts` and
-`browser/gpu/transport.ts` are checked guest-reachable implementations. The inventory names
+`browser/display/guest.ts`, `browser/display/surface-info.ts`, `browser/gpu/guest.ts`,
+`browser/gpu/ring.ts` and `browser/gpu/transport.ts` are checked guest-reachable implementations. The inventory names
 `GraphicsConnection`, `GraphicsGrant`, `GraphicsOpen`, `GuestGpuConnection`, `RecordRing`,
 `RingWriter`, `PayloadDirectory`, `LogicalAppend` and `LogicalReader` as private authority. Launch ports and their
 native send/close methods are captured before executor hooks or guest execution. Fixed GPU

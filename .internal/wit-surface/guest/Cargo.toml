@@ -1,0 +1,20 @@
+[package]
+name = "surface-wire"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+
+[workspace]
+
+[features]
+default = ["generated"]
+generated = ["dep:wit-bindgen"]
+
+[dependencies]
+wit-bindgen = { version = "=0.57.1", default-features = false, features = ["macros"], optional = true }
+
+[profile.release]
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = "symbols"
