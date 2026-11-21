@@ -222,7 +222,12 @@ async function matrix(failing: readonly string[]): Promise<void> {
     try {
       await runOwned([process.execPath, "scripts/matrix-entry.ts"], {
         cwd: root,
-        env: { ...process.env, MATRIX_FAIL: failing.join("|"), STORAGE_SCRATCH_ROOT: root },
+        env: {
+          ...process.env,
+          WAFFLE_BROWSER_GROUP: undefined,
+          MATRIX_FAIL: failing.join("|"),
+          STORAGE_SCRATCH_ROOT: root,
+        },
         timeoutMs: 5000,
       });
     } catch (error) {
@@ -389,18 +394,10 @@ test("native GPU failure remains blocking in its single supervised Chromium invo
   await matrix([`${nativeGpu}:chromium`]);
 }, 15_000);
 
-async function nativeDiscovery(
-  group: "parallel" | "serial",
-  failingRunner:
-    | "gpu-native"
-    | "gpu-async"
-    | "gpu-async-controls"
-    | "notification"
-    | "asset-load-recovery"
-    | "notification-fairness"
-    | "threads-runtime"
-    | undefined,
-): Promise<void> {
+async function discoverCommands(
+  group: string | undefined,
+  failingRunner?: string,
+): Promise<{ commands: string[]; failures: unknown; failed: boolean }> {
   const root = await mkdtemp(join(tmpdir(), "waffle-native-discovery-"));
   let cleanupError: CommandCleanupError | undefined;
   try {
@@ -432,56 +429,83 @@ export async function runBrowserSuite(command) {
       failure = error;
     }
     expect(cleanupError).toBeUndefined();
-    expect(failure instanceof Error).toBe(failingRunner !== undefined);
-    const commands: string[][] = (await readFile(join(root, "commands.jsonl"), "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    expect(
-      commands.filter((command) => command[0] === "tests/threads-runtime-browser-runner.ts"),
-    ).toEqual([
-      group === "parallel"
-        ? ["tests/threads-runtime-browser-runner.ts", "chromium", "firefox"]
-        : ["tests/threads-runtime-browser-runner.ts", "webkit"],
-    ]);
-    expect(
-      commands.filter((command) => command[0] === "tests/gpu-native-browser-runner.ts"),
-    ).toEqual(group === "parallel" ? [["tests/gpu-native-browser-runner.ts", "chromium"]] : []);
-    expect(
-      commands.filter((command) => command[0] === "tests/gpu-async-browser-runner.ts"),
-    ).toEqual(
-      group === "parallel"
-        ? [["tests/gpu-async-browser-runner.ts", "chromium", "firefox"]]
-        : [["tests/gpu-async-browser-runner.ts", "webkit"]],
-    );
-    expect(
-      commands.filter((command) => command[0] === "tests/page-runner/gpu-async-controls-runner.ts"),
-    ).toEqual(
-      group === "serial"
-        ? [["tests/page-runner/gpu-async-controls-runner.ts", "--ci", "chromium", "webkit"]]
-        : [],
-    );
-    expect(
-      commands.filter((command) => command[0] === "tests/notification-browser-runner.ts"),
-    ).toEqual(group === "serial" ? [["tests/notification-browser-runner.ts"]] : []);
-    expect(
-      commands.filter((command) => command[0] === "tests/asset-load-recovery-browser-runner.ts"),
-    ).toEqual(group === "serial" ? [["tests/asset-load-recovery-browser-runner.ts"]] : []);
-    expect(
-      commands.filter((command) => command[0] === "tests/notification-fairness-browser-runner.ts"),
-    ).toEqual(group === "serial" ? [["tests/notification-fairness-browser-runner.ts"]] : []);
-    const failed =
-      failingRunner === "gpu-async-controls"
-        ? "tests/page-runner/gpu-async-controls-runner.ts"
-        : `tests/${failingRunner}-browser-runner.ts`;
-    expect(JSON.parse(await readFile(join(root, "failures.json"), "utf8"))).toEqual(
-      failingRunner ? [`${failed} failed`] : [],
-    );
+    const log = Bun.file(join(root, "commands.jsonl"));
+    const commands = (await log.exists()) ? (await log.text()).trimEnd().split("\n") : [];
+    const failures: unknown = JSON.parse(await readFile(join(root, "failures.json"), "utf8"));
+    return { commands, failures, failed: failure instanceof Error };
   } finally {
     if (cleanupError) console.error(`Retained native discovery scratch: ${root}`, cleanupError);
     else await rm(root, { recursive: true, force: true });
   }
 }
+
+async function nativeDiscovery(
+  group: "parallel" | "serial",
+  failingRunner?: string,
+): Promise<void> {
+  const result = await discoverCommands(group, failingRunner);
+  expect(result.failed).toBe(failingRunner !== undefined);
+  const commands: string[][] = result.commands.map((line) => JSON.parse(line));
+  expect(
+    commands.filter((command) => command[0] === "tests/threads-runtime-browser-runner.ts"),
+  ).toEqual([
+    group === "parallel"
+      ? ["tests/threads-runtime-browser-runner.ts", "chromium", "firefox"]
+      : ["tests/threads-runtime-browser-runner.ts", "webkit"],
+  ]);
+  expect(commands.filter((command) => command[0] === "tests/gpu-native-browser-runner.ts")).toEqual(
+    group === "parallel" ? [["tests/gpu-native-browser-runner.ts", "chromium"]] : [],
+  );
+  expect(commands.filter((command) => command[0] === "tests/gpu-async-browser-runner.ts")).toEqual(
+    group === "parallel"
+      ? [["tests/gpu-async-browser-runner.ts", "chromium", "firefox"]]
+      : [["tests/gpu-async-browser-runner.ts", "webkit"]],
+  );
+  expect(
+    commands.filter((command) => command[0] === "tests/page-runner/gpu-async-controls-runner.ts"),
+  ).toEqual(
+    group === "serial"
+      ? [["tests/page-runner/gpu-async-controls-runner.ts", "--ci", "chromium", "webkit"]]
+      : [],
+  );
+  expect(
+    commands.filter((command) => command[0] === "tests/notification-browser-runner.ts"),
+  ).toEqual(group === "serial" ? [["tests/notification-browser-runner.ts"]] : []);
+  expect(
+    commands.filter((command) => command[0] === "tests/asset-load-recovery-browser-runner.ts"),
+  ).toEqual(group === "serial" ? [["tests/asset-load-recovery-browser-runner.ts"]] : []);
+  expect(
+    commands.filter((command) => command[0] === "tests/notification-fairness-browser-runner.ts"),
+  ).toEqual(group === "serial" ? [["tests/notification-fairness-browser-runner.ts"]] : []);
+  const failed =
+    failingRunner === "gpu-async-controls"
+      ? "tests/page-runner/gpu-async-controls-runner.ts"
+      : `tests/${failingRunner}-browser-runner.ts`;
+  expect(result.failures).toEqual(failingRunner ? [`${failed} failed`] : []);
+}
+
+test("CI shards dispatch each command in the full browser matrix exactly once", async () => {
+  const [full, parallel, serial, reporter] = await Promise.all([
+    discoverCommands(undefined),
+    discoverCommands("parallel"),
+    discoverCommands("serial"),
+    discoverCommands("reporter"),
+  ]);
+  for (const run of [full, parallel, serial, reporter]) {
+    expect(run.failed).toBe(false);
+    expect(run.commands.length).toBeGreaterThan(0);
+  }
+  expect(parallel.commands.concat(serial.commands, reporter.commands).sort()).toEqual(
+    full.commands.sort(),
+  );
+});
+
+test("an unknown CI shard fails before dispatch", async () => {
+  const result = await discoverCommands("unknown");
+  expect(result.failed).toBe(true);
+  expect(result.commands).toEqual([]);
+  expect(result.failures).toEqual(["Error: Unknown WAFFLE_BROWSER_GROUP: unknown"]);
+});
 
 for (const group of ["parallel", "serial"] as const)
   test(`native GPU executable discovery in CI ${group} group`, () =>

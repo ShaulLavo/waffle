@@ -55,7 +55,7 @@ bun packages/waffle/tests/storage-browser-runner.ts chromium
 bun run test:browser
 ```
 
-Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite. Each runner removes its own browser profile and processes when it finishes. Other suites take `PROCESS_SCRATCH_ROOT` or `NETWORK_SCRATCH_ROOT`. `bun run test:browser` runs Chromium and Firefox together and WebKit afterwards, as CI does.
+Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite. Each runner removes its own browser profile and processes when it finishes. Other suites take `PROCESS_SCRATCH_ROOT` or `NETWORK_SCRATCH_ROOT`. `bun run test:browser` runs the full suite locally, with Chromium and Firefox first. CI runs three jobs in parallel. One runs the Chromium and Firefox batch, one runs WebKit and the isolated checks, and one prepares the reporter controls once and runs them in Chromium and WebKit.
 
 [Run storage tests on iOS Safari](storage-browser-runner.md) covers the native command and local reporter failure controls. [Run process recycling tests on iOS Safari](process-recycling-browser-runner.md) covers the complete process command and its failure controls.
 

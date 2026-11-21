@@ -1707,5 +1707,10 @@ jobs:
       - name: Reject failed or cancelled CI jobs
         env:
           RESULTS: ${{ toJSON(needs) }}
+          BROWSER_REQUIRED: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true' }}
         run: |
-          echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'
+          jq -e --arg browser_required "$BROWSER_REQUIRED" '
+            type == "object" and has("browser") and
+            all(.[]; .result == "success" or .result == "skipped") and
+            ($browser_required == "false" or .browser.result == "success")
+          ' <<< "$RESULTS"

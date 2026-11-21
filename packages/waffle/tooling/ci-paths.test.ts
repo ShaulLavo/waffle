@@ -274,7 +274,7 @@ test("one pinned Rust producer exports its exact uploaded artifact through the r
   expect(threadsSteps.some((step) => String(step.run).includes("cache-hit="))).toBe(true);
 });
 
-test("both browser groups download the producer ID and verify it without compiling Rust", () => {
+test("browser groups that run Rust threads verify the producer artifact without compiling", () => {
   const steps = stepsFor("browser");
   const downloads = steps.filter(
     (step) =>
@@ -289,8 +289,9 @@ test("both browser groups download the producer ID and verify it without compili
   expect(inputs["merge-multiple"]).toBe(true);
   for (const field of ["name", "pattern", "run-id", "github-token"])
     expect(inputs[field]).toBeUndefined();
-  expect(download.if).toBeUndefined();
+  expect(download.if).toBe("matrix.group != 'reporter'");
   const guard = steps.find((step) => step.name === "Require the Rust threads fixture artifact ID");
+  expect(guard?.if).toBe(download.if);
   expect(record(guard?.env).THREAD_ARTIFACT_ID).toBe(inputs["artifact-ids"]);
   expect(steps.indexOf(record(guard))).toBeLessThan(steps.indexOf(download));
   for (const id of ["", "45678"]) {
@@ -302,6 +303,7 @@ test("both browser groups download the producer ID and verify it without compili
   const verify = steps.find(
     (step) => step.run === "bun packages/waffle/scripts/build-thread-fixture.ts --verify",
   );
+  expect(verify?.if).toBe(download.if);
   const browser = steps.find((step) => String(step.run).startsWith("bun run test:browser"));
   expect(record(verify?.env).THREAD_FIXTURE_DIR).toBe(inputs.path);
   expect(record(browser?.env).THREAD_FIXTURE_DIR).toBe(inputs.path);
@@ -325,6 +327,7 @@ test("Complete CI gate rejects a failed or cancelled required threads producer",
     const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(check?.run)], {
       env: {
         ...process.env,
+        BROWSER_REQUIRED: "false",
         RESULTS: JSON.stringify({
           browser: { result: "skipped" },
           "threads-fixture": { result },
@@ -332,6 +335,37 @@ test("Complete CI gate rejects a failed or cancelled required threads producer",
       },
     });
     expect(command.exitCode).toBe(result === "success" || result === "skipped" ? 0 : 1);
+  }
+});
+
+test("Complete CI gate requires successful browser shards whenever the browser matrix is selected", () => {
+  const gate = record(jobs.gate);
+  expect(gate.needs).toContain("browser");
+  const step = stepsFor("gate").find((step) => step.name === "Reject failed or cancelled CI jobs");
+  const selection = record(step?.env).BROWSER_REQUIRED;
+  expect(record(jobs.browser).if).toContain(String(selection).slice(4, -3));
+  for (const [result, required, expected] of [
+    ["success", "true", 0],
+    ["failure", "true", 1],
+    ["cancelled", "true", 1],
+    ["skipped", "true", 1],
+    ["skipped", "false", 0],
+    ["failure", "false", 1],
+    ["cancelled", "false", 1],
+    [undefined, "true", 1],
+    [undefined, "false", 1],
+  ]) {
+    const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(step?.run)], {
+      env: {
+        ...process.env,
+        BROWSER_REQUIRED: String(required),
+        RESULTS: JSON.stringify({
+          changes: { result: "success" },
+          browser: result === undefined ? undefined : { result },
+        }),
+      },
+    });
+    expect(command.exitCode, `browser=${result}, required=${required}`).toBe(expected);
   }
 });
 
@@ -356,7 +390,7 @@ test("browser failure retains structured recovery evidence before full protocol"
   expect(record(recoveryUpload.with).path).not.toBe(record(protocolUpload.with).path);
 });
 
-test("serial browser controls retain durable process evidence even when the command fails", () => {
+test("reporter controls retain durable process evidence even when the command fails", () => {
   const steps = stepsFor("browser");
   const browserTest = steps.find(
     (step) =>
@@ -365,7 +399,7 @@ test("serial browser controls retain durable process evidence even when the comm
   const result = "${{ runner.temp }}/browser-controls-results.json";
   expect(record(browserTest?.env).BROWSER_CONTROLS_RESULT).toBe(result);
   const upload = artifactStep(steps, `${result}*`);
-  expect(upload.if).toBe("always() && matrix.group == 'serial'");
+  expect(upload.if).toBe("always() && matrix.group == 'reporter'");
   expect(record(upload.with).name).toBe(
     "browser-controls-${{ github.run_id }}-${{ github.run_attempt }}",
   );
@@ -373,11 +407,17 @@ test("serial browser controls retain durable process evidence even when the comm
   expect(record(upload.with)["if-no-files-found"]).toBe("warn");
 });
 
-test("the browser suite runs its two ordered groups on separate runners", () => {
+test("the browser suite dispatches all three groups separately with failures blocking", () => {
+  expect(record(jobs.browser).strategy).toEqual({
+    "fail-fast": false,
+    matrix: { group: ["parallel", "serial", "reporter"] },
+  });
   const browserTest = stepsFor("browser").find(
     (step) =>
       step.run === 'bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"',
   );
+  expect(browserTest?.if).toBeUndefined();
+  expect(browserTest?.shell).toBe("bash");
   expect(record(browserTest?.env).WAFFLE_BROWSER_GROUP).toBe("${{ matrix.group }}");
 });
 
@@ -824,9 +864,10 @@ test("the browser rejects a missing fixture artifact ID before download", () => 
   expect(record(guard?.env).MEMORY_GROUP_ARTIFACT_ID).toBe(
     "${{ needs.libc.outputs.memory-group-artifact-id }}",
   );
-  expect(guard?.if).toBeUndefined();
+  expect(guard?.if).toBe("matrix.group == 'serial'");
   expect(guard?.["continue-on-error"]).toBeUndefined();
   const downloadIndex = steps.findIndex((step) => step.uses === "actions/download-artifact@v8");
+  expect(steps[downloadIndex]?.if).toBe(guard?.if);
   expect(guard).toBeDefined();
   expect(steps.indexOf(record(guard))).toBeLessThan(downloadIndex);
   for (const id of ["", "12345"]) {
