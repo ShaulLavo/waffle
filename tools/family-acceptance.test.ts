@@ -15,13 +15,13 @@ const sourceFilesystem = await import("../packages/waffle/browser/shared-fs.ts")
 const sourcePipes = await import("../packages/waffle/proc/pipes.ts");
 const sourceClient = await import("../packages/waffle/proc/worker-client.ts");
 const sourceWorkerPipes = await import("../packages/waffle/proc/worker-pipes.ts");
-mock.module("waffle", () => sourceRuntime);
-mock.module("waffle/core/descriptors", () => sourceDescriptors);
-mock.module("waffle/browser/runtime-terminals", () => sourceTerminals);
-mock.module("waffle/browser/shared-fs", () => sourceFilesystem);
-mock.module("waffle/proc/pipes", () => sourcePipes);
-mock.module("waffle/proc/worker-client", () => sourceClient);
-mock.module("waffle/proc/worker-pipes", () => sourceWorkerPipes);
+mock.module("@waffle-os/runtime", () => sourceRuntime);
+mock.module("@waffle-os/runtime/core/descriptors", () => sourceDescriptors);
+mock.module("@waffle-os/runtime/browser/runtime-terminals", () => sourceTerminals);
+mock.module("@waffle-os/runtime/browser/shared-fs", () => sourceFilesystem);
+mock.module("@waffle-os/runtime/proc/pipes", () => sourcePipes);
+mock.module("@waffle-os/runtime/proc/worker-client", () => sourceClient);
+mock.module("@waffle-os/runtime/proc/worker-pipes", () => sourceWorkerPipes);
 
 const fixtures = [
   {
