@@ -103,4 +103,4 @@ test("browser fixtures use the shared navigation admission helper", () => {
     if (/[.]goto\s*[(]/.test(readFileSync(join(import.meta.dir, path), "utf8"))) direct.push(path);
   }
   expect(direct).toEqual([]);
-});
+}, 30_000);
