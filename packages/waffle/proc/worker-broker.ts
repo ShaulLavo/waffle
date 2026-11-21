@@ -561,12 +561,23 @@ export class WorkerProcessBroker {
       await this.discardExec(message, error, descriptors);
     }
   }
-  private checkSpawnKind(
+  private checkSpawnReservation(
     transport: WorkerProcessTransport,
     request: import("./types.js").SpawnRequest,
+    state: ReturnType<typeof workerProcessState>,
   ): void {
-    if (checkedProcessKind(request.processKind) !== workerProcessState(transport).processKind)
+    if (transport.generation !== 1)
+      throw new ProcessError(ProcessErrno.INVAL, "spawn image generation must be one");
+    if (checkedProcessKind(request.processKind) !== state.processKind)
       throw new ProcessError(ProcessErrno.INVAL, "spawn kind conflicts with published reservation");
+    if (
+      request.job <= 0 &&
+      (checkedJobLifetime(request.job, request.jobLifetime) !== state.jobLifetime ||
+        state.jobOwner !== state.parentPid)
+    )
+      throw new ProcessError(ProcessErrno.INVAL, "job lifetime conflicts with shared reservation");
+    if (transport.cwd !== request.cwd)
+      throw new ProcessError(ProcessErrno.INVAL, "spawn cwd conflicts with process transport");
   }
   private async spawn(
     transport: WorkerProcessTransport,
@@ -585,20 +596,7 @@ export class WorkerProcessBroker {
     let reason: ProcessAdmissionEvent["reason"] = "admission-failed";
     try {
       codec = this.codec(transport);
-      if (transport.generation !== 1)
-        throw new ProcessError(ProcessErrno.INVAL, "spawn image generation must be one");
-      this.checkSpawnKind(transport, request);
-      if (
-        request.job <= 0 &&
-        (checkedJobLifetime(request.job, request.jobLifetime) !== state.jobLifetime ||
-          state.jobOwner !== state.parentPid)
-      )
-        throw new ProcessError(
-          ProcessErrno.INVAL,
-          "job lifetime conflicts with shared reservation",
-        );
-      if (transport.cwd !== request.cwd)
-        throw new ProcessError(ProcessErrno.INVAL, "spawn cwd conflicts with process transport");
+      this.checkSpawnReservation(transport, request, state);
       if (existing)
         throw new ProcessError(
           ProcessErrno.SRCH,

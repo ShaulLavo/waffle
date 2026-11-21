@@ -91,6 +91,12 @@ handles are named private types in the checker. None of these modules is classif
 page-only trusted implementation, and no payload exception exempts their private buffers
 or collections.
 
+The installed command entry and its owner map stay on the page. Guest transports carry only
+their command's shared rollback report. It identifies the producing image and exact spawn
+intent or staged exec generation, with a bounded copy of the error text. The guest writes it
+with captured atomics before dropping its transfer fence. A tagged directory cell carries the
+staged exec generation until the broker confirms transfer or discard.
+
 The page-only supervisor, table, registry, broker and lazy facade are named in
 `trustedModules`. The Node WASI descriptor adapter is also trusted because it is an explicit
 Node embedding leaf and is not imported by the guest bootstrap. `WorkerPipeBroker` alone is

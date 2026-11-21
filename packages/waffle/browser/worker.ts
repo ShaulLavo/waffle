@@ -1233,7 +1233,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
           listenAbort(cancellation.signal, hook);
           return () => unlistenAbort(cancellation.signal, hook);
         },
-        prepareExec: () => {
+        prepareExec: (_pid, cleanupFailed) => {
           checkActive();
           const end = fs.beginTransfer();
           let filesystem: ReturnType<typeof createProcessFilesystemIdentity> | undefined;
@@ -1257,6 +1257,8 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
           } catch (error) {
             try {
               cancel();
+            } catch (cleanup) {
+              cleanupFailed?.(cleanup);
             } finally {
               end();
             }
@@ -1264,7 +1266,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
           }
         },
         beginSpawnTransfer: () => fs.beginTransfer(),
-        prepareSpawn: (pid) => {
+        prepareSpawn: (pid, cleanupFailed) => {
           checkActive();
           let filesystem: ReturnType<typeof createProcessFilesystemIdentity> | undefined;
           let enrolled = false;
@@ -1289,7 +1291,11 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
               }),
             };
           } catch (error) {
-            cancel();
+            try {
+              cancel();
+            } catch (cleanup) {
+              cleanupFailed?.(cleanup);
+            }
             throw error;
           }
         },

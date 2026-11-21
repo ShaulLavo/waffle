@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium, firefox, webkit } from "playwright";
+import { compileCommandGuests } from "../../packages/waffle/tests/fixtures/command-guests.ts";
 
 const engines = { chromium, firefox, webkit };
 const root = resolve(import.meta.dirname, "../..");
@@ -15,8 +16,19 @@ const bundle = await Bun.build({
   ],
   target: "browser",
   naming: "[name].js",
+  plugins: [
+    {
+      name: "coreutils workspace package",
+      setup(build) {
+        build.onResolve({ filter: /^@waffle-os\/coreutils$/ }, () => ({
+          path: resolve(root, "packages/coreutils/src/index.ts"),
+        }));
+      },
+    },
+  ],
 });
 assert.ok(bundle.success, String(bundle.logs));
+const guests = await compileCommandGuests();
 const outputs = new Map(bundle.outputs.map((file) => [file.path.replace(/^\./, ""), file]));
 const headers = {
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -35,6 +47,8 @@ const server = Bun.serve({
         },
       );
     if (path === "/dist/cat.wasm") return new Response(Bun.file(asset), { headers });
+    const guest = path.startsWith("/fixtures/") && guests.get(path.slice("/fixtures/".length));
+    if (guest) return new Response(Uint8Array.from(guest), { headers });
     const output = outputs.get(path);
     if (output)
       return new Response(output, { headers: { ...headers, "Content-Type": "text/javascript" } });
@@ -56,8 +70,20 @@ try {
       await page.waitForSelector('body[data-done="true"]', { timeout: 60_000 });
       const result: unknown = JSON.parse(await page.locator("body").innerText());
       console.log(JSON.stringify({ name, result, errors }));
-      assert.deepEqual(result, { ok: true, line: "hello from cat\n" });
-      assert.deepEqual(errors, []);
+      assert.ok(
+        result && typeof result === "object" && "ok" in result && result.ok && "line" in result,
+      );
+      assert.equal(result.line, "hello from cat\n");
+      const expectedStarts = errors.filter((error) =>
+        /runtime: process controller failed (ExecutableNotFound|ExecutableNotRunnable|ExecutableFormatError)/.test(
+          error,
+        ),
+      );
+      assert.equal(expectedStarts.length, 7);
+      assert.deepEqual(
+        errors.filter((error) => !expectedStarts.includes(error)),
+        [],
+      );
     } finally {
       await browser.close();
     }

@@ -315,17 +315,7 @@ export class ExecutableRegistry {
         symlinks,
         scriptName,
       );
-    let file;
-    try {
-      file = await this.lookup(absolute);
-    } catch (error) {
-      assertActive();
-      const errno =
-        error !== null && typeof error === "object" && "errno" in error ? error.errno : undefined;
-      if (errno === 44) throw new ExecutableNotFound(absolute);
-      if (errno === 54) throw new ExecutableNotRunnable(absolute, false, "ENOTDIR");
-      throw error;
-    }
+    const file = await this.lookupFile(this.lookup, absolute, assertActive);
     assertActive();
     if (!file) throw new ExecutableNotFound(absolute);
     rejectNonExecutableNode(file);
@@ -398,6 +388,19 @@ export class ExecutableRegistry {
       seen,
       symlinks,
     );
+  }
+
+  private async lookupFile(lookup: ExecutableLookup, path: string, assertActive: () => void) {
+    try {
+      return await lookup(path);
+    } catch (error) {
+      assertActive();
+      const errno =
+        error !== null && typeof error === "object" && "errno" in error ? error.errno : undefined;
+      if (errno === 44) throw new ExecutableNotFound(path);
+      if (errno === 54) throw new ExecutableNotRunnable(path, false, "ENOTDIR");
+      throw error;
+    }
   }
 
   private async admitEntry(

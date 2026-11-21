@@ -798,6 +798,12 @@ export class BrowserProcessBroker {
     context: ProcessContext | CommandProcessContext,
   ): ProcessHandle | Promise<ProcessHandle> {
     if (this.suspended) throw new Error("Process broker is disposed");
+    const transport = this.transport.get(context.pid);
+    const command = transport && this.commandScope(transport);
+    if (command) {
+      this.traceProcess(context, "launching");
+      this.checkCommandAdmission(transport);
+    }
     this.acquireObservation(context.observation, true);
     const observation = this.observationOwners.get(context.pid);
     const nativeReturned = this.nativeLaunchReturns.get(context.pid) ?? observation?.acquire();
@@ -819,7 +825,7 @@ export class BrowserProcessBroker {
     };
     const invokeLauncher = (): ProcessHandle | Promise<ProcessHandle> => {
       if ("command" in context) return this.launchCommand(context);
-      if (context.execution?.kind === "host") return this.options.launch(context);
+      if (command || context.execution?.kind === "host") return this.options.launch(context);
       const controller = this.controllerFor(context.pid);
       if (!controller?.launch) return this.options.launch(context);
       controllerReturn = this.controllerNativeReturnFor(context.pid);
@@ -829,7 +835,7 @@ export class BrowserProcessBroker {
       return this.options.launch(context);
     };
     if (nativeReturned) this.nativeLaunchReturns.set(context.pid, nativeReturned);
-    this.traceProcess(context, "launching");
+    if (!command) this.traceProcess(context, "launching");
     const launch = this.launchState(context);
     launch.active = true;
     (this.launches ??= new Set()).add(context.pid);
@@ -1349,8 +1355,7 @@ export class BrowserProcessBroker {
     transport: WorkerProcessTransport,
     options: RuntimeRootOptions,
   ): Promise<void> {
-    await this.ready();
-    if (this.suspended) throw new Error("Process broker is disposed");
+    if (this.suspended || !this.supervisor) throw new Error("Process broker is unavailable");
     const processCapacity = directoryCapacity(transport.directory);
     const registry = new PipePublicationRegistry({
       processCapacity,
@@ -1380,7 +1385,14 @@ export class BrowserProcessBroker {
   }
   private commandScope(transport: WorkerProcessTransport): CommandRootState | undefined {
     if (!this.commandRoots?.size) return;
-    const scope = this.commandRoots.get(workerProcessState(transport).rootPid);
+    let rootPid: number;
+    try {
+      rootPid = workerProcessState(transport).rootPid;
+    } catch (error) {
+      if (!isCollectedProcess(error)) throw error;
+      return;
+    }
+    const scope = this.commandRoots.get(rootPid);
     if (scope && workerProcessDirectoryId(scope.root) === workerProcessDirectoryId(transport))
       return scope;
   }
@@ -1421,7 +1433,7 @@ export class BrowserProcessBroker {
       return new Error("Command transfer cleanup failed", { cause });
     }
     const buffer = scope.root.commandTransfer;
-    return buffer ? readCommandTransferFailure(buffer) : undefined;
+    return buffer ? readCommandTransferFailure(buffer)?.error : undefined;
   }
   private async joinCommandExec(transport: WorkerProcessTransport): Promise<void> {
     const scope = this.commandScope(transport);
@@ -1429,9 +1441,20 @@ export class BrowserProcessBroker {
     const state = workerProcessState(transport);
     for (;;) {
       const expected = Atomics.load(state.wake, 0);
-      const failure = this.commandCleanupFailure(scope);
-      if (failure) throw failure;
-      if (controlLoad(state.execTransfer) === 0) return;
+      const buffer = scope.root.commandTransfer;
+      const local = buffer && readCommandTransferFailure(buffer);
+      if (
+        local?.kind === "exec" &&
+        local.pid === transport.pid &&
+        local.generation === transport.generation
+      )
+        throw local.error;
+      const staged = controlLoad(state.execTransfer);
+      if (staged === 0) return;
+      for (const [transfer, cause] of scope.failures) {
+        if (transfer.pid === transport.pid && transfer.generation === staged)
+          throw new Error("Exec transfer cleanup failed", { cause });
+      }
       await atomicsWaitAsync(state.wake, 0, expected).value;
     }
   }
@@ -1462,9 +1485,14 @@ export class BrowserProcessBroker {
     wakeWorkerProcess(root);
   }
   private stopCommandMembers(root: WorkerProcessTransport): void {
-    const members = Array.from(directoryProcesses(root.directory)).filter(
-      (state) => state.pid !== root.pid && !readOutcome(state.signals.outcome),
-    );
+    const members = Array.from(directoryProcesses(root.directory)).filter((state) => {
+      try {
+        return state.pid !== root.pid && !readOutcome(state.signals.outcome);
+      } catch (error) {
+        if (!isCollectedProcess(error)) throw error;
+        return false;
+      }
+    });
     for (const state of members) this.requestSignalIfPresent(state.signals, 9);
     for (const state of members) {
       try {
@@ -2987,6 +3015,9 @@ export class BrowserProcessBroker {
         }
       }
     }
+    const transport = this.transport.get(pid);
+    if (transport && this.commandScope(transport))
+      return Promise.all(pending).then(() => this.joinCommandExec(transport));
     if (pending.length) return Promise.all(pending).then(() => {});
   }
   private quiesceChild(child: RuntimeChild): void | Promise<void> {

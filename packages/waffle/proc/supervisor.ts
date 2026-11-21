@@ -1099,7 +1099,8 @@ export class ProcessSupervisor {
     if (image.stopping) return image.stopping;
     const stop = async () => {
       this.revokeImage(image);
-      this.disposeDescriptors(image.descriptors);
+      if (this.options.byteBackedGuestOnly?.(record.rootPid)) image.descriptors.dispose();
+      else this.disposeDescriptors(image.descriptors);
       await this.options.stopImage!(record.pid, image.generation, () =>
         this.replacementActive(record, replacement),
       );
@@ -1556,7 +1557,14 @@ export class ProcessSupervisor {
     record.revocations.clear();
     for (const hook of hooks) this.safely(hook);
     this.revokeImage(record.image);
-    this.disposeDescriptors(record.image.descriptors);
+    this.disposeDescriptors(record.image.descriptors, (error) => {
+      if (!this.options.byteBackedGuestOnly?.(record.rootPid)) {
+        this.report(error);
+        return;
+      }
+      fenceFailed = true;
+      this.failRetirementFence(record, error);
+    });
     // Invoke the fence while broker child/identity records are still present. Every observer
     // must wait for admitted filesystem and adapter work (for example a terminal section),
     // independently of the physical worker's potentially delayed termination.
@@ -1839,13 +1847,17 @@ export class ProcessSupervisor {
     // already have retired it while its separately captured physical stop was pending.
     if (this.table.job(job.id) === job) this.reapJob(owner, job.id);
   }
-  private disposeDescriptors(descriptors: DescriptorTable): void {
+  private disposeDescriptors(
+    descriptors: DescriptorTable,
+    onError?: (error: unknown) => void,
+  ): void {
     // dispose drains every entry before reporting release errors. These errors are diagnostics,
     // not transient work: report once and continue to the explicit host quiescence fence.
     try {
       descriptors.dispose();
     } catch (error) {
-      this.report(error);
+      if (onError) onError(error);
+      else this.report(error);
     }
   }
   private safely(operation: () => void): void {

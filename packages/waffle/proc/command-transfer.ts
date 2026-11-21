@@ -48,7 +48,7 @@ export function commandTransferFailed(buffer: SharedArrayBuffer | undefined): bo
   return buffer !== undefined && atomicsLoad(new Int32ArrayConstructor(buffer, 0, 1), 0) !== 0;
 }
 
-export function readCommandTransferFailure(buffer: SharedArrayBuffer): Error | undefined {
+export function readCommandTransferFailure(buffer: SharedArrayBuffer) {
   const words = new Int32ArrayConstructor(buffer, 0, HEADER_BYTES / 4);
   const operation = atomicsLoad(words, 0);
   if (operation <= 0) return;
@@ -57,10 +57,12 @@ export function readCommandTransferFailure(buffer: SharedArrayBuffer): Error | u
   const target = atomicsLoad(words, 3);
   const length = atomicsLoad(words, 4);
   const cause = decodeUtf8(new Uint8ArrayConstructor(buffer, HEADER_BYTES, length));
-  return new Error(
-    operation === 1
+  const kind = operation === 1 ? "spawn" : "exec";
+  const error = new Error(
+    kind === "spawn"
       ? `Spawn transfer to process ${target} from process ${pid} image ${generation} could not be released`
       : `Exec transfer for process ${pid} image ${target} could not be released`,
     { cause: new Error(cause) },
   );
+  return { kind, pid, generation, target, error };
 }

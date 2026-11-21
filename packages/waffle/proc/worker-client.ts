@@ -289,8 +289,8 @@ export interface WorkerProcessClientOptions {
   postMessage(message: WorkerProcessMessage): void;
   codec: WorkerDescriptorCodec;
   beginSpawnTransfer?(): () => void;
-  prepareSpawn?(pid: number): WorkerSpawnTransfer;
-  prepareExec?(pid: number): WorkerSpawnTransfer;
+  prepareSpawn?(pid: number, cleanupFailed?: (error: unknown) => void): WorkerSpawnTransfer;
+  prepareExec?(pid: number, cleanupFailed?: (error: unknown) => void): WorkerSpawnTransfer;
   registerRevocation?(hook: () => void): () => void;
   /** Synchronously freeze shared endpoint cursors after default signal death is selected.
    * A shared pipe publication registry supplies this hook without entering the guest worker.
@@ -390,7 +390,9 @@ export class WorkerProcessClient {
     const handoff = staged.commandTransfer ? workerProcessState(staged).execTransfer : undefined;
     let published = false;
     try {
-      transfer = this.options.prepareExec(pid);
+      transfer = this.options.prepareExec(pid, (error) =>
+        recordCommandTransferFailure(this.options.transport, "exec", staged.generation, error),
+      );
       codec = transfer.codec ?? codec;
       staged.data = transfer.data;
       this.exportBindings(staged, snapshot, sources, references, codec);
@@ -424,11 +426,13 @@ export class WorkerProcessClient {
     try {
       transfer?.commit?.();
     } catch (error) {
+      recordCommandTransferFailure(this.options.transport, "exec", staged.generation, error);
       this.report(error);
     }
     try {
       transfer?.release?.();
     } catch (error) {
+      recordCommandTransferFailure(this.options.transport, "exec", staged.generation, error);
       this.report(error);
     }
     return completion;
@@ -624,7 +628,9 @@ export class WorkerProcessClient {
     try {
       // Acquire the host admission fence before touching shared membership. Fatal
       // teardown must not stop this worker with an anonymous outstanding reservation.
-      transfer = this.options.prepareSpawn?.(pid);
+      transfer = this.options.prepareSpawn?.(pid, (error) =>
+        recordCommandTransferFailure(this.options.transport, "spawn", pid, error),
+      );
       codec = transfer?.codec ?? codec;
       child = reserveRecord(
         this.options.transport,
@@ -659,8 +665,10 @@ export class WorkerProcessClient {
         request: snapshot,
       });
     } catch (error) {
-      if (publishing) this.releaseUncertainSpawn(transfer);
-      else this.rollbackSpawn(pid, child, transfer, codec, error);
+      if (publishing) {
+        recordCommandTransferFailure(this.options.transport, "spawn", pid, error);
+        this.releaseUncertainSpawn(transfer);
+      } else this.rollbackSpawn(pid, child, transfer, codec, error);
       throw error;
     }
     // Publication transferred ownership. Never discard published resources if a host
@@ -668,11 +676,13 @@ export class WorkerProcessClient {
     try {
       transfer?.commit?.();
     } catch (error) {
+      recordCommandTransferFailure(this.options.transport, "spawn", pid, error);
       this.report(error);
     } finally {
       try {
         transfer?.release?.();
       } catch (error) {
+        recordCommandTransferFailure(this.options.transport, "spawn", pid, error);
         this.report(error);
       }
     }

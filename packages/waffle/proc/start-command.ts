@@ -108,6 +108,7 @@ export function startCommand(
   executable: string,
   options: CommandOptions,
 ): RunningCommand {
+  const started = performance.now();
   const input = snapshot(executable, options);
   const stopped = new AbortController();
   let stopRequested: StopRequest | undefined;
@@ -117,13 +118,16 @@ export function startCommand(
     stopRequested = reason;
     stopped.abort();
   };
-  const timer =
-    input.deadlineMs === undefined
-      ? undefined
-      : setTimeout(() => stop("deadline"), input.deadlineMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (input.deadlineMs !== undefined) {
+    const remaining = input.deadlineMs - (performance.now() - started);
+    if (remaining <= 0) stop("deadline");
+    else timer = setTimeout(() => stop("deadline"), Math.ceil(remaining));
+  }
   const running = import("../browser/run-command.js").then(({ runCommand }) =>
     runCommand(runtime, executable, input, stopped.signal),
   );
+  let active: typeof running | undefined = running;
   const result: Promise<CommandResult> = running
     .then((command) => command.result)
     .then(({ exit, stdout, stderr }) => {
@@ -133,6 +137,7 @@ export function startCommand(
     })
     .finally(() => {
       settled = true;
+      active = undefined;
       clearTimeout(timer);
     });
   return {
@@ -142,8 +147,7 @@ export function startCommand(
         stop("kill");
         return;
       }
-      if (settled) return;
-      await (await running).signal(signal);
+      await (await active)?.signal(signal);
     },
     kill() {
       stop("kill");

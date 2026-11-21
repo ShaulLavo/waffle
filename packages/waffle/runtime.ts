@@ -974,10 +974,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         throwFailures();
       });
       token.disposal = disposal;
-      commandDisposals.get(runtime)?.abort();
       // Publish owned process outcomes before consumer callbacks or display revocation can wake
       // guests. Physical stops still wait for terminationFence and the existing quiescence gates.
       suspend(failures);
+      commandDisposals.get(runtime)?.abort();
       // Wake page operations before activation/drain can await startup. Keep the worker
       // and any acquired ownership alive until admitted consumer sections have fenced;
       // the normal final filesystem.dispose() then performs the startup abort handshake.

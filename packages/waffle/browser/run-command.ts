@@ -3,8 +3,11 @@ import { COMMAND_TRANSFER_BYTES } from "../proc/command-transfer.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import type { Runtime } from "../runtime.js";
 import { commandDisposals, commandOwners } from "../proc/command-owner.js";
+import { controlLoad } from "../proc/control.js";
 import { directoryJob } from "../proc/directory.js";
 import type { PipeEndpoint } from "../proc/pipes.js";
+import type { WorkerPipeHost } from "../proc/worker-pipes.js";
+import { atomicsWaitAsync } from "../proc/intrinsics.js";
 import { readOutcome } from "../proc/outcome.js";
 import type { CommandOptions, CommandOutput, CommandOutputOptions } from "../proc/start-command.js";
 import { checkedSignal, type ProcessExit, type ProcessSignal } from "../proc/types.js";
@@ -15,6 +18,7 @@ import {
   workerProcessState,
   type WorkerProcessMessage,
   type WorkerProcessTransport,
+  type WorkerSpawnTransfer,
 } from "../proc/worker-client.js";
 import type { BrowserProcessBroker } from "./process-broker.js";
 import { createRuntimeTerminalCodec } from "./runtime-terminals.js";
@@ -27,7 +31,7 @@ const FD_FILESTAT_GET = 1n << 21n;
 const OUTPUT_BATCH = 32;
 
 class Capture {
-  private readonly chunks: Uint8Array[] = [];
+  private bytes = new Uint8Array(0);
   private readonly limit: number;
   private size = 0;
   private truncated = false;
@@ -40,8 +44,10 @@ class Capture {
   append(data: Uint8Array): void {
     const length = Math.min(data.length, this.limit - this.size);
     if (length) {
-      this.chunks.push(data.slice(0, length));
-      this.size += length;
+      const size = this.size + length;
+      if (size > this.bytes.length) this.grow(size);
+      this.bytes.set(data.subarray(0, length), this.size);
+      this.size = size;
     }
     if (length < data.length) this.truncated = true;
     try {
@@ -51,14 +57,15 @@ class Capture {
       throw error;
     }
   }
+  private grow(size: number): void {
+    const capacity = Math.min(this.limit, Math.max(size, 4096, 2 * this.bytes.length));
+    const bytes = new Uint8Array(capacity);
+    bytes.set(this.bytes);
+    this.bytes = bytes;
+  }
   result(): CommandOutput {
-    const bytes = new Uint8Array(this.size);
-    let offset = 0;
-    for (const chunk of this.chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.length;
-    }
-    this.chunks.length = 0;
+    const bytes = this.bytes.length === this.size ? this.bytes : this.bytes.slice(0, this.size);
+    this.bytes = new Uint8Array(0);
     return { bytes, truncated: this.truncated };
   }
 }
@@ -100,7 +107,12 @@ class Command {
     this.abortSetup.resolve(undefined);
     if (!this.root || this.runtime.disposed) return;
     this.stopInput();
-    this.owner?.stopCommandRoot(this.root);
+    try {
+      this.owner?.stopCommandRoot(this.root);
+    } catch (error) {
+      this.ioFailure ??= { error };
+      wakeWorkerProcess(this.root);
+    }
   };
 
   private readonly dispose = () => {
@@ -123,7 +135,7 @@ class Command {
     const sig = checkedSignal(signal);
     const leader = await this.leader.promise;
     if (!leader || this.settled || this.runtime.disposed || !this.root) return;
-    if (leader.state.outcome.valid() && !readOutcome(leader.state.outcome))
+    if (leader.state.outcome.valid() && controlLoad(leader.state.pending) > 0)
       await this.owner?.killJob(leader.job, sig);
   }
 
@@ -195,7 +207,11 @@ class Command {
       }
       this.failIO(error);
     } finally {
-      this.descriptors.dispose();
+      try {
+        this.descriptors.dispose();
+      } catch (error) {
+        this.failIO(error);
+      }
       this.leader.resolve(leader);
     }
     if (this.stopped.aborted || this.ioFailure) this.stop();
@@ -244,18 +260,7 @@ class Command {
         descriptors: this.descriptors,
         codec,
         postMessage: post,
-        prepareSpawn: (pid) => {
-          pipes.registry.registerProcess(pid);
-          const filesystem = this.runtime.filesystem.createIdentity();
-          return {
-            data: { filesystem, pipeRegistry: pipes.registry.handle() },
-            cancel: () => {
-              this.runtime.filesystem.revoke(filesystem);
-              this.runtime.filesystem.reap(filesystem);
-              pipes.registry.collectProcess(pid);
-            },
-          };
-        },
+        prepareSpawn: (pid, cleanupFailed) => this.prepareChild(pipes, pid, cleanupFailed),
       });
       client.spawn(root.pid, {
         executable: this.executable,
@@ -275,6 +280,32 @@ class Command {
     }
     if (!leader) throw new Error("Command leader was not published");
     return leader;
+  }
+
+  private prepareChild(
+    pipes: WorkerPipeHost,
+    pid: number,
+    cleanupFailed?: (error: unknown) => void,
+  ): WorkerSpawnTransfer {
+    const filesystem = this.runtime.filesystem.createIdentity();
+    let enrolled = false;
+    const cancel = () => {
+      this.runtime.filesystem.revoke(filesystem);
+      this.runtime.filesystem.reap(filesystem);
+      if (enrolled) pipes.registry.collectProcess(pid);
+    };
+    try {
+      pipes.registry.registerProcess(pid);
+      enrolled = true;
+      return { data: { filesystem, pipeRegistry: pipes.registry.handle() }, cancel };
+    } catch (error) {
+      try {
+        cancel();
+      } catch (cleanup) {
+        cleanupFailed?.(cleanup);
+      }
+      throw error;
+    }
   }
 
   private openTerminals(stdin: CommandOptions["stdin"]): void {
@@ -332,7 +363,7 @@ class Command {
         if (!leader || exit) return exit;
         throw new Error("Command leader retired without an outcome");
       }
-      await Atomics.waitAsync(wake, 0, expected).value;
+      await atomicsWaitAsync(wake, 0, expected).value;
     }
   }
 }
