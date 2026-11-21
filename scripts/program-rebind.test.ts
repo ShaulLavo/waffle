@@ -35,9 +35,9 @@ const repository = resolve(import.meta.dirname, "..");
 const fromTag = "programs-v0.0.13";
 const targetTag = "programs-v0.0.14";
 const sourceRuntimeUrl =
-  "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.105/waffle-0.0.105.tgz";
+  "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.105/waffle-os-runtime-0.0.105.tgz";
 const targetRuntimeUrl =
-  "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.106/waffle-0.0.106.tgz";
+  "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.106/waffle-os-runtime-0.0.106.tgz";
 let scratch = "";
 
 function sha256(path: string) {
@@ -106,6 +106,10 @@ function writePackage(root: string, directory: string, manifest: object, artifac
   }
 }
 
+function assetFilename(name: string, version: string) {
+  return `${name.replace(/^@/, "").replaceAll("/", "-")}-${version}.tgz`;
+}
+
 function sourcePackage(
   root: string,
   directory: string,
@@ -114,7 +118,8 @@ function sourcePackage(
   archiveDir: string,
 ) {
   const packageRoot = resolve(root, "packages", directory);
-  const archive = resolve(archiveDir, `${name}-0.0.13.tgz`);
+  const filename = assetFilename(name, "0.0.13");
+  const archive = resolve(archiveDir, filename);
   pack(packageRoot, archive);
   const packageJson = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));
   const files = artifact
@@ -126,8 +131,8 @@ function sourcePackage(
     sourceTree: git(root, ["rev-parse", `HEAD:packages/${directory}`]),
     sourceVersion: "0.0.13",
     version: "0.0.13",
-    filename: `${name}-0.0.13.tgz`,
-    url: `https://github.com/ShaulLavo/waffle/releases/download/${fromTag}/${name}-0.0.13.tgz`,
+    filename,
+    url: `https://github.com/ShaulLavo/waffle/releases/download/${fromTag}/${filename}`,
     bytes: readFileSync(archive).length,
     sha256: sha256(archive),
     closureDependencies: Object.fromEntries(
@@ -189,7 +194,10 @@ function createFixture(
   writePackage(
     root,
     "child",
-    { ...packageManifest("waffle-child", {}, { waffle: sourcePeer }), ...sourceMetadata },
+    {
+      ...packageManifest("waffle-child", {}, { "@waffle-os/runtime": sourcePeer }),
+      ...sourceMetadata,
+    },
     true,
   );
   writePackage(
@@ -199,11 +207,11 @@ function createFixture(
       ...packageManifest(
         "@waffle-os/base",
         {
-          ...(schema === 1 ? { waffle: sourceRuntimeUrl } : {}),
+          ...(schema === 1 ? { "@waffle-os/runtime": sourceRuntimeUrl } : {}),
           "waffle-child":
             "https://github.com/ShaulLavo/waffle/releases/download/programs-v0.0.13/waffle-child-0.0.13.tgz",
         },
-        { waffle: sourcePeer },
+        { "@waffle-os/runtime": sourcePeer },
       ),
       ...sourceMetadata,
     },
@@ -245,7 +253,7 @@ function createFixture(
     tagState: "tagged",
     assetBase: `https://github.com/ShaulLavo/waffle/releases/download/${fromTag}`,
     runtime: {
-      name: "waffle",
+      name: "@waffle-os/runtime",
       ...sourceMetadata,
       version: "0.0.105",
       url: sourceRuntimeUrl,
@@ -268,7 +276,7 @@ function createFixture(
     resolve(runtimeRoot, "package.json"),
     JSON.stringify(
       {
-        name: "waffle",
+        name: "@waffle-os/runtime",
         version: "0.0.106",
         waffleHostInterface: config.targetHostInterface ?? 1,
         type: "module",
@@ -331,13 +339,15 @@ function repackSourceArchive(
   name: string,
   edit: (root: string) => void,
 ) {
-  const extracted = resolve(fixture.root, `mutate-${name}`);
-  execFileSync("tar", ["-xzf", resolve(fixture.assets, `${name}-0.0.13.tgz`), "-C", fixture.root]);
+  const filename = assetFilename(name, "0.0.13");
+  const slug = name.replace(/^@/, "").replaceAll("/", "-");
+  const extracted = resolve(fixture.root, `mutate-${slug}`);
+  execFileSync("tar", ["-xzf", resolve(fixture.assets, filename), "-C", fixture.root]);
   const packageRoot = resolve(fixture.root, "package");
   edit(packageRoot);
-  const archive = resolve(fixture.archiveRoot, `${name}-mutated.tgz`);
+  const archive = resolve(fixture.archiveRoot, `${slug}-mutated.tgz`);
   pack(packageRoot, archive);
-  cpSync(archive, resolve(fixture.assets, `${name}-0.0.13.tgz`));
+  cpSync(archive, resolve(fixture.assets, filename));
   rmSync(packageRoot, { recursive: true, force: true });
   rmSync(extracted, { recursive: true, force: true });
   updateSourceMetadata(fixture);
@@ -410,12 +420,16 @@ describe("program peer rebind", () => {
     const baseJson = JSON.parse(
       execFileSync(
         "tar",
-        ["-xzOf", resolve(fixture.out, "assets/waffle-base-0.0.14.tgz"), "package/package.json"],
+        [
+          "-xzOf",
+          resolve(fixture.out, "assets/waffle-os-base-0.0.14.tgz"),
+          "package/package.json",
+        ],
         { encoding: "utf8" },
       ),
     );
-    expect(baseJson.dependencies.waffle).toBeUndefined();
-    expect(baseJson.peerDependencies.waffle).toBe("*");
+    expect(baseJson.dependencies["@waffle-os/runtime"]).toBeUndefined();
+    expect(baseJson.peerDependencies["@waffle-os/runtime"]).toBe("*");
     expect(baseJson.waffleHostInterface).toBe(1);
     expect(baseJson.dependencies["waffle-child"]).toContain("programs-v0.0.14");
     expect(baseJson.version).toBe("0.0.14");
@@ -713,7 +727,12 @@ describe("program peer rebind", () => {
     writeFileSync(
       resolve(missingInterfaceRuntime, "package.json"),
       JSON.stringify(
-        { name: "waffle", version: "0.0.106", type: "module", exports: { ".": "./index.js" } },
+        {
+          name: "@waffle-os/runtime",
+          version: "0.0.106",
+          type: "module",
+          exports: { ".": "./index.js" },
+        },
         null,
         2,
       ) + "\n",
@@ -739,7 +758,7 @@ describe("program peer rebind", () => {
       resolve(wrongRuntime, "package.json"),
       JSON.stringify(
         {
-          name: "waffle",
+          name: "@waffle-os/runtime",
           version: "0.0.105",
           waffleHostInterface: 1,
           type: "module",
@@ -816,13 +835,13 @@ describe("program peer rebind", () => {
     const failed = createFixture();
     execFileSync("tar", [
       "-xzf",
-      resolve(failed.assets, "waffle-base-0.0.13.tgz"),
+      resolve(failed.assets, "waffle-os-base-0.0.13.tgz"),
       "-C",
       failed.root,
     ]);
     const raw = resolve(failed.archiveRoot, "raw.tgz");
     execFileSync("tar", ["-czf", raw, "-C", failed.root, "package"]);
-    cpSync(raw, resolve(failed.assets, "waffle-base-0.0.13.tgz"));
+    cpSync(raw, resolve(failed.assets, "waffle-os-base-0.0.13.tgz"));
     rmSync(resolve(failed.root, "package"), { recursive: true, force: true });
     updateSourceMetadata(failed);
     await expect(buildRebind(failed.options)).rejects.toThrow(/identity repack differs/);
@@ -876,7 +895,7 @@ describe("program peer rebind", () => {
       version: "0.0.14",
       sourceDirectory: "packages/base",
       sourceTree: git(fixture.root, ["rev-parse", "HEAD:packages/base"]),
-      url: "https://github.com/ShaulLavo/waffle/releases/download/programs-v0.0.14/waffle-base-0.0.14.tgz",
+      url: "https://github.com/ShaulLavo/waffle/releases/download/programs-v0.0.14/waffle-os-base-0.0.14.tgz",
     });
     expect(result.sourceCommit).toBe(git(fixture.root, ["rev-parse", "HEAD"]));
   }, 60_000);

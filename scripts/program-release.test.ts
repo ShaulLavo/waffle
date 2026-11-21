@@ -197,12 +197,12 @@ describe("base closure", () => {
         ...packed.dependencies,
         ...packed.peerDependencies,
       })) {
-        expect(spec).toBe(name === "waffle" ? "*" : urls.get(name));
+        expect(spec).toBe(name === "@waffle-os/runtime" ? "*" : urls.get(name));
       }
     }
-    const base = packedManifest(resolve(out, "assets", "waffle-base-0.0.92.tgz"));
+    const base = packedManifest(resolve(out, "assets", "waffle-os-base-0.0.92.tgz"));
     expect(base.waffleHostInterface).toBe(runtimeHostInterface);
-    expect(base.peerDependencies).toEqual({ waffle: "*" });
+    expect(base.peerDependencies).toEqual({ "@waffle-os/runtime": "*" });
     expect(Object.keys(base.dependencies).toSorted()).toEqual([
       "@waffle-os/coreutils",
       "@waffle-os/findutils",
@@ -269,16 +269,19 @@ describe("base closure", () => {
 
 describe("refusals", () => {
   const workspace = new Map([
-    ["waffle", { name: "waffle", directory: "waffle", root: "/x/waffle", manifest: {} }],
+    [
+      "@waffle-os/runtime",
+      { name: "@waffle-os/runtime", directory: "waffle", root: "/x/waffle", manifest: {} },
+    ],
     ["waffle-a", { name: "waffle-a", directory: "a", root: "/x/a", manifest: {} }],
   ]);
-  const urls = new Map([["waffle", runtimeUrl]]);
+  const urls = new Map([["@waffle-os/runtime", runtimeUrl]]);
 
   test("workspace edge outside the closure", () => {
     const manifest = {
       name: "waffle-b",
       waffleHostInterface: 1,
-      peerDependencies: { waffle: "*" },
+      peerDependencies: { "@waffle-os/runtime": "*" },
       dependencies: { "waffle-a": "workspace:*" },
     };
     expect(() =>
@@ -292,7 +295,7 @@ describe("refusals", () => {
         {
           name: "waffle-b",
           waffleHostInterface: 1,
-          peerDependencies: { waffle: "*" },
+          peerDependencies: { "@waffle-os/runtime": "*" },
           dependencies,
         },
         "0.0.92",
@@ -310,7 +313,7 @@ describe("refusals", () => {
   test("new releases reject missing and mismatched family metadata", () => {
     const base = {
       name: "waffle-b",
-      peerDependencies: { waffle: "*" },
+      peerDependencies: { "@waffle-os/runtime": "*" },
     };
     expect(() =>
       rewriteManifest({ ...base, dependencies: { other: "0.0.1" } }, "0.0.92", {
@@ -332,15 +335,15 @@ describe("refusals", () => {
     const manifest = {
       name: "waffle-b",
       waffleHostInterface: 1,
-      peerDependencies: { waffle: "*" },
-      devDependencies: { waffle: "workspace:*" },
+      peerDependencies: { "@waffle-os/runtime": "*" },
+      devDependencies: { "@waffle-os/runtime": "workspace:*" },
     };
     const result = rewriteManifest(manifest, "0.0.92", {
       workspace,
       urls,
       runtimeHostInterface: hostInterface,
     });
-    expect(result.manifest.peerDependencies).toEqual({ waffle: "*" });
+    expect(result.manifest.peerDependencies).toEqual({ "@waffle-os/runtime": "*" });
     expect(result.manifest.devDependencies).toBeUndefined();
     expect(result.stripped).toEqual(["devDependencies"]);
   });

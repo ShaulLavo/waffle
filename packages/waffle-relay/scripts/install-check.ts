@@ -92,7 +92,10 @@ async function install(manager: "npm" | "bun", nativeArchive: Uint8Array): Promi
     version: "0.0.0",
     private: true,
     type: "module",
-    dependencies: { waffle: `file:${runtime}`, "@waffle-os/relay": `file:${scratch}/relay.tgz` },
+    dependencies: {
+      "@waffle-os/runtime": `file:${runtime}`,
+      "@waffle-os/relay": `file:${scratch}/relay.tgz`,
+    },
   };
   await writeFile(join(directory, "package.json"), JSON.stringify(manifest));
   const env = {
