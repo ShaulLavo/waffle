@@ -371,3 +371,49 @@ test("a staged exec rejection holds the source and reports the exact failure", a
     await f.close();
   }
 });
+
+test("the leader can exit while an independent child's real retirement fences remain pending", async () => {
+  const contexts = new Map<number, ProcessContext>();
+  const release = Promise.withResolvers<void>();
+  let held: FilesystemIdentity | undefined;
+  const f = await fixture({
+    launch(context) {
+      contexts.set(context.pid, context);
+      context.started();
+    },
+    quiesce(identity) {
+      if (identity === held) return release.promise;
+    },
+  });
+  try {
+    const leader = f.spawn();
+    await f.broker.runtimeMessage(leader.message, f.root.pid);
+    await f.supervisor.start(leader.pid);
+    held = createFilesystemIdentity();
+    const child = f.spawn(
+      f.client(leader.transport, {
+        prepareSpawn: () => ({ data: { filesystem: held } }),
+      }),
+    );
+    await f.broker.runtimeMessage(child.message, leader.pid);
+    await f.supervisor.start(child.pid);
+    const parent = contexts.get(leader.pid);
+    const descendant = contexts.get(child.pid);
+    if (!parent || !descendant) throw new Error("missing process adapter");
+    const outcome = workerProcessState(leader.transport).jobOutcome;
+    parent.exit(17);
+    await until(() => readOutcome(outcome)?.code === 17);
+    expect(f.broker.checkCommandCleanup(f.root, true)).toBe(false);
+    f.broker.stopCommandRoot(f.root);
+    expect(f.broker.checkCommandCleanup(f.root, true)).toBe(false);
+    const childState = workerProcessState(child.transport);
+    expect(readOutcome(childState.signals.outcome)).toMatchObject({ kind: "signaled", code: 9 });
+    expect(controlLoad(childState.confirmed)).toBe(0);
+    release.resolve();
+    await until(() => f.broker.checkCommandCleanup(f.root, true));
+    await f.broker.retireCommandRoot(f.root);
+  } finally {
+    release.resolve();
+    await f.close();
+  }
+});

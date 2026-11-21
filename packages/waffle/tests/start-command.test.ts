@@ -1,3 +1,4 @@
+import { compileCommandGuests } from "./fixtures/command-guests.js";
 import { expect, test } from "bun:test";
 import {
   BrowserProcessBroker,
@@ -91,4 +92,32 @@ test("kill joins a late adapter handle and its physical stop", async () => {
     releaseStop.resolve();
     await runtime.dispose();
   }
+});
+
+test("the public command entry preserves a real generic worker's ordinary exit 130", async () => {
+  const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: fsWorker } });
+  const workerUrl = new URL("../browser/preview1-worker.ts", import.meta.url).href;
+  try {
+    const source = (await compileCommandGuests()).get("exit130");
+    if (!source) throw new Error("Missing exit fixture");
+    runtime.registerAdapter("generic", (context, service) =>
+      service.launchWorker(context, {
+        workerUrl,
+        request: { module: context.module, args: context.request.argv, env: context.request.env },
+      }),
+    );
+    runtime.registerProgram("/fixture", { adapter: "generic", source });
+    await runtime.filesystem.writeFile("/fixture", "");
+    const result = await startCommand(runtime, "/fixture", options).result;
+    expect(result.exit).toEqual({ kind: "exited", code: 130, status: 130 });
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+test("runtime disposal failure rejects the command before broker disposal and cancels stdin", () => {
+  const entry = new URL("./fixtures/command-disposal.ts", import.meta.url).pathname;
+  const attempt = Bun.spawnSync([process.execPath, entry], { timeout: 5000 });
+  expect(attempt.stderr.toString()).toBe("");
+  expect(attempt.exitCode).toBe(0);
 });

@@ -719,10 +719,13 @@ class PipeState {
           ? this.writers[index]!
           : this.readers[index - this.writers.length]!;
       const pid = ring.owner;
+      const reader = index >= this.writers.length;
       if (
-        pid &&
-        (pid === RECLAIMING || !this.registry?.isRevoked(Math.abs(pid))) &&
-        (pid < 0 ? !ring.closed : ring.references > 0)
+        reader
+          ? this.readerPending(ring)
+          : pid &&
+            (pid === RECLAIMING || !this.registry?.isRevoked(Math.abs(pid))) &&
+            (pid < 0 ? !ring.closed : ring.references > 0)
       ) {
         alive = true;
         break;
@@ -754,9 +757,11 @@ class PipeState {
   }
   /** A reservation or reclaiming slot may still publish a reader after the last close. */
   readerHangup(): boolean {
+    const changed = atomicsLoad(this.changed, 0);
     const generation = atomicsLoad(this.control, 5);
     if (ringSome(this.readers, (ring) => this.readerPending(ring))) return false;
-    if (atomicsLoad(this.control, 5) === generation) return true;
+    if (atomicsLoad(this.control, 5) === generation && atomicsLoad(this.changed, 0) === changed)
+      return true;
     this.signal();
     return false;
   }

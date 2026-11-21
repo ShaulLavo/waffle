@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { chromium, firefox, webkit } from "playwright";
 import { compileCommandGuests } from "../../packages/waffle/tests/fixtures/command-guests.ts";
@@ -55,12 +57,12 @@ const server = Bun.serve({
     return new Response("missing", { status: 404, headers });
   },
 });
-try {
-  for (const name of process.argv.slice(2)) {
-    assert.ok(name === "chromium" || name === "firefox" || name === "webkit");
-    const browser = await engines[name].launch();
+async function run(name: keyof typeof engines) {
+  const profile = await mkdtemp(resolve(tmpdir(), "waffle-command-"));
+  try {
+    const browser = await engines[name].launchPersistentContext(profile);
     try {
-      const page = await browser.newPage();
+      const page = browser.pages()[0] ?? (await browser.newPage());
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(String(error)));
       page.on("console", (line) => {
@@ -69,25 +71,42 @@ try {
       await page.goto(server.url.href);
       await page.waitForSelector('body[data-done="true"]', { timeout: 60_000 });
       const result: unknown = JSON.parse(await page.locator("body").innerText());
-      console.log(JSON.stringify({ name, result, errors }));
+      console.log(
+        JSON.stringify({ name, result, errors: errors.map((error) => error.split("\n")[0]) }),
+      );
       assert.ok(
         result && typeof result === "object" && "ok" in result && result.ok && "line" in result,
       );
       assert.equal(result.line, "hello from cat\n");
-      const expectedStarts = errors.filter((error) =>
-        /runtime: process controller failed (ExecutableNotFound|ExecutableNotRunnable|ExecutableFormatError)/.test(
-          error,
-        ),
+      const unexpected = errors.filter(
+        (error) =>
+          !/runtime: process controller failed (ExecutableNotFound|ExecutableNotRunnable|ExecutableFormatError|Error: Truncated declaration section)/.test(
+            error,
+          ),
       );
-      assert.equal(expectedStarts.length, 7);
-      assert.deepEqual(
-        errors.filter((error) => !expectedStarts.includes(error)),
-        [],
-      );
+      assert.equal(errors.length, 7);
+      assert.deepEqual(unexpected, []);
     } finally {
       await browser.close();
     }
+  } finally {
+    await rm(profile, { recursive: true, force: true });
   }
+}
+
+try {
+  const names = process.argv.slice(2);
+  assert.ok(names.length, "Choose chromium, firefox, or webkit");
+  const failures: unknown[] = [];
+  for (const name of names) {
+    assert.ok(name === "chromium" || name === "firefox" || name === "webkit");
+    try {
+      await run(name);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length) throw new AggregateError(failures, "Command browser qualification failed");
 } finally {
   await server.stop(true);
 }

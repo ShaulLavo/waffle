@@ -632,8 +632,6 @@ export class BrowserProcessBroker {
   private async launchPrepared(
     context: ProcessContext | CommandProcessContext,
   ): Promise<ProcessHandle> {
-    const transport = this.transport.get(context.pid);
-    if (transport) this.checkCommandAdmission(transport);
     const descendant = this.descendant(context.pid);
     if (!descendant) return this.launchAdapter(context);
     return this.prepareDescendant(context, descendant.hook, descendant.transport);
@@ -1398,8 +1396,15 @@ export class BrowserProcessBroker {
   }
   private checkCommandAdmission(transport: WorkerProcessTransport): void {
     const scope = this.commandScope(transport);
-    if (scope?.stopped || commandTransferFailed(scope?.root.commandTransfer))
+    if (scope && this.commandAdmissionClosed(scope))
       throw new ProcessError(ProcessErrno.SRCH, "Command is stopping");
+  }
+  private commandAdmissionClosed(scope: CommandRootState): boolean {
+    return (
+      scope.stopped ||
+      scope.failures.size !== 0 ||
+      commandTransferFailed(scope.root.commandTransfer)
+    );
   }
   private trackCommandTransfer(
     transport: WorkerProcessTransport,
@@ -1422,7 +1427,7 @@ export class BrowserProcessBroker {
   private async retireRejectedCommand(transport: WorkerProcessTransport): Promise<void> {
     const returned = this.processNativeReturn(transport);
     if (this.acquiredProcesses.get(transport.pid) === this.processLifetime(transport)) {
-      await this.retireProcess(transport.pid);
+      await this.retireProcess(transport.pid, true);
       this.retireChildController(transport.pid);
     }
     returned();
@@ -1929,7 +1934,7 @@ export class BrowserProcessBroker {
     if (message.operation !== "spawn" && message.operation !== "exec") return false;
     try {
       const scope = this.commandScope(message.transport);
-      return !!scope?.stopped || commandTransferFailed(scope?.root.commandTransfer);
+      return scope !== undefined && this.commandAdmissionClosed(scope);
     } catch (error) {
       if (!isCollectedProcess(error)) throw error;
       return false;
@@ -3437,10 +3442,12 @@ export class BrowserProcessBroker {
     (this.controllerStops ??= new Map()).set(pid, { pending: stopping, controllerStop: true });
     return stopping;
   }
-  private async retireProcess(pid: number): Promise<void> {
+  private async retireProcess(pid: number, rejectedTransferFenced = false): Promise<void> {
     await (this.children.get(pid)?.launch.pending ?? this.pendingLaunches?.get(pid))?.acquired;
     this.observationOwners.get(pid)?.close();
-    if (this.suspended) {
+    // A rejected transfer never entered a guest adapter. Its own fence is already
+    // complete, and shutdown waits for that rejection before it opens the global stop gate.
+    if (this.suspended && !rejectedTransferFenced) {
       await this.retirementGate.promise;
       return;
     }

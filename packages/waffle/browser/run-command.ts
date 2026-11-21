@@ -51,7 +51,12 @@ class Capture {
     }
     if (length < data.length) this.truncated = true;
     try {
-      this.onChunk?.(data.slice());
+      const onChunk = this.onChunk;
+      if (!onChunk) return;
+      const returned: unknown = onChunk(data.slice());
+      if (returned === undefined) return;
+      if (returned instanceof Promise) void returned.catch(() => {});
+      throw new TypeError("Command output callbacks must return undefined synchronously");
     } catch (error) {
       this.onChunk = undefined;
       throw error;

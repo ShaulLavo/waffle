@@ -37,11 +37,14 @@ export function recordCommandTransferFailure(
   atomicsStore(words, 1, source.pid);
   atomicsStore(words, 2, source.generation);
   atomicsStore(words, 3, target);
-  const bytes = encodeUtf8Prefix(describeStartError(error), DIAGNOSTIC_BYTES);
-  typedArraySet(new Uint8ArrayConstructor(buffer, HEADER_BYTES), bytes);
-  atomicsStore(words, 4, typedArrayLength(bytes));
-  atomicsStore(words, 0, kind === "spawn" ? 1 : 2);
-  wakeDirectory(source.directory);
+  try {
+    const bytes = encodeUtf8Prefix(describeStartError(error), DIAGNOSTIC_BYTES);
+    typedArraySet(new Uint8ArrayConstructor(buffer, HEADER_BYTES), bytes);
+    atomicsStore(words, 4, typedArrayLength(bytes));
+  } finally {
+    atomicsStore(words, 0, kind === "spawn" ? 1 : 2);
+    wakeDirectory(source.directory);
+  }
 }
 
 export function commandTransferFailed(buffer: SharedArrayBuffer | undefined): boolean {
