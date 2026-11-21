@@ -68,6 +68,24 @@ for (const imported of [false, true])
     }
   });
 
+test("failure preparing native imports stays before instantiating", async () => {
+  const ping = () => 42;
+  const f = run(namedMemoryImportGuest(), {
+    namespaces: () => ({ env: { ping } }),
+    imports: () => ({
+      env: {
+        get ping(): never {
+          throw new Error("import argument preparation failed");
+        },
+      },
+    }),
+    run: () => 0,
+  });
+  await f.pending;
+  expect(f.errors[0]).toContain("import argument preparation failed");
+  expect(readStartProgress(Atomics.load(f.bytes, 0))?.step).toBe("group-joined");
+});
+
 test("cancellation fences late memory binding and completion", async () => {
   const entered = Promise.withResolvers<
     WorkerBindingsContext & { bindMemory(memory: WebAssembly.Memory): void }
