@@ -50,11 +50,7 @@ test("echo-only changes select a same-run xargs producer without repeating its u
       patterns.some((pattern) => new Glob(String(pattern)).match(path)),
       path,
     );
-  assert.deepEqual(record(jobs["coreutils-echo"]).needs, [
-    "changes",
-    "network-wasm",
-    "findutils-xargs",
-  ]);
+  assert.deepEqual(record(jobs["coreutils-echo"]).needs, ["changes", "findutils-xargs"]);
   assert.ok(
     String(record(jobs["findutils-xargs"]).if).includes(
       "needs.changes.outputs.coreutils == 'true'",
@@ -102,7 +98,7 @@ test("consumer verifies the exact same-run artifact and never builds xargs or ne
 });
 
 test("network and singular libc caches are shared exactly and native compilation stays one lane", () => {
-  const network = steps(jobs["network-wasm"]).find((step) => step.id === "network-artifact");
+  const network = steps(jobs.changes).find((step) => step.id === "network-artifact");
   const libc = steps(producer).find((step) => step.id === "libc");
   for (const job of [producer, consumer]) {
     const restored = steps(job).find((step) => step.id === "network");

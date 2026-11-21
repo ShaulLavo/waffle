@@ -21,12 +21,16 @@ env:
 
 jobs:
   changes:
+    name: Changes and network artifact
     if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/packages/waffle/target
+      WAFFLE_TOOL_CACHE: ${{ github.workspace }}/.network-tools
     outputs:
+      paths-result: ${{ steps.paths.outcome }}
       libc: ${{ steps.paths.outputs.libc }}
-      browser: ${{ steps.paths.outputs.browser }}
-      network: ${{ steps.paths.outputs.network }}
+      browser: ${{ steps.paths.outcome != 'success' || steps.paths.outputs.browser != 'false' }}
       coreutils: ${{ steps.paths.outputs.coreutils }}
       checksums: ${{ steps.paths.outputs.checksums }}
       sed: ${{ steps.paths.outputs.sed }}
@@ -46,6 +50,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: paths
+        continue-on-error: true
         with:
           base: ${{ github.ref }}
           filters: |
@@ -430,15 +435,6 @@ jobs:
               - 'packages/waffle/tests/preview1-socket-support.ts'
               - 'packages/waffle/tests/fixtures/**'
               - 'packages/waffle/scripts/build-memory-group-fixture.ts'
-  network-wasm:
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled()) }}
-    runs-on: ubuntu-latest
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/packages/waffle/target
-      WAFFLE_TOOL_CACHE: ${{ github.workspace }}/.network-tools
-    steps:
-      - uses: actions/checkout@v4
       - uses: ./.github/actions/release-downloads
       - uses: ./.github/actions/setup-tools
         with:
@@ -462,7 +458,7 @@ jobs:
           path: .network-tools
           key: network-translator-v1-${{ hashFiles('packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**') }}
       - name: Cache Rust toolchain and Cargo build inputs
-        if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
+        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.paths.outputs.network == 'true' || steps.paths.outcome != 'success' || github.event_name == 'workflow_dispatch'
         uses: actions/cache@v4
         id: rust-cache
         with:
@@ -474,7 +470,7 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-${{ hashFiles('packages/waffle/network/**/*.rs') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-
       - uses: dtolnay/rust-toolchain@stable
-        if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
+        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.paths.outputs.network == 'true' || steps.paths.outcome != 'success' || github.event_name == 'workflow_dispatch'
         with:
           toolchain: 1.98.1
           targets: wasm32-unknown-unknown
@@ -483,7 +479,7 @@ jobs:
         if: steps.network-artifact.outputs.cache-hit != 'true'
         run: bun run --cwd packages/waffle build:network
       - name: Rust native, state and actual WASM tests
-        if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
+        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.paths.outputs.network == 'true' || steps.paths.outcome != 'success' || github.event_name == 'workflow_dispatch'
         run: |
           bun tooling/check-network-rust.ts
           cargo fmt --all -- --check
@@ -493,7 +489,7 @@ jobs:
         env:
           WAFFLE_TCP_MODULE: ${{ github.workspace }}/packages/waffle/browser/net/network.wasm
       - name: Verify network compiler lifecycle and raw source installation
-        if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
+        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.paths.outputs.network == 'true' || steps.paths.outcome != 'success' || github.event_name == 'workflow_dispatch'
         working-directory: packages/waffle
         run: |
           bun test tooling/network-translator.test.ts
@@ -505,11 +501,12 @@ jobs:
           echo "Translator cache-hit=${{ steps.translator-cache.outputs.cache-hit }}"
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
+
   awk:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-    needs: [changes, network-wasm]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.awk == 'true')) }}
+    needs: changes
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.awk == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -586,8 +583,8 @@ jobs:
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   procps:
-    needs: [changes, network-wasm]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true')) }}
+    needs: changes
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.procps == 'true')) }}
     runs-on: ubuntu-latest
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
@@ -630,8 +627,8 @@ jobs:
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   diffutils:
-    needs: [changes, network-wasm]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true')) }}
+    needs: changes
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.diffutils == 'true')) }}
     runs-on: ubuntu-latest
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
@@ -734,8 +731,8 @@ jobs:
   gh:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-    needs: [changes, network-wasm]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.gh == 'true')) }}
+    needs: changes
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.gh == 'true')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -771,8 +768,8 @@ jobs:
   jq:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-    needs: [changes, network-wasm]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true')) }}
+    needs: changes
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.jq == 'true')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -887,8 +884,8 @@ jobs:
   curl:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-    needs: [changes, network-wasm]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.curl == 'true')) }}
+    needs: changes
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.curl == 'true')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -955,8 +952,8 @@ jobs:
   tar:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-    needs: [changes, network-wasm]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.tar == 'true')) }}
+    needs: changes
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.tar == 'true')) }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -1060,7 +1057,7 @@ jobs:
     if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-    needs: network-wasm
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -1127,16 +1124,16 @@ jobs:
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   libc:
-    needs: [changes, network-wasm]
+    needs: changes
     outputs:
       memory-group-artifact-id: ${{ steps.memory-group-artifact.outputs.artifact-id }}
       gpu-artifact-id: ${{ steps.gpu-artifact.outputs.artifact-id }}
     # Also the single producer of the memory group fixture that the browser gate consumes.
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser == 'true')) }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser != 'false')) }}
     runs-on: ubuntu-latest
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-      RUN_LIBC: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' }}
+      RUN_LIBC: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.libc == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/release-downloads
@@ -1290,13 +1287,13 @@ jobs:
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   threads-fixture:
     needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true')) }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.browser != 'false')) }}
     uses: ./.github/workflows/threads-fixture.yml
   browser:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-    needs: [changes, network-wasm, libc, threads-fixture]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true')) }}
+    needs: [changes, libc, threads-fixture]
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.browser != 'false')) }}
     # Playwright 1.64.1 browsers are proven on Ubuntu 24.04; move the pin deliberately with a green run.
     runs-on: ubuntu-24.04
     # Chromium/Firefox plus recovery on one runner, serial WebKit and the isolated runners on the other.
@@ -1452,22 +1449,22 @@ jobs:
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   findutils-xargs:
-    needs: [changes, network-wasm]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.findutils == 'true' || needs.changes.outputs.coreutils == 'true')) }}
+    needs: changes
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.findutils == 'true' || needs.changes.outputs.coreutils == 'true')) }}
     uses: ./.github/workflows/findutils-xargs.yml
     with:
-      test-process: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.findutils == 'true' }}
+      test-process: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.findutils == 'true' }}
   coreutils-echo:
-    needs: [changes, network-wasm, findutils-xargs]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true')) }}
+    needs: [changes, findutils-xargs]
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.coreutils == 'true')) }}
     uses: ./.github/workflows/coreutils-echo.yml
   coreutils-checksums:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
       WASI_LIBC_JOBS: "2"
       GNU_CHECKSUM_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-checksum-native-oracle
-    needs: [changes, network-wasm]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true')) }}
+    needs: changes
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.checksums == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1590,7 +1587,7 @@ jobs:
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   programs:
     needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.programs == 'true')) }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.programs == 'true')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -1625,20 +1622,20 @@ jobs:
       - run: bun run programs:routes
       - run: bun run programs:source
       - name: Record exact GNU date source and native compiler identity
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.coreutils == 'true' }}
         id: gnu-date-identity
         run: |
           set -euo pipefail
           identity=$(node packages/coreutils/scripts/build-native-date-oracle.ts --identity)
           printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.coreutils == 'true' }}
         id: gnu-date-native
         with:
           path: .build/gnu-date-native-oracle
           key: ${{ runner.os }}-${{ runner.arch }}-gnu-date-9.12-v1-${{ steps.gnu-date-identity.outputs.identity }}
       - name: Build or verify only the pinned GNU date native oracle
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.coreutils == 'true' }}
         env:
           GNU_DATE_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-date-native-oracle
           GNU_DATE_ORACLE_SCRATCH_ROOT: ${{ runner.temp }}
@@ -1650,7 +1647,7 @@ jobs:
           printf 'GNU_DATE=%s/date\n' "$GNU_DATE_ORACLE_ROOT" >> "$GITHUB_ENV"
           printf 'GNU_DATE_ORACLE_ROOT=%s\n' "$GNU_DATE_ORACLE_ROOT" >> "$GITHUB_ENV"
       - name: Verify date source against the pinned native GNU oracle
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.coreutils == 'true' }}
         run: node --disable-warning=ExperimentalWarning --test packages/coreutils/scripts/date-source.test.ts
       - run: bun run --cwd packages/python test:composition
       - run: bun run --cwd packages/python test:build
@@ -1671,7 +1668,6 @@ jobs:
     needs:
       [
         changes,
-        network-wasm,
         awk,
         procps,
         diffutils,
@@ -1696,6 +1692,10 @@ jobs:
         run: |
           echo '::error::Mark this PR ready for review to run the required checks.'
           exit 1
+      - name: Require successful change detection
+        env:
+          PATHS_RESULT: ${{ needs.changes.outputs.paths-result }}
+        run: test "$PATHS_RESULT" = success
       - name: Reject failed or cancelled CI jobs
         env:
           RESULTS: ${{ toJSON(needs) }}

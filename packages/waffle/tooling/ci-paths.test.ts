@@ -32,15 +32,20 @@ for (const name of ["browser", "libc"]) {
     const job = record(jobs[name]);
     // libc is also the single producer of the memory group fixture the browser gate consumes.
     expect(job.needs).toEqual(
-      name === "browser"
-        ? ["changes", "network-wasm", "libc", "threads-fixture"]
-        : ["changes", "network-wasm"],
+      name === "browser" ? ["changes", "libc", "threads-fixture"] : "changes",
     );
-    const producer = name === "libc" ? " || needs.changes.outputs.browser == 'true'" : "";
+    const selected =
+      name === "libc"
+        ? "needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser != 'false'"
+        : "needs.changes.outputs.browser != 'false'";
     expect(job.if).toBe(
-      `\${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true'${producer})) }}`,
+      `\${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || ${selected})) }}`,
     );
-    expect(record(changes.outputs)[name]).toBe(`\${{ steps.paths.outputs.${name} }}`);
+    const output =
+      name === "libc"
+        ? "${{ steps.paths.outputs.libc }}"
+        : "${{ steps.paths.outcome != 'success' || steps.paths.outputs.browser != 'false' }}";
+    expect(record(changes.outputs)[name]).toBe(output);
   });
 
   test(`${name} selects runtime, dependency and workflow inputs`, () => {
@@ -246,7 +251,7 @@ test("thread, memory and producer inputs select the browser and all its fixture 
   const producer = record(jobs["threads-fixture"]);
   expect(producer.needs).toBe("changes");
   expect(producer.if).toBe(record(jobs.browser).if);
-  expect(String(record(jobs.libc).if)).toContain("needs.changes.outputs.browser == 'true'");
+  expect(String(record(jobs.libc).if)).toContain("needs.changes.outputs.browser != 'false'");
   expect(producer.uses).toBe("./.github/workflows/threads-fixture.yml");
   const triggers = record(threadsWorkflow.on);
   expect(Object.keys(triggers).sort()).toEqual(["workflow_call", "workflow_dispatch"]);
@@ -439,7 +444,7 @@ test("package and site gates run for every ready PR", () => {
     expect(job.if).toBe(
       "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}",
     );
-    expect(job.needs).toBe(name === "package" ? "network-wasm" : undefined);
+    expect(job.needs).toBe(name === "package" ? "changes" : undefined);
   }
 });
 
@@ -486,7 +491,7 @@ test("Rust network inputs select one release test/build lane and an exact WASM c
   ])
     expect(selected("network", path), path).toBe(true);
   expect(selected("network", "docs/network.md")).toBe(false);
-  const steps = stepsFor("network-wasm");
+  const steps = stepsFor("changes");
   expect(
     steps.filter((step) => typeof step.run === "string" && step.run.includes("cargo test")),
   ).toHaveLength(1);
@@ -526,7 +531,7 @@ test("network consumers verify restored bytes before install and forbid Cargo", 
 });
 
 test("network producer checks Rust target ownership with lockfile-sensitive caches", () => {
-  const steps = stepsFor("network-wasm");
+  const steps = stepsFor("changes");
   const cache = steps.find((step) => step.id === "rust-cache");
   expect(String(record(cache?.with).key)).toContain(
     "hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml')",
@@ -617,9 +622,9 @@ test("programs prepares locked Cargo sources after cache restore and before sour
 
 test("jq has a separate leaf with the shared network artifact prerequisite", () => {
   const job = record(jobs.jq);
-  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.needs).toBe("changes");
   expect(job.if).toBe(
-    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true')) }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.jq == 'true')) }}",
   );
   expect(record(changes.outputs).jq).toBe("${{ steps.paths.outputs.jq }}");
   const steps = stepsFor("jq");
@@ -855,7 +860,7 @@ test("program producers explicitly provision the pinned optimizer before running
     expect(steps[optimizer]?.["continue-on-error"]).toBeUndefined();
   }
   expect(
-    stepsFor("network-wasm").some((step) => step.uses === "./.github/actions/program-optimizer"),
+    stepsFor("changes").some((step) => step.uses === "./.github/actions/program-optimizer"),
   ).toBe(false);
   for (const path of [
     "ci.yml",
@@ -878,10 +883,10 @@ test("program producers explicitly provision the pinned optimizer before running
 
 test("diffutils selects its exact integration inputs", () => {
   const job = record(jobs.diffutils);
-  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.needs).toBe("changes");
   expect(record(changes.outputs).diffutils).toBe("${{ steps.paths.outputs.diffutils }}");
   expect(job.if).toBe(
-    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true')) }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.diffutils == 'true')) }}",
   );
   for (const path of [
     ".github/workflows/ci.yml",
@@ -906,7 +911,7 @@ test("diffutils selects its exact integration inputs", () => {
 });
 
 test("diffutils consumes the single verified network artifact before installation", () => {
-  const producer = stepsFor("network-wasm");
+  const producer = stepsFor("changes");
   const steps = stepsFor("diffutils");
   const cache = producer.find((step) => step.id === "network-artifact");
   const restore = steps.findIndex((step) => step.id === "network-artifact");
@@ -1012,7 +1017,7 @@ test("diffutils package exposes its actual commands", async () => {
 test("gh selects its inputs without selecting native program jobs for gh-only changes", () => {
   const job = record(jobs.gh);
   expect(record(changes.outputs).gh).toBe("${{ steps.paths.outputs.gh }}");
-  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.needs).toBe("changes");
   expect(String(job.if)).toContain("needs.changes.outputs.gh == 'true'");
   for (const path of [
     "packages/gh/src/program.ts",
@@ -1037,7 +1042,7 @@ test("gh selects its inputs without selecting native program jobs for gh-only ch
 
 test("gh restores the exact network asset and does not set up native compilers", () => {
   const steps = stepsFor("gh");
-  const producer = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  const producer = stepsFor("changes").find((step) => step.id === "network-artifact");
   const restore = steps.find((step) => step.id === "network-artifact");
   expect(record(restore?.with).key).toBe(record(producer?.with).key);
   expect(record(restore?.with)["fail-on-cache-miss"]).toBe(true);
@@ -1070,9 +1075,9 @@ test("gh restores the exact network asset and does not set up native compilers",
 
 test("awk has one bounded leaf using the normal finalizer and verified network bytes", () => {
   const job = record(jobs.awk);
-  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.needs).toBe("changes");
   expect(job.if).toBe(
-    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.awk == 'true')) }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.awk == 'true')) }}",
   );
   expect(record(changes.outputs).awk).toBe("${{ steps.paths.outputs.awk }}");
   expect(job["timeout-minutes"]).toBe(15);
@@ -1094,7 +1099,7 @@ test("awk has one bounded leaf using the normal finalizer and verified network b
   expect(producer).toBeDefined();
   expect(steps.indexOf(record(producer))).toBeGreaterThan(optimizer);
   expect(record(producer?.env).AWK_SCRATCH_ROOT).toBe("${{ runner.temp }}");
-  const network = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  const network = stepsFor("changes").find((step) => step.id === "network-artifact");
   expect(record(steps[restore]?.with).key).toBe(record(network?.with).key);
   expect(record(steps[restore]?.with)["fail-on-cache-miss"]).toBe(true);
   const commands = steps.map((step) => step.run).join("\n");
@@ -1153,10 +1158,10 @@ test("tar scratch path is resolved by a runner step, not job-context evaluation"
 test("procps selects its exact inputs without selecting native work for package-only changes", () => {
   const job = record(jobs.procps);
   expect(record(changes.outputs).procps).toBe("${{ steps.paths.outputs.procps }}");
-  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.needs).toBe("changes");
   expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
   expect(job.if).toBe(
-    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true')) }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.procps == 'true')) }}",
   );
   expect(filters.procps).toEqual([
     ".github/workflows/ci.yml",
@@ -1200,7 +1205,7 @@ test("procps runs pure and runtime controls once using verified network bytes wi
   expect(execute).toBeGreaterThan(prepare);
   expect(runs.filter((run) => run === "bun run prepare:package")).toHaveLength(1);
   expect(runs.filter((run) => run === "bun run programs:procps")).toHaveLength(1);
-  const network = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  const network = stepsFor("changes").find((step) => step.id === "network-artifact");
   expect(record(steps[restore]?.with).key).toBe(record(network?.with).key);
   expect(record(steps[restore]?.with)["fail-on-cache-miss"]).toBe(true);
   expect(runs).toContain(
@@ -1224,9 +1229,9 @@ test("procps runs pure and runtime controls once using verified network bytes wi
 
 test("checksums has a bounded leaf using the existing producer route", () => {
   const job = record(jobs["coreutils-checksums"]);
-  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.needs).toBe("changes");
   expect(job.if).toBe(
-    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true')) }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.checksums == 'true')) }}",
   );
   expect(record(changes.outputs).checksums).toBe("${{ steps.paths.outputs.checksums }}");
   expect(job["timeout-minutes"]).toBe(30);
@@ -1573,7 +1578,7 @@ test("translated network inputs and assets share every exact cache and only one 
     expect(selected("network", `packages/waffle/${path}`), path).toBe(true);
     expect(selected("browser", `packages/waffle/${path}`), path).toBe(true);
   }
-  const producer = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  const producer = stepsFor("changes").find((step) => step.id === "network-artifact");
   const key = String(record(producer?.with).key);
   expect(key).toContain("network-wasm-v2-");
   expect(key).toContain("tooling/network-translator/**");
@@ -1586,7 +1591,7 @@ test("translated network inputs and assets share every exact cache and only one 
     expect(record(cache.with).key).toBe(key);
     for (const artifact of ["network.buffer.js", "network.buffer.sha256", "network.growth.json"])
       expect(String(record(cache.with).path)).toContain(artifact);
-    if (name === "network-wasm") continue;
+    if (name === "changes") continue;
     expect(
       steps.some(
         (step) =>
@@ -1595,12 +1600,12 @@ test("translated network inputs and assets share every exact cache and only one 
     ).toBe(false);
   }
   expect(
-    stepsFor("network-wasm").filter((step) => String(step.run).includes("build:network")),
+    stepsFor("changes").filter((step) => String(step.run).includes("build:network")),
   ).toHaveLength(1);
 });
 
 test("release, echo and xargs restore all translated artifacts under the producer key", async () => {
-  const producer = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  const producer = stepsFor("changes").find((step) => step.id === "network-artifact");
   const key = record(producer?.with).key;
   for (const name of ["release", "coreutils-echo", "findutils-xargs"]) {
     const source = await Bun.file(
@@ -1623,14 +1628,43 @@ test("release, echo and xargs restore all translated artifacts under the produce
 });
 
 test("compiler lifecycle and truly raw source proof run only in the network producer", () => {
-  const producer = stepsFor("network-wasm");
+  const producer = stepsFor("changes");
   expect(producer.some((step) => String(step.run).includes("network-source-smoke.ts"))).toBe(true);
   for (const [name, job] of Object.entries(jobs)) {
-    if (name === "network-wasm" || !Array.isArray(record(job).steps)) continue;
+    if (name === "changes" || !Array.isArray(record(job).steps)) continue;
     expect(
       stepsFor(name).some((step) =>
         /network-source-smoke|network-translator.test/.test(String(step.run)),
       ),
     ).toBe(false);
+  }
+});
+
+test("change detection shares the network producer's runner and remains blocking", () => {
+  expect(changes.needs).toBeUndefined();
+  expect(paths?.["continue-on-error"]).toBe(true);
+  expect(record(changes.outputs)["paths-result"]).toBe("${{ steps.paths.outcome }}");
+  const steps = stepsFor("changes");
+  expect(steps.filter((step) => step.uses === "actions/checkout@v4")).toHaveLength(1);
+  expect(steps.findIndex((step) => step.id === "paths")).toBeLessThan(
+    steps.findIndex((step) => step.id === "network-artifact"),
+  );
+  const validation = steps.find((step) => step.name === "Rust native, state and actual WASM tests");
+  expect(validation?.if).toBe(
+    "steps.network-artifact.outputs.cache-hit != 'true' || steps.paths.outputs.network == 'true' || steps.paths.outcome != 'success' || github.event_name == 'workflow_dispatch'",
+  );
+  const gate = record(jobs.gate);
+  expect(gate.needs).toContain("changes");
+  expect(gate.needs).not.toContain("network-wasm");
+  expect(gate.name).toBe("Complete CI gate");
+  const check = stepsFor("gate").find(
+    (step) => step.name === "Require successful change detection",
+  );
+  expect(record(check?.env).PATHS_RESULT).toBe("${{ needs.changes.outputs.paths-result }}");
+  for (const result of ["success", "failure", "cancelled", "skipped", ""]) {
+    const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(check?.run)], {
+      env: { ...process.env, PATHS_RESULT: result },
+    });
+    expect(command.exitCode, result).toBe(result === "success" ? 0 : 1);
   }
 });
