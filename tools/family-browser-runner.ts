@@ -111,6 +111,9 @@ export async function runFamilyBrowser(options: BrowserOptions) {
 
     const origin = lifecycle.serve(routes);
     const browser = await lifecycle.launch(options.engine);
+    if (!options.workload) {
+      return { engine: "Chromium", ...(await runPage(await browser.newPage(), origin, false)) };
+    }
     const info = {
       engine: options.engine,
       version: browser.version(),
@@ -127,8 +130,6 @@ export async function runFamilyBrowser(options: BrowserOptions) {
       bun: Bun.version,
       headers: { coop: "same-origin", coep: "require-corp", cacheControl: "no-store" },
     };
-    if (!options.workload)
-      return { ...info, ...(await runPage(await browser.newPage(), origin, false)) };
     const samples = [];
     for (let index = 0; index < 3; index++) {
       const context = await browser.newContext();

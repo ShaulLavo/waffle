@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { CommandCleanupError } from "../packages/waffle/scripts/owned-command.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const [flag, browser, extra] = process.argv.slice(2);
@@ -14,6 +15,13 @@ assert.ok(
 const temporary = resolve(process.env.PROGRAM_CONSUMER_SCRATCH ?? "/work/tmp");
 await mkdir(temporary, { recursive: true });
 const consumer = await mkdtemp(resolve(temporary, "waffle-programs-packed-"));
+const controller = new AbortController();
+const interrupt = () => controller.abort(new Error("Packed workload interrupted"));
+if (browser) {
+  process.once("SIGINT", interrupt);
+  process.once("SIGTERM", interrupt);
+}
+let retained = false;
 try {
   const runtimeArchive = resolve(consumer, "waffle-runtime-local.tgz");
   execFileSync("bun", ["pm", "pack", "--ignore-scripts", "--filename", runtimeArchive], {
@@ -23,6 +31,7 @@ try {
   const taskLocalRuntimeArchiveSHA256 = createHash("sha256")
     .update(new Uint8Array(await Bun.file(runtimeArchive).arrayBuffer()))
     .digest("hex");
+  if (!browser) console.log(JSON.stringify({ taskLocalRuntimeArchiveSHA256 }));
   const files: Record<string, string> = { "@waffle-os/runtime": `file:${runtimeArchive}` };
   const families = browser
     ? ["coreutils"]
@@ -57,7 +66,7 @@ try {
       consumer,
       Object.keys(files),
       process.env,
-      { timeoutMs: 240_000, signal: undefined },
+      { timeoutMs: 240_000, signal: controller.signal },
       root,
       browser,
     );
@@ -74,11 +83,16 @@ try {
       }),
     );
   } else {
-    console.log(JSON.stringify({ taskLocalRuntimeArchiveSHA256 }));
     await verifyFamilies(consumer, files);
   }
+} catch (error) {
+  retained = error instanceof CommandCleanupError;
+  if (retained) console.error("Retained packed consumer at " + consumer);
+  throw error;
 } finally {
-  await rm(consumer, { recursive: true, force: true });
+  process.off("SIGINT", interrupt);
+  process.off("SIGTERM", interrupt);
+  if (!retained) await rm(consumer, { recursive: true, force: true });
 }
 
 async function verifyFamilies(consumer: string, files: Record<string, string>) {
