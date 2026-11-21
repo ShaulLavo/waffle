@@ -147,7 +147,7 @@ test("Node process hosts expose fd_kind against their current descriptor binding
 
 for (const [command, entry] of [
   [process.execPath, new URL("../browser/net/module.ts", import.meta.url).href],
-  ["node", "waffle/network"],
+  ["node", "@waffle-os/runtime/network"],
 ] as const) {
   test(`${command} standalone network import has no asset I/O and instances have independent ownership`, () => {
     const script = `

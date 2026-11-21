@@ -27,13 +27,13 @@ The command writes the `waffle` dependency and `trustedDependencies` into `packa
 Create `fs-worker.ts`. It makes your build include Waffle's filesystem service:
 
 ```ts
-import "waffle/browser/fs-worker";
+import "@waffle-os/runtime/browser/fs-worker";
 ```
 
 Create `app.ts`:
 
 ```ts
-import { createRuntime } from "waffle";
+import { createRuntime } from "@waffle-os/runtime";
 
 const runtime = createRuntime({
   filesystem: { workerURL: "/fs-worker.js", mode: "memory" },

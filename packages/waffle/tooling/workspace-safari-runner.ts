@@ -149,7 +149,7 @@ export async function prepareWorkspaceSafari(directory: string): Promise<void> {
   const entries = [
     ["browser", resolve(import.meta.dir, "../tests/workspace-safari-browser.ts")],
     ["guest", resolve(import.meta.dir, "../tests/workspace-safari-guest.ts")],
-    ["fs-worker", Bun.resolveSync("waffle/browser/fs-worker", import.meta.dir)],
+    ["fs-worker", Bun.resolveSync("@waffle-os/runtime/browser/fs-worker", import.meta.dir)],
   ];
   await prepareBundles(directory, entries);
 }
@@ -179,8 +179,11 @@ export async function prepareNetworkRelaySafari(directory: string): Promise<void
   await prepareBundles(directory, [
     ["browser", resolve(import.meta.dir, "../tests/network-relay-browser.ts")],
     ["relay-helper-worker", resolve(import.meta.dir, "../tests/network-relay-worker.ts")],
-    ["relay-preview1-worker", Bun.resolveSync("waffle/browser/preview1-worker", import.meta.dir)],
-    ["relay-fs", Bun.resolveSync("waffle/browser/fs-worker", import.meta.dir)],
+    [
+      "relay-preview1-worker",
+      Bun.resolveSync("@waffle-os/runtime/browser/preview1-worker", import.meta.dir),
+    ],
+    ["relay-fs", Bun.resolveSync("@waffle-os/runtime/browser/fs-worker", import.meta.dir)],
   ]);
   for (const [path, bytes] of await relaySocketModules())
     await Bun.write(resolve(directory, path.slice(1)), bytes);
