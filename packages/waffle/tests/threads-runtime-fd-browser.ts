@@ -33,6 +33,7 @@ export class RuntimeDescriptorCase {
   private originalHandle: number | undefined;
   private connect: ((identity: FilesystemIdentity) => FilesystemClient) | undefined;
   private released = false;
+  private serviceInitializations = 0;
 
   constructor(
     readonly selected: DescriptorCase,
@@ -57,6 +58,14 @@ export class RuntimeDescriptorCase {
         this.events.push(data);
       },
     );
+  }
+
+  observePost(message: unknown): void {
+    if (!message || typeof message !== "object" || !("kind" in message)) return;
+    if (message.kind !== "thread-service") return;
+    if (!("memory" in message) || !(message.memory instanceof WebAssembly.Memory)) return;
+    this.serviceInitializations++;
+    same(this.serviceInitializations, 1, "canonical descriptor service initialization");
   }
 
   async setup(
@@ -113,9 +122,10 @@ export class RuntimeDescriptorCase {
     inputWriter: PipeEndpoint;
     pid: number;
     observations: ThreadRegressionObservations;
+    readOutput: () => string;
   }) {
-    const { runtime, memory, inputWriter, pid, observations } = input;
-    const proof = await this.exercise(memory, inputWriter);
+    const { runtime, memory, inputWriter, pid, observations, readOutput } = input;
+    const proof = await this.exercise(memory, inputWriter, readOutput);
     observations.signal(fdLayout.childRelease);
     await until(() => observations.retired(2), "descriptor sibling retired before main");
     check(
@@ -131,7 +141,11 @@ export class RuntimeDescriptorCase {
     return { ...proof, ...(await this.checkFiles(runtime)) };
   }
 
-  private async exercise(memory: WebAssembly.Memory, inputWriter: PipeEndpoint) {
+  private async exercise(
+    memory: WebAssembly.Memory,
+    inputWriter: PipeEndpoint,
+    readOutput: () => string,
+  ) {
     const p = fdLayout;
     const view = new DataView(memory.buffer);
     const count = (address: number) => view.getUint32(address, true);
@@ -172,6 +186,8 @@ export class RuntimeDescriptorCase {
     same(original().length, 0);
     same(inputWriter.tryWrite([new Uint8Array([90])]), 1);
     await until(() => this.completed("write", 1, 992).length === 1, "sibling descriptor reuse");
+    await until(() => readOutput().length >= 2, "sibling pipe output before releasing file I/O");
+    same(readOutput(), "PR", "pipe output while the original file operation is in flight");
     same(original().length, 0, "original operation remains in flight after descriptor reuse");
     const beforeRelease = this.completed("tell", 4).at(-1)?.original;
     same([beforeRelease?.references, beforeRelease?.offset], [1, 0], "original pin before release");
@@ -214,6 +230,7 @@ export class RuntimeDescriptorCase {
     const disposed = this.events.filter((event) => event.kind === "disposed").length;
     same(drained, 1);
     same(disposed, 1);
+    same(this.serviceInitializations, 1, "canonical descriptor service initialization");
     return { drained, disposed };
   }
 

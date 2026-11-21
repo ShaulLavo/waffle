@@ -208,6 +208,7 @@ export async function runThreadsRuntime(
       message: unknown,
       transfer?: Transferable[] | StructuredSerializeOptions,
     ): void {
+      descriptor?.observePost(message);
       if (
         message &&
         typeof message === "object" &&
@@ -302,7 +303,14 @@ export async function runThreadsRuntime(
     if (descriptor) {
       await until(() => !!backingMemory, "descriptor process backing");
       check(backingMemory, "descriptor process backing");
-      return descriptor.run({ runtime, memory: backingMemory, pid, inputWriter, observations });
+      return descriptor.run({
+        runtime,
+        memory: backingMemory,
+        pid,
+        inputWriter,
+        observations,
+        readOutput: () => output,
+      });
     }
     if (selected === "overlapping-waits") return runOverlappingWaits(observations);
     if (selected === "admission") return runThreadAdmission(observations);
@@ -482,6 +490,7 @@ export async function runThreadsRuntime(
     const n = reader.tryRead([buffer]);
     if (n > 0) output += new TextDecoder().decode(buffer.subarray(0, n));
     checkExit(selected, exit, output, errors);
+    if (fatal) regression = await checkFatalRetirement(observations, pid);
     check(
       inputWriter.tryWrite([new Uint8Array([1])]) === 1,
       "could not release ordinary sibling stdin",
@@ -505,7 +514,6 @@ export async function runThreadsRuntime(
       "filesystem continued after thread terminal",
     );
     await deadline(runtime.dispose(), "Runtime disposal deadline");
-    if (fatal) regression = checkFatalRetirement(observations, pid);
     if (descriptor) regression = { ...regression, ...descriptor.checkDisposal() };
     check(errors.length === 0, errors.join("\n"));
     const snapshot = runtime.sharedMemory.snapshot();
@@ -537,6 +545,14 @@ export async function runThreadsRuntime(
         controlDebts.reduce((sum, holder) => sum + holder.declaredBytes, 0) === snapshot.debtBytes,
       "cleanup retained debt outside consumed controls",
     );
+    if (descriptor) {
+      const sizes = controlDebts.map((holder) => holder.declaredBytes).sort((a, b) => a - b);
+      const debtSizes = sizes.join(",");
+      check(
+        debtSizes === "88,88" || debtSizes === "4,88,88",
+        `unexpected descriptor control debt: ${sizes}`,
+      );
+    }
     check(
       stopped.size === created.length,
       `Worker stop mismatch ${stopped.size}/${created.length}`,

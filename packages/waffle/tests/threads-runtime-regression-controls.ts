@@ -60,9 +60,15 @@ export class ThreadRegressionObservations {
   stdin: ServiceRead | undefined;
   stdinSettled: ServiceRead | undefined;
   private memory: WebAssembly.Memory | undefined;
+  private guestConstructionCount = 0;
   constructor(private readonly stopped: ReadonlySet<Worker>) {}
+  get guestConstructions(): number {
+    return this.guestConstructionCount;
+  }
   attach(worker: Worker, target: string): void {
-    if (!/guest-bootstrap|thread-guest|thread-growth|thread-barrier/.test(target)) return;
+    const guest = /guest-bootstrap|thread-guest|thread-growth/.test(target);
+    if (guest) this.guestConstructionCount++;
+    if (!guest && !target.includes("thread-barrier")) return;
     worker.addEventListener("message", ({ data }: MessageEvent<ObservedMessage>) => {
       if (!data || typeof data !== "object" || !("kind" in data)) return;
       if (data.kind === "fixture-stdin-pending") {
@@ -162,21 +168,20 @@ function checkFatalWrites(control: Observations): void {
     check(control.word(address) === 0, `terminal guest published a write at ${address}`);
 }
 
-export function checkFatalRetirement(control: Observations, pid: number) {
+export async function checkFatalRetirement(control: Observations, pid: number) {
+  const tids = [1, 2, 3, 4];
+  await until(
+    () => tids.every((tid) => control.retired(tid) && control.event(tid, "host-idle")),
+    "same-PID native Worker stops",
+  );
   checkFatalWrites(control);
   check(
     control.stdinSettled?.pid === pid && control.stdinSettled.tid === 2,
     "drain settled the same-PID stdin service call",
   );
-  const tids = [1, 2, 3, 4];
   check(
     control.guests.size === tids.length &&
-      tids.every(
-        (tid) =>
-          control.guests.get(tid)?.request.thread.pid === pid &&
-          control.event(tid, "host-idle") &&
-          control.retired(tid),
-      ),
+      tids.every((tid) => control.guests.get(tid)?.request.thread.pid === pid),
     "each same-PID guest must become idle and stop",
   );
   return { stdinTid: control.stdin?.tid, timedTid: 3, retiredTids: tids };
@@ -221,7 +226,7 @@ export async function runThreadAdmission(control: Observations) {
   const p = admissionLayout;
   await until(() => control.waiting(4, p.startGate, 4), "fourth thread pending in Wasm start");
   check(
-    control.guests.size === 4 && !control.event(4, "ready"),
+    control.guestConstructions === 4 && control.guests.size === 4 && !control.event(4, "ready"),
     "main and pending thread count at cap",
   );
   control.signal(p.firstRefusal);
@@ -229,7 +234,10 @@ export async function runThreadAdmission(control: Observations) {
     () => control.word(p.pendingResult) !== 0,
     "spawn response with a pending fourth thread",
   );
-  check(control.word(p.pendingResult) === -6, "signed refusal includes pending admission");
+  check(
+    control.word(p.pendingResult) === -6 && control.guestConstructions === 4,
+    "signed pending refusal does not construct a Worker",
+  );
   control.signal(p.startGate);
   await until(() => control.word(p.admitted) === 4, "fourth thread accepted after ready");
   control.signal(p.secondRefusal);
@@ -238,7 +246,9 @@ export async function runThreadAdmission(control: Observations) {
     "spawn response with a running fourth thread",
   );
   check(
-    control.word(p.runningResult) === -6 && control.guests.size === 4,
+    control.word(p.runningResult) === -6 &&
+      control.guests.size === 4 &&
+      control.guestConstructions === 4,
     "signed refusal at cap without a worker",
   );
 
@@ -327,7 +337,8 @@ export async function runThreadIds(
   check(
     control.word(p.results[3]) === -6 &&
       control.word(p.entries[3]) === 0 &&
-      control.guests.size === 4,
+      control.guests.size === 4 &&
+      control.guestConstructions === 4,
     "exhaustion must fail without launching or entering a Worker",
   );
   control.signal(p.finish);
