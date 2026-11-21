@@ -30,7 +30,7 @@ import {
   type HostInterface,
 } from "../packages/waffle/tooling/host-interface.ts";
 
-export const runtimePackageName = "waffle";
+export const runtimePackageName = "@waffle-os/runtime";
 const dependencyFields = ["dependencies", "peerDependencies", "optionalDependencies"] as const;
 const strippedFields = ["devDependencies", "scripts", "workspaces"] as const;
 const skippedCopies = new Set(["node_modules", ".build", "target", ".sources"]);
@@ -236,11 +236,14 @@ export function releaseAssetBase(repository: string, tag: string): string {
 /** The runtime's own per-version release asset; mutable aliases and other tags are refused. */
 export function runtimeReleaseUrl(repository: string, version: string): string {
   assert.ok(/^\d+\.\d+\.\d+$/.test(version), `Runtime version is not exact: ${version}`);
-  return `${releaseAssetBase(repository, `waffle-v${version}`)}/waffle-${version}.tgz`;
+  return `${releaseAssetBase(repository, `waffle-v${version}`)}/${assetFilename(runtimePackageName, version)}`;
 }
 
 function runtimeUrlVersion(url: string) {
-  const match = /\/releases\/download\/waffle-v(\d+\.\d+\.\d+)\/waffle-\1\.tgz$/.exec(url);
+  const match =
+    /\/releases\/download\/waffle-v(\d+\.\d+\.\d+)\/(?:waffle-os-runtime|waffle)-\1\.tgz$/.exec(
+      url,
+    );
   assert.ok(match?.[1], `Runtime URL is not a waffle-v<version> release asset: ${url}`);
   return match[1];
 }

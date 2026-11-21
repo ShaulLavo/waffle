@@ -51,6 +51,7 @@ const safeActions = new Set([
   "actions/checkout",
   "actions/download-artifact",
   "actions/upload-artifact",
+  "changesets/action",
   "dorny/paths-filter",
   "dtolnay/rust-toolchain",
   "docker/login-action",

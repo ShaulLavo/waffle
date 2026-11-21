@@ -12,7 +12,7 @@ try {
     cwd: resolve(root, "packages/waffle"),
     stdio: "pipe",
   });
-  const files: Record<string, string> = { waffle: `file:${runtimeArchive}` };
+  const files: Record<string, string> = { "@waffle-os/runtime": `file:${runtimeArchive}` };
   for (const family of ["python", "git"]) {
     const directory = resolve(root, "packages", family);
     const pkg: unknown = await Bun.file(resolve(directory, "package.json")).json();
@@ -22,7 +22,12 @@ try {
   await writeFile(
     resolve(consumer, "package.json"),
     JSON.stringify(
-      { private: true, type: "module", dependencies: files, overrides: { waffle: files.waffle } },
+      {
+        private: true,
+        type: "module",
+        dependencies: files,
+        overrides: { "@waffle-os/runtime": files["@waffle-os/runtime"] },
+      },
       null,
       2,
     ),
@@ -34,12 +39,12 @@ try {
     outdir: consumer,
     naming: "check.js",
     external: [
-      "waffle",
-      "waffle/*",
-      "waffle-git",
-      "waffle-git/*",
-      "@waffle/python",
-      "@waffle/python/*",
+      "@waffle-os/runtime",
+      "@waffle-os/runtime/*",
+      "@waffle-os/git",
+      "@waffle-os/git/*",
+      "@waffle-os/python",
+      "@waffle-os/python/*",
     ],
   });
   assert.ok(built.success, String(built.logs));

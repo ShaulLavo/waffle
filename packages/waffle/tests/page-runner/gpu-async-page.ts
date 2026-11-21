@@ -1,4 +1,4 @@
-import { startPage, type HostPageRun } from "waffle/testing/page-runner/page";
+import { startPage, type HostPageRun } from "@waffle-os/runtime/testing/page-runner/page";
 import { gpuAsyncCapabilities, gpuAsyncInvoke, gpuAsyncTeardown } from "./gpu-async-operations.js";
 import { gpuAsyncId, type GpuAsyncRequest } from "./gpu-async-request.js";
 

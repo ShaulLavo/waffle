@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { setImmediate } from "node:timers/promises";
 import { after, before, test, type TestContext } from "node:test";
-import type { GuestLauncher, RuntimeProcessContext } from "waffle";
+import type { GuestLauncher, RuntimeProcessContext } from "@waffle-os/runtime";
 import { PYTHON_ARGV0, type PythonPayloadManifest } from "../src/python-payload.ts";
 import { installNodeWorkers, liveNodeWorkers, stopNodeWorkers } from "../test/node-worker-host.ts";
 import { wasiCat } from "../../waffle/tests/fixtures/wasi-cat.ts";
@@ -15,8 +15,8 @@ const runtimeTest = {
   timeout: 10_000,
 };
 const paths = ["/usr/bin/python", "/usr/bin/python3", "/bin/python3"];
-const nodeRoot = new URL(".", import.meta.resolve("waffle"));
-const worker = new URL(import.meta.resolve("waffle/browser/preview1-worker"));
+const nodeRoot = new URL(".", import.meta.resolve("@waffle-os/runtime"));
+const worker = new URL(import.meta.resolve("@waffle-os/runtime/browser/preview1-worker"));
 const files = new Map([
   ["/Lib/os.py", new TextEncoder().encode("# lifecycle fixture, not CPython\n")],
   [
@@ -87,7 +87,7 @@ function heldLauncher({
 }
 
 async function fixture(context: TestContext, launcher = launchWorker) {
-  const { createRuntime } = await import("waffle");
+  const { createRuntime } = await import("@waffle-os/runtime");
   const { createPythonPackage } = await import("../src/index.ts");
   const { installPython } = await import("../src/install.ts");
   const { createProgramTestRoot } = await import("../../../tools/program-test-root.ts");

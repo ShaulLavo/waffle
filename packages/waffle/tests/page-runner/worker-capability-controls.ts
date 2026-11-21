@@ -1,5 +1,5 @@
-import { runPageSuite, type SuiteAdapter } from "waffle/testing/page-runner";
-import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+import { runPageSuite, type SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
+import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 import { browserBundle } from "../browser-runner-lifecycle.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

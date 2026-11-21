@@ -15,13 +15,13 @@ const sourceFilesystem = await import("../packages/waffle/browser/shared-fs.ts")
 const sourcePipes = await import("../packages/waffle/proc/pipes.ts");
 const sourceClient = await import("../packages/waffle/proc/worker-client.ts");
 const sourceWorkerPipes = await import("../packages/waffle/proc/worker-pipes.ts");
-mock.module("waffle", () => sourceRuntime);
-mock.module("waffle/core/descriptors", () => sourceDescriptors);
-mock.module("waffle/browser/runtime-terminals", () => sourceTerminals);
-mock.module("waffle/browser/shared-fs", () => sourceFilesystem);
-mock.module("waffle/proc/pipes", () => sourcePipes);
-mock.module("waffle/proc/worker-client", () => sourceClient);
-mock.module("waffle/proc/worker-pipes", () => sourceWorkerPipes);
+mock.module("@waffle-os/runtime", () => sourceRuntime);
+mock.module("@waffle-os/runtime/core/descriptors", () => sourceDescriptors);
+mock.module("@waffle-os/runtime/browser/runtime-terminals", () => sourceTerminals);
+mock.module("@waffle-os/runtime/browser/shared-fs", () => sourceFilesystem);
+mock.module("@waffle-os/runtime/proc/pipes", () => sourcePipes);
+mock.module("@waffle-os/runtime/proc/worker-client", () => sourceClient);
+mock.module("@waffle-os/runtime/proc/worker-pipes", () => sourceWorkerPipes);
 
 const fixtures = [
   {
@@ -102,14 +102,14 @@ test("representative case set covers every family, descriptors and interruption"
 });
 
 // These exercise the maintained root, not a parallel process/pipe fixture.
-type TestRegistry = import("waffle/proc/pipes").PipePublicationRegistry;
-type TestController = import("waffle/proc/pipes").PipeController;
+type TestRegistry = import("@waffle-os/runtime/proc/pipes").PipePublicationRegistry;
+type TestController = import("@waffle-os/runtime/proc/pipes").PipeController;
 
 async function rootLifecycleFixture() {
   const { spyOn } = await import("bun:test");
-  const { createRuntime } = await import("waffle");
-  const { PipePublicationRegistry, PipeController } = await import("waffle/proc/pipes");
-  const { WorkerPipeHost } = await import("waffle/proc/worker-pipes");
+  const { createRuntime } = await import("@waffle-os/runtime");
+  const { PipePublicationRegistry, PipeController } = await import("@waffle-os/runtime/proc/pipes");
+  const { WorkerPipeHost } = await import("@waffle-os/runtime/proc/worker-pipes");
   const { BrowserProcessBroker } = await import("../packages/waffle/browser/process-broker.ts");
   const { createProgramTestRoot } = await import("./program-test-root.ts");
   const registrations: { registry: InstanceType<typeof PipePublicationRegistry>; pid: number }[] =
@@ -221,7 +221,7 @@ async function rootLifecycleFixture() {
       owner = await createProgramTestRoot(runtime);
       return owner;
     },
-    duplicate(input: import("waffle/proc/pipes").PipeEndpoint) {
+    duplicate(input: import("@waffle-os/runtime/proc/pipes").PipeEndpoint) {
       const controller = controllers.values().next().value;
       assert.ok(controller, "input controller was not observed");
       return controller.duplicate(input);
@@ -264,10 +264,10 @@ const pipeRequest = {
 };
 
 function failedEndpointExport(
-  transfer: import("waffle/proc/pipes").PipeEndpoint["forProcess"],
-  retained: import("waffle/proc/pipes").PipeEndpoint[],
+  transfer: import("@waffle-os/runtime/proc/pipes").PipeEndpoint["forProcess"],
+  retained: import("@waffle-os/runtime/proc/pipes").PipeEndpoint[],
 ) {
-  return function (this: import("waffle/proc/pipes").PipeEndpoint, pid: number) {
+  return function (this: import("@waffle-os/runtime/proc/pipes").PipeEndpoint, pid: number) {
     retained.push(transfer.call(this, pid));
     throw new Error("endpoint export failed after allocation");
   };
@@ -275,8 +275,8 @@ function failedEndpointExport(
 
 test("maintained root cancels pipe enrollment after preparation, export and snapshot failures", async () => {
   const { spyOn } = await import("bun:test");
-  const { PipeEndpoint, PipeErrno } = await import("waffle/proc/pipes");
-  const { SharedFilesystem } = await import("waffle/browser/shared-fs");
+  const { PipeEndpoint, PipeErrno } = await import("@waffle-os/runtime/proc/pipes");
+  const { SharedFilesystem } = await import("@waffle-os/runtime/browser/shared-fs");
   const fixture = await rootLifecycleFixture();
   const restoreMocks: Array<() => void> = [];
   try {
@@ -321,8 +321,8 @@ test("maintained root cancels pipe enrollment after preparation, export and snap
 
 type LifecycleOutcome = "kill" | "start-failure" | "EOF";
 
-async function readLifecycleInput(input: import("waffle/proc/pipes").PipeEndpoint) {
-  const { PipeErrno } = await import("waffle/proc/pipes");
+async function readLifecycleInput(input: import("@waffle-os/runtime/proc/pipes").PipeEndpoint) {
+  const { PipeErrno } = await import("@waffle-os/runtime/proc/pipes");
   const bytes = new Uint8Array(128),
     decoder = new TextDecoder();
   const deadline = Date.now() + 2000;
@@ -343,10 +343,10 @@ async function readLifecycleInput(input: import("waffle/proc/pipes").PipeEndpoin
 function lifecycleLaunch(
   outcome: LifecycleOutcome,
   launched: (pid: number) => void,
-  capture: (input: import("waffle/proc/pipes").PipeEndpoint) => void,
-): import("waffle").GuestLauncher {
+  capture: (input: import("@waffle-os/runtime/proc/pipes").PipeEndpoint) => void,
+): import("@waffle-os/runtime").GuestLauncher {
   return async (context) => {
-    const { PipeEndpoint } = await import("waffle/proc/pipes");
+    const { PipeEndpoint } = await import("@waffle-os/runtime/proc/pipes");
     const resource = context.descriptors.get(0)?.resource;
     assert.ok(resource instanceof PipeEndpoint);
     capture(resource);
@@ -366,7 +366,7 @@ function lifecycleLaunch(
 
 for (const outcome of ["kill", "start-failure", "EOF"] as const) {
   test(`maintained root uses service revocation and retires input pipes on ${outcome}`, async () => {
-    const { PipeEndpoint, PipeErrno } = await import("waffle/proc/pipes");
+    const { PipeEndpoint, PipeErrno } = await import("@waffle-os/runtime/proc/pipes");
     const fixture = await rootLifecycleFixture();
     let input: InstanceType<typeof PipeEndpoint> | undefined;
     try {

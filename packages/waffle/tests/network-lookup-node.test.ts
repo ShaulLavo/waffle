@@ -5,8 +5,8 @@ import { resolve } from "node:path";
 test("native Bun embedders use lookup through prepared Node package exports", () => {
   const script = `
     import assert from "node:assert/strict";
-    import { createRuntime, declareSharedMemoryPlatform, RuntimeNetworkLookupError } from "waffle";
-    assert.match(import.meta.resolve("waffle"), /\\/dist\\/index\\.js$/);
+    import { createRuntime, declareSharedMemoryPlatform, RuntimeNetworkLookupError } from "@waffle-os/runtime";
+    assert.match(import.meta.resolve("@waffle-os/runtime"), /\\/dist\\/index\\.js$/);
     const runtime = createRuntime({
       sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }),
       filesystem: { mode: "memory", workerURL: new URL("./dist/browser/fs-worker.js", import.meta.url) },

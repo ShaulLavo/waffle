@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { installClientWorker } from "../process-recycling-browser.js";
-import type { PreparationContext } from "waffle/testing/page-runner";
+import type { PreparationContext } from "@waffle-os/runtime/testing/page-runner";
 
 const sources = {
   "/tests.js": "process-recycling-browser.ts",

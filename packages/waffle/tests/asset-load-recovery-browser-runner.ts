@@ -23,7 +23,7 @@ async function buildConsumer(): Promise<string> {
     stdio: "pipe",
     timeout: 120_000,
   });
-  const packed = join(scratch, "node_modules/waffle");
+  const packed = join(scratch, "node_modules/@waffle-os/runtime");
   await mkdir(packed, { recursive: true });
   execFileSync("tar", ["-xzf", archive, "--strip-components=1", "-C", packed]);
   const entry = join(scratch, "page.ts");

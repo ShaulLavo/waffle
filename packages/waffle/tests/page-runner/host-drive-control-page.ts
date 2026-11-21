@@ -1,4 +1,8 @@
-import { startPage, cleanupStorage, type HostPageRun } from "waffle/testing/page-runner/page";
+import {
+  startPage,
+  cleanupStorage,
+  type HostPageRun,
+} from "@waffle-os/runtime/testing/page-runner/page";
 
 declare const HOST_CONTROL: string;
 type Request = { mode: string };

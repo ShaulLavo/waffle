@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "bun:test";
-import { createRuntime } from "waffle";
-import type { PackageProgram } from "waffle/programs";
-import { basePackages } from "waffle-base";
+import { createRuntime } from "@waffle-os/runtime";
+import type { PackageProgram } from "@waffle-os/runtime/programs";
+import { basePackages } from "@waffle-os/base";
 import { runLazyBaseAcceptance } from "./family-integration.ts";
 import { admitProgramPackage, packProgramPackage } from "./program-package.ts";
 import { resolve } from "node:path";

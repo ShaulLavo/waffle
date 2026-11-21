@@ -4,7 +4,7 @@ import {
   startPage,
   type PageSuite,
   type StorageEntry,
-} from "waffle/testing/page-runner/page";
+} from "@waffle-os/runtime/testing/page-runner/page";
 
 declare const CONSUMER_CONTROL: string;
 type Request = { databaseName: string; encoded: string };

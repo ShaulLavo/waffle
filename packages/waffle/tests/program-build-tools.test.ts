@@ -19,8 +19,8 @@ import {
   wasiTarget, wasiBuildConfiguration, wasiSysrootCommand,
   wasiCargoEnvironment, wasiBuildEnvironment, verifyWasiGuest, functionNames,
   type WasiBuildRecipe, type WasiGuestVerification,
-} from "waffle/program-build-tools";
-const entry = import.meta.resolve("waffle/program-build-tools");
+} from "@waffle-os/runtime/program-build-tools";
+const entry = import.meta.resolve("@waffle-os/runtime/program-build-tools");
 assert.ok(entry.endsWith(process.env.EXPECTED_ENTRY_SUFFIX ?? "missing"), entry);
 const root = resolve("fixture-" + process.env.RUNTIME);
 const waffle = resolve(root, "selected-waffle");
@@ -70,7 +70,7 @@ const verification: WasiGuestVerification = { sdk, filesystemAdapter: "fixture::
 verifyWasiGuest(guest, verification);
 writeFileSync(guest, Uint8Array.from(header.concat([5, 3, 1, 0, 1])));
 assert.throws(() => verifyWasiGuest(guest, verification), /unshared maximum/);
-const directory = resolve("node_modules/waffle", process.env.RUNTIME === "node" ? "dist/tooling/program" : "tooling/program");
+const directory = resolve("node_modules/@waffle-os/runtime", process.env.RUNTIME === "node" ? "dist/tooling/program" : "tooling/program");
 const extension = process.env.RUNTIME === "node" ? ".js" : ".ts";
 const derivation = await import(pathToFileURL(resolve(directory, "program-derivation" + extension)).href);
 const optimizer = await import(pathToFileURL(resolve(directory, "program-optimize" + extension)).href);
@@ -139,7 +139,7 @@ function checkWorkspacePrepare(scratch: string, installed: string): void {
 test("packed build tools work without the repository in Node, Bun and a typed consumer", () => {
   const scratch = mkdtempSync(join(tmpdir(), "waffle-build-tools-"));
   try {
-    const installed = join(scratch, "node_modules/waffle");
+    const installed = join(scratch, "node_modules/@waffle-os/runtime");
     mkdirSync(installed, { recursive: true });
     const archive = join(scratch, "waffle.tgz");
     execFileSync("bun", ["pm", "pack", "--ignore-scripts", "--filename", archive], {

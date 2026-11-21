@@ -1,5 +1,5 @@
 {
-  "name": "waffle-awk",
+  "name": "@waffle-os/awk",
   "version": "0.0.0",
   "private": true,
   "description": "The One True Awk as an optional WASI program for Waffle runtimes.",
@@ -40,10 +40,10 @@
   "devDependencies": {
     "@types/bun": "^1.4.3",
     "typescript": "7.0.2",
-    "waffle": "workspace:*"
+    "@waffle-os/runtime": "workspace:*"
   },
   "peerDependencies": {
-    "waffle": "*"
+    "@waffle-os/runtime": "*"
   },
   "waffleHostInterface": 3
 }

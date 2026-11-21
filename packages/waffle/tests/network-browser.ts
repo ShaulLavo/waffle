@@ -1,4 +1,4 @@
-import type { OwnedServiceWorker } from "waffle/testing/page-runner/page";
+import type { OwnedServiceWorker } from "@waffle-os/runtime/testing/page-runner/page";
 import { finishNetworkCase } from "./network-finalizer.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import {

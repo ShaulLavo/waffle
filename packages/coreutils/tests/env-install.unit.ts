@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createRuntime } from "waffle";
-import { BrowserProcessBroker } from "waffle/browser/process-broker";
-import type { ExecutableRegistry } from "waffle/proc/registry";
+import { createRuntime } from "@waffle-os/runtime";
+import { BrowserProcessBroker } from "@waffle-os/runtime/browser/process-broker";
+import type { ExecutableRegistry } from "@waffle-os/runtime/proc/registry";
 import { installEnv } from "../src/utilities/env";
 
 test("env alias admission uses the caller's real Waffle filesystem and registry", async (context) => {

@@ -1,7 +1,7 @@
 import { chromium } from "playwright";
 import { mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { basePackages } from "waffle-base";
+import { basePackages } from "@waffle-os/base";
 import assert from "node:assert/strict";
 
 const root = resolve(import.meta.dirname, "..");

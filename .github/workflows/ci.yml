@@ -1052,7 +1052,7 @@ jobs:
       - name: Admit the package and run actual guest archive readback
         run: |
           node tools/program-package.ts pack packages/tar
-          TAR_PACKAGE_ARCHIVE="$PWD/packages/tar/.build/waffle-tar-0.0.0.tgz" bun test packages/tar/tests/tar-wasi.test.ts
+          TAR_PACKAGE_ARCHIVE="$PWD/packages/tar/.build/waffle-os-tar-0.0.0.tgz" bun test packages/tar/tests/tar-wasi.test.ts
 
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

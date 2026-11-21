@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { processBrowserCases } from "../process-recycling-browser.js";
 import { Collector } from "./collector.js";
 import { FakeDriver, type FakeCommand, type FakeMode } from "./fake-driver.js";
-import { runPageSuite } from "waffle/testing/page-runner";
+import { runPageSuite } from "@waffle-os/runtime/testing/page-runner";
 import { processRecyclingAdapter } from "./process-recycling-suite.js";
 
 const labels = processBrowserCases();

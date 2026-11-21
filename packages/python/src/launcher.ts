@@ -1,4 +1,4 @@
-import type { GuestLauncher, RuntimeProcessContext } from "waffle";
+import type { GuestLauncher, RuntimeProcessContext } from "@waffle-os/runtime";
 
 /** The qualified CPython startup patch establishes cwd from PWD. */
 export function pythonLaunchContext<T extends Pick<RuntimeProcessContext, "request">>(

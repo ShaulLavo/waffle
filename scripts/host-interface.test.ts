@@ -23,7 +23,7 @@ const provided = parseHostInterface(1, "fixture");
 const manifest = {
   name: "waffle-child",
   waffleHostInterface: 1,
-  peerDependencies: { waffle: "*" },
+  peerDependencies: { "@waffle-os/runtime": "*" },
 };
 const control = { signal: undefined, timeoutMs: 30_000 };
 
@@ -49,20 +49,24 @@ test("new package recipes preserve exact Git and registry edges without interpre
   expect(result.manifest.dependencies).toEqual(dependencies);
   expect(result.registryDependencies).toEqual(dependencies);
   expect(result.closureDependencies).toEqual({});
-  expect(result.manifest.peerDependencies).toEqual({ waffle: "*" });
+  expect(result.manifest.peerDependencies).toEqual({ "@waffle-os/runtime": "*" });
 });
 
 test("new release recipes reject historical exact peers, dependencies, and missing integers", () => {
   const context = { workspace: new Map(), urls: new Map(), runtimeHostInterface: provided };
   const exact = runtimeReleaseUrl("ShaulLavo/waffle", "0.0.106");
-  for (const peers of [undefined, { waffle: exact }, { waffle: "^1" }]) {
+  for (const peers of [
+    undefined,
+    { "@waffle-os/runtime": exact },
+    { "@waffle-os/runtime": "^1" },
+  ]) {
     expect(() =>
       rewriteManifest({ ...manifest, peerDependencies: peers }, "0.0.92", context),
-    ).toThrow(/peerDependencies.waffle/);
+    ).toThrow(/peerDependencies\.@waffle-os\/runtime/);
   }
   for (const field of ["dependencies", "optionalDependencies"]) {
     expect(() =>
-      rewriteManifest({ ...manifest, [field]: { waffle: exact } }, "0.0.92", context),
+      rewriteManifest({ ...manifest, [field]: { "@waffle-os/runtime": exact } }, "0.0.92", context),
     ).toThrow(/must be absent/);
   }
   for (const value of [undefined, null, 0, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
@@ -74,21 +78,29 @@ test("new release recipes reject historical exact peers, dependencies, and missi
 
 test("installed consumers reject missing, invalid, or mismatched runtime metadata", () => {
   ownedFixture((root) => {
-    const runtime = resolve(root, "node_modules/waffle");
+    const runtime = resolve(root, "node_modules/@waffle-os/runtime");
     for (const value of [undefined, "1", 1.1, 0, -1, Number.MAX_SAFE_INTEGER + 1, 2]) {
-      writeManifest(runtime, { name: "waffle", version: "0.0.106", waffleHostInterface: value });
+      writeManifest(runtime, {
+        name: "@waffle-os/runtime",
+        version: "0.0.106",
+        waffleHostInterface: value,
+      });
       expect(() => assertOnePhysicalRuntime(root, "0.0.106", provided)).toThrow();
     }
-    writeManifest(runtime, { name: "waffle", version: "0.0.106", waffleHostInterface: 1 });
+    writeManifest(runtime, {
+      name: "@waffle-os/runtime",
+      version: "0.0.106",
+      waffleHostInterface: 1,
+    });
     expect(assertOnePhysicalRuntime(root, "0.0.106", provided)).toBe(1);
   });
 });
 
 test("installed consumers validate real family manifests before importing family code", () => {
   ownedFixture((root) => {
-    const runtime = resolve(root, "node_modules/waffle");
+    const runtime = resolve(root, "node_modules/@waffle-os/runtime");
     writeManifest(runtime, {
-      name: "waffle",
+      name: "@waffle-os/runtime",
       version: "0.0.106",
       waffleHostInterface: 1,
       main: "index.ts",
@@ -116,7 +128,11 @@ test("runtime reader validates actual archive metadata and marks a local candida
     const source = resolve(root, "source");
     const archive = resolve(root, "waffle-local.tgz");
     for (const value of [undefined, "1", 1.5, 0, -1, Number.MAX_SAFE_INTEGER + 1, 1]) {
-      writeManifest(source, { name: "waffle", version: "0.0.106", waffleHostInterface: value });
+      writeManifest(source, {
+        name: "@waffle-os/runtime",
+        version: "0.0.106",
+        waffleHostInterface: value,
+      });
       execFileSync("bun", ["pm", "pack", "--ignore-scripts", "--filename", archive], {
         cwd: source,
         stdio: "pipe",

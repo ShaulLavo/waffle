@@ -21,7 +21,9 @@ test("P5 documented two-entry browser build starts the default runtime with its 
           ? `globalThis.documentedStartup=(async()=>{${match[2]!.replace(/^import .*?;\n/m, "")} })();`
           : match[2]!;
       const text =
-        match[1] === "app.ts" ? `import {createRuntime} from "waffle";\n${content}` : content;
+        match[1] === "app.ts"
+          ? `import {createRuntime} from "@waffle-os/runtime";\n${content}`
+          : content;
       await writeFile(
         join(scratch, match[1]!),
         text

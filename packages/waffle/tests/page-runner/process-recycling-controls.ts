@@ -1,8 +1,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { runPageSuite, type SuiteResult } from "waffle/testing/page-runner";
-import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+import { runPageSuite, type SuiteResult } from "@waffle-os/runtime/testing/page-runner";
+import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 import { processRecyclingAdapter } from "./process-recycling-suite.js";
 import { writeProcessDiagnostics } from "./process-recycling-native.js";
 

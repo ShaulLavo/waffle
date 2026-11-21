@@ -16,11 +16,11 @@ const runtimeInterface = parseHostInterface(1, "runtime");
 
 function familyManifest(overrides: Record<string, unknown> = {}) {
   return {
-    name: "waffle-family",
+    name: "@waffle-os/family",
     version: "0.0.0",
     waffleHostInterface: 1,
-    devDependencies: { waffle: "workspace:*" },
-    peerDependencies: { waffle: "*" },
+    devDependencies: { "@waffle-os/runtime": "workspace:*" },
+    peerDependencies: { "@waffle-os/runtime": "*" },
     ...overrides,
   };
 }
@@ -54,15 +54,20 @@ test("requires the wildcard peer and forbids nested runtime placement", () => {
   for (const peer of [undefined, "workspace:*", "^1.0.0"]) {
     expect(() =>
       assertWaffleFamilyManifest(
-        familyManifest({ peerDependencies: peer === undefined ? undefined : { waffle: peer } }),
+        familyManifest({
+          peerDependencies: peer === undefined ? undefined : { "@waffle-os/runtime": peer },
+        }),
         "family",
       ),
-    ).toThrow(/peerDependencies\.waffle/);
+    ).toThrow(/peerDependencies\.@waffle-os\/runtime/);
   }
   for (const field of ["dependencies", "optionalDependencies"] as const) {
     expect(() =>
-      assertWaffleFamilyManifest(familyManifest({ [field]: { waffle: "workspace:*" } }), "family"),
-    ).toThrow(`${field}.waffle must be absent`);
+      assertWaffleFamilyManifest(
+        familyManifest({ [field]: { "@waffle-os/runtime": "workspace:*" } }),
+        "family",
+      ),
+    ).toThrow(`${field}.@waffle-os/runtime must be absent`);
   }
 });
 
@@ -76,14 +81,14 @@ test("source families keep a workspace development edge and exact runtime metada
       "family",
       runtimeInterface,
     ),
-  ).toThrow(/devDependencies\.waffle/);
+  ).toThrow(/devDependencies\.@waffle-os\/runtime/);
   expect(() =>
     assertSourceWaffleFamilyManifest(
-      familyManifest({ devDependencies: { waffle: "*" } }),
+      familyManifest({ devDependencies: { "@waffle-os/runtime": "*" } }),
       "family",
       runtimeInterface,
     ),
-  ).toThrow(/devDependencies\.waffle/);
+  ).toThrow(/devDependencies\.@waffle-os\/runtime/);
   expect(() =>
     assertSourceWaffleFamilyManifest(
       familyManifest({ waffleHostInterface: 2 }),
@@ -98,9 +103,13 @@ test("the repository source metadata gate covers every Waffle family", () => {
 });
 
 test("source discovery includes missing peers and dev-only runtime references", () => {
-  expect(isWaffleFamilyManifest({ devDependencies: { waffle: "workspace:*" } })).toBe(true);
+  expect(isWaffleFamilyManifest({ devDependencies: { "@waffle-os/runtime": "workspace:*" } })).toBe(
+    true,
+  );
   expect(isWaffleFamilyManifest({ waffleHostInterface: 1 })).toBe(true);
-  expect(isWaffleFamilyManifest({ name: "waffle", waffleHostInterface: 1 })).toBe(false);
+  expect(isWaffleFamilyManifest({ name: "@waffle-os/runtime", waffleHostInterface: 1 })).toBe(
+    false,
+  );
   expect(isWaffleFamilyManifest({ name: "fixture" })).toBe(false);
   assert.equal(readHostInterface({ waffleHostInterface: 1 }, "fixture"), 1);
 });

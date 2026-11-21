@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { createRuntime } from "waffle";
-import { defineProgramPackage } from "waffle/programs";
+import { createRuntime } from "@waffle-os/runtime";
+import { defineProgramPackage } from "@waffle-os/runtime/programs";
 import { DescriptorTable } from "../../core/descriptors.js";
 import { createProgramShell } from "./program-shell.js";
 import { wasiCat } from "./wasi-cat.js";
@@ -22,7 +22,7 @@ const pkg = defineProgramPackage({
 const runtime = createRuntime({
   filesystem: {
     mode: "memory",
-    workerURL: new URL("browser/fs-worker.js", import.meta.resolve("waffle")),
+    workerURL: new URL("browser/fs-worker.js", import.meta.resolve("@waffle-os/runtime")),
   },
   programs: { onDemand: [pkg] },
 });

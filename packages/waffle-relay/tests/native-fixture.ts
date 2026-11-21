@@ -8,8 +8,8 @@ import { tmpdir } from "node:os";
 import { gzipSync } from "node:zlib";
 import { once } from "node:events";
 import { lookup } from "node:dns/promises";
-import { createNodeRelayServer } from "waffle-relay/node";
-import { createRelayFetch } from "waffle-relay";
+import { createNodeRelayServer } from "@waffle-os/relay/node";
+import { createRelayFetch } from "@waffle-os/relay";
 
 const TOKEN = "owned-local-fixture-token-only";
 const temporary =

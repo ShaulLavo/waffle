@@ -1,4 +1,4 @@
-import { defineProgramPackage } from "waffle/programs/catalog";
+import { defineProgramPackage } from "@waffle-os/runtime/programs/catalog";
 import type { Command } from "./model.ts";
 
 const names: readonly Command[] = ["ps", "pgrep", "pkill"];

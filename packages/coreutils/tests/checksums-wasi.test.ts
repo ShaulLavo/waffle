@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "bun:test";
-import { createRuntime, type Runtime } from "waffle";
-import { PipeErrno, type PipeEndpoint } from "waffle/proc/pipes";
-import type { ProgramPackage } from "waffle/programs";
+import { createRuntime, type Runtime } from "@waffle-os/runtime";
+import { PipeErrno, type PipeEndpoint } from "@waffle-os/runtime/proc/pipes";
+import type { ProgramPackage } from "@waffle-os/runtime/programs";
 import {
   runFamilyAcceptance,
   type FamilyAcceptanceSession,

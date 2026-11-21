@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 const hostInterfaceField = "waffleHostInterface" as const;
-const wafflePackageName = "waffle" as const;
+const wafflePackageName = "@waffle-os/runtime" as const;
 
 export type HostInterface = number & {
   readonly __brand: "WaffleHostInterface";

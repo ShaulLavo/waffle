@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { createRuntime } from "waffle";
+import { createRuntime } from "@waffle-os/runtime";
 import { basePackages } from "../../base/src/index.ts";
 import {
   runFamilyAcceptance,

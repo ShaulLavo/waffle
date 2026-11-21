@@ -1,16 +1,16 @@
-import { createSharedControlAllocator } from "waffle";
-import type { Runtime } from "waffle";
-import type { SpawnRequest } from "waffle/proc/types";
-import { DescriptorTable } from "waffle/core/descriptors";
-import { createRuntimeTerminalCodec } from "waffle/browser/runtime-terminals";
-import { WorkerPipeHost } from "waffle/proc/worker-pipes";
+import { createSharedControlAllocator } from "@waffle-os/runtime";
+import type { Runtime } from "@waffle-os/runtime";
+import type { SpawnRequest } from "@waffle-os/runtime/proc/types";
+import { DescriptorTable } from "@waffle-os/runtime/core/descriptors";
+import { createRuntimeTerminalCodec } from "@waffle-os/runtime/browser/runtime-terminals";
+import { WorkerPipeHost } from "@waffle-os/runtime/proc/worker-pipes";
 import {
   createWorkerProcessTransport,
   workerProcessPipeRegistry,
   WorkerProcessClient,
   type WorkerProcessMessage,
   type WorkerSpawnTransfer,
-} from "waffle/proc/worker-client";
+} from "@waffle-os/runtime/proc/worker-client";
 
 export type TestExecution = { status: number; stdout: string; stderr: string };
 export type TestRequest = Pick<SpawnRequest, "executable" | "argv" | "env" | "cwd"> & {

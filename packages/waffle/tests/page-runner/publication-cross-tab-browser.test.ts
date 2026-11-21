@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { crossTabAdapter } from "./publication-cross-tab-suite.js";
-import { runPageSuite } from "waffle/testing/page-runner";
-import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+import { runPageSuite } from "@waffle-os/runtime/testing/page-runner";
+import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 
 const controls = [
   { engine: "chromium", mode: "complete" },

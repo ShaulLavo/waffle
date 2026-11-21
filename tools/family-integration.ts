@@ -1,6 +1,6 @@
 import assert from "./test-assert.ts";
-import type { Runtime } from "waffle";
-import { basePackages, basePrograms, installBase } from "waffle-base";
+import type { Runtime } from "@waffle-os/runtime";
+import { basePackages, basePrograms, installBase } from "@waffle-os/base";
 import { runFamilyAcceptance } from "./family-acceptance.ts";
 
 export async function runLazyBaseAcceptance(runtime: Runtime, workerUrl: URL) {

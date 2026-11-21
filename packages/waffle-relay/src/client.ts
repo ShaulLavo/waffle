@@ -1,4 +1,4 @@
-import { attachNetFetchResponseMetadata } from "waffle/browser/net/transport";
+import { attachNetFetchResponseMetadata } from "@waffle-os/runtime/browser/net/transport";
 import { Lifetime, type Exchange } from "./lifetime.js";
 import { boundedStream } from "./stream.js";
 import {

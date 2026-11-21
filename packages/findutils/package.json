@@ -1,5 +1,5 @@
 {
-  "name": "waffle-findutils",
+  "name": "@waffle-os/findutils",
   "version": "0.0.0",
   "private": true,
   "description": "WASI find and xargs for Waffle runtimes.",
@@ -40,10 +40,10 @@
     "test:types": "bun ../waffle/node_modules/typescript/bin/tsc -p tests/tsconfig.json"
   },
   "devDependencies": {
-    "waffle": "workspace:*"
+    "@waffle-os/runtime": "workspace:*"
   },
   "peerDependencies": {
-    "waffle": "*"
+    "@waffle-os/runtime": "*"
   },
   "waffleHostInterface": 3
 }

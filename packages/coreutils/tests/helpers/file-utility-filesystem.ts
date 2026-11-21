@@ -1,4 +1,4 @@
-import type { Runtime } from "waffle";
+import type { Runtime } from "@waffle-os/runtime";
 import { initialTree, type FileTree } from "./file-utility-cases.ts";
 
 export async function seedFileUtilityTree(runtime: Runtime) {

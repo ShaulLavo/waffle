@@ -1,4 +1,4 @@
-import { startPage, cleanupStorage } from "waffle/testing/page-runner/page";
+import { startPage, cleanupStorage } from "@waffle-os/runtime/testing/page-runner/page";
 import { record } from "./protocol.js";
 declare global {
   interface Window {

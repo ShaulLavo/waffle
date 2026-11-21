@@ -1,0 +1,29 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [["@waffle-os/runtime", "@waffle-os/relay"]],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": [
+    "@waffle-os/awk",
+    "@waffle-os/base",
+    "@waffle-os/coreutils",
+    "@waffle-os/curl",
+    "@waffle-os/diffutils",
+    "@waffle-os/findutils",
+    "@waffle-os/gh",
+    "@waffle-os/git",
+    "@waffle-os/grep",
+    "@waffle-os/jq",
+    "@waffle-os/procps",
+    "@waffle-os/python",
+    "@waffle-os/ripgrep",
+    "@waffle-os/sed",
+    "@waffle-os/tar",
+    "waffle-process-consumer",
+    "waffle-program-support"
+  ]
+}

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { SuiteAdapter } from "waffle/testing/page-runner";
+import type { SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
 import { createRelayBrowserFixture } from "./network-relay-fixture.js";
 import {
   networkBudgets,

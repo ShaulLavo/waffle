@@ -1,4 +1,4 @@
-import { defineProgramPackage, type ProgramCatalog } from "waffle/programs/catalog";
+import { defineProgramPackage, type ProgramCatalog } from "@waffle-os/runtime/programs/catalog";
 
 export const GH_CLI_URL = new URL("../dist/gh-cli.js", import.meta.url);
 

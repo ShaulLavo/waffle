@@ -3,8 +3,8 @@ import {
   type SuiteAdapter,
   type SuiteFixture,
   type FixtureRequest,
-} from "waffle/testing/page-runner";
-import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+} from "@waffle-os/runtime/testing/page-runner";
+import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 import { browserBundle } from "../browser-runner-lifecycle.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

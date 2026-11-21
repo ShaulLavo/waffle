@@ -7,7 +7,7 @@ import {
   writeResult,
   type Driver,
   type SuiteAdapter,
-} from "waffle/testing/page-runner";
+} from "@waffle-os/runtime/testing/page-runner";
 import { networkAdapter, relayAdapter } from "./network-page-suite.js";
 import { networkInputs } from "./network-page-inputs.js";
 import type { NetworkTarget } from "./network-page-contract.js";

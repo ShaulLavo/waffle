@@ -1,5 +1,10 @@
-import { createRuntime, type NamespaceCut, type NamespaceEntry, type WorkspaceVfs } from "waffle";
-import { FilesystemClient, createWorkspaceVfs, revokeFilesystem } from "waffle/fs";
+import {
+  createRuntime,
+  type NamespaceCut,
+  type NamespaceEntry,
+  type WorkspaceVfs,
+} from "@waffle-os/runtime";
+import { FilesystemClient, createWorkspaceVfs, revokeFilesystem } from "@waffle-os/runtime/fs";
 
 import type { WorkspaceSafariGuestRequest } from "./workspace-safari-guest.js";
 

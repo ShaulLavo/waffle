@@ -9,7 +9,7 @@ export async function runGpuAsyncControls(
   const { mkdir, readdir, rmdir } = await import("node:fs/promises");
   const { gpuAsyncAdapter } = await import("./gpu-async-suite.js");
   const { PlaywrightDriver } = await import("./playwright-driver.js");
-  const { runPageSuite } = await import("waffle/testing/page-runner");
+  const { runPageSuite } = await import("@waffle-os/runtime/testing/page-runner");
   const { qualificationEngine, swiftShaderArgs } = await import("../gpu-browser-qualification.js");
   if (!isAbsolute(root) || !isAbsolute(scratch)) throw new Error("Control paths must be absolute");
   await mkdir(root, { recursive: true });

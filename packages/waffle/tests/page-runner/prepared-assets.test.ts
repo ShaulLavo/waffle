@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runPageSuite, type SuiteAdapter } from "waffle/testing/page-runner";
+import { runPageSuite, type SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
 import { controlAssets } from "./consumer-controls.js";
 
 async function fixture(run: (root: string) => Promise<void>): Promise<void> {

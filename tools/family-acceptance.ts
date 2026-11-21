@@ -1,16 +1,16 @@
-import { createSharedControlAllocator } from "waffle";
-import type { Runtime, GuestLauncher, RuntimeSupervisor } from "waffle";
-import { DescriptorTable } from "waffle/core/descriptors";
-import { createRuntimeTerminalCodec } from "waffle/browser/runtime-terminals";
-import type { DescriptorBinding, ProcessExit } from "waffle/proc/types";
+import { createSharedControlAllocator } from "@waffle-os/runtime";
+import type { Runtime, GuestLauncher, RuntimeSupervisor } from "@waffle-os/runtime";
+import { DescriptorTable } from "@waffle-os/runtime/core/descriptors";
+import { createRuntimeTerminalCodec } from "@waffle-os/runtime/browser/runtime-terminals";
+import type { DescriptorBinding, ProcessExit } from "@waffle-os/runtime/proc/types";
 import {
   createWorkerProcessTransport,
   workerProcessPipeRegistry,
   WorkerProcessClient,
   type WorkerProcessMessage,
-} from "waffle/proc/worker-client";
-import { WorkerPipeHost } from "waffle/proc/worker-pipes";
-import { installPrograms, type ProgramInstallation, type ProgramPackage } from "waffle/programs";
+} from "@waffle-os/runtime/proc/worker-client";
+import { WorkerPipeHost } from "@waffle-os/runtime/proc/worker-pipes";
+import { installPrograms, type ProgramInstallation, type ProgramPackage } from "@waffle-os/runtime/programs";
 import cutTrFixture from "../packages/coreutils/fixtures/cut-tr.json" with { type: "json" };
 import { seedFindTree } from "../packages/findutils/provenance/bash/tests/helpers/find-cases.ts";
 import grepFixture from "../packages/grep/tests/fixtures/grep-usage-cases.json" with { type: "json" };

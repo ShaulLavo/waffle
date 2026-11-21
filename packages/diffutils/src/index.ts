@@ -1,4 +1,4 @@
-import { defineProgramPackage, type ProgramCatalog } from "waffle/programs";
+import { defineProgramPackage, type ProgramCatalog } from "@waffle-os/runtime/programs";
 
 export const diffutils: ProgramCatalog = defineProgramPackage({
   name: "diffutils",

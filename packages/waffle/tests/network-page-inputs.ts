@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { PreparationContext } from "waffle/testing/page-runner";
+import type { PreparationContext } from "@waffle-os/runtime/testing/page-runner";
 import { preview1ListenerModule } from "./preview1-listener-module.js";
 import { relaySocketModules } from "./network-relay-modules.js";
 import { sentinelAssets } from "./network-sentinel-assets.js";

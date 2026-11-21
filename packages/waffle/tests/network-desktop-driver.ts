@@ -1,4 +1,4 @@
-import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 
 const snapshot = `return (async()=>{
   const registrations=await navigator.serviceWorker.getRegistrations();

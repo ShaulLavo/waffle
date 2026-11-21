@@ -1,4 +1,4 @@
-import { createRuntime } from "waffle";
+import { createRuntime } from "@waffle-os/runtime";
 import { runLazyBaseAcceptance } from "./family-integration.ts";
 
 const runtime = createRuntime({

@@ -1,5 +1,5 @@
 {
-  "name": "waffle-relay",
+  "name": "@waffle-os/relay",
   "version": "0.0.145",
   "description": "Optional authenticated HTTP and TCP relay for Waffle runtimes.",
   "license": "MIT",
@@ -73,12 +73,12 @@
     "@types/ws": "8.18.2",
     "miniflare": "5.20261006.1-alpha",
     "typescript": "7.0.2",
-    "waffle": "workspace:*"
+    "@waffle-os/runtime": "workspace:*"
   },
   "peerDependencies": {
     "@fails-components/webtransport": "1.6.11",
     "@fails-components/webtransport-transport-http3-quiche": "1.6.11",
-    "waffle": "*"
+    "@waffle-os/runtime": "*"
   },
   "peerDependenciesMeta": {
     "@fails-components/webtransport": {
@@ -91,5 +91,9 @@
   "engines": {
     "node": ">=22.18"
   },
-  "waffleHostInterface": 3
+  "waffleHostInterface": 3,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }

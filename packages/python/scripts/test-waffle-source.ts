@@ -15,11 +15,11 @@ test("Python audits the actual committed sibling and rejects modified inputs bef
     mkdirSync(resolve(root, "packages/waffle"), { recursive: true });
     writeFileSync(
       resolve(root, "packages/waffle/package.json"),
-      JSON.stringify({ name: "waffle", version: "0.0.99" }),
+      JSON.stringify({ name: "@waffle-os/runtime", version: "0.0.99" }),
     );
     writeFileSync(
       resolve(root, "package.json"),
-      JSON.stringify({ devDependencies: { waffle: "workspace:*" } }),
+      JSON.stringify({ devDependencies: { "@waffle-os/runtime": "workspace:*" } }),
     );
     git("init", "-q");
     git("add", ".");
@@ -43,7 +43,7 @@ test("Python audits the actual committed sibling and rejects modified inputs bef
     rmSync(resolve(root, "packages/waffle/uncommitted.ts"));
     writeFileSync(
       resolve(root, "packages/waffle/package.json"),
-      JSON.stringify({ name: "waffle", version: "changed" }),
+      JSON.stringify({ name: "@waffle-os/runtime", version: "changed" }),
     );
     assert.throws(() => auditWaffleSource(root), /Commit runtime inputs/);
   } finally {

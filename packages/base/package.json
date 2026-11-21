@@ -1,5 +1,5 @@
 {
-  "name": "waffle-base",
+  "name": "@waffle-os/base",
   "version": "0.0.0",
   "private": true,
   "description": "The everyday Waffle program families.",
@@ -19,17 +19,17 @@
     "prepack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts check"
   },
   "dependencies": {
-    "waffle-coreutils": "workspace:*",
-    "waffle-findutils": "workspace:*",
-    "waffle-grep": "workspace:*",
-    "waffle-ripgrep": "workspace:*",
-    "waffle-sed": "workspace:*"
+    "@waffle-os/coreutils": "workspace:*",
+    "@waffle-os/findutils": "workspace:*",
+    "@waffle-os/grep": "workspace:*",
+    "@waffle-os/ripgrep": "workspace:*",
+    "@waffle-os/sed": "workspace:*"
   },
   "devDependencies": {
-    "waffle": "workspace:*"
+    "@waffle-os/runtime": "workspace:*"
   },
   "peerDependencies": {
-    "waffle": "*"
+    "@waffle-os/runtime": "*"
   },
   "waffleHostInterface": 3
 }

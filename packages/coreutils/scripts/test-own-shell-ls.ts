@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import type { Runtime } from "waffle";
+import type { Runtime } from "@waffle-os/runtime";
 import { installNodeWorkers, liveNodeWorkers, stopNodeWorkers } from "./node-worker-host.ts";
 import { runRoot } from "./waffle-compat.ts";
 import type * as Api from "./waffle-node-api.ts";

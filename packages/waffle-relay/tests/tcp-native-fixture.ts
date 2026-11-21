@@ -10,9 +10,9 @@ import {
   createNodeWebSocket,
   type TcpLog,
   type TcpServerOptions,
-} from "waffle-relay/node";
-import { createRelayConnect, type TcpStream } from "waffle-relay";
-import { mintRelayToken } from "waffle-relay/token";
+} from "@waffle-os/relay/node";
+import { createRelayConnect, type TcpStream } from "@waffle-os/relay";
+import { mintRelayToken } from "@waffle-os/relay/token";
 
 const origin = "https://tcp-fixture.example";
 const secret = randomBytes(32);

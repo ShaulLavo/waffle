@@ -16,7 +16,7 @@ import {
   type AttachedConnection,
   type FrameworkHost,
   type VitestEnd,
-} from "waffle/testing/page-runner/framework";
+} from "@waffle-os/runtime/testing/page-runner/framework";
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : (JSON.stringify(error) ?? String(error));

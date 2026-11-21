@@ -1,4 +1,4 @@
-import { startPage, cleanupStorage } from "waffle/testing/page-runner/page";
+import { startPage, cleanupStorage } from "@waffle-os/runtime/testing/page-runner/page";
 import { bufferNetworkActivation } from "./network-activation-browser.js";
 import { networkBrowserCases } from "./network-browser.js";
 import { networkId } from "./network-page-contract.js";

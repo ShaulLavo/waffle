@@ -1,4 +1,4 @@
-import { startPage } from "waffle/testing/page-runner/page";
+import { startPage } from "@waffle-os/runtime/testing/page-runner/page";
 import { runtimeThreadCases } from "../threads-runtime-cases.js";
 import { runThreadsRuntime } from "../threads-runtime-browser.js";
 import type { ThreadRuntimeRequest } from "./threads-runtime-suite.js";

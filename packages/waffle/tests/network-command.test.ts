@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as host from "waffle/testing/page-runner";
+import * as host from "@waffle-os/runtime/testing/page-runner";
 import { FakeDriver } from "./page-runner/fake-driver.js";
 import {
   completeNetworkCommand,

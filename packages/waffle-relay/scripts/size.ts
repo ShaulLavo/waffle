@@ -74,7 +74,7 @@ try {
   const before = await bundle("packages/waffle/index.ts", true);
   const after = await bundle("packages/waffle/index.ts");
   assert.ok(
-    !after.allInputs.some((input) => input.includes("waffle-relay")),
+    !after.allInputs.some((input) => input.includes("@waffle-os/relay")),
     "Relay entered the runtime dependency graph",
   );
   assert.ok(

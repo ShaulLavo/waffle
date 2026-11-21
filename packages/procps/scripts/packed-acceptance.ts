@@ -7,7 +7,7 @@ import { commandShell } from "../../waffle/tests/program-host-command-fixture.ts
 
 const consumer = process.argv[2];
 if (!consumer) throw new Error("Expected an extracted package consumer path");
-const entry = createRequire(consumer).resolve("waffle-procps/programs");
+const entry = createRequire(consumer).resolve("@waffle-os/procps/programs");
 assert.equal(entry, join(dirname(consumer), "package", "src", "catalog.ts"));
 const { procps }: typeof import("../src/catalog.ts") = await import(entry);
 const runtime = createRuntime({

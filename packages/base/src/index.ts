@@ -1,16 +1,16 @@
-import { defineProgramPackage } from "waffle/programs/catalog";
-import type { GuestLauncher, Runtime } from "waffle";
+import { defineProgramPackage } from "@waffle-os/runtime/programs/catalog";
+import type { GuestLauncher, Runtime } from "@waffle-os/runtime";
 import {
   installPrograms,
   type InstallProgramsOptions,
   type ProgramInstallation,
   type ProgramPackage,
-} from "waffle/programs";
-import { coreutils } from "waffle-coreutils";
-import { findutils } from "waffle-findutils";
-import { grep } from "waffle-grep";
-import { ripgrep } from "waffle-ripgrep";
-import { sed } from "waffle-sed";
+} from "@waffle-os/runtime/programs";
+import { coreutils } from "@waffle-os/coreutils";
+import { findutils } from "@waffle-os/findutils";
+import { grep } from "@waffle-os/grep";
+import { ripgrep } from "@waffle-os/ripgrep";
+import { sed } from "@waffle-os/sed";
 
 export const basePackages = [
   coreutils,

@@ -1,4 +1,4 @@
-import { defineProgramPackage } from "waffle/programs/catalog";
+import { defineProgramPackage } from "@waffle-os/runtime/programs/catalog";
 import { createCurlCommand, curlPaths } from "./command.ts";
 import type { CurlPackageOptions } from "./host-command.ts";
 

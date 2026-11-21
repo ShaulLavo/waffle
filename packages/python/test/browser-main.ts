@@ -1,4 +1,4 @@
-import { createRuntime } from "waffle";
+import { createRuntime } from "@waffle-os/runtime";
 import { qualifyPython } from "./qualification.ts";
 import { browserUsageCases } from "./public-usage.ts";
 

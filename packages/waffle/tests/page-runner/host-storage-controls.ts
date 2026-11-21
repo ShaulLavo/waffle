@@ -4,8 +4,8 @@ import {
   ownedDatabase,
   type HostCase,
   type SuiteAdapter,
-} from "waffle/testing/page-runner";
-import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+} from "@waffle-os/runtime/testing/page-runner";
+import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 import { record } from "./protocol.js";
 
 export const hostStorageControlModes = [

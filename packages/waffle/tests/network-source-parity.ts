@@ -31,7 +31,7 @@ function parsedNode(text: string): Node | undefined {
   return node?.type === "ExpressionStatement" && object(node.expression) ? node.expression : node;
 }
 const substitutions = [
-  ['import type { OwnedServiceWorker } from "waffle/testing/page-runner/page";', ""],
+  ['import type { OwnedServiceWorker } from "@waffle-os/runtime/testing/page-runner/page";', ""],
   ['import { finishNetworkCase } from "./network-finalizer.js";', ""],
   [
     "export interface NetworkBrowserEnvironment { readonly serviceWorker: OwnedServiceWorker; }",

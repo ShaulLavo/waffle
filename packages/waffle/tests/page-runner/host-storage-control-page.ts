@@ -1,5 +1,5 @@
-import { createRuntime, type Runtime } from "waffle/runtime";
-import { cleanupStorage, startPage } from "waffle/testing/page-runner/page";
+import { createRuntime, type Runtime } from "@waffle-os/runtime/runtime";
+import { cleanupStorage, startPage } from "@waffle-os/runtime/testing/page-runner/page";
 import { record } from "./protocol.js";
 
 declare const HOST_STORAGE_CONTROL: string;

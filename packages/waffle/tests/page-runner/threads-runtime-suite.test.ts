@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { runPageSuite } from "waffle/testing/page-runner";
+import { runPageSuite } from "@waffle-os/runtime/testing/page-runner";
 import { parseRuntimeThreadCommand } from "../threads-runtime-browser-runner.js";
 import {
   runtimeThreadCases,

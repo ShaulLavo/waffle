@@ -1,7 +1,7 @@
-import { createRuntime, type Runtime } from "waffle";
+import { createRuntime, type Runtime } from "@waffle-os/runtime";
 import { installBunAdapters } from "bun-wasm";
-import { installGit } from "waffle-git";
-import { installGitProgram, GIT_CLI_URL } from "waffle-git/program";
+import { installGit } from "@waffle-os/git";
+import { installGitProgram, GIT_CLI_URL } from "@waffle-os/git/program";
 import type { GitInvocation } from "../../src/git-types";
 import { processRoot, type Result } from "./process-root";
 

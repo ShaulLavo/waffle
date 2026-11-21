@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { HostCase, SuiteAdapter } from "waffle/testing/page-runner";
+import type { HostCase, SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
 import { record, strings } from "./protocol.js";
 
 export const filesystemTransportId = "filesystem-transport: complete command";

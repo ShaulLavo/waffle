@@ -28,12 +28,12 @@ import assert from "node:assert/strict";
 import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import { fastGrep } from "waffle-grep";
-import { fastRipgrep } from "waffle-ripgrep";
+import { fastGrep } from "@waffle-os/grep";
+import { fastRipgrep } from "@waffle-os/ripgrep";
 const require = createRequire(import.meta.url);
-const runtime = realpathSync(require.resolve("waffle"));
-for (const name of ["waffle-grep", "waffle-ripgrep"])
-  assert.equal(realpathSync(require.resolve("waffle", { paths: [dirname(require.resolve(name))] })), runtime);
+const runtime = realpathSync(require.resolve("@waffle-os/runtime"));
+for (const name of ["@waffle-os/grep", "@waffle-os/ripgrep"])
+  assert.equal(realpathSync(require.resolve("@waffle-os/runtime", { paths: [dirname(require.resolve(name))] })), runtime);
 const workers = { search: "/search.js", shard: "/shard.js" };
 let launched = 0;
 for (const [factory, argv] of [

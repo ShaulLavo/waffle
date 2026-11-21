@@ -2,7 +2,11 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runPageSuite, type SuiteAdapter, type FixtureRoute } from "waffle/testing/page-runner";
+import {
+  runPageSuite,
+  type SuiteAdapter,
+  type FixtureRoute,
+} from "@waffle-os/runtime/testing/page-runner";
 import { FakeDriver } from "./fake-driver.js";
 
 const id = "fixture";

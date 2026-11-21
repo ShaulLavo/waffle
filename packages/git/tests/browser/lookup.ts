@@ -1,4 +1,4 @@
-import { createRuntime, type Runtime } from "waffle";
+import { createRuntime, type Runtime } from "@waffle-os/runtime";
 import { installBunAdapters } from "bun-wasm";
 import { createShell, SharedBridge, control } from "bash-web";
 import { installGit } from "../../src/git";

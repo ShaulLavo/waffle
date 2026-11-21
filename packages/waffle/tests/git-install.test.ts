@@ -19,7 +19,7 @@ test("the repository root is a private workspace and the runtime package owns it
   expect(root.private).toBe(true);
   expect(root.workspaces).toEqual(["packages/*"]);
   expect(root.exports).toBeUndefined();
-  expect(runtime.name).toBe("waffle");
+  expect(runtime.name).toBe("@waffle-os/runtime");
   expect(runtime.version).toMatch(/^0\.0\.\d+$/);
   expect(Object.keys(runtime.exports)).toContain(".");
 });

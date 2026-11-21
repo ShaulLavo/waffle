@@ -1,4 +1,4 @@
-import type { Runtime } from "waffle";
+import type { Runtime } from "@waffle-os/runtime";
 import type { GitFilesystem, GitStat } from "./git-types";
 
 class GitFilesystemError extends Error {

@@ -1,8 +1,8 @@
-import { FilesystemError } from "waffle/core/filesystem";
-import { compileGlob } from "waffle/search";
-import type { GlobPattern, WalkPlan } from "waffle/search";
-import { compileMatcher, supportsSearchOperands } from "waffle/search";
-import type { MatcherPlan, OutputPlan, SearchPlan } from "waffle/search";
+import { FilesystemError } from "@waffle-os/runtime/core/filesystem";
+import { compileGlob } from "@waffle-os/runtime/search";
+import type { GlobPattern, WalkPlan } from "@waffle-os/runtime/search";
+import { compileMatcher, supportsSearchOperands } from "@waffle-os/runtime/search";
+import type { MatcherPlan, OutputPlan, SearchPlan } from "@waffle-os/runtime/search";
 
 export type RgPlanAdmission =
   | { readonly kind: "supported"; readonly plan: SearchPlan }

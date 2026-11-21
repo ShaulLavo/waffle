@@ -1,5 +1,5 @@
 {
-  "name": "waffle-procps",
+  "name": "@waffle-os/procps",
   "version": "0.0.0",
   "private": true,
   "description": "Optional Waffle process commands with pure snapshot planning.",
@@ -26,10 +26,10 @@
     "size:commands": "bun scripts/measure-commands.ts"
   },
   "devDependencies": {
-    "waffle": "workspace:*"
+    "@waffle-os/runtime": "workspace:*"
   },
   "peerDependencies": {
-    "waffle": "*"
+    "@waffle-os/runtime": "*"
   },
   "waffleHostInterface": 3
 }

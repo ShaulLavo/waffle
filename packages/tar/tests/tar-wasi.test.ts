@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test, spyOn } from "bun:test";
-import { createRuntime } from "waffle";
+import { createRuntime } from "@waffle-os/runtime";
 
 import {
   runFamilyAcceptance,

@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import * as root from "waffle";
-import type { WorkspaceExportOptions as RootOptions, VersionStat } from "waffle";
-import * as fs from "waffle/fs";
-import type { WorkspaceExportOptions as FsOptions } from "waffle/fs";
-import * as fsIndex from "waffle/fs/index";
-import type { WorkspaceExportOptions as AliasOptions } from "waffle/fs/index";
+import * as root from "@waffle-os/runtime";
+import type { WorkspaceExportOptions as RootOptions, VersionStat } from "@waffle-os/runtime";
+import * as fs from "@waffle-os/runtime/fs";
+import type { WorkspaceExportOptions as FsOptions } from "@waffle-os/runtime/fs";
+import * as fsIndex from "@waffle-os/runtime/fs/index";
+import type { WorkspaceExportOptions as AliasOptions } from "@waffle-os/runtime/fs/index";
 import { parseWorkspaceArchive, type ArchiveEvent } from "../fs/workspace-archive";
 import { storeIdentity } from "../fs/file-identity";
 import { MemoryBackend } from "../fs/backend";
@@ -108,10 +108,10 @@ test("public exporter early return closes its lease but leaves the caller projec
 test("prepared Node root and fs entries expose the same bounded exporter, not import wiring", () => {
   const script = `
     import assert from "node:assert/strict";
-    import * as root from "waffle";
-    import * as fs from "waffle/fs";
-    import * as alias from "waffle/fs/index";
-    import { MemFS } from "waffle/fs/memory";
+    import * as root from "@waffle-os/runtime";
+    import * as fs from "@waffle-os/runtime/fs";
+    import * as alias from "@waffle-os/runtime/fs/index";
+    import { MemFS } from "@waffle-os/runtime/fs/memory";
     import { parseWorkspaceArchive } from "./dist/fs/workspace-archive.js";
     assert.equal(typeof root.exportWorkspaceArchive, "function");
     assert.equal(root.exportWorkspaceArchive, fs.exportWorkspaceArchive);

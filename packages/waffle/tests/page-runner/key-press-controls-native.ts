@@ -1,4 +1,4 @@
-import { nativeMain } from "waffle/testing/page-runner";
+import { nativeMain } from "@waffle-os/runtime/testing/page-runner";
 import { keyPressAdapter } from "./key-press-suite.js";
 
 if (import.meta.main)

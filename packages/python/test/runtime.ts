@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { createRuntime } from "waffle";
+import { createRuntime } from "@waffle-os/runtime";
 import { serveTestFiles } from "./assets-server.ts";
 import { qualifyPython } from "./qualification.ts";
 import { installNodeWorkers, liveNodeWorkers, stopNodeWorkers } from "./node-worker-host.ts";
 
 // The public Node root locates this package's generated Node worker modules.
-const nodeRoot = new URL(".", import.meta.resolve("waffle"));
+const nodeRoot = new URL(".", import.meta.resolve("@waffle-os/runtime"));
 const server = await serveTestFiles(new URL("..", import.meta.url).pathname);
 installNodeWorkers();
 const runtime = createRuntime({
@@ -13,7 +13,7 @@ const runtime = createRuntime({
 });
 try {
   const result = await qualifyPython(runtime, {
-    workerUrl: new URL(import.meta.resolve("waffle/browser/preview1-worker")),
+    workerUrl: new URL(import.meta.resolve("@waffle-os/runtime/browser/preview1-worker")),
     wasmUrl: new URL("/assets/python.wasm", server.origin),
     payloadUrl: new URL("/assets/python-stdlib.json", server.origin),
   });

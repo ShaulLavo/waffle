@@ -32,6 +32,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 env:
   GITHUB_TOKEN: ${{ github.token }}
@@ -121,12 +122,23 @@ jobs:
           name: program-release-${{ inputs.tag }}
           path: .build/program-release/assets
           if-no-files-found: error
-      - name: Publish the GitHub release assets
+      - name: Publish program packages to npm
+        if: inputs.publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+          fi
+          bun scripts/publish-programs-npm.ts .build/program-release/assets
+      - name: Create notes-only GitHub release
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$RELEASE_TAG" .build/program-release/assets/* \
-            --verify-tag --title "$RELEASE_TAG" --generate-notes
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes
+          fi
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

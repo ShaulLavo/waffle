@@ -1,6 +1,6 @@
-import { compileGlob } from "waffle/search";
-import { compileMatcher, supportsSearchOperands } from "waffle/search";
-import type { MatcherPlan, OutputPlan, SearchPlan } from "waffle/search";
+import { compileGlob } from "@waffle-os/runtime/search";
+import { compileMatcher, supportsSearchOperands } from "@waffle-os/runtime/search";
+import type { MatcherPlan, OutputPlan, SearchPlan } from "@waffle-os/runtime/search";
 
 type Fallback = { readonly kind: "fallback"; readonly reason: string };
 type OptionResult = { readonly kind: "parsed"; readonly consumeNext: boolean } | Fallback;

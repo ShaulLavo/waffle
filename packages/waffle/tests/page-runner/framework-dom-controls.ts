@@ -7,7 +7,7 @@ import {
   createFrameworkControl,
   type FrameworkHost,
   type FrameworkResult,
-} from "waffle/testing/page-runner/framework";
+} from "@waffle-os/runtime/testing/page-runner/framework";
 import { writeResult } from "./suite-host.js";
 import { record } from "./protocol.js";
 

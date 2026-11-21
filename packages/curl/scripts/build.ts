@@ -13,7 +13,7 @@ const result = await Bun.build({
   format: "esm",
   minify: true,
   splitting: false,
-  external: ["waffle", "waffle/*"],
+  external: ["@waffle-os/runtime", "@waffle-os/runtime/*"],
 });
 if (!result.success) throw new Error(result.logs.join("\n"));
 const output = result.outputs[0];

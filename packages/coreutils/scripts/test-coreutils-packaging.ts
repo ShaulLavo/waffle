@@ -84,7 +84,7 @@ async function bundle(entry: string): Promise<string> {
     format: "esm",
     platform: "browser",
     conditions: ["browser"],
-    external: ["waffle", "waffle/*"],
+    external: ["@waffle-os/runtime", "@waffle-os/runtime/*"],
     logLevel: "silent",
   });
   return result.outputFiles.map((file) => file.text).join("\n");

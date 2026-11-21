@@ -1,5 +1,5 @@
 {
-  "name": "waffle-sed",
+  "name": "@waffle-os/sed",
   "version": "0.0.0",
   "private": true,
   "description": "WASI sed for Waffle runtimes.",
@@ -31,10 +31,10 @@
     "prepare:package": "bun run build && bun run notices"
   },
   "devDependencies": {
-    "waffle": "workspace:*"
+    "@waffle-os/runtime": "workspace:*"
   },
   "peerDependencies": {
-    "waffle": "*"
+    "@waffle-os/runtime": "*"
   },
   "waffleHostInterface": 3
 }

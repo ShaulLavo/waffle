@@ -22,7 +22,7 @@ try {
         .digest("hex"),
     }),
   );
-  const files: Record<string, string> = { waffle: `file:${runtimeArchive}` };
+  const files: Record<string, string> = { "@waffle-os/runtime": `file:${runtimeArchive}` };
   for (const family of ["base", "coreutils", "findutils", "grep", "ripgrep", "sed"]) {
     const directory = resolve(root, "packages", family);
     const manifest: unknown = await Bun.file(resolve(directory, "package.json")).json();
@@ -30,8 +30,8 @@ try {
       manifest && typeof manifest === "object" && "name" in manifest && "version" in manifest,
     );
     assert.ok(typeof manifest.name === "string" && typeof manifest.version === "string");
-    files[manifest.name] =
-      `file:${resolve(directory, ".build", `${manifest.name}-${manifest.version}.tgz`)}`;
+    const archiveName = `${manifest.name.replace(/^@/, "").replaceAll("/", "-")}-${manifest.version}.tgz`;
+    files[manifest.name] = `file:${resolve(directory, ".build", archiveName)}`;
   }
   await writeFile(
     resolve(consumer, "package.json"),
@@ -49,7 +49,7 @@ try {
     outdir: consumer,
     naming: "acceptance.js",
     target: "bun",
-    external: Object.keys(files).concat(["waffle/*"]),
+    external: Object.keys(files).concat(["@waffle-os/runtime/*"]),
   });
   assert.ok(bundle.success, String(bundle.logs));
   execFileSync("bun", [entry], { cwd: consumer, stdio: "inherit", timeout: 90_000 });

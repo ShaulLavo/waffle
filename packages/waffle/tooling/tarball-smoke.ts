@@ -91,7 +91,7 @@ async function run(): Promise<void> {
       name: "waffle-tarball-consumer",
       private: true,
       type: "module",
-      dependencies: { waffle: `file:${archive}`, vite: "8.3.4" },
+      dependencies: { "@waffle-os/runtime": `file:${archive}`, vite: "8.3.4" },
     }) + "\n",
   );
   execFileSync(
@@ -102,7 +102,7 @@ async function run(): Promise<void> {
       stdio: "pipe",
     },
   );
-  assertWasiLibcBuildInputs(join(consumerDirectory, "node_modules/waffle"));
+  assertWasiLibcBuildInputs(join(consumerDirectory, "node_modules/@waffle-os/runtime"));
   await pageRunnerConsumer(consumerDirectory);
   await frameworkConsumer(consumerDirectory, "packed");
   await sourceInstallParity(packedRoot);
@@ -114,18 +114,18 @@ async function run(): Promise<void> {
     const entry = record(target);
     verifyExportTargets(packedRoot, entry);
     if (typeof entry.node === "string")
-      nodeSpecifiers.push(key === "." ? "waffle" : `waffle${key.slice(1)}`);
+      nodeSpecifiers.push(key === "." ? "@waffle-os/runtime" : `@waffle-os/runtime${key.slice(1)}`);
   }
   const nodeScript = `
     for (const specifier of ${JSON.stringify(nodeSpecifiers)}) await import(specifier);
-    const link = await import("waffle/link");
+    const link = await import("@waffle-os/runtime/link");
     if (link.adoptLinkPlan !== link.PreparedLinkPlan.adopt || link.prepareLinkPlan !== link.PreparedLinkPlan.prepare)
       throw new Error("packed link exports changed");
     if ("toSource" in link.PreparedLinkPlan.prototype) throw new Error("legacy link transport remains");
-    const { loadBufferNetworkModule } = await import("./node_modules/waffle/dist/browser/net/buffer-module.js");
+    const { loadBufferNetworkModule } = await import("./node_modules/@waffle-os/runtime/dist/browser/net/buffer-module.js");
     const buffer = (await loadBufferNetworkModule()).create();
     try { if (buffer.call("net_pair") < 1) throw Error("packed translated dynamic import failed"); } finally { buffer.dispose(); }
-    const { loadNetworkModule } = await import("waffle/network");
+    const { loadNetworkModule } = await import("@waffle-os/runtime/network");
     const network = (await loadNetworkModule()).create();
     try { if (network.call("net_listen", 40, 23456) !== 23456) throw new Error("packed network failed"); }
     finally { network.dispose(); }
@@ -134,10 +134,17 @@ async function run(): Promise<void> {
     cwd: consumerDirectory,
     stdio: "pipe",
   });
-  execFileSync("bun", ["-e", 'await import("waffle"); await import("waffle/browser/worker");'], {
-    cwd: consumerDirectory,
-    stdio: "pipe",
-  });
+  execFileSync(
+    "bun",
+    [
+      "-e",
+      'await import("@waffle-os/runtime"); await import("@waffle-os/runtime/browser/worker");',
+    ],
+    {
+      cwd: consumerDirectory,
+      stdio: "pipe",
+    },
+  );
   await mkdir(join(consumerDirectory, "src"));
   await writeFile(
     join(consumerDirectory, "index.html"),
@@ -145,7 +152,7 @@ async function run(): Promise<void> {
   );
   await writeFile(
     join(consumerDirectory, "src/main.ts"),
-    'import { bootstrap } from "waffle/browser/worker";\nimport { adoptLinkPlan, prepareLinkPlan } from "waffle/link";\nimport searchUrl from "waffle/search/search-worker?worker&url";\nimport shardUrl from "waffle/search/shard-worker?worker&url";\nexport { bootstrap, adoptLinkPlan, prepareLinkPlan, searchUrl, shardUrl };\n',
+    'import { bootstrap } from "@waffle-os/runtime/browser/worker";\nimport { adoptLinkPlan, prepareLinkPlan } from "@waffle-os/runtime/link";\nimport searchUrl from "@waffle-os/runtime/search/search-worker?worker&url";\nimport shardUrl from "@waffle-os/runtime/search/shard-worker?worker&url";\nexport { bootstrap, adoptLinkPlan, prepareLinkPlan, searchUrl, shardUrl };\n',
   );
   execFileSync("bun", ["run", "vite", "build", "--outDir", join(scratch, "vite-dist")], {
     cwd: consumerDirectory,
@@ -166,17 +173,17 @@ function consumerCommand(directory: string, command: string, args: string[]): vo
   });
 }
 const pageRunnerScript = `
-  import { nativeMain, ownedDatabase } from "waffle/testing/page-runner";
-  import { isHostedPage } from "waffle/testing/page-runner/page";
+  import { nativeMain, ownedDatabase } from "@waffle-os/runtime/testing/page-runner";
+  import { isHostedPage } from "@waffle-os/runtime/testing/page-runner/page";
   import { readdir } from "node:fs/promises";
   import { join, resolve } from "node:path";
   if (isHostedPage()) throw new Error("page import accessed a hosted window");
   for (const [specifier, suffix] of [
-    ["waffle/testing/page-runner", "/tests/page-runner/consumer.ts"],
-    ["waffle/testing/page-runner/page", "/tests/page-runner/consumer-page.ts"],
+    ["@waffle-os/runtime/testing/page-runner", "/tests/page-runner/consumer.ts"],
+    ["@waffle-os/runtime/testing/page-runner/page", "/tests/page-runner/consumer-page.ts"],
   ]) {
     const path = import.meta.resolve(specifier);
-    if (!path.endsWith(suffix) || !path.includes("/node_modules/waffle/")) throw new Error("wrong installed source entry " + path);
+    if (!path.endsWith(suffix) || !path.includes("/node_modules/@waffle-os/runtime/")) throw new Error("wrong installed source entry " + path);
   }
   let playwright;
   try { playwright = import.meta.resolve("playwright"); } catch {}
@@ -201,8 +208,8 @@ const pageRunnerScript = `
   }
 `;
 const adapterTypes = `
-import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type DriverPressControl, type HostKey, type HostCase, type AssetHoldCallback, type HeldAssetRequest, type HostPeer, type SuiteCase, type HostVerdict, type HostWorker, type HostRequestCallback } from "waffle/testing/page-runner";
-import { isHostedPage, startPage, cleanupStorage, type PageSuite, type HostPageRun } from "waffle/testing/page-runner/page";
+import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type DriverPressControl, type HostKey, type HostCase, type AssetHoldCallback, type HeldAssetRequest, type HostPeer, type SuiteCase, type HostVerdict, type HostWorker, type HostRequestCallback } from "@waffle-os/runtime/testing/page-runner";
+import { isHostedPage, startPage, cleanupStorage, type PageSuite, type HostPageRun } from "@waffle-os/runtime/testing/page-runner/page";
 const adapter: SuiteAdapter<{ databaseName: string }> = {
   suite: "consumer-types",
   inventory: () => [{ id: "consumer", label: "default", request: run => ({ databaseName: \`consumer-\${run}\` }) }],
@@ -313,7 +320,7 @@ const declared: SuiteAdapter<null> = {
   }) },
 };
 export { declared };
-const durable: import("waffle/testing/page-runner").StorageEntry = { kind: "service-worker", name: "http://localhost/scope/", clientURL: "http://localhost/scope/client", scriptURL: "http://localhost/sw.js" };
+const durable: import("@waffle-os/runtime/testing/page-runner").StorageEntry = { kind: "service-worker", name: "http://localhost/scope/", clientURL: "http://localhost/scope/client", scriptURL: "http://localhost/sw.js" };
 void durable;
 const suite: PageSuite<{ databaseName: string }> = {
   list: async () => ({ ids: ["consumer"] }),
@@ -338,7 +345,7 @@ export async function run(factory: (scratch: string) => Driver) {
 async function pageRunnerConsumer(directory: string): Promise<void> {
   await writeFile(
     join(directory, "page.ts"),
-    'export { isHostedPage, startPage, cleanupStorage } from "waffle/testing/page-runner/page";',
+    'export { isHostedPage, startPage, cleanupStorage } from "@waffle-os/runtime/testing/page-runner/page";',
   );
   await writeFile(join(directory, "page-runner.ts"), pageRunnerScript);
   consumerCommand(directory, "bun", ["page-runner.ts"]);
@@ -346,7 +353,7 @@ async function pageRunnerConsumer(directory: string): Promise<void> {
     "--input-type=module",
     "--eval",
     `
-    for (const path of ["waffle/testing/page-runner", "waffle/testing/page-runner/page", "waffle/testing/page-runner/playwright"]) {
+    for (const path of ["@waffle-os/runtime/testing/page-runner", "@waffle-os/runtime/testing/page-runner/page", "@waffle-os/runtime/testing/page-runner/playwright"]) {
       try { await import(path); throw new Error("Node accepted Bun-only entry " + path); }
       catch (error) { if (error.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error; }
     }
@@ -366,7 +373,7 @@ async function pageRunnerConsumer(directory: string): Promise<void> {
   consumerCommand(directory, "bun", [
     "-e",
     `
-    import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
+    import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
     const path = import.meta.resolve("playwright");
     if (!path.startsWith("file://" + process.cwd() + "/node_modules/")) throw new Error("Playwright ancestor leak " + path);
     if (typeof PlaywrightDriver !== "function") throw new Error("missing explicit driver");
@@ -402,16 +409,16 @@ async function frameworkConsumer(directory: string, phase: string): Promise<void
     "--input-type=module",
     "--eval",
     `
-    import { createFrameworkHost } from "waffle/testing/page-runner/framework";
-    import { getFrameworkObservation } from "waffle/testing/page-runner/framework-page";
+    import { createFrameworkHost } from "@waffle-os/runtime/testing/page-runner/framework";
+    import { getFrameworkObservation } from "@waffle-os/runtime/testing/page-runner/framework-page";
     if (typeof createFrameworkHost !== "function" || getFrameworkObservation() !== undefined) throw new Error("bad Node framework entry");
-    const entry = import.meta.resolve("waffle/testing/page-runner/framework");
-    if (!entry.endsWith("/node_modules/waffle/dist/tests/page-runner/framework.js")) throw new Error("Node did not resolve prepared installed JavaScript");
+    const entry = import.meta.resolve("@waffle-os/runtime/testing/page-runner/framework");
+    if (!entry.endsWith("/node_modules/@waffle-os/runtime/dist/tests/page-runner/framework.js")) throw new Error("Node did not resolve prepared installed JavaScript");
   `,
   ]);
   await writeFile(
     join(directory, "framework-page.ts"),
-    'export { getFrameworkObservation } from "waffle/testing/page-runner/framework-page";',
+    'export { getFrameworkObservation } from "@waffle-os/runtime/testing/page-runner/framework-page";',
   );
   consumerCommand(directory, "bun", [
     "--eval",
@@ -493,8 +500,8 @@ async function sourceInstallParity(packedRoot: string): Promise<void> {
       name: "waffle-source-consumer",
       private: true,
       type: "module",
-      dependencies: { waffle: `file:${source}` },
-      trustedDependencies: ["waffle"],
+      dependencies: { "@waffle-os/runtime": `file:${source}` },
+      trustedDependencies: ["@waffle-os/runtime"],
     }),
   );
   consumerCommand(consumer, "bun", [
@@ -504,7 +511,7 @@ async function sourceInstallParity(packedRoot: string): Promise<void> {
     "--linker=hoisted",
     "--backend=copyfile",
   ]);
-  const installed = join(consumer, "node_modules/waffle");
+  const installed = join(consumer, "node_modules/@waffle-os/runtime");
   if (!existsSync(join(installed, "dist/index.js")))
     throw new Error("source preparation did not emit Node entries");
   if (!existsSync(join(installed, "dist/tests/page-runner/framework.js")))

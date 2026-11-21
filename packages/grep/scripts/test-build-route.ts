@@ -56,7 +56,7 @@ test("grep uses the cooperative family route and exact admission prefix", () => 
     resolve(packageRoot, "Cargo.toml"),
     "-j2",
     "-p",
-    "waffle-grep",
+    "@waffle-os/grep",
     "--bin",
     "grep",
     "--features",

@@ -18,8 +18,8 @@ try {
   });
   execFileSync("tar", ["-xzf", archive, "-C", scratch]);
   const packed = join(scratch, "package");
-  mkdirSync(join(scratch, "node_modules"));
-  symlinkSync(resolve(root, "../waffle"), join(scratch, "node_modules/waffle"), "dir");
+  mkdirSync(join(scratch, "node_modules/@waffle-os"), { recursive: true });
+  symlinkSync(resolve(root, "../waffle"), join(scratch, "node_modules/@waffle-os/runtime"), "dir");
   symlinkSync(resolve(root, "node_modules/ws"), join(scratch, "node_modules/ws"), "dir");
   const executable = resolve(packed, manifest.bin["waffle-relay"]);
   const cli = spawnSync(executable, [], { encoding: "utf8", timeout: 5000 });

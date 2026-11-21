@@ -1,5 +1,5 @@
-import { createRuntime, type Runtime } from "waffle";
-import { FilesystemClient } from "waffle/fs/client";
+import { createRuntime, type Runtime } from "@waffle-os/runtime";
+import { FilesystemClient } from "@waffle-os/runtime/fs/client";
 import { installGitProgram } from "../../src/program";
 
 /** Dev-only: dispose removes only the script it created, never a caller's replacement. */

@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { nativeMain } from "waffle/testing/page-runner";
+import { nativeMain } from "@waffle-os/runtime/testing/page-runner";
 import { assertRuntimeSafariPacket } from "../threads-runtime-safari-packet.js";
 import { threadsRuntimeAdapter } from "./threads-runtime-suite.js";
 

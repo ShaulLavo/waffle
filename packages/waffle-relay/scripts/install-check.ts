@@ -92,7 +92,10 @@ async function install(manager: "npm" | "bun", nativeArchive: Uint8Array): Promi
     version: "0.0.0",
     private: true,
     type: "module",
-    dependencies: { waffle: `file:${runtime}`, "waffle-relay": `file:${scratch}/relay.tgz` },
+    dependencies: {
+      "@waffle-os/runtime": `file:${runtime}`,
+      "@waffle-os/relay": `file:${scratch}/relay.tgz`,
+    },
   };
   await writeFile(join(directory, "package.json"), JSON.stringify(manifest));
   const env = {
@@ -114,7 +117,7 @@ async function install(manager: "npm" | "bun", nativeArchive: Uint8Array): Promi
     [
       "--input-type=module",
       "--eval",
-      'await import("waffle-relay"); await import("waffle-relay/node")',
+      'await import("@waffle-os/relay"); await import("@waffle-os/relay/node")',
     ],
     { cwd: directory, env, timeout: 10000 },
   );
@@ -139,7 +142,7 @@ async function install(manager: "npm" | "bun", nativeArchive: Uint8Array): Promi
   );
   await execute(
     manager === "npm" ? "node" : "bun",
-    ["--input-type=module", "--eval", 'await import("waffle-relay/node-webtransport")'],
+    ["--input-type=module", "--eval", 'await import("@waffle-os/relay/node-webtransport")'],
     { cwd: directory, env, timeout: 10000 },
   );
   await startup(directory, true);
@@ -156,7 +159,7 @@ async function install(manager: "npm" | "bun", nativeArchive: Uint8Array): Promi
     await assert.rejects(
       execute(
         manager === "npm" ? "node" : "bun",
-        ["--input-type=module", "--eval", 'await import("waffle-relay/node-webtransport")'],
+        ["--input-type=module", "--eval", 'await import("@waffle-os/relay/node-webtransport")'],
         { cwd: directory, env, timeout: 10000 },
       ),
       (error: unknown) =>

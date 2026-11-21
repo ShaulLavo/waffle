@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { createRuntime } from "waffle";
-import { FilesystemClient } from "waffle/fs";
-import { PipeErrno } from "waffle/proc/pipes";
-import type { ProgramPackage } from "waffle/programs";
+import { createRuntime } from "@waffle-os/runtime";
+import { FilesystemClient } from "@waffle-os/runtime/fs";
+import { PipeErrno } from "@waffle-os/runtime/proc/pipes";
+import type { ProgramPackage } from "@waffle-os/runtime/programs";
 import { coreutils } from "../src/index.ts";
 import { teeCases, type TeeCase } from "../fixtures/tee-cases.ts";
 import { observeNativeTee, verifyGnuTee } from "../scripts/tee-oracle.ts";

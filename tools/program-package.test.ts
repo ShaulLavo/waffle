@@ -78,7 +78,7 @@ test("pack rejects absent guests and notices, and verifies actual archive closur
         name: "fixture",
         version: "0.0.0",
         waffleHostInterface: 1,
-        peerDependencies: { waffle: "*" },
+        peerDependencies: { "@waffle-os/runtime": "*" },
         files: ["dist"],
       }),
     );
@@ -117,7 +117,7 @@ test("pack rejects absent guests and notices, and verifies actual archive closur
         name: "fixture",
         version: "0.0.0",
         waffleHostInterface: 1,
-        peerDependencies: { waffle: "*" },
+        peerDependencies: { "@waffle-os/runtime": "*" },
         files: ["package.json"],
       }),
     );

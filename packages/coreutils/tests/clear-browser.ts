@@ -1,4 +1,4 @@
-import { createRuntime } from "waffle";
+import { createRuntime } from "@waffle-os/runtime";
 import { GhosttyRuntime } from "ghostty-webgpu";
 import { createShell, type Shell } from "../src/shell.ts";
 import {
