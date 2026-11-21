@@ -56,7 +56,7 @@ export function checkConfig(
   assert.equal(runtime.User, "1000:1000");
   assert.deepEqual(runtime.Entrypoint, [
     "/usr/local/bin/node",
-    "/app/node_modules/@waffle-os/relay/dist/cli.js",
+    "/app/node_modules/waffle-relay/dist/cli.js",
   ]);
   assert.deepEqual(runtime.Cmd, ["serve", "--config", "/app/relay.json"]);
   const labels = record(runtime.Labels);

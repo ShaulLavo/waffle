@@ -47,7 +47,7 @@ function config(selected = "native") {
     architecture: "amd64",
     config: {
       User: "1000:1000",
-      Entrypoint: ["/usr/local/bin/node", "/app/node_modules/@waffle-os/relay/dist/cli.js"],
+      Entrypoint: ["/usr/local/bin/node", "/app/node_modules/waffle-relay/dist/cli.js"],
       Cmd: ["serve", "--config", "/app/relay.json"],
       Env: ["NODE_ENV=production"],
       Labels: {
