@@ -18,21 +18,23 @@ for (const selected of ["read", "write"]) {
       ]);
       expect(await child.exited, stderr).toBe(0);
       expect(JSON.parse(stdout.trim())).toMatchObject({
-        selected,
-        workers: 4,
-        stopped: 4,
-        drained: 1,
-        disposed: 1,
-        errors: [],
-        pipe: "PRM",
+        selected: `fd-${selected}`,
+        workers: 5,
+        stopped: 5,
+        output: "PRM",
         exit: { kind: "exited", code: 0, status: 0 },
-        beforeRelease: { references: 1, offset: 0 },
-        originalCompletion: {
-          result: { kind: "ok", value: 2 },
-          original: { references: 0, offset: 2 },
+        regression: {
+          drained: 1,
+          disposed: 1,
+          flags: [0, 4, 4, 0, 0],
+          beforeRelease: { references: 1, offset: 0 },
+          originalCompletion: {
+            result: { kind: "ok", value: 2 },
+            original: { references: 0, offset: 2 },
+          },
+          originalBytes: selected === "read" ? "ABCDExyHIJ" : "UVCDExyHIJ",
+          replacementBytes: "12Q4567890",
         },
-        originalBytes: selected === "read" ? "ABCDExyHIJ" : "UVCDExyHIJ",
-        replacementBytes: "12Q4567890",
       });
     } finally {
       clearTimeout(timer);

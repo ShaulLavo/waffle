@@ -67,7 +67,7 @@ export async function guestFixture(
         return result;
       }
       const tid = await spawn(request.startArg);
-      return tid > 0 ? { kind: "ok", value: tid } : { kind: "error", errno: -tid };
+      return tid >= 0 ? { kind: "ok", value: tid } : { kind: "error", errno: -tid };
     },
   };
   function launch(

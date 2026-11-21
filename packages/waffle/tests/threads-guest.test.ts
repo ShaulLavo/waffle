@@ -240,6 +240,31 @@ describe("thread guest bridge", () => {
       await fixture.dispose();
     }
   });
+
+  for (const invalid of [0, 0x20000000]) {
+    test(`compiled guest rejects out-of-range successful spawn value ${invalid}`, async () => {
+      const fixture = await guestFixture();
+      try {
+        fixture.setSpawn(async () => invalid);
+        const module = await compileThreadGuest(
+          guestModule({
+            imports: [{ module: "wasi", name: "thread-spawn", params: [0x7f] }],
+            initial: store(64, i32(88).concat(call(0))),
+          }),
+        );
+        new Int32Array(fixture.memory.buffer)[16] = 123;
+        const guest = fixture.launch(module, { kind: "initial" });
+        await guest.ready;
+        guest.enter();
+        await guest.idle;
+        expect(readOutcome(fixture.outcome)).toMatchObject({ kind: "exited", code: 1 });
+        expect(new Int32Array(fixture.memory.buffer)[16]).toBe(123);
+        expect(fixture.guests).toHaveLength(1);
+      } finally {
+        await fixture.dispose();
+      }
+    });
+  }
 });
 
 test("ordinary precompiled modules cannot bypass supervised wait admission", async () => {

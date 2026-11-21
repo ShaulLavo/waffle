@@ -8,6 +8,16 @@ import {
   call,
   store,
 } from "./threads-guest-module.js";
+import type { BrowserRuntimeThreadCase } from "./threads-runtime-cases.js";
+import { descriptorModule } from "./threads-runtime-fd-module.js";
+import {
+  admissionThreadModule,
+  fatalThreadModule,
+  overlappingWaitModule,
+  receivingGrowthModule,
+  spawnImport,
+  threadIdModule,
+} from "./threads-runtime-regression-modules.js";
 const u32 = (value: number): number[] => {
   const result: number[] = [];
   do {
@@ -77,11 +87,19 @@ export function runtimeSurvivorModule(): Uint8Array<ArrayBuffer> {
   );
 }
 
-export function generatedRuntimeThreadModule(selected: string): Uint8Array<ArrayBuffer> {
-  const spawn = { module: "wasi", name: "thread-spawn", params: [0x7f] };
+export function generatedRuntimeThreadModule(
+  selected: BrowserRuntimeThreadCase,
+): Uint8Array<ArrayBuffer> {
+  if (selected === "fd-read") return descriptorModule("read");
+  if (selected === "fd-write") return descriptorModule("write");
+  if (selected === "fatal-exit") return fatalThreadModule();
+  if (selected === "admission") return admissionThreadModule();
+  if (selected === "tid-boundaries") return threadIdModule();
+  if (selected === "growth") return receivingGrowthModule();
+  if (selected === "overlapping-waits") return overlappingWaitModule();
   if (selected === "join")
     return guestModule({
-      imports: [spawn, { name: "fd_write", params: [0x7f, 0x7f, 0x7f, 0x7f] }],
+      imports: [spawnImport, { name: "fd_write", params: [0x7f, 0x7f, 0x7f, 0x7f] }],
       initial: i32(0x12345678).concat(call(0), [0x1a], wait32(0)),
       secondary: store(256, i32(99)).concat(
         store(128, i32(256)),
@@ -98,12 +116,12 @@ export function generatedRuntimeThreadModule(selected: string): Uint8Array<Array
     });
   if (selected === "child-exit")
     return guestModule({
-      imports: [spawn, { name: "proc_exit", params: [0x7f], result: false }],
+      imports: [spawnImport, { name: "proc_exit", params: [0x7f], result: false }],
       initial: i32(0).concat(call(0), [0x1a], wait64(0)),
       secondary: i32(0).concat(call(1)),
     });
   return guestModule({
-    imports: [spawn],
+    imports: [spawnImport],
     initial:
       selected === "cpu"
         ? [0x03, 0x40, 0x0c, 0, 0x0b]
