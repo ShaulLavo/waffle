@@ -1283,6 +1283,7 @@ export class BrowserProcessBroker {
       !this.options.reservations.ownsBuffer("pipe-registry", data.pipeRegistry.buffer)
     )
       throw new TypeError("Root bootstrap requires a ledger-charged registry");
+    const guestControls = this.commandRoots?.get(state.pid)?.root !== transport;
     const ticket = this.options.reservations.admit({
       pid: workerProcessState(transport).pid,
       executable: "adopted root",
@@ -1292,7 +1293,7 @@ export class BrowserProcessBroker {
           : { kind: "declared", memories: options.memory },
       group: "none",
       connection: false,
-      controls: true,
+      controls: guestControls,
     });
     const previousData = transport.data;
     let changedData = false;
@@ -1341,7 +1342,7 @@ export class BrowserProcessBroker {
       if (descendant) this.descendantHooks.set(state.pid, descendant);
       this.rootAdmissions.set(state.pid, ticket);
       this.rootTickets.set(state.pid, ticket.launched());
-      this.rootGrants.set(state.pid, ticket.control);
+      if (guestControls) this.rootGrants.set(state.pid, ticket.control);
     } catch (error) {
       if (changedData) transport.data = previousData;
       registeredRegistry?.collectProcess(state.pid);
