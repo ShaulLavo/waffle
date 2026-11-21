@@ -151,6 +151,17 @@ function programStages() {
     }));
 }
 
+function observeWorkers(
+  service: ProcessService,
+  starts: Map<number, ProcessStartState>,
+  linearBytes: Map<number, number>,
+) {
+  for (const worker of service.startStates()) starts.set(worker.pid, worker);
+  for (const { pid, bytes } of service.workerMemory()) {
+    if (bytes !== null) linearBytes.set(pid, Math.max(linearBytes.get(pid) ?? 0, bytes));
+  }
+}
+
 async function runPipeline(
   session: FamilyAcceptanceSession,
   service: ProcessService,
@@ -180,13 +191,7 @@ async function runPipeline(
     const blocked = memory(runtime, service);
     const starts = new Map<number, ProcessStartState>();
     const observedLinearBytes = new Map<number, number>();
-    const sample = () => {
-      for (const worker of service.startStates()) starts.set(worker.pid, worker);
-      for (const { pid, bytes } of service.workerMemory()) {
-        if (bytes !== null)
-          observedLinearBytes.set(pid, Math.max(observedLinearBytes.get(pid) ?? 0, bytes));
-      }
-    };
+    const sample = () => observeWorkers(service, starts, observedLinearBytes);
     sample();
     const sha = await time(() => session.spawn(request(["sha256sum", "-"], input, output)));
     const running = memory(runtime, service);

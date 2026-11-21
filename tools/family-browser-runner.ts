@@ -3,7 +3,7 @@ import { realpath } from "node:fs/promises";
 import { arch, cpus, platform, release } from "node:os";
 import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Page } from "playwright";
+import type { Browser, Page } from "playwright";
 import playwright from "playwright/package.json" with { type: "json" };
 import {
   BrowserRunnerLifecycle,
@@ -84,6 +84,19 @@ async function runPage(page: Page, origin: string, workload: boolean) {
   return { result, disposed, workers, focus, heapBefore, heapAfter };
 }
 
+async function runWorkloadSamples(browser: Browser, origin: string) {
+  const samples = [];
+  for (let index = 0; index < 3; index++) {
+    const context = await browser.newContext();
+    try {
+      samples.push(await runPage(await context.newPage(), origin, true));
+    } finally {
+      await context.close();
+    }
+  }
+  return samples;
+}
+
 export async function runFamilyBrowser(options: BrowserOptions) {
   const lifecycle = new BrowserRunnerLifecycle();
   try {
@@ -130,16 +143,7 @@ export async function runFamilyBrowser(options: BrowserOptions) {
       bun: Bun.version,
       headers: { coop: "same-origin", coep: "require-corp", cacheControl: "no-store" },
     };
-    const samples = [];
-    for (let index = 0; index < 3; index++) {
-      const context = await browser.newContext();
-      try {
-        samples.push(await runPage(await context.newPage(), origin, true));
-      } finally {
-        await context.close();
-      }
-    }
-    return { ...info, samples };
+    return { ...info, samples: await runWorkloadSamples(browser, origin) };
   } finally {
     await lifecycle.close();
   }
