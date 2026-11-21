@@ -1,4 +1,9 @@
-import { commandTransferFailed, recordCommandTransferFailure } from "./command-transfer.js";
+import {
+  commandExecTransfer,
+  commandTransferFailed,
+  initializeCommandExec,
+  recordCommandTransferFailure,
+} from "./command-transfer.js";
 import { captureNativeReturn } from "./observation.js";
 import { EXEC_COMPLETION_BYTES } from "./exec.js";
 import type { PipePublicationRegistryHandle } from "./pipes.js";
@@ -199,7 +204,7 @@ function reserveRecord(
   cwd = "/",
   processKind: ProcessKind = "process",
 ): WorkerProcessTransport {
-  return {
+  const reserved: WorkerProcessTransport = {
     ...reserveDirectoryProcess(
       transport,
       pid,
@@ -212,12 +217,15 @@ function reserveRecord(
       processKind,
     ),
     generation: 1,
-    commandTransfer: transport.commandTransfer,
     identity: transport.identity,
     bindings: [],
     resources: [],
     cwd,
   };
+  if (!transport.commandTransfer) return reserved;
+  const scoped = { ...reserved, commandTransfer: transport.commandTransfer };
+  initializeCommandExec(scoped);
+  return scoped;
 }
 export function workerProcessDirectoryId(transport: WorkerProcessTransport): string {
   const header = new Uint32ArrayConstructor(transport.directory, 0, 8);
@@ -387,7 +395,7 @@ export class WorkerProcessClient {
       bindings: [],
       resources: [],
     };
-    const handoff = staged.commandTransfer ? workerProcessState(staged).execTransfer : undefined;
+    const handoff = commandExecTransfer(staged);
     let published = false;
     try {
       transfer = this.options.prepareExec(pid, (error) =>

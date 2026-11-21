@@ -1,4 +1,9 @@
-import { commandTransferFailed, readCommandTransferFailure } from "../proc/command-transfer.js";
+import {
+  commandExecTransfer,
+  commandTransferFailed,
+  initializeCommandExec,
+  readCommandTransferFailure,
+} from "../proc/command-transfer.js";
 import { WorkerStartError } from "../proc/start-diagnostic.ts";
 import { requireGroupPlan } from "../link/issuance.js";
 import type { SharedLinkPlan } from "../link/image.js";
@@ -1367,6 +1372,7 @@ export class BrowserProcessBroker {
           maximum: bytes(maximum),
         }),
     });
+    initializeCommandExec(transport);
     transport.data = { filesystem: options.filesystem, pipeRegistry: registry.handle() };
     (this.commandRoots ??= new Map()).set(transport.pid, {
       root: transport,
@@ -1442,7 +1448,8 @@ export class BrowserProcessBroker {
   }
   private async joinCommandExec(transport: WorkerProcessTransport): Promise<void> {
     const scope = this.commandScope(transport);
-    if (!scope) return;
+    const handoff = commandExecTransfer(transport);
+    if (!scope || !handoff) return;
     const state = workerProcessState(transport);
     for (;;) {
       const expected = Atomics.load(state.wake, 0);
@@ -1454,7 +1461,7 @@ export class BrowserProcessBroker {
         local.generation === transport.generation
       )
         throw local.error;
-      const staged = controlLoad(state.execTransfer);
+      const staged = controlLoad(handoff);
       if (staged === 0) return;
       for (const [transfer, cause] of scope.failures) {
         if (transfer.pid === transport.pid && transfer.generation === staged)

@@ -1,5 +1,5 @@
 import { allocateSharedControl } from "../memory/control.js";
-import { COMMAND_TRANSFER_BYTES } from "../proc/command-transfer.js";
+import { commandTransferBytes } from "../proc/command-transfer.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import type { Runtime } from "../runtime.js";
 import { commandDisposals, commandOwners } from "./command-owner.js";
@@ -181,12 +181,13 @@ class Command {
   }
 
   private async runInRoot(owner: BrowserProcessBroker): Promise<ProcessExit | null> {
+    const transport = createWorkerProcessTransport({
+      identity: this.runtime.identities.buffer,
+      foreground: false,
+    });
     const root = {
-      ...createWorkerProcessTransport({
-        identity: this.runtime.identities.buffer,
-        foreground: false,
-      }),
-      commandTransfer: allocateSharedControl(COMMAND_TRANSFER_BYTES),
+      ...transport,
+      commandTransfer: allocateSharedControl(commandTransferBytes(transport.directory)),
     };
     const filesystem = this.runtime.filesystem.createIdentity();
     this.owner = owner;

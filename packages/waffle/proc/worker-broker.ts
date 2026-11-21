@@ -1,3 +1,4 @@
+import { commandExecTransfer } from "./command-transfer.js";
 import { captureNativeReturn } from "./observation.js";
 import { EXEC_COMPLETION_BYTES, publishExecCompletion } from "./exec.js";
 import { allocateSharedControl } from "../memory/control.ts";
@@ -469,17 +470,17 @@ export class WorkerProcessBroker {
     }
   }
   private currentExecTransfer(transport: WorkerProcessTransport): boolean {
-    if (!transport.commandTransfer) return true;
     try {
-      return controlLoad(workerProcessState(transport).execTransfer) === transport.generation;
+      const handoff = commandExecTransfer(transport);
+      return !handoff || controlLoad(handoff) === transport.generation;
     } catch (error) {
       if (!isCollectedProcess(error)) throw error;
       return false;
     }
   }
   private confirmExec(transport: WorkerProcessTransport): void {
-    if (!transport.commandTransfer) return;
-    const handoff = workerProcessState(transport).execTransfer;
+    const handoff = commandExecTransfer(transport);
+    if (!handoff) return;
     controlCas(handoff, 0, transport.generation, 0);
     wakeWorkerProcess(transport);
   }
@@ -533,7 +534,7 @@ export class WorkerProcessBroker {
         throw new ProcessError(ProcessErrno.NOTSUP, "exec requires an owned worker image");
       const supervisor = await this.ready();
       this.options.beforeAdmit?.(transport);
-      const handoff = transport.commandTransfer ? state.execTransfer : undefined;
+      const handoff = commandExecTransfer(transport);
       if (handoff && controlLoad(handoff) !== transport.generation)
         throw new ProcessError(ProcessErrno.INVAL, "exec transfer is not current");
       codec = this.codec(transport);

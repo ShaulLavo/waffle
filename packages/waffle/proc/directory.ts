@@ -51,8 +51,7 @@ const PROCESS_ID = 79 + START_DIAGNOSTIC_WORDS;
 const PROCESS_PARENT = PROCESS_ID + 1;
 const PROCESS_KIND = PROCESS_ID + 2;
 const IMAGE_ADMISSION = PROCESS_ID + 3;
-const EXEC_TRANSFER = PROCESS_ID + 4;
-const PROCESS_WORDS = PROCESS_ID + 5;
+const PROCESS_WORDS = PROCESS_ID + 4;
 const JOB_WORDS = 10;
 const INTENT_STEP = 0x100000000n;
 
@@ -131,6 +130,9 @@ function validity(raw: BigInt64Array, id: number): CellValidity {
     byteOffset: typedArrayByteOffset(raw),
     id,
   };
+}
+export function directoryProcessValidity(handle: DirectoryHandle): CellValidity {
+  return validity(row(handle.directory, handle.slot), handle.pid);
 }
 function cells(raw: BigInt64Array, id: number, offset: number, count = 1): TaggedCells {
   return new TaggedCells(typedArraySubarray(raw, offset, offset + count), id);
@@ -231,9 +233,6 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
     // Spawn/exec alone need this view; ordinary lookup keeps its existing construction bound.
     get imageAdmission() {
       return liveCells(raw, pid, IMAGE_ADMISSION);
-    },
-    get execTransfer() {
-      return liveCells(raw, pid, EXEC_TRANSFER);
     },
     job,
     jobSlot,

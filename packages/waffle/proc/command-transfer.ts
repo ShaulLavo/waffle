@@ -1,4 +1,5 @@
 import {
+  BigInt64ArrayConstructor,
   Int32ArrayConstructor,
   Uint8ArrayConstructor,
   atomicsCompareExchange,
@@ -9,18 +10,42 @@ import {
   typedArraySet,
   typedArrayLength,
 } from "./intrinsics.js";
-import { wakeDirectory } from "./directory.js";
+import { packedControl, TaggedCells } from "./control.js";
+import {
+  directoryCapacity,
+  directoryProcessValidity,
+  wakeDirectory,
+  type DirectoryHandle,
+} from "./directory.js";
 import { describeStartError } from "./start-diagnostic.js";
 
-const HEADER_BYTES = 20;
+const HEADER_BYTES = 24;
 const DIAGNOSTIC_BYTES = 1024;
-export const COMMAND_TRANSFER_BYTES = HEADER_BYTES + DIAGNOSTIC_BYTES;
+const EXEC_WORDS_OFFSET = HEADER_BYTES + DIAGNOSTIC_BYTES;
 
-interface TransferSource {
-  readonly directory: SharedArrayBuffer;
+interface TransferSource extends DirectoryHandle {
   readonly commandTransfer?: SharedArrayBuffer;
-  readonly pid: number;
   readonly generation: number;
+}
+
+export function commandTransferBytes(directory: SharedArrayBuffer): number {
+  return EXEC_WORDS_OFFSET + directoryCapacity(directory) * 8;
+}
+
+/** One incarnation-tagged handoff per process slot, allocated only for a command root. */
+export function commandExecTransfer(source: TransferSource): TaggedCells | undefined {
+  const buffer = source.commandTransfer;
+  if (!buffer) return;
+  return new TaggedCells(
+    new BigInt64ArrayConstructor(buffer, EXEC_WORDS_OFFSET + source.slot * 8, 1),
+    source.pid,
+    directoryProcessValidity(source),
+  );
+}
+
+export function initializeCommandExec(source: TransferSource): void {
+  const handoff = commandExecTransfer(source);
+  if (handoff) atomicsStore(handoff.cells, 0, packedControl(source.pid, 0));
 }
 
 /** Publication stays inside the producer's filesystem fence, even if no message was sent. */

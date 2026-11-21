@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { createFilesystemIdentity, type FilesystemIdentity } from "../fs/protocol.js";
-import { COMMAND_TRANSFER_BYTES } from "../proc/command-transfer.js";
+import { commandExecTransfer, commandTransferBytes } from "../proc/command-transfer.js";
 import { controlLoad } from "../proc/control.js";
 import {
   directoryAdmissionVersion,
@@ -93,12 +93,13 @@ async function fixture(options: FixtureOptions = {}) {
       diagnostics.push(error);
     },
   });
+  const transport = createWorkerProcessTransport({
+    identity: identities.buffer,
+    capacity: options.capacity ?? 6,
+  });
   const root = {
-    ...createWorkerProcessTransport({
-      identity: identities.buffer,
-      capacity: options.capacity ?? 6,
-    }),
-    commandTransfer: new SharedArrayBuffer(COMMAND_TRANSFER_BYTES),
+    ...transport,
+    commandTransfer: new SharedArrayBuffer(commandTransferBytes(transport.directory)),
   };
   const filesystem = createFilesystemIdentity();
   const supervisor = await broker.ready();
@@ -355,7 +356,9 @@ test("a staged exec rejection holds the source and reports the exact failure", a
     source.exec(child.pid, request);
     const message = await stagedMessage.promise;
     const state = workerProcessState(child.transport);
-    expect(controlLoad(state.execTransfer)).toBe(2);
+    const handoff = commandExecTransfer(child.transport);
+    if (!handoff) throw new Error("missing scoped exec handoff");
+    expect(controlLoad(handoff)).toBe(2);
     f.broker.rejectRuntimeMessage(message, child.pid);
     await fenced.promise;
     f.broker.stopCommandRoot(f.root);
@@ -364,7 +367,7 @@ test("a staged exec rejection holds the source and reports the exact failure", a
     fence.reject(failure);
     await until(() => f.diagnostics.includes(failure));
     expect(() => f.broker.checkCommandCleanup(f.root, true)).toThrow("transfer cleanup failed");
-    expect(controlLoad(state.execTransfer)).toBe(2);
+    expect(controlLoad(handoff)).toBe(2);
     expect(controlLoad(state.confirmed)).toBe(0);
   } finally {
     fence.resolve();
