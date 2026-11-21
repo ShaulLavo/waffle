@@ -1,5 +1,5 @@
 import { testReservations } from "./fixtures/shared-memory-platform.js";
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { Worker } from "node:worker_threads";
 import { DescriptorTable, OpenDescription } from "../core/descriptors.js";
 import { MemFS } from "../fs/memory.js";
@@ -9,9 +9,9 @@ import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { ProcessTable } from "../proc/table.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessSupervisor, type SupervisorOptions } from "../proc/supervisor.js";
-import { controlLoad } from "../proc/control.js";
+import { controlLoad, packedControl, TaggedCells, type CellValidity } from "../proc/control.js";
 import { SIGNAL_PENDING, requestSignal, setSignalDisposition } from "../proc/signals.js";
-import { readOutcome } from "../proc/outcome.js";
+import { OutcomeCell, readOutcome } from "../proc/outcome.js";
 import { checkedJobLifetime, type SpawnRequest } from "../proc/types.js";
 import { WorkerProcessBroker } from "../proc/worker-broker.js";
 import {
@@ -22,7 +22,7 @@ import {
   type WorkerProcessTransport,
   type WorkerDescriptorCodec,
 } from "../proc/worker-client.js";
-import { findDirectoryJob, directoryGroups } from "../proc/directory.js";
+import { collectDirectoryJob, findDirectoryJob, directoryGroups } from "../proc/directory.js";
 import {
   createFilesystemIdentity,
   FilesystemSection,
@@ -1002,3 +1002,139 @@ test("a shared legacy job collection keeps the late child handle in its fatal ow
   expect(terminated).toBe(true);
   await starting;
 });
+
+/** Another worker's consuming wait can land between any two host reads of a job header.
+ * This collects the job just before the host's k-th checked read of that header, counting
+ * only reads made once the job is collectable. */
+function collectBeforeHeaderCheck(directory: SharedArrayBuffer, job: number, k: number) {
+  const header = findDirectoryJob(directory, job)!;
+  const { byteOffset } = header.outcome.validity;
+  const pending = new BigInt64Array(directory, byteOffset + 4 * 8, 1);
+  const injection = { seen: 0, collected: false, restore() {} };
+  let busy = false;
+  const before = (validity: CellValidity | undefined) => {
+    if (busy || injection.collected || validity?.buffer !== directory) return;
+    if (validity.byteOffset !== byteOffset || validity.id !== job) return;
+    if (Atomics.load(pending, 0) !== packedControl(job, 0)) return;
+    if (++injection.seen !== k) return;
+    busy = true;
+    try {
+      collectDirectoryJob(directory, header.slot, job);
+      injection.collected = true;
+    } finally {
+      busy = false;
+    }
+  };
+  const taggedValid = TaggedCells.prototype.valid;
+  const outcomeValid = OutcomeCell.prototype.valid;
+  const tagged = spyOn(TaggedCells.prototype, "valid").mockImplementation(function (
+    this: TaggedCells,
+  ) {
+    before(this.validity);
+    return taggedValid.call(this);
+  });
+  const outcome = spyOn(OutcomeCell.prototype, "valid").mockImplementation(function (
+    this: OutcomeCell,
+  ) {
+    before(this.validity);
+    return outcomeValid.call(this);
+  });
+  injection.restore = () => {
+    tagged.mockRestore();
+    outcome.mockRestore();
+  };
+  cleanups.push(() => injection.restore());
+  return injection;
+}
+/** Generous hang cap only: a failed closure would otherwise leave the owner unretired. */
+function hangCap<T>(work: Promise<T>, errors: readonly unknown[] = []): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cap = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const reported = errors.map((error) => (error as Error).stack ?? String(error));
+      reject(new Error(["owned closure hung; reported:"].concat(reported).join("\n")));
+    }, 2_000);
+  });
+  return Promise.race([work, cap]).finally(() => clearTimeout(timer));
+}
+/** running: the owned child is alive when its owner dies. exited: the job is already empty,
+ * so it is collectable while the owner's exit lists its owned jobs. queued: the child's
+ * spawn notice reaches the host only after the owner died. */
+type OwnedChildState = "running" | "exited" | "queued";
+async function closeOwnedJobWithCollection(k: number, state: OwnedChildState) {
+  const errors: unknown[] = [];
+  const f = sharedFixture({ onError: (error) => errors.push(error) });
+  const ownerPid = f.root.spawn(f.root.pid, spec());
+  const owner = f.client(await f.admit());
+  const childPid = owner.spawn(ownerPid, spec(true));
+  const notice = f.messages.shift()!;
+  if (notice.operation !== "spawn") throw new Error("expected child spawn");
+  const job = workerProcessState(notice.transport).job;
+  if (state !== "queued") {
+    await f.broker.handle(notice, ownerPid);
+    await f.s.start(childPid);
+  }
+  if (state === "exited") {
+    f.client(notice.transport).exit(0);
+    while (f.messages.length) await f.broker.handle(f.messages.shift()!);
+    await hangCap(f.s.waitForExit(ownerPid, childPid), errors);
+  }
+  const injection = collectBeforeHeaderCheck(f.transport.directory, job, k);
+  f.root.kill(ownerPid, 9);
+  await f.broker.handle(f.messages.shift()!, f.root.pid);
+  if (state === "queued") await f.broker.handle(notice, ownerPid).catch(() => {});
+  const result = await hangCap(f.s.waitForExit(f.root.pid, ownerPid), errors).finally(() =>
+    injection.restore(),
+  );
+  return { f, errors, result, injection, ownerPid, childPid, job };
+}
+test.each(["running", "exited", "queued"] as const)(
+  "owned closure retires cleanly when another worker collects its job at any header read (child %s)",
+  async (state) => {
+    const dry = await closeOwnedJobWithCollection(Infinity, state);
+    expect(dry.errors).toEqual([]);
+    expect(dry.injection.seen).toBeGreaterThan(0);
+    for (let k = 1; k <= dry.injection.seen; k++) await expectCleanClosure(k, state);
+  },
+  30_000,
+);
+async function expectCleanClosure(k: number, state: OwnedChildState) {
+  const run = await closeOwnedJobWithCollection(k, state);
+  expect({ k, collected: run.injection.collected, errors: run.errors }).toEqual({
+    k,
+    collected: true,
+    errors: [],
+  });
+  expect(run.result).toMatchObject({ kind: "signaled", code: 9 });
+  expect(run.f.s.get(run.ownerPid)?.retirement?.kind).not.toBe("failed");
+  expect(run.f.s.get(run.childPid)).toBeUndefined();
+  expect(findDirectoryJob(run.f.transport.directory, run.job)).toBeUndefined();
+  run.f.broker.pump();
+  expect(run.f.s.job(run.job)).toBeUndefined();
+}
+test("a failed owned closure does not block a later cleanup of the same job", async () => {
+  const failure = new Error("injected closure failure");
+  const reported = Promise.withResolvers<void>();
+  const f = sharedFixture({
+    onError: (error) => {
+      if (error === failure) reported.resolve();
+    },
+  });
+  const ownerPid = f.root.spawn(f.root.pid, spec());
+  const owner = f.client(await f.admit());
+  owner.spawn(ownerPid, spec(true));
+  const child = f.client(await f.admit());
+  const subscribe = spyOn(f.s, "onJobRetirement").mockImplementationOnce(() => {
+    throw failure;
+  });
+  cleanups.push(() => subscribe.mockRestore());
+  f.root.kill(ownerPid, 9);
+  await f.broker.handle(f.messages.shift()!, f.root.pid);
+  // The first cleanup's caller still sees its real failure: the owner's fence reports it.
+  await hangCap(reported.promise);
+  expect(findDirectoryJob(f.transport.directory, child.job)).toBeDefined();
+  const retry = f.broker["closeOwnedJobs"](ownerPid);
+  expect(retry).toBeDefined();
+  await hangCap(retry!);
+  expect(findDirectoryJob(f.transport.directory, child.job)).toBeUndefined();
+}, 30_000);
