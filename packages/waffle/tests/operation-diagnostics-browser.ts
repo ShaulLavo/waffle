@@ -3,6 +3,7 @@ import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { gzipSync } from "node:zlib";
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
+import { navigateTestPage } from "./browser-navigation.js";
 
 const {
   positionals: [engine],
@@ -127,7 +128,7 @@ async function run(
     url.searchParams.set("samples", String(samples));
     if (controls) url.searchParams.set("controls", "");
     if (audit) url.searchParams.set("audit", "");
-    await page.goto(url.href, { timeout: 30_000 });
+    await navigateTestPage(page, url.href, { timeout: 30_000 });
     await page.waitForSelector('body[data-done="true"]', { timeout: 90_000 });
     const result = JSON.parse(await page.locator("body").innerText());
     assert.equal(result.ok, true, JSON.stringify({ result, errors }));
@@ -157,8 +158,10 @@ try {
   assert.ok(diagnostics.every((name) => !off.requested.includes(name)));
   const baseline = values.baseline ? await bundle(resolve(values.baseline)) : undefined;
   const base = baseline ? await run(browser, baseline, "baseline") : undefined;
-  const audit = values.audit
-    ? await run(browser, await bundle(source, true), "on", true, true)
+  const auditOutputs = values.audit ? await bundle(source, true) : undefined;
+  const audit = auditOutputs ? await run(browser, auditOutputs, "on", true, true) : undefined;
+  const auditDisabled = auditOutputs
+    ? await run(browser, auditOutputs, "off", true, true)
     : undefined;
   console.log(
     JSON.stringify({
@@ -170,6 +173,7 @@ try {
       candidate,
       baseline: baseline && (await inventory(baseline)),
       audit,
+      auditDisabled,
     }),
   );
 } finally {

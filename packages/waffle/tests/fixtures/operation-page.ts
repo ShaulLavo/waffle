@@ -30,6 +30,7 @@ declare global {
 }
 const NativeWorker = Worker;
 const auditReports: IntrinsicsReport[] = [];
+const resolveErrnos: number[] = [];
 globalThis.Worker = class extends NativeWorker {
   constructor(url: string | URL, options?: WorkerOptions) {
     super(url, options);
@@ -37,6 +38,7 @@ globalThis.Worker = class extends NativeWorker {
     workers.push(this);
     this.addEventListener("message", ({ data }) => {
       if (data?.type === "operation-authority-audit") auditReports.push(data.report);
+      if (data?.type === "operation-errno-audit") resolveErrnos.push(data.errno);
     });
   }
 };
@@ -425,6 +427,23 @@ function timedSnapshots(runtime: Runtime) {
 const search = new URL(location.href).searchParams;
 const observeOperations = search.get("mode") === "on";
 const audit = search.has("audit");
+
+async function auditGuestAuthority(runtime: Runtime, session: Session) {
+  const success = observeOperations ? await positive(runtime, session) : undefined;
+  const broken = await blockedResolve(session, "input", "transport");
+  channel.postMessage({ kind: "forward" });
+  await waitExit(broken, 1);
+  const errno = await until(() => resolveErrnos.at(-1), "guest transport errno");
+  equal(errno, 29, "transport failure reached cat's filesystem with EIO");
+  if (!observeOperations) return { success, errno };
+  await until(() => auditReports.length === 3 || undefined, "guest authority audit reports");
+  for (const report of auditReports) {
+    ok(report.canaries.includes("Atomics.compareExchange"), "CAS canary missing");
+    ok(report.canaries.includes("Atomics.load"), "load canary missing");
+    equal(report.leaks.length, 0, "private buffer exposures");
+  }
+  return { success, errno };
+}
 const runtime = createRuntime({
   observeOperations,
   filesystem: {
@@ -459,20 +478,10 @@ try {
   await runtime.programs.ready;
   session = await createSession(runtime);
   const controls =
-    observeOperations && search.has("controls")
-      ? {
-          positive: await positive(runtime, session),
-          failures: audit ? undefined : await failures(runtime, session),
-        }
+    observeOperations && search.has("controls") && !audit
+      ? { positive: await positive(runtime, session), failures: await failures(runtime, session) }
       : undefined;
-  if (audit) {
-    await until(() => auditReports.length === 2 || undefined, "guest authority audit reports");
-    for (const report of auditReports) {
-      ok(report.canaries.includes("Atomics.compareExchange"), "CAS canary missing");
-      ok(report.canaries.includes("Atomics.load"), "load canary missing");
-      equal(report.leaks.length, 0, "private buffer exposures");
-    }
-  }
+  const auditResult = audit ? await auditGuestAuthority(runtime, session) : undefined;
   const measurements = [];
   const samples = audit ? -1 : Number(search.get("samples") ?? "0");
   for (let index = 0; index <= samples; index++) {
@@ -491,6 +500,7 @@ try {
     snapshot,
     holders,
     auditReports,
+    auditResult,
   });
 } catch (error) {
   document.body.textContent = JSON.stringify({
