@@ -107,6 +107,7 @@ async function runLink(engine: keyof typeof engines, url: string, scratch: strin
   }
 }
 
+let failure: string | undefined;
 try {
   const [page, worker, relayWorker, filesystemWorker] = await Promise.all([
     bundle("link-browser.ts"),
@@ -149,9 +150,18 @@ try {
     interrupted.signal.throwIfAborted();
     console.log(JSON.stringify({ engine: name, ...result }));
   }
+} catch (error) {
+  failure = error instanceof Error ? (error.stack ?? error.message) : String(error);
 } finally {
   await cleanup().finally(() => {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
+  });
+}
+if (failure !== undefined) {
+  process.exitCode = 1;
+  // Use the same stream as live browser diagnostics so pending writes stay ahead of this report.
+  await new Promise<void>((resolve) => {
+    process.stderr.write(`Link browser failed\n${failure}\n`, () => resolve());
   });
 }

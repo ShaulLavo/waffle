@@ -82,9 +82,7 @@ async function assertFailure(
     expect(stderr.includes("native stdout/stderr truncated")).toBe(true);
     expect(stderr.includes("<process did exit: exitCode=42, signal=null>")).toBe(true);
     const failure =
-      runner === "link"
-        ? stderr.slice(stderr.indexOf("error: "))
-        : await Bun.file(`${result}.controls.json`).text();
+      runner === "link" ? linkFailure(stderr) : await Bun.file(`${result}.controls.json`).text();
     expect(failure.includes("NATIVE_LINE_10 ")).toBe(false);
     expect(stdout.includes("NATIVE_LINE_10 ")).toBe(false);
     expect(failure.includes("NATIVE_LINE_1 ")).toBe(true);
@@ -96,10 +94,25 @@ async function assertFailure(
         failure.includes("Failed to launch the browser process"),
       failure.replace(/\d{100,}/g, "[launcher payload]").slice(-2500),
     ).toBe(true);
-    const bytes = Array.from(failure.matchAll(/NATIVE_LINE_\d+ \d+/g), ([line]) => line.length);
-    expect(bytes.reduce((sum, length) => sum + length, 0)).toBeLessThanOrEqual(64 * 1024);
+    expect(nativeBytes(failure)).toBeLessThanOrEqual(64 * 1024);
   } finally {
     if (child.exitCode === null) child.kill();
     await child.exited;
   }
+}
+
+function linkFailure(stderr: string): string {
+  const [live, failure, ...extra] = stderr.split("Link browser failed\n");
+  expect(extra).toEqual([]);
+  if (failure === undefined) throw new Error("link runner did not print its failure report");
+  expect(nativeBytes(live ?? "")).toBeGreaterThan(32 * 1024);
+  expect(nativeBytes(live ?? "")).toBeLessThanOrEqual(64 * 1024);
+  return failure;
+}
+
+function nativeBytes(output: string): number {
+  return Array.from(output.matchAll(/NATIVE_LINE_\d+ \d+/g), ([line]) => line.length).reduce(
+    (sum, length) => sum + length,
+    0,
+  );
 }
