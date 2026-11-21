@@ -105,6 +105,18 @@ async function createSession(runtime: Runtime) {
   const postMessage = (message: WorkerProcessMessage) => {
     messages.push(message);
   };
+  async function waitStdout(length: number) {
+    const expired = Promise.withResolvers<never>();
+    const timer = setTimeout(
+      () => expired.reject(new Error("Timed out waiting for stdout")),
+      deadlineMs,
+    );
+    try {
+      while (stdout.length < length) await Promise.race([output.promise, expired.promise]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   try {
     const pipes = new WorkerPipeHost({
       allocateShared: createSharedControlAllocator(
@@ -155,18 +167,7 @@ async function createSession(runtime: Runtime) {
       service,
       stdout: () => stdout,
       stderr: () => stderr,
-      async waitStdout(length: number) {
-        const expired = Promise.withResolvers<never>();
-        const timer = setTimeout(
-          () => expired.reject(new Error("Timed out waiting for stdout")),
-          deadlineMs,
-        );
-        try {
-          while (stdout.length < length) await Promise.race([output.promise, expired.promise]);
-        } finally {
-          clearTimeout(timer);
-        }
-      },
+      waitStdout,
       pipe() {
         const [read, write] = pipes.createPipe();
         const fd = descriptors.open(read, rights, 0n);

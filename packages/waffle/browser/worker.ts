@@ -1500,15 +1500,7 @@ function installProcessImports(
   for (let index = 0; index < entries.length; index++) {
     const entry = entries[index]!;
     const name = entry[0];
-    const call = entry[1];
-    if (name === "poll" && observedPoll) {
-      const poll = observedPoll.wrap(call);
-      target[name] = (ptr, count, timeout, out) => {
-        checkActive();
-        return poll(ptr!, count!, timeout!, out!);
-      };
-      continue;
-    }
+    const call = name === "poll" && observedPoll ? observedPoll.wrap(entry[1]) : entry[1];
     target[name] = (...args) => {
       checkActive();
       return call(...args);

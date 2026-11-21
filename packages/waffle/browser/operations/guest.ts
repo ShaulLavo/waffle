@@ -13,7 +13,7 @@ import type { OperationWriter } from "./writer.js";
 
 export { createOperationWriters } from "./writer.js";
 
-type Poll = (ptr: number, count: number, timeout: number, out: number) => number;
+type Poll = (...args: number[]) => number;
 const PIPE_READ_RIGHTS = RIGHT_FD_READ | RIGHT_POLL_FD_READWRITE;
 
 function qualifyingPipe(
@@ -57,6 +57,28 @@ export function observePipePoll(options: {
       throw error;
     }
   }
+  function pollObserved(
+    poll: Poll,
+    ptr: number,
+    count: number,
+    timeout: number,
+    out: number,
+  ): number {
+    if (count !== 1 || timeout !== -1 || !entered() || !qualifyingPipe(memory(), descriptors, ptr))
+      return poll(ptr, count, timeout, out);
+    qualified = true;
+    guardStopped = false;
+    try {
+      const result = poll(ptr, count, timeout, out);
+      writer.settle(result === 1 ? "completed" : result === 0 ? "signalPending" : "pollError");
+      return result;
+    } catch (error) {
+      writer.settle(guardStopped ? "processStop" : "pollError");
+      throw error;
+    } finally {
+      qualified = false;
+    }
+  }
   return {
     wait(ms: number, word: Int32Array, expected: number): void {
       guard();
@@ -66,27 +88,7 @@ export function observePipePoll(options: {
       guard();
     },
     wrap(poll: Poll): Poll {
-      return (ptr, count, timeout, out) => {
-        if (
-          count !== 1 ||
-          timeout !== -1 ||
-          !entered() ||
-          !qualifyingPipe(memory(), descriptors, ptr)
-        )
-          return poll(ptr, count, timeout, out);
-        qualified = true;
-        guardStopped = false;
-        try {
-          const result = poll(ptr, count, timeout, out);
-          writer.settle(result === 1 ? "completed" : result === 0 ? "signalPending" : "pollError");
-          return result;
-        } catch (error) {
-          writer.settle(guardStopped ? "processStop" : "pollError");
-          throw error;
-        } finally {
-          qualified = false;
-        }
-      };
+      return (ptr, count, timeout, out) => pollObserved(poll, ptr!, count!, timeout!, out!);
     },
   };
 }

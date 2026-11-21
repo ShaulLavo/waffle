@@ -2172,10 +2172,7 @@ export function installFilesystemWorker(
           const acceptResolve = data.operations
             ? await prepareAcceptance(data.operations)
             : undefined;
-          if (disposing) {
-            data.connect.port.close();
-            return;
-          }
+          if (disposing) return data.connect.port.close();
           owner.connect(data.connect, acceptResolve);
           scope.postMessage({ type: "filesystem-state", status: "ready" });
           reportRuntimeStartup(onStartupStage, "filesystem-ready");

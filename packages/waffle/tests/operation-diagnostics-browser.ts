@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { gzipSync } from "node:zlib";
-import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
+import {
+  chromium,
+  firefox,
+  webkit,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from "playwright";
 import { navigateTestPage } from "./browser-navigation.js";
 
 const {
@@ -66,6 +73,26 @@ async function inventory(outputs: Awaited<ReturnType<typeof bundle>>) {
   return assets;
 }
 
+async function trackWorkers(page: Page) {
+  const counts = { created: 0, closed: 0 };
+  const preview1Closed: Promise<void>[] = [];
+  page.on("worker", (worker) => {
+    counts.created++;
+    const ended = Promise.withResolvers<void>();
+    if (worker.url().includes("preview1-worker")) preview1Closed.push(ended.promise);
+    worker.on("close", () => {
+      counts.closed++;
+      ended.resolve();
+    });
+  });
+  await page.exposeFunction("waitForOperationWorkerClose", (number: number) => {
+    const ended = preview1Closed[number - 1];
+    assert.ok(ended, "preview1 Worker close observer must be armed");
+    return ended;
+  });
+  return counts;
+}
+
 async function run(
   browser: Browser,
   outputs: Awaited<ReturnType<typeof bundle>>,
@@ -105,24 +132,8 @@ async function run(
     context = await browser.newContext();
     const page = await context.newPage();
     const errors: string[] = [];
-    let created = 0,
-      closed = 0;
-    const preview1Closed: Promise<void>[] = [];
     page.on("pageerror", (error) => errors.push(String(error)));
-    page.on("worker", (worker) => {
-      created++;
-      const ended = Promise.withResolvers<void>();
-      if (worker.url().includes("preview1-worker")) preview1Closed.push(ended.promise);
-      worker.on("close", () => {
-        closed++;
-        ended.resolve();
-      });
-    });
-    await page.exposeFunction("waitForOperationWorkerClose", (number: number) => {
-      const ended = preview1Closed[number - 1];
-      assert.ok(ended, "preview1 Worker close observer must be armed");
-      return ended;
-    });
+    const workers = await trackWorkers(page);
     const url = new URL(server.url.href);
     url.searchParams.set("mode", mode);
     url.searchParams.set("samples", String(samples));
@@ -135,8 +146,8 @@ async function run(
     assert.equal(await page.locator("body").getAttribute("data-disposed"), "true");
     assert.deepEqual(errors, []);
     await page.close();
-    assert.equal(closed, created, "native Worker close events");
-    return { result, created, closed, requested: Array.from(requested).sort() };
+    assert.equal(workers.closed, workers.created, "native Worker close events");
+    return { result, ...workers, requested: Array.from(requested).sort() };
   } finally {
     try {
       await context?.close();

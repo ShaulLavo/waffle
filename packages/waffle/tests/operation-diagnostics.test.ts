@@ -231,7 +231,11 @@ test("a recorder failure leaves the wait result and cleanup unchanged", () => {
     observer.wait(0, word, 0);
     return -29;
   });
-  expect(sample().owned[0]?.pipeReadWait?.failed).toBe(0);
+  expect(poll(0, 1, -1, 64)).toBe(-29);
+  expect(sample().owned[0]?.pipeReadWait).toMatchObject({
+    failed: 1,
+    latest: { phase: "failed", reason: "poll-error" },
+  });
   const write = OperationCells.prototype.write;
   OperationCells.prototype.write = function (index, value) {
     if (index === PIPE_OFFSET + Field.active) throw new Error("injected recorder failure");
@@ -239,14 +243,19 @@ test("a recorder failure leaves the wait result and cleanup unchanged", () => {
   };
   try {
     expect(poll(0, 1, -1, 64)).toBe(-29);
-    expect(checks).toBe(2);
+    expect(checks).toBe(4);
   } finally {
     OperationCells.prototype.write = write;
     descriptors.dispose();
     pipe.dispose();
   }
   live.delete(1);
-  expect(sample().departed[0]?.pipeReadWait).toEqual({ completed: 0, cancelled: 0, failed: 0 });
+  expect(sample().departed[0]?.pipeReadWait).toMatchObject({
+    completed: 0,
+    cancelled: 0,
+    failed: 1,
+    latest: { phase: "failed", reason: "poll-error" },
+  });
 });
 
 test("an optional backing allocation can fail without throwing from enrollment", () => {
