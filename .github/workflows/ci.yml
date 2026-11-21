@@ -1299,11 +1299,11 @@ jobs:
     if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true')) }}
     # Playwright 1.64.1 browsers are proven on Ubuntu 24.04; move the pin deliberately with a green run.
     runs-on: ubuntu-24.04
-    # Chromium/Firefox plus recovery on one runner, serial WebKit and the isolated runners on the other.
+    # Reporter controls share one prepared bundle and run independently of the other suites.
     strategy:
       fail-fast: false
       matrix:
-        group: [parallel, serial]
+        group: [parallel, serial, reporter]
     name: browser (${{ matrix.group }})
     steps:
       - uses: actions/checkout@v4
@@ -1355,37 +1355,45 @@ jobs:
       - uses: ./.github/actions/ubuntu-main-archive
       - run: bunx playwright install --with-deps chromium firefox webkit
       - name: Require the producer's fixture artifact ID
+        if: matrix.group == 'serial'
         run: test -n "$MEMORY_GROUP_ARTIFACT_ID"
         env:
           MEMORY_GROUP_ARTIFACT_ID: ${{ needs.libc.outputs.memory-group-artifact-id }}
       - uses: actions/download-artifact@v8
+        if: matrix.group == 'serial'
         with:
           digest-mismatch: error
           artifact-ids: ${{ needs.libc.outputs.memory-group-artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/memory-group-fixture
       - name: Require the compiled GPU guest artifact
+        if: matrix.group != 'reporter'
         run: test -n "$GPU_ARTIFACT_ID"
         env:
           GPU_ARTIFACT_ID: ${{ needs.libc.outputs.gpu-artifact-id }}
       - uses: actions/download-artifact@v8
+        if: matrix.group != 'reporter'
         with:
           digest-mismatch: error
           artifact-ids: ${{ needs.libc.outputs.gpu-artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/gpu-fixture
       - run: bun packages/waffle/scripts/build-gpu-fixture.ts --verify "$RUNNER_TEMP/gpu-fixture"
+        if: matrix.group != 'reporter'
       - name: Require the Rust threads fixture artifact ID
+        if: matrix.group != 'reporter'
         run: test -n "$THREAD_ARTIFACT_ID"
         env:
           THREAD_ARTIFACT_ID: ${{ needs.threads-fixture.outputs.artifact-id }}
       - uses: actions/download-artifact@v8
+        if: matrix.group != 'reporter'
         with:
           digest-mismatch: error
           artifact-ids: ${{ needs.threads-fixture.outputs.artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/threads-fixture
       - name: Verify the Rust threads fixture without a compiler
+        if: matrix.group != 'reporter'
         run: bun packages/waffle/scripts/build-thread-fixture.ts --verify
         env:
           THREAD_FIXTURE_DIR: ${{ runner.temp }}/threads-fixture
@@ -1414,7 +1422,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - name: Retain browser controls result and process outcome
-        if: always() && matrix.group == 'serial'
+        if: always() && matrix.group == 'reporter'
         uses: actions/upload-artifact@v4
         with:
           name: browser-controls-${{ github.run_id }}-${{ github.run_attempt }}

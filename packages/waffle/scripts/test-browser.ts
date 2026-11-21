@@ -36,7 +36,7 @@ const parallel = [
   [{ runner: "tests/gpu-native-browser-runner.ts", engines: ["chromium"] }],
   [{ runner: asyncGpuRunner, engines: ["chromium", "firefox"] }],
 ]);
-const serial = runners
+const serialBeforeReporter = runners
   .map((runner) => [{ runner, engines: ["webkit"] }])
   .concat(
     [[{ runner: "tests/bootstrap-arrival-browser-runner.ts", engines: ["webkit"] }]],
@@ -54,34 +54,44 @@ const serial = runners
     [[{ runner: "tests/network-browser-runner.ts", engines: ["--page-controls", "chromium"] }]],
     [[{ runner: "tests/memory-group-browser-runner.ts", engines: ["chromium"] }]],
     [[{ runner: "tests/fs-socket-browser-runner.ts", engines: ["firefox"] }]],
-    [[{ runner: reporterControls, engines: ["--prepare"] }]],
-    [[{ runner: reporterControls, engines: ["chromium", "--prepared"] }]],
-    [[{ runner: reporterControls, engines: ["webkit", "--prepared"] }]],
-    [
-      [
-        {
-          runner: "tests/process-recycling-browser-runner.ts",
-          engines: ["--page-controls", "chromium"],
-        },
-      ],
-    ],
-    [
-      [
-        {
-          runner: "tests/page-runner/gpu-async-controls-runner.ts",
-          engines: ["--ci", "chromium", "webkit"],
-        },
-      ],
-    ],
-    [[{ runner: "tests/notification-browser-runner.ts", engines: [] }]],
-    [[{ runner: "tests/asset-load-recovery-browser-runner.ts", engines: [] }]],
-    [[{ runner: "tests/notification-fairness-browser-runner.ts", engines: [] }]],
   );
-// CI runs the two groups on separate runners; each keeps its own order.
-const group = process.env.WAFFLE_BROWSER_GROUP;
-if (group !== undefined && group !== "parallel" && group !== "serial")
-  throw new Error(`Unknown WAFFLE_BROWSER_GROUP: ${group}`);
-const batches = (group === "serial" ? [] : parallel).concat(group === "parallel" ? [] : serial);
+const reporter = [
+  [{ runner: reporterControls, engines: ["--prepare"] }],
+  [{ runner: reporterControls, engines: ["chromium", "--prepared"] }],
+  [{ runner: reporterControls, engines: ["webkit", "--prepared"] }],
+];
+const serialAfterReporter = [
+  [
+    {
+      runner: "tests/process-recycling-browser-runner.ts",
+      engines: ["--page-controls", "chromium"],
+    },
+  ],
+  [
+    {
+      runner: "tests/page-runner/gpu-async-controls-runner.ts",
+      engines: ["--ci", "chromium", "webkit"],
+    },
+  ],
+  [{ runner: "tests/notification-browser-runner.ts", engines: [] }],
+  [{ runner: "tests/asset-load-recovery-browser-runner.ts", engines: [] }],
+  [{ runner: "tests/notification-fairness-browser-runner.ts", engines: [] }],
+];
+function selectBatches(group: string | undefined) {
+  switch (group) {
+    case undefined:
+      return parallel.concat(serialBeforeReporter, reporter, serialAfterReporter);
+    case "parallel":
+      return parallel;
+    case "serial":
+      return serialBeforeReporter.concat(serialAfterReporter);
+    case "reporter":
+      return reporter;
+    default:
+      throw new Error(`Unknown WAFFLE_BROWSER_GROUP: ${group}`);
+  }
+}
+const batches = selectBatches(process.env.WAFFLE_BROWSER_GROUP);
 let failures: Error[] = [];
 try {
   for (const batch of batches) {
