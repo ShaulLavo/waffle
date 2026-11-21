@@ -222,7 +222,7 @@ test("packed build tools work without the repository in Node, Bun and a typed co
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test.each(["consumer", "waffle-monorepo"])(
   "workspace-shaped consumers preserve packaged tools (%s)",

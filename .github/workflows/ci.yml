@@ -1108,7 +1108,7 @@ jobs:
       - run: bun run relay:check
       - name: Prepare pinned ledger-free allocation reference
         run: bun packages/waffle/tooling/prepare-allocation-reference.ts
-      - run: bun run test && bun run test:ci
+      - run: bun run test --parallel=2 && bun run test:ci
       - run: bun run size && bun run size:network && bun run size:gpu
       - run: bun run pack
       - uses: actions/upload-artifact@v4

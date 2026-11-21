@@ -16,6 +16,7 @@ const workflow = record(
 );
 const jobs = record(workflow.jobs);
 const changes = record(jobs.changes);
+const packageTestsCommand = "bun run test --parallel=2 && bun run test:ci";
 if (!Array.isArray(changes.steps)) throw new Error("expected change-detection steps");
 const paths = changes.steps.map(record).find((step) => step.id === "paths");
 const filters = record(YAML.parse(String(record(paths?.with).filters)));
@@ -464,9 +465,7 @@ test("package runs each test root once without repeating preparation", () => {
   const steps = record(jobs.package).steps;
   if (!Array.isArray(steps)) throw new Error("expected package steps");
   const commands = steps.map((step) => record(step).run);
-  expect(commands.filter((command) => command === "bun run test && bun run test:ci")).toHaveLength(
-    1,
-  );
+  expect(commands.filter((command) => command === packageTestsCommand)).toHaveLength(1);
   expect(commands).not.toContain("bun run prepare");
 });
 
@@ -1458,7 +1457,7 @@ test("package prepares exactly the pinned shallow-safe allocation reference befo
   const setup = steps.findIndex(
     (step) => step.run === "bun packages/waffle/tooling/prepare-allocation-reference.ts",
   );
-  const tests = steps.findIndex((step) => step.run === "bun run test && bun run test:ci");
+  const tests = steps.findIndex((step) => step.run === packageTestsCommand);
   expect(setup).toBeGreaterThanOrEqual(0);
   expect(setup).toBeLessThan(tests);
   const source = readFileSync(
