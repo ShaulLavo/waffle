@@ -78,6 +78,9 @@ export default {
         "tests/fixtures/stop-order-worker.ts",
         // Process start states test (scripts/test-browser.ts). Its runner bundles the page.
         "tests/process-start-browser{,-runner}.ts",
+        // The packed operation controls bundle a page and two Worker entries by path.
+        "tests/operation-diagnostics-browser.ts",
+        "tests/fixtures/operation-{fs-worker,observer-worker,page}.ts",
         "tests/bootstrap-arrival-browser-runner.ts",
         // Bundled by the link browser runner before the linker imports execute.
         "tests/fixtures/link-relay-worker.ts",
