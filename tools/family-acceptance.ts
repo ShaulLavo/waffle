@@ -1,7 +1,9 @@
 import { createSharedControlAllocator } from "@waffle-os/runtime";
 import type { Runtime, GuestLauncher, RuntimeSupervisor } from "@waffle-os/runtime";
 import { DescriptorTable } from "@waffle-os/runtime/core/descriptors";
+import { FilesystemClient } from "@waffle-os/runtime/fs/client";
 import { createRuntimeTerminalCodec } from "@waffle-os/runtime/browser/runtime-terminals";
+import { createFilesystemDescriptorCodec } from "@waffle-os/runtime/proc/filesystem-codec";
 import type { DescriptorBinding, ProcessExit } from "@waffle-os/runtime/proc/types";
 import {
   createWorkerProcessTransport,
@@ -10,7 +12,11 @@ import {
   type WorkerProcessMessage,
 } from "@waffle-os/runtime/proc/worker-client";
 import { WorkerPipeHost } from "@waffle-os/runtime/proc/worker-pipes";
-import { installPrograms, type ProgramInstallation, type ProgramPackage } from "@waffle-os/runtime/programs";
+import {
+  installPrograms,
+  type ProgramInstallation,
+  type ProgramPackage,
+} from "@waffle-os/runtime/programs";
 import cutTrFixture from "../packages/coreutils/fixtures/cut-tr.json" with { type: "json" };
 import { seedFindTree } from "../packages/findutils/provenance/bash/tests/helpers/find-cases.ts";
 import grepFixture from "../packages/grep/tests/fixtures/grep-usage-cases.json" with { type: "json" };
@@ -19,6 +25,7 @@ import { rgCases } from "../packages/ripgrep/tests/helpers/rg-fixtures.ts";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const PIPE_READ_RIGHTS = (1n << 1n) | (1n << 21n) | (1n << 27n);
+const WRITE_RIGHTS = (1n << 6n) | (1n << 21n) | (1n << 27n);
 const PATH = "/usr/bin:/bin";
 
 export interface FamilyAcceptanceAssets {
@@ -50,7 +57,7 @@ export interface Execution {
 
 export interface RunningProgram {
   readonly exit: Promise<ProcessExit>;
-  readonly interrupt: () => void;
+  readonly interrupt: () => Promise<void>;
 }
 
 export interface FamilyAcceptanceCase {
@@ -67,6 +74,8 @@ export interface FamilyAcceptanceSession {
   spawn(request: LaunchRequest): Promise<RunningProgram>;
   filledPipe(input: string | Uint8Array): number;
   pipe(): ReturnType<WorkerPipeHost["createPipe"]>;
+  outputFile(path: string): Promise<number>;
+  outputBytes(): { stdout: number; stderr: number };
   resetOutput(): void;
   waitForOutput(text: string): Promise<void>;
   dispose(): Promise<void>;
@@ -82,6 +91,13 @@ export interface FamilyAcceptanceOptions {
 interface InstalledSession {
   readonly session: FamilyAcceptanceSession;
   readonly installation: ProgramInstallation;
+}
+
+interface ProgramAcceptanceOptions {
+  readonly runtime: Runtime;
+  readonly workerUrl: URL;
+  readonly packages: readonly ProgramPackage[];
+  readonly redirectFiles?: boolean;
 }
 
 function assert(value: unknown, message: string): asserts value {
@@ -208,6 +224,7 @@ class Session implements FamilyAcceptanceSession {
     private readonly launches: LaunchRecord[],
     readonly descriptors: DescriptorTable,
     private readonly output: Output,
+    private readonly files: FilesystemClient | undefined,
   ) {
     this.filesystem = runtime.filesystem;
   }
@@ -235,9 +252,7 @@ class Session implements FamilyAcceptanceSession {
     await this.flush();
     await this.supervisor.start(child);
     return {
-      interrupt: () => {
-        void this.service.kill(child, 2);
-      },
+      interrupt: () => this.service.kill(child, 2),
       exit: this.supervisor
         .waitForExit(this.pid, child)
         .then(async (exit) => {
@@ -276,6 +291,41 @@ class Session implements FamilyAcceptanceSession {
     return this.pipes.createPipe();
   }
 
+  async outputFile(path: string) {
+    const files = required(this.files, "file descriptor client");
+    const slash = path.lastIndexOf("/");
+    assert(slash >= 0 && slash < path.length - 1, "Expected a file path");
+    const directory: number = await files.asyncCall("preopen", [path.slice(0, slash) || "/"]);
+    files.retain(directory);
+    try {
+      const { node: handle }: { node: number } = await files.asyncCall("resolve", [
+        directory,
+        path.slice(slash + 1),
+      ]);
+      files.retain(handle);
+      try {
+        return this.descriptors.open(
+          { kind: "file", handle, offset: 0, append: false },
+          WRITE_RIGHTS,
+          0n,
+          () => files.release(handle),
+        );
+      } catch (error) {
+        files.release(handle);
+        throw error;
+      }
+    } finally {
+      files.release(directory);
+    }
+  }
+
+  outputBytes() {
+    return {
+      stdout: this.output.stdout.reduce((sum, bytes) => sum + bytes.length, 0),
+      stderr: this.output.stderr.reduce((sum, bytes) => sum + bytes.length, 0),
+    };
+  }
+
   resetOutput() {
     this.output.stdout.length = 0;
     this.output.stderr.length = 0;
@@ -291,9 +341,13 @@ class Session implements FamilyAcceptanceSession {
   }
 
   async dispose() {
-    await Promise.all(Array.from(this.children, (child) => this.service.kill(child, 9)));
-    this.children.clear();
-    this.descriptors.dispose();
+    try {
+      await Promise.all(Array.from(this.children, (child) => this.service.kill(child, 9)));
+      this.children.clear();
+    } finally {
+      this.descriptors.dispose();
+      this.files?.dispose();
+    }
   }
 }
 
@@ -302,7 +356,11 @@ function recordOutput(output: Output, fd: number, payload: Uint8Array) {
   else if (fd === 2) output.stderr.push(Uint8Array.from(payload));
 }
 
-async function createSession(runtime: Runtime, launches: LaunchRecord[]): Promise<Session> {
+async function createSession(
+  runtime: Runtime,
+  launches: LaunchRecord[],
+  redirectFiles: boolean,
+): Promise<Session> {
   const service = await runtime.processes();
   const transport = createWorkerProcessTransport({
     pid: runtime.identities.pid(),
@@ -317,6 +375,9 @@ async function createSession(runtime: Runtime, launches: LaunchRecord[]): Promis
   });
   const notices: WorkerProcessMessage[] = [];
   const descriptors = new DescriptorTable();
+  const files = redirectFiles
+    ? new FilesystemClient(runtime.filesystem.connect(runtime.filesystem.createIdentity()))
+    : undefined;
   try {
     const pipes = new WorkerPipeHost({
       allocateShared: createSharedControlAllocator(
@@ -336,7 +397,7 @@ async function createSession(runtime: Runtime, launches: LaunchRecord[]): Promis
           write: () => 0,
           readiness: () => ({ readable: true, writable: true, hangup: fd === 0 }),
         },
-        fd === 0 ? PIPE_READ_RIGHTS : (1n << 6n) | (1n << 21n) | (1n << 27n),
+        fd === 0 ? PIPE_READ_RIGHTS : WRITE_RIGHTS,
         0n,
       );
     }
@@ -347,11 +408,19 @@ async function createSession(runtime: Runtime, launches: LaunchRecord[]): Promis
       codec: terminalCodec,
       prepareSpawn: (child) => {
         pipes.registry.registerProcess(child);
+        const filesystem = runtime.filesystem.createIdentity();
+        const codec =
+          files &&
+          createRuntimeTerminalCodec({
+            descriptors,
+            fallback: pipes.codec(createFilesystemDescriptorCodec(files, filesystem)),
+          });
         return {
           data: {
-            filesystem: runtime.filesystem.createIdentity(),
+            filesystem,
             pipeRegistry: pipes.registry.handle(),
           },
+          codec,
         };
       },
       postMessage: (message) => notices.push(message),
@@ -368,15 +437,19 @@ async function createSession(runtime: Runtime, launches: LaunchRecord[]): Promis
       launches,
       descriptors,
       output,
+      files,
     );
   } catch (error) {
     descriptors.dispose();
+    files?.dispose();
     throw error;
   }
 }
 
-async function createInstalledSession(options: FamilyAcceptanceOptions): Promise<InstalledSession> {
-  const { runtime, assets, workerUrl } = options;
+async function createInstalledSession(
+  options: ProgramAcceptanceOptions,
+): Promise<InstalledSession> {
+  const { runtime, packages, workerUrl, redirectFiles = false } = options;
   const launches: LaunchRecord[] = [];
   const launcher: GuestLauncher = (context, service) => {
     launches.push({
@@ -397,10 +470,9 @@ async function createInstalledSession(options: FamilyAcceptanceOptions): Promise
       },
     });
   };
-  const packages = [assets.coreutils, assets.findutils, assets.grep, assets.sed, assets.ripgrep];
   const installation = await installPrograms(runtime, packages, { launcher });
   try {
-    return { session: await createSession(runtime, launches), installation };
+    return { session: await createSession(runtime, launches, redirectFiles), installation };
   } catch (error) {
     await installation.dispose();
     throw error;
@@ -424,16 +496,30 @@ async function runCases(session: FamilyAcceptanceSession, cases: readonly Family
 }
 
 export async function runFamilyAcceptance(options: FamilyAcceptanceOptions): Promise<string[]> {
+  const { assets } = options;
+  const packages = [assets.coreutils, assets.findutils, assets.grep, assets.sed, assets.ripgrep];
+  return withProgramAcceptance({ ...options, packages }, (session) =>
+    runCases(session, options.cases ?? familyAcceptanceCases),
+  );
+}
+
+export async function withProgramAcceptance<Result>(
+  options: ProgramAcceptanceOptions,
+  run: (session: FamilyAcceptanceSession) => Promise<Result>,
+): Promise<Result> {
   const { session, installation } = await createInstalledSession(options);
   try {
-    return await runCases(session, options.cases ?? familyAcceptanceCases);
+    return await run(session);
   } finally {
-    await session.dispose();
-    assert(
-      session.descriptors.inheritable().length === 0,
-      "Acceptance descriptors survived disposal",
-    );
-    await installation.dispose();
+    try {
+      await session.dispose();
+      assert(
+        session.descriptors.inheritable().length === 0,
+        "Acceptance descriptors survived disposal",
+      );
+    } finally {
+      await installation.dispose();
+    }
   }
 }
 
@@ -523,7 +609,7 @@ async function interruption(session: FamilyAcceptanceSession) {
     const stdin = session.descriptors.open(reader, PIPE_READ_RIGHTS, 0n);
     const running = await session.spawn(request(["cat"], "/", [{ child: 0, parent: stdin }]));
     await session.waitForOutput("first\n");
-    running.interrupt();
+    await running.interrupt();
     expectExit(await running.exit, 130);
   } finally {
     writer.close?.();
