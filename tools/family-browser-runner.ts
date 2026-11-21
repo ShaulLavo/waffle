@@ -27,6 +27,7 @@ interface BrowserOptions {
 
 async function focusControl(page: Page) {
   await page.waitForSelector('body[data-blocked="true"], body[data-done="true"]', {
+    state: "attached",
     timeout: 60_000,
   });
   if (await page.locator("body").getAttribute("data-done")) return null;
