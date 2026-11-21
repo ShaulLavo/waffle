@@ -64,7 +64,7 @@ for (const imported of [false, true])
     else {
       // No bytes were observable: the cell holds only the last bootstrap start step.
       expect(sample < 0n).toBe(true);
-      expect(readStartProgress(sample)?.step).toBe("group-joined");
+      expect(readStartProgress(sample)?.step).toBe("instantiating");
     }
   });
 
