@@ -477,7 +477,7 @@ describe("review r621 refusals", () => {
     commitAll(root, "export no guests");
     const release = buildRelease(await fixtureOptions(root, "zero-guests"));
     await expect(release).rejects.toThrow(
-      /waffle-coreutils packs guests no export reaches: dist\/env\.wasm/,
+      /@waffle-os\/coreutils packs guests no export reaches: dist\/env\.wasm/,
     );
   }, 60_000);
 
