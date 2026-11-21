@@ -123,7 +123,7 @@ Playwright WebKit is not actual Safari qualification.
 
 ### Run the low-level Rust threads proof
 
-For the production Runtime's complete nine-case command and native Safari adapters, see
+For the production Runtime's browser corpus and native Safari adapters, see
 [Run the Runtime thread fixture](threads-runtime-runner.md).
 
 The optional threads runner consumes an existing producer receipt and artifact. It verifies both

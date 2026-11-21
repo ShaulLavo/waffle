@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "description": "jq-compatible WASI queries for Waffle runtimes.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShaulLavo/waffle.git",
+    "directory": "packages/jq"
+  },
   "files": [
     "dist",
     "src",
@@ -34,8 +39,8 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
-    "typescript": "7.0.2",
-    "@waffle-os/runtime": "workspace:*"
+    "@waffle-os/runtime": "workspace:*",
+    "typescript": "7.0.2"
   },
   "peerDependencies": {
     "@waffle-os/runtime": "*"

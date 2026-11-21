@@ -323,7 +323,7 @@ export function singleProgramBuilds(args: readonly string[], programs: readonly 
   }
   return programs.map((program) => {
     selectCatalogs(program, "0.13.0");
-    const packageName = packagesByProgram.get(program) ?? "@waffle-os/coreutils";
+    const packageName = packagesByProgram.get(program) ?? "waffle-coreutils";
     return { program, args: common.concat(["-p", packageName, "--bin", program]) };
   });
 }

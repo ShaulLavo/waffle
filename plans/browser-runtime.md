@@ -219,6 +219,8 @@ passed 200 fresh WebKit contexts: 4,000 quiet writes and 40,000 socket-ordered w
 The native reproducer and rerunnable context loop are retained in the owner report
 `/work/reports/wave-20261106/guest-watch-race/`. Actual Safari acceptance remains separate.
 
+See [Browser workaround evidence](browser-workarounds.md) for the relay's removal check and
+other active workarounds.
 
 ## Recovering quarantined pipe slots
 

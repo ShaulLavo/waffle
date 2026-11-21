@@ -98,7 +98,7 @@ prepareChecksumSource();
 generateRustNotices({
   root,
   packages: [
-    "@waffle-os/coreutils",
+    "waffle-coreutils",
     "waffle-cut",
     "waffle-tr",
     "waffle-wc",

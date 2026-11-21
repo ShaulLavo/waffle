@@ -4,6 +4,11 @@
   "private": true,
   "description": "Local Git commands for Waffle runtimes, backed by isomorphic-git",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShaulLavo/waffle.git",
+    "directory": "packages/git"
+  },
   "files": [
     "dist",
     "src",
@@ -39,10 +44,10 @@
   "devDependencies": {
     "@playwright/test": "1.64.0",
     "@types/node": "26.6.3",
+    "@waffle-os/runtime": "workspace:*",
     "bun-wasm": "git+https://github.com/ShaulLavo/bun-wasm.git#59c88f03dc887fcafa9fa873fabcddca5e23cfa8",
     "esbuild": "0.28.2",
-    "typescript": "7.0.2",
-    "@waffle-os/runtime": "workspace:*"
+    "typescript": "7.0.2"
   },
   "peerDependencies": {
     "@waffle-os/runtime": "*"

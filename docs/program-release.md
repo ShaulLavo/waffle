@@ -49,6 +49,8 @@ The command:
    (`guests`). Python's interpreter is a static reference; its qualified-artifact route is not
    exercised by these checks. Pure JavaScript packages (base, Git) admit no guests.
    `--acceptance FILE` also bundles and runs a consumer program against the installed closure.
+   `--workload-browser ENGINE` records the [packed Coreutils browser profile](program-workload-profile.md)
+   in the same acceptance field when the closure contains Coreutils.
    Every fetch and child command has a deadline (`--timeout-ms`, default ten minutes). Each child
    runs in its own process group. SIGINT or SIGTERM, or a deadline, retires the whole group before
    staging is removed. A group that will not exit leaves its staging in place and is reported.

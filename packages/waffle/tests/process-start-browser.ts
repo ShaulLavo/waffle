@@ -1,10 +1,15 @@
 import { createRuntime, type ProcessStartState } from "../runtime.js";
+import { createRuntimeTerminalCodec } from "../browser/runtime-terminals.js";
+import { WorkerProcessClient, workerProcessPipeRegistry } from "../proc/worker-client.js";
+import { WorkerPipeHost } from "../proc/worker-pipes.js";
+import type { ProcessStartWorkerRequest } from "./fixtures/process-start-worker.js";
 import { pageRootClient } from "./fixtures/page-root-client.js";
 import { stopOrderModule } from "./fixtures/stop-order-wasm.js";
 
 // docs/process-observation.md, "Start states", through the real runtime, broker and Worker.
 
 export interface ProcessStartReport {
+  readonly stages: readonly ProcessStartState[];
   /** A normal start, read once the guest's heartbeat moved. */
   readonly normal: ProcessStartState | undefined;
   /** A start whose worker script request never answered, read after it was posted. */
@@ -33,15 +38,26 @@ async function until<T>(read: () => T | undefined, label: string): Promise<T> {
 export async function processStarts(): Promise<ProcessStartReport> {
   const runtime = createRuntime({ filesystem: { workerURL: "/fs-worker.js", mode: "memory" } });
   const memories = new Map<number, WebAssembly.Memory>();
+  const stages = ["installing-bindings", "bindings-installed", "instantiating"] as const;
+  const gates = new Int32Array(new SharedArrayBuffer(stages.length * Int32Array.BYTES_PER_ELEMENT));
+  const release = (index: number) => {
+    Atomics.store(gates, index, 1);
+    Atomics.notify(gates, index);
+  };
   for (const [adapter, workerUrl] of [
     ["normal", "/worker.js"],
     ["held", "/held-worker.js"],
     ["missing", "/missing-worker.js"],
   ])
     runtime.registerAdapter(adapter!, (context, service) =>
-      service.launchWorker(context, {
+      service.launchWorker<ProcessStartWorkerRequest>(context, {
         workerUrl: workerUrl!,
-        request: { module: context.module, args: context.request.argv, env: {} },
+        request: {
+          module: context.module,
+          args: context.request.argv,
+          env: {},
+          gates: gates.buffer,
+        },
         onMessage(message) {
           const data = message as { type?: string; memory?: WebAssembly.Memory };
           if (data.type === "stop-order-memory" && data.memory)
@@ -53,16 +69,49 @@ export async function processStarts(): Promise<ProcessStartReport> {
   const module = await WebAssembly.compile(source);
   for (const adapter of ["normal", "held", "missing"])
     runtime.registerProgram(`/${adapter}`, { adapter, module, cooperative: true });
-  const { root, client, descriptors, notices } = pageRootClient(runtime);
+  const { root, client: initialClient, descriptors, notices } = pageRootClient(runtime);
   const service = await runtime.processes();
   const flush = async () => {
     while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);
   };
   const state = (pid: number) => service.startStates().find((entry) => entry.pid === pid);
+  const waitForStage = (pid: number, step: (typeof stages)[number]) =>
+    until(() => {
+      const current = state(pid);
+      return current?.step === step ? current : undefined;
+    }, step);
   try {
     for (const adapter of ["normal", "held", "missing"])
       await runtime.filesystem.writeFile(`/${adapter}`, source);
     await service.adoptRuntimeRoot(root, { memory: [] });
+    const pipes = new WorkerPipeHost({
+      transport: root,
+      postMessage: initialClient.options.postMessage,
+      registry: workerProcessPipeRegistry(root),
+    });
+    const [reader, writer] = pipes.createPipe();
+    descriptors.openAt(0, reader, 2n, 0n, () => reader.close());
+    descriptors.openAt(1, writer, 64n, 0n, () => writer.close());
+    descriptors.openAt(
+      2,
+      {
+        kind: "terminal",
+        read: () => 0,
+        write: () => 0,
+        readiness: () => ({ readable: false, writable: true, hangup: false }),
+      },
+      64n,
+      0n,
+    );
+    const client = new WorkerProcessClient({
+      ...initialClient.options,
+      codec: createRuntimeTerminalCodec({ descriptors, fallback: pipes.codec() }),
+      prepareSpawn: (pid) => {
+        const filesystem = runtime.filesystem.createIdentity();
+        pipes.registry.registerProcess(pid);
+        return { data: { filesystem }, cancel: () => pipes.registry.collectProcess(pid) };
+      },
+    });
     const supervisor = await service.ready();
     const spawn = async (executable: string) => {
       const pid = client.spawn(root.pid, {
@@ -71,7 +120,13 @@ export async function processStarts(): Promise<ProcessStartReport> {
         env: {},
         cwd: "/",
         job: -1,
-        fds: [],
+        fds:
+          executable === "/normal"
+            ? [
+                { child: 1, parent: 1 },
+                { child: 2, parent: 2 },
+              ]
+            : [],
       });
       await flush();
       await supervisor.start(pid);
@@ -85,6 +140,11 @@ export async function processStarts(): Promise<ProcessStartReport> {
     };
 
     const normalPid = await spawn("/normal");
+    const observed: ProcessStartState[] = [];
+    for (const [index, step] of stages.entries()) {
+      observed.push(await waitForStage(normalPid, step));
+      release(index);
+    }
     await until(() => {
       const memory = memories.get(normalPid);
       return memory && Atomics.load(new Int32Array(memory.buffer), 0) > 2 ? true : undefined;
@@ -112,8 +172,9 @@ export async function processStarts(): Promise<ProcessStartReport> {
       () => (service.startStates().length === 0 ? true : undefined),
       "start states to empty",
     );
-    return { normal, held, heldLater, heldKilled, missing };
+    return { stages: observed, normal, held, heldLater, heldKilled, missing };
   } finally {
+    for (const index of stages.keys()) release(index);
     descriptors.dispose();
     await runtime.dispose();
   }
