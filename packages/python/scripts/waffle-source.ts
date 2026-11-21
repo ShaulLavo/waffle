@@ -11,7 +11,7 @@ export function auditWaffleSource(repository: string) {
   assert.equal(realpathSync(runtime), runtime, "Runtime must be the actual sibling source");
   const pkg: unknown = JSON.parse(readFileSync(resolve(runtime, "package.json"), "utf8"));
   assert.ok(pkg && typeof pkg === "object" && "name" in pkg && "version" in pkg);
-  assert.equal(pkg.name, "waffle");
+  assert.equal(pkg.name, "@waffle-os/runtime");
   assert.equal(typeof pkg.version, "string");
   assert.equal(
     git("status", "--porcelain", "--untracked-files=all", "--", "packages/waffle"),

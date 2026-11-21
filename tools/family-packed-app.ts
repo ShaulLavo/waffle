@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { runLazyBaseAcceptance } from "./family-integration.ts";
 
 const modules = [
-  "waffle",
+  "@waffle-os/runtime",
   "@waffle-os/base",
   "@waffle-os/coreutils",
   "@waffle-os/findutils",

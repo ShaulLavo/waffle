@@ -13,13 +13,13 @@ try {
   if (archives.length !== 1) throw new Error("Expected one procps archive");
   const archive = join(scratch, archives[0]!);
   await run(["tar", "-xzf", archive, "-C", scratch]);
-  await mkdir(join(scratch, "package", "node_modules"));
+  await mkdir(join(scratch, "package", "node_modules", "@waffle-os"), { recursive: true });
   await symlink(
     new URL("../../waffle", import.meta.url).pathname,
-    join(scratch, "package", "node_modules", "waffle"),
+    join(scratch, "package", "node_modules", "@waffle-os", "runtime"),
   );
-  await mkdir(join(scratch, "node_modules"));
-  await symlink(join(scratch, "package"), join(scratch, "node_modules", "@waffle-os/procps"));
+  await mkdir(join(scratch, "node_modules", "@waffle-os"), { recursive: true });
+  await symlink(join(scratch, "package"), join(scratch, "node_modules", "@waffle-os", "procps"));
   await run([
     process.execPath,
     new URL("packed-acceptance.ts", import.meta.url).pathname,

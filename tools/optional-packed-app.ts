@@ -8,7 +8,7 @@ import { qualifyPython } from "../packages/python/test/qualification.ts";
 
 const expected = resolve(process.cwd(), "node_modules") + "/";
 for (const name of [
-  "waffle",
+  "@waffle-os/runtime",
   "@waffle-os/git",
   "@waffle-os/git/program",
   "@waffle-os/python",

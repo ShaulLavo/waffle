@@ -34,7 +34,7 @@ async function stage(consumer: string) {
   );
   const family = manifest.packages.find(
     (entry: unknown) =>
-      entry && typeof entry === "object" && "name" in entry && entry.name === "@waffle-os/coreutils",
+      entry && typeof entry === "object" && "name" in entry && entry.name === "waffle-coreutils",
   );
   assert.ok(
     family &&
@@ -53,7 +53,7 @@ async function stage(consumer: string) {
   await download(family.url, coreutilsArchive, family.sha256);
   const dependencies = {
     waffle: `file:${runtimeArchive}`,
-    "@waffle-os/coreutils": `file:${coreutilsArchive}`,
+    "waffle-coreutils": `file:${coreutilsArchive}`,
     playwright: "1.64.1",
   };
   await writeFile(
@@ -92,7 +92,7 @@ async function stage(consumer: string) {
     console.log(JSON.stringify({ source: path, sha256: digest(await readFile(destination)) }));
   }
   for (const path of [
-    "@waffle-os/coreutils/src/index.ts",
+    "waffle-coreutils/src/index.ts",
     "waffle/index.ts",
     "waffle/browser/preview1-worker.ts",
   ])
@@ -105,7 +105,7 @@ async function stage(consumer: string) {
 }
 
 async function browserCampaign(consumer: string) {
-  const runtime = resolve(consumer, "node_modules/@waffle-os/runtime");
+  const runtime = resolve(consumer, "node_modules/waffle");
   const {
     BrowserRunnerLifecycle,
   }: typeof import("../../waffle/tests/browser-runner-lifecycle.ts") = await import(
