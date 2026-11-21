@@ -4,6 +4,7 @@ import { arch, cpus, platform, release } from "node:os";
 import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Page } from "playwright";
+import playwright from "playwright/package.json" with { type: "json" };
 import {
   BrowserRunnerLifecycle,
   engines,
@@ -118,18 +119,20 @@ export async function runFamilyBrowser(options: BrowserOptions) {
       release: release(),
       arch: arch(),
       cpu: cpus()[0]?.model,
-      browserExecutable: engines[options.engine].executablePath().split(sep).at(-2),
+      playwright: playwright.version,
+      browserBuild: engines[options.engine].executablePath().split(sep).at(-3),
+      bun: Bun.version,
       headers: { coop: "same-origin", coep: "require-corp", cacheControl: "no-store" },
     };
     if (!options.workload)
       return { ...info, ...(await runPage(await browser.newPage(), origin, false)) };
     const samples = [];
     for (let index = 0; index < 3; index++) {
-      const page = await browser.newPage();
+      const context = await browser.newContext();
       try {
-        samples.push(await runPage(page, origin, true));
+        samples.push(await runPage(await context.newPage(), origin, true));
       } finally {
-        await page.context().close();
+        await context.close();
       }
     }
     return { ...info, samples };

@@ -1,5 +1,10 @@
 import { coreutils } from "@waffle-os/coreutils";
-import { createRuntime, type ProcessService, type Runtime } from "@waffle-os/runtime";
+import {
+  createRuntime,
+  type ProcessService,
+  type ProcessStartState,
+  type Runtime,
+} from "@waffle-os/runtime";
 import type { ProcessExit } from "@waffle-os/runtime/proc/types";
 import { withProgramAcceptance, type FamilyAcceptanceSession } from "./family-acceptance.ts";
 import assert, { ok } from "./test-assert.ts";
@@ -121,7 +126,7 @@ async function prepareInput(fs: Runtime["filesystem"]) {
   ok(reread.value);
   ok(reread.value.every((byte, index) => byte === payload[index]));
   assert.equal(reread.value.byteLength, payload.byteLength);
-  // Same file and chunk sizes on a seeded tree. This includes VFS publication, not just page search.
+  // Overwriting the seeded file uses one request with the same total byte count.
   const overwrite = await time(() => fs.writeFile(inputPath, payload));
   return {
     smallMs: small.ms,
@@ -173,14 +178,23 @@ async function runPipeline(
     }, "cat's full pipe lane");
     const beforeConsumerMs = performance.now() - start;
     const blocked = memory(runtime, service);
-    const blockedStart = service.startStates();
+    const starts = new Map<number, ProcessStartState>();
+    const observedLinearBytes = new Map<number, number>();
+    const sample = () => {
+      for (const worker of service.startStates()) starts.set(worker.pid, worker);
+      for (const { pid, bytes } of service.workerMemory()) {
+        if (bytes !== null)
+          observedLinearBytes.set(pid, Math.max(observedLinearBytes.get(pid) ?? 0, bytes));
+      }
+    };
+    sample();
     const sha = await time(() => session.spawn(request(["sha256sum", "-"], input, output)));
-    const consumerStart = service.startStates();
     const running = memory(runtime, service);
     descriptors.close(input);
     descriptors.close(output);
     const first = await time(() =>
       until(async () => {
+        sample();
         const bytes = await fs.readFile(digestPath);
         return bytes?.length ? bytes : undefined;
       }, "file-directed digest"),
@@ -219,8 +233,8 @@ async function runPipeline(
       backpressureQueuedBytes: queued,
       assets,
       load: programStages(),
-      blockedStart,
-      consumerStart,
+      starts: Array.from(starts.values()),
+      observedLinearBytes: Array.from(observedLinearBytes, ([pid, bytes]) => ({ pid, bytes })),
       blocked,
       running,
       retired: memory(runtime, service),

@@ -31,8 +31,8 @@ server before removing their scratch files.
 To record the same workload in a program release candidate, use
 `--families coreutils --workload-browser chromium` with the existing
 [local runtime candidate flags](program-release.md#qualify-a-local-runtime-candidate).
-The report is in `install.acceptance.output` in `program-release.json`.
-`install.acceptance.source` identifies the tracked page inputs.
+The report is in `installCheck.acceptance.output` in `program-release.json`.
+`installCheck.acceptance.source` identifies the tracked page inputs.
 The enclosing release manifest supplies the runtime and family archive hashes
 and the exact runtime source identity.
 
@@ -67,8 +67,9 @@ and the exact runtime source identity.
 - The [copy map](payload-ownership.md) explains the runtime's source snapshot,
   request staging and direct guest VFS I/O. For this pipeline, a ring read
   stages up to one 64 KiB lane in a temporary typed array per call. The ledger
-  includes shared pipe backing and control grants. It excludes this private
-  scratch, other transient buffers and compiler internals. The artifact
+  includes shared pipe backing and control grants. The relay can hold a separate
+  chunk of up to 64 KiB for ordinary delivery. The ledger excludes these private
+  buffers, other transient buffers and compiler internals. The artifact
   lengths, request size and ring capacity are bounds on their own paths.
   They cannot establish a whole-page peak or physical reclamation.
 - The focus control opens a second tab while the guest is blocked and returns
