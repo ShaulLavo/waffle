@@ -1297,6 +1297,11 @@ jobs:
       WAFFLE_NETWORK_PREBUILT: "1"
     needs: [changes, network-wasm, libc, threads-fixture]
     if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true')) }}
+    # A matrix result can report success when a shard never acquired a runner.
+    outputs:
+      parallel: ${{ steps.browser-result.outputs.parallel }}
+      serial: ${{ steps.browser-result.outputs.serial }}
+      reporter: ${{ steps.browser-result.outputs.reporter }}
     # Playwright 1.64.1 browsers are proven on Ubuntu 24.04; move the pin deliberately with a green run.
     runs-on: ubuntu-24.04
     # Reporter controls share one prepared bundle and run independently of the other suites.
@@ -1436,6 +1441,11 @@ jobs:
           name: browser-protocol-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/waffle-browser-protocol.log
           retention-days: 7
+      - name: Record successful browser shard
+        id: browser-result
+        env:
+          BROWSER_SHARD: ${{ matrix.group }}
+        run: printf '%s=passed\n' "$BROWSER_SHARD" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   site:
@@ -1712,5 +1722,8 @@ jobs:
           jq -e --arg browser_required "$BROWSER_REQUIRED" '
             type == "object" and has("browser") and
             all(.[]; .result == "success" or .result == "skipped") and
-            ($browser_required == "false" or .browser.result == "success")
+            ($browser_required == "false" or (
+              .browser.result == "success" and
+              (.browser.outputs | [.parallel, .serial, .reporter] | all(.[]; . == "passed"))
+            ))
           ' <<< "$RESULTS"

@@ -338,35 +338,77 @@ test("Complete CI gate rejects a failed or cancelled required threads producer",
   }
 });
 
-test("Complete CI gate requires successful browser shards whenever the browser matrix is selected", () => {
+function browserShardOutputs() {
+  const browser = record(jobs.browser);
+  const groups = record(record(browser.strategy).matrix).group;
+  if (!Array.isArray(groups) || !groups.every((group) => typeof group === "string"))
+    throw new Error("expected browser matrix groups");
+  expect(Object.keys(record(browser.outputs)).sort()).toEqual(groups.toSorted());
+  const step = stepsFor("browser").at(-2);
+  expect(step?.id).toBe("browser-result");
+  expect(step?.if).toBeUndefined();
+  expect(record(step?.env).BROWSER_SHARD).toBe("${{ matrix.group }}");
+  return Object.fromEntries(
+    groups.map((group: string) => {
+      expect(record(browser.outputs)[group]).toBe(`\${{ steps.browser-result.outputs.${group} }}`);
+      const script = `
+        GITHUB_OUTPUT=$(mktemp)
+        trap 'rm -f "$GITHUB_OUTPUT"' EXIT
+        ${step?.run}
+        cat "$GITHUB_OUTPUT"
+      `;
+      const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", script], {
+        env: { ...process.env, BROWSER_SHARD: group },
+      });
+      expect(command.exitCode, command.stderr.toString()).toBe(0);
+      const output = command.stdout.toString();
+      expect(output).toBe(`${group}=passed\n`);
+      return [group, output.trimEnd().split("=")[1]];
+    }),
+  );
+}
+
+test("Complete CI gate requires success from each selected browser shard", () => {
   const gate = record(jobs.gate);
   expect(gate.needs).toContain("browser");
   const step = stepsFor("gate").find((step) => step.name === "Reject failed or cancelled CI jobs");
   const selection = record(step?.env).BROWSER_REQUIRED;
   expect(record(jobs.browser).if).toContain(String(selection).slice(4, -3));
+  const allPassed = browserShardOutputs();
+  const missingShards = Object.keys(allPassed).map((group) => {
+    const partial = { ...allPassed };
+    delete partial[group];
+    return { result: "success", outputs: partial };
+  });
+  const passed = { result: "success", outputs: allPassed };
   const outcomes = [
-    ["success", "true", 0],
-    ["failure", "true", 1],
-    ["cancelled", "true", 1],
-    ["skipped", "true", 1],
-    ["skipped", "false", 0],
-    ["failure", "false", 1],
-    ["cancelled", "false", 1],
+    [passed, "true", 0],
+    [{ result: "failure", outputs: allPassed }, "true", 1],
+    [{ result: "cancelled", outputs: allPassed }, "true", 1],
+    [{ result: "skipped" }, "true", 1],
+    [{ result: "success" }, "true", 1],
+    [{ result: "skipped" }, "false", 0],
+    [{ result: "failure" }, "false", 1],
+    [{ result: "cancelled" }, "false", 1],
     [undefined, "true", 1],
     [undefined, "false", 1],
-  ] satisfies [string | undefined, string, number][];
-  for (const [result, required, expected] of outcomes) {
+  ] satisfies [object | undefined, string, number][];
+  for (const [browser, required, expected] of outcomes.concat(
+    missingShards.map((browser) => [browser, "true", 1]),
+  )) {
     const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(step?.run)], {
       env: {
         ...process.env,
         BROWSER_REQUIRED: required,
         RESULTS: JSON.stringify({
           changes: { result: "success" },
-          browser: result === undefined ? undefined : { result },
+          browser,
         }),
       },
     });
-    expect(command.exitCode, `browser=${result}, required=${required}`).toBe(expected);
+    expect(command.exitCode, `browser=${JSON.stringify(browser)}, required=${required}`).toBe(
+      expected,
+    );
   }
 });
 
