@@ -7,7 +7,13 @@ import type {
 import { existingDatabase, isWorkspace } from "./idle-database.js";
 import { IndexedDBStorage, OWNERSHIP_LOST_MESSAGE } from "./indexeddb.js";
 import { restoreTree } from "./persisted-tree.js";
-import { maintenanceLock, type StorageLockManager } from "./storage-maintenance.js";
+import {
+  NOTHING_TO_DELETE,
+  holdLock,
+  maintenanceLock,
+  type DeletionClaim,
+  type StorageLockManager,
+} from "./storage-maintenance.js";
 import { attemptCleanup, throwCleanupFailures } from "./cleanup.js";
 import { IdleWalk } from "./idle-walk.js";
 import type { MemFS, Node } from "./memory.js";
@@ -171,11 +177,11 @@ async function finishIdleClaim(
   throwCleanupFailures(failures, "Idle database claim cleanup failed");
 }
 
-async function requestIdleWriter<T>(
+async function requestIdleWriter(
   locks: StorageLockManager,
   name: string,
-  callback: (lock: unknown | null) => Promise<T>,
-): Promise<T> {
+  callback: (lock: unknown | null) => Promise<void>,
+): Promise<void> {
   return locks.request(
     `bun-wasm:filesystem:indexeddb:${name}`,
     { mode: "exclusive", ifAvailable: true },
@@ -183,25 +189,38 @@ async function requestIdleWriter<T>(
   );
 }
 
-/** Deletes a workspace database without reading its records, so an unreadable workspace can
- * start fresh. Only the format markers identify it as a workspace. Another owner, including a
- * live tab or an idle handle, keeps its workspace and gets "busy". */
-export async function deleteIdle(
+/** Claims a workspace database for deletion without reading its records, so an unreadable
+ * workspace can start fresh. Only the format markers identify it as a workspace. Another owner,
+ * holding either the maintenance or the writer lock, keeps its workspace: the claim is "busy". */
+export async function claimIdleDeletion(
   name: string,
   signal?: AbortSignal,
-): Promise<"deleted" | "missing" | "busy"> {
+): Promise<DeletionClaim | "busy"> {
   signal?.throwIfAborted();
-  if (!globalThis.indexedDB || !globalThis.navigator?.locks) return "missing";
+  if (!globalThis.indexedDB || !globalThis.navigator?.locks) return NOTHING_TO_DELETE;
   const locks = navigator.locks;
   const maintenance = await maintenanceLock(locks, name, "exclusive", signal);
   if (maintenance === "busy") return "busy";
-  try {
-    return await requestIdleWriter(locks, name, (lock) =>
-      lock ? deleteOwnedDatabase(name, signal) : Promise.resolve("busy" as const),
-    );
-  } finally {
+  const writer = await holdLock(
+    locks,
+    `bun-wasm:filesystem:indexeddb:${name}`,
+    { mode: "exclusive", ifAvailable: true },
+    signal,
+  ).catch(async (error: unknown) => {
     await maintenance.release();
+    throw error;
+  });
+  if (writer === "busy") {
+    await maintenance.release();
+    return "busy";
   }
+  return {
+    remove: () => deleteOwnedDatabase(name, signal),
+    async release() {
+      await writer.release();
+      await maintenance.release();
+    },
+  };
 }
 
 async function deleteOwnedDatabase(

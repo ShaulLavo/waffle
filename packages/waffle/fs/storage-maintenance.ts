@@ -42,9 +42,30 @@ export async function maintenanceLock(
   return requestMaintenance(locks, name, { mode: "shared", signal }, signal);
 }
 
-async function requestMaintenance(
+function requestMaintenance(
   locks: StorageLockManager,
   name: string,
+  options: Parameters<StorageLockManager["request"]>[1],
+  signal?: AbortSignal,
+): Promise<MaintenanceLease | "busy"> {
+  return holdLock(locks, `bun-wasm:filesystem:indexeddb-maintenance:${name}`, options, signal);
+}
+
+/** A store's held claim to delete a workspace; nothing is removed until remove(). */
+export interface DeletionClaim {
+  remove(): Promise<"deleted" | "missing">;
+  release(): Promise<void>;
+}
+/** A store this context cannot use holds no workspace to delete. */
+export const NOTHING_TO_DELETE: DeletionClaim = {
+  remove: () => Promise.resolve("missing"),
+  release: () => Promise.resolve(),
+};
+
+/** Holds a Web Lock until release(); "busy" when an ifAvailable request finds it taken. */
+export async function holdLock(
+  locks: StorageLockManager,
+  lockName: string,
   options: Parameters<StorageLockManager["request"]>[1],
   signal?: AbortSignal,
 ): Promise<MaintenanceLease | "busy"> {
@@ -52,27 +73,23 @@ async function requestMaintenance(
   const ready = Promise.withResolvers<MaintenanceLease | "busy">();
   const held = Promise.withResolvers<void>();
   let released: Promise<void> | undefined;
-  const lifetime = locks.request(
-    `bun-wasm:filesystem:indexeddb-maintenance:${name}`,
-    options,
-    async (lock) => {
-      if (signal?.aborted) {
-        ready.reject(signal.reason);
-        return;
-      }
-      if (lock === null) {
-        ready.resolve("busy");
-        return;
-      }
-      ready.resolve({
-        release() {
-          held.resolve();
-          return (released ??= releasedAtBroker(locks, lifetime));
-        },
-      });
-      await held.promise;
-    },
-  );
+  const lifetime = locks.request(lockName, options, async (lock) => {
+    if (signal?.aborted) {
+      ready.reject(signal.reason);
+      return;
+    }
+    if (lock === null) {
+      ready.resolve("busy");
+      return;
+    }
+    ready.resolve({
+      release() {
+        held.resolve();
+        return (released ??= releasedAtBroker(locks, lifetime));
+      },
+    });
+    await held.promise;
+  });
   void lifetime.catch(ready.reject);
   return ready.promise;
 }

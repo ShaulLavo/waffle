@@ -30,6 +30,7 @@ import {
   type StorageBackend,
 } from "./storage.js";
 import type { StorageLockManager } from "./indexeddb.js";
+import { NOTHING_TO_DELETE, holdLock, type DeletionClaim } from "./storage-maintenance.js";
 
 /** OPFS is owned by the filesystem worker, never a document or guest. */
 export interface OpfsStorageOptions {
@@ -204,19 +205,24 @@ export class OpfsStorage implements StorageBackend {
   }
   /** Removes a workspace without reading its snapshots, so an unreadable one can start fresh.
    * A workspace another tab holds keeps running and gets "busy" instead of waiting. */
-  static async deleteIdle(
+  static async claimIdle(
     name: string,
     options: Pick<OpfsStorageOptions, "root" | "storage" | "locks" | "signal"> = {},
-  ): Promise<"deleted" | "missing" | "busy"> {
+  ): Promise<DeletionClaim | "busy"> {
     options.signal?.throwIfAborted();
     const locks: StorageLockManager | undefined = options.locks ?? globalThis.navigator?.locks;
     const storage = options.storage ?? globalThis.navigator?.storage;
-    if (!locks || (!options.root && typeof storage?.getDirectory !== "function")) return "missing";
-    return locks.request(
+    if (!locks || (!options.root && typeof storage?.getDirectory !== "function"))
+      return NOTHING_TO_DELETE;
+    const lease = await holdLock(
+      locks,
       `bun-wasm:filesystem:${name}`,
       { mode: "exclusive", ifAvailable: true },
-      async (lock) => {
-        if (!lock) return "busy";
+      options.signal,
+    );
+    if (lease === "busy") return "busy";
+    return {
+      async remove() {
         // A context that cannot open OPFS, such as a WebKit page, cannot hold an OPFS workspace.
         const root = options.root ?? (await storage!.getDirectory().catch(() => undefined));
         if (!root) return "missing";
@@ -228,7 +234,8 @@ export class OpfsStorage implements StorageBackend {
           throw translate(error, "delete");
         }
       },
-    );
+      release: () => lease.release(),
+    };
   }
   static async open(name: string, options: OpfsStorageOptions = {}): Promise<OpfsStorage> {
     const locks: StorageLockManager | undefined = options.locks ?? globalThis.navigator?.locks;
