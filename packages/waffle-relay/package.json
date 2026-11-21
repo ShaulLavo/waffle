@@ -3,6 +3,11 @@
   "version": "0.0.145",
   "description": "Optional authenticated HTTP and TCP relay for Waffle runtimes.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShaulLavo/waffle.git",
+    "directory": "packages/waffle-relay"
+  },
   "bin": {
     "waffle-relay": "./dist/cli.js"
   },
@@ -50,6 +55,10 @@
       "default": "./src/node-webtransport.ts"
     }
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test ./tests",
@@ -71,9 +80,9 @@
     "@types/bun": "^1.4.3",
     "@types/node": "26.6.3",
     "@types/ws": "8.18.2",
+    "@waffle-os/runtime": "workspace:*",
     "miniflare": "5.20261006.1-alpha",
-    "typescript": "7.0.2",
-    "@waffle-os/runtime": "workspace:*"
+    "typescript": "7.0.2"
   },
   "peerDependencies": {
     "@fails-components/webtransport": "1.6.11",
@@ -91,9 +100,5 @@
   "engines": {
     "node": ">=22.18"
   },
-  "waffleHostInterface": 3,
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
-  }
+  "waffleHostInterface": 3
 }

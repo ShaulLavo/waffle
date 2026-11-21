@@ -2,6 +2,11 @@
   "name": "@waffle-os/python",
   "version": "0.0.0",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShaulLavo/waffle.git",
+    "directory": "packages/python"
+  },
   "files": [
     "src",
     "assets",
@@ -36,9 +41,9 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
+    "@waffle-os/runtime": "workspace:*",
     "esbuild": "0.28.2",
-    "typescript": "7.0.2",
-    "@waffle-os/runtime": "workspace:*"
+    "typescript": "7.0.2"
   },
   "peerDependencies": {
     "@waffle-os/runtime": "*"

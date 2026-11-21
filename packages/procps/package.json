@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "description": "Optional Waffle process commands with pure snapshot planning.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShaulLavo/waffle.git",
+    "directory": "packages/procps"
+  },
   "files": [
     "src",
     "docs",
