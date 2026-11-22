@@ -117,6 +117,8 @@ interface SessionStage {
   /** Refunds the owner's private copy to the connection's retained-bytes budget. */
   readonly release: () => void;
 }
+/** Largest request, in encoded bytes, whose decoded form stays with it while it is queued. */
+const RETAINED_DECODE_BYTES = 512;
 interface Session {
   watchTransactions: Map<number, WatchTransaction>;
   watchResponses: Map<number, () => void>;
@@ -131,6 +133,8 @@ interface Session {
   transportFailed?: boolean;
   handles: Map<number, number>;
   capabilities: Int32Array;
+  /** One view for the connection's lifetime: every request reads and bumps it. */
+  readonly epoch: Int32Array;
   freeEntries: number[];
   preopens: Set<number>;
   transient: Map<number, true>;
@@ -272,6 +276,7 @@ export class FilesystemService {
       requests: captureRequestMemory(connection.requests),
       handles: new Map(),
       capabilities: new Int32Array(connection.capabilities, 0, CAPABILITY_LENGTH),
+      epoch: new Int32Array(connection.epoch),
       freeEntries: Array.from(
         { length: CAPABILITY_SLOTS },
         (_, index) => CAPABILITY_HEADER + (CAPABILITY_SLOTS - index - 1) * CAPABILITY_WORDS,
@@ -508,17 +513,22 @@ export class FilesystemService {
     // Barriers capture their checkpoint in queue order without holding the mutation lock
     // while storage commits. Cold preparation likewise rejoins the queue only when ready.
     let barrier = false;
+    // A small request runs on this decode, so an ordinary queue turn decodes it once. A queued
+    // request can wait behind a blocked backend, so the decoded form is kept only when it is
+    // small; a larger one is decoded again at its turn instead of staying in memory meanwhile.
+    let input: { operation: string; args: unknown[]; publication?: unknown } | undefined;
     try {
-      const cells = requestCells(buffer);
-      const input = unpack(requestInput(session, id, requestBytes(buffer)).subarray(0, cells[1]!));
-      barrier = input.operation === "flush" || input.operation === "sync";
+      const length = requestCells(buffer)[1]!;
+      const decoded = unpack(requestInput(session, id, requestBytes(buffer)).subarray(0, length));
+      barrier = decoded?.operation === "flush" || decoded?.operation === "sync";
+      if (length <= RETAINED_DECODE_BYTES) input = decoded;
     } catch {
       /* request() reports malformed input through its completion */
     }
     const previous = this.queue;
     const request = this.trackWork(
       session,
-      previous.then(() => this.request(session, id, buffer, prepared)),
+      previous.then(() => this.request(session, id, buffer, prepared, input)),
     );
     this.runningRequests.add(request);
     void request.then(
@@ -742,7 +752,7 @@ export class FilesystemService {
     }
     if (idle <= TRANSIENT_HANDLES && !detached) return;
     // Eviction is a capability mutation, serialized against direct guest mutations too.
-    const epoch = new Int32Array(session.connection.epoch);
+    const epoch = session.epoch;
     const invalidate = !shared?.ownsServiceMutation;
     if (invalidate) {
       if (shared) shared.beginServiceMutation(epoch);
@@ -1145,6 +1155,7 @@ export class FilesystemService {
     id: number,
     buffer: FilesystemRequestBuffer,
     prepared?: PreparedRequest,
+    decoded?: { operation: string; args: unknown[]; publication?: unknown },
   ): Promise<void> {
     const cells = requestCells(buffer);
     const response = requestBytes(buffer);
@@ -1155,12 +1166,12 @@ export class FilesystemService {
     let staging = false;
     let admission: PublicationAdmission | undefined;
     let dirtyRetry: number | undefined;
-    const epoch = new Int32Array(session.connection.epoch);
+    const epoch = session.epoch;
     try {
       if (sessionRevoked(session) || !this.sessions.has(session) || requestCancelled(buffer))
         throw new FilesystemError(11);
       const { inputLength, dataLength } = requestLengths(buffer, bytes);
-      const input = unpack(bytes.subarray(0, inputLength));
+      const input = decoded ?? unpack(bytes.subarray(0, inputLength));
       const { operation, args } = input;
       if (session.connection.publication && input.publication)
         admission = publicationAdmission(input.publication);
@@ -1461,7 +1472,7 @@ export class FilesystemService {
       domain = backend.shared.publication!,
       connection = session.connection.publication;
     if (!connection) throw new FilesystemError(2);
-    backend.shared.beginServiceMutation(new Int32Array(session.connection.epoch));
+    backend.shared.beginServiceMutation(session.epoch);
     try {
       domain.assertLive();
       this.checkSocketTree(session, operation, args);
@@ -1495,7 +1506,7 @@ export class FilesystemService {
       }
       return this.applyPublication(session, id, operation, plan, publication, args);
     } finally {
-      backend.shared.endServiceMutation(new Int32Array(session.connection.epoch));
+      backend.shared.endServiceMutation(session.epoch);
     }
   }
   private applyPublication(
@@ -1596,7 +1607,7 @@ export class FilesystemService {
         this.check(session, handle);
         this.residentPublication ??= new ResidentGrantAuthority(
           this.backend,
-          new Int32Array(session.connection.epoch),
+          session.epoch,
           workspace,
         );
         if (this.residentPublication.workspace !== workspace) throw new FilesystemError(28);
@@ -1692,10 +1703,7 @@ export class FilesystemService {
     // on reentry, while keeping session close and release bookkeeping non-reentrant.
     for (const session of this.sessions)
       if (Atomics.load(new Int32Array(session.connection.revocations[0]!), 0) === 2)
-        this.backend.revokeOwner?.(
-          session.connection.owner,
-          new Int32Array(session.connection.epoch),
-        );
+        this.backend.revokeOwner?.(session.connection.owner, session.epoch);
     if (this.sweeping) return;
     this.sweeping = true;
     try {
@@ -1764,11 +1772,7 @@ export class FilesystemService {
       );
       return;
     }
-    if (ownRevocation === 2)
-      this.backend.revokeOwner?.(
-        session.connection.owner,
-        new Int32Array(session.connection.epoch),
-      );
+    if (ownRevocation === 2) this.backend.revokeOwner?.(session.connection.owner, session.epoch);
     // A discard can be lost when a port closes. Retirement settles what remains, before this
     // session's file pins and request blocks go: a committed write is applied, never dropped.
     for (const id of Array.from(session.stages.keys())) this.settleStage(session, id);
@@ -2008,10 +2012,7 @@ export class FilesystemService {
     for (const session of sessions) {
       if (Atomics.load(new Int32Array(session.connection.revocations[0]!), 0) !== 2) continue;
       try {
-        this.backend.revokeOwner?.(
-          session.connection.owner,
-          new Int32Array(session.connection.epoch),
-        );
+        this.backend.revokeOwner?.(session.connection.owner, session.epoch);
       } catch (error) {
         failures.push(error);
       }

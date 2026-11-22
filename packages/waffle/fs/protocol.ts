@@ -12,6 +12,9 @@ import {
   BigIntConstructor,
   bigintToString,
   Int32ArrayConstructor,
+  objectHasOwn,
+  objectKeys,
+  stringIncludes,
   SharedArrayBufferConstructor,
   Uint8ArrayConstructor,
   objectDefineProperty,
@@ -480,15 +483,24 @@ function storedTransportValue(_key: string, item: unknown): unknown {
     return { $record: Object.entries(item) };
   return item;
 }
-export function unpack(bytes: Uint8Array): any {
-  const value: unknown = JSON.parse(
-    decoder.decode(
-      Reflect.get(bytes.buffer, "resizable") ||
-        Object.prototype.toString.call(bytes.buffer) === "[object SharedArrayBuffer]"
-        ? new Uint8Array(bytes)
-        : bytes,
-    ),
+/** Whether TextDecoder accepts a view over this backing directly. The two local constructors
+ * answer the common cases with one check; a buffer from another realm takes the slow brand test. */
+function decodable(buffer: ArrayBufferLike): boolean {
+  if (SharedArrayBufferConstructor !== undefined && buffer instanceof SharedArrayBufferConstructor)
+    return false;
+  if (buffer instanceof ArrayBuffer) return !(buffer as { resizable?: boolean }).resizable;
+  return !(
+    Reflect.get(buffer, "resizable") ||
+    Object.prototype.toString.call(buffer) === "[object SharedArrayBuffer]"
   );
+}
+export function unpack(bytes: Uint8Array): any {
+  // TextDecoder rejects views over shared or resizable backing, so only those are copied.
+  const text = decoder.decode(decodable(bytes.buffer) ? bytes : new Uint8Array(bytes));
+  const value: unknown = JSON.parse(text);
+  // A tag is an own object key beginning with "$", which JSON writes as `"$` or as the escape
+  // for U+0024. Without either, no object is tagged and the parsed tree is already the answer.
+  if (!stringIncludes(text, '"$') && !stringIncludes(text, "\\u0024")) return value;
   return transportValue(value);
 }
 function transportRecord(value: unknown): Record<string, unknown> {
@@ -502,15 +514,32 @@ function transportRecord(value: unknown): Record<string, unknown> {
   }
   return Object.fromEntries(entries);
 }
-function transportArray(value: readonly unknown[]): unknown[] {
-  const result: unknown[] = [];
-  result.length = value.length;
+// JSON.parse results are private to this call, so untagged containers are decoded in place.
+function transportArray(value: unknown[]): unknown[] {
   for (let index = 0; index < value.length; index++) {
-    const decoded = transportValue(value[index]);
+    const item = value[index];
+    if (!item || typeof item !== "object") continue;
+    const decoded = transportValue(item);
+    if (decoded === item) continue;
     // Match JSON reviver deletion without erasing unvalidated byte positions.
-    if (decoded !== undefined) result[index] = decoded;
+    if (decoded === undefined) delete value[index];
+    else value[index] = decoded;
   }
-  return result;
+  return value;
+}
+function transportPlain(item: Record<string, unknown>): Record<string, unknown> {
+  // Own keys only, like the tag checks: an inherited property is never ours to rewrite.
+  const keys = objectKeys(item);
+  for (let index = 0; index < keys.length; index++) {
+    const key = keys[index]!;
+    const child = item[key];
+    if (!child || typeof child !== "object") continue;
+    const decoded = transportValue(child);
+    if (decoded === child) continue;
+    if (decoded === undefined) delete item[key];
+    else item[key] = decoded;
+  }
+  return item;
 }
 function transportMap(value: unknown): Map<unknown, unknown> {
   if (!Array.isArray(value)) throw new FilesystemError(28, "invalid map transport value");
@@ -525,20 +554,23 @@ function transportMap(value: unknown): Map<unknown, unknown> {
 function transportValue(item: unknown): unknown {
   if (!item || typeof item !== "object") return item;
   if (Array.isArray(item)) return transportArray(item);
-  if ("$record" in item) return transportRecord(item.$record);
-  if ("$undefined" in item) {
-    if (item.$undefined !== true)
+  // Tags are own keys, so a property inherited from a polluted prototype cannot forge one.
+  const record = item as Record<string, unknown>;
+  if (objectHasOwn(item, "$record")) return transportRecord(record.$record);
+  if (objectHasOwn(item, "$undefined")) {
+    if (record.$undefined !== true)
       throw new FilesystemError(28, "invalid undefined transport value");
     return undefined;
   }
-  if ("$map" in item) return transportMap(item.$map);
-  if ("$bigint" in item) {
-    if (typeof item.$bigint !== "string" || !/^(0|-?[1-9][0-9]*)$/.test(item.$bigint))
+  if (objectHasOwn(item, "$map")) return transportMap(record.$map);
+  if (objectHasOwn(item, "$bigint")) {
+    const digits = record.$bigint;
+    if (typeof digits !== "string" || !/^(0|-?[1-9][0-9]*)$/.test(digits))
       throw new FilesystemError(28, "invalid bigint transport value");
-    return BigIntConstructor(item.$bigint);
+    return BigIntConstructor(digits);
   }
-  if ("$bytes" in item) return transportBytes(item.$bytes);
-  return transportRecord(Object.entries(item));
+  if (objectHasOwn(item, "$bytes")) return transportBytes(record.$bytes);
+  return transportPlain(record);
 }
 function transportBytes(value: unknown): Uint8Array {
   if (!Array.isArray(value)) throw new FilesystemError(28, "invalid byte transport value");

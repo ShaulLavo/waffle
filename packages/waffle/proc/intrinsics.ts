@@ -42,6 +42,7 @@ export {
   ProxyConstructor,
   StringConstructor,
   stringSlice,
+  stringIncludes,
   encodeUtf8Prefix,
   decodeUtf8,
   typedArrayByteLength,

@@ -143,11 +143,13 @@ function control(memory: FilesystemRequestMemory): BigInt64Array {
 function current(memory: FilesystemRequestMemory): boolean {
   return atomicsLoad(control(memory), C.generation) >> 32n === BigIntConstructor(memory.generation);
 }
-function get(memory: FilesystemRequestMemory, index: number): number {
-  const word = atomicsLoad(control(memory), index);
-  if (word >> 32n !== BigIntConstructor(memory.generation))
-    throw new FilesystemTransportError("stale");
+function readWord(words: BigInt64Array, generation: bigint, index: number): number {
+  const word = atomicsLoad(words, index);
+  if (word >> 32n !== generation) throw new FilesystemTransportError("stale");
   return Number(word & MASK);
+}
+function get(memory: FilesystemRequestMemory, index: number): number {
+  return readWord(control(memory), BigIntConstructor(memory.generation), index);
 }
 function update(
   memory: FilesystemRequestMemory,
@@ -212,8 +214,12 @@ export async function waitForRequestQuiescence(
 export function requestTransportError(
   memory: FilesystemRequestMemory,
 ): FilesystemTransportError | undefined {
-  if (!current(memory)) return new FilesystemTransportError("stale");
-  const closed = get(memory, C.closed);
+  // Every request checks this several times, so it makes one view and one generation tag.
+  const words = control(memory);
+  const generation = BigIntConstructor(memory.generation);
+  if (atomicsLoad(words, C.generation) >> 32n !== generation)
+    return new FilesystemTransportError("stale");
+  const closed = readWord(words, generation, C.closed);
   return closed
     ? new FilesystemTransportError(
         closed === 2 ? "stale" : closed === 3 ? "protocol" : "messageerror",
@@ -843,13 +849,13 @@ export function requestMemoryResources(memory: FilesystemRequestMemory) {
 }
 
 export function requestCancelled(buffer: FilesystemRequestBuffer): boolean {
-  const word = atomicsLoad(
-    new BigInt64ArrayConstructor(buffer.memory.data, buffer.offset - 8, 1),
-    0,
-  );
+  const memory = buffer.memory;
+  const generation = BigIntConstructor(memory.generation);
+  const word = atomicsLoad(new BigInt64ArrayConstructor(memory.data, buffer.offset - 8, 1), 0);
+  // Same identity as ownership(generation, id, 0) >> 3n, with one tag conversion.
   return (
-    !current(buffer.memory) ||
-    word >> 3n !== ownership(buffer.memory.generation, buffer.id, 0) >> 3n ||
+    atomicsLoad(control(memory), C.generation) >> 32n !== generation ||
+    word >> 3n !== ((generation << 29n) | BigIntConstructor(buffer.id)) ||
     !!(word & 4n)
   );
 }
