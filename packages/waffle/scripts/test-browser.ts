@@ -31,16 +31,28 @@ const runners = [
   "tests/process-start-browser-runner.ts",
   gpuRunner,
 ];
+const splitEngines = new Set([
+  "tests/process-recycling-browser-runner.ts",
+  storageRunner,
+  gpuRunner,
+]);
+const fixedStoragePort = Number(process.env.STORAGE_TEST_PORT ?? 0) !== 0;
+function parallelTasks(runner: string): SuiteTask[] {
+  if (splitEngines.has(runner) && !(runner === storageRunner && fixedStoragePort))
+    return [
+      { runner, engines: ["chromium"] },
+      { runner, engines: ["firefox"] },
+    ];
+  return [{ runner, engines: ["chromium", "firefox"] }];
+}
 const parallel: SuiteBatch[] = [
   {
     concurrency: 6,
-    tasks: runners
-      .filter((runner) => runner !== gpuRunner)
-      .map((runner) => ({ runner, engines: ["chromium", "firefox"] })),
+    tasks: runners.filter((runner) => runner !== gpuRunner).flatMap(parallelTasks),
   },
   {
-    concurrency: 1,
-    tasks: [{ runner: gpuRunner, engines: ["chromium", "firefox"] }],
+    concurrency: 2,
+    tasks: parallelTasks(gpuRunner),
   },
   {
     concurrency: 3,
@@ -119,6 +131,10 @@ function invocationEnv(runner: string, engines: readonly string[]) {
   return { ...process.env, STORAGE_LIFECYCLE_OBSERVER: engines.includes("webkit") ? "0" : "1" };
 }
 
+function taskLabel(task: SuiteTask): string {
+  return task.engines.length ? `${task.runner} ${task.engines.join(" ")}` : task.runner;
+}
+
 async function runSuiteTask(task: SuiteTask, failures: Error[]): Promise<void> {
   try {
     await runBrowserSuite([process.execPath, task.runner].concat(task.engines), {
@@ -127,7 +143,7 @@ async function runSuiteTask(task: SuiteTask, failures: Error[]): Promise<void> {
       signal: stopped.signal,
     });
   } catch (reason) {
-    failures.push(new Error(`${task.runner} failed`, { cause: reason }));
+    failures.push(new Error(`${taskLabel(task)} failed`, { cause: reason }));
   }
 }
 
