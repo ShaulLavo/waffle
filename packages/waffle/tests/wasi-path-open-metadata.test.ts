@@ -45,11 +45,11 @@ test("root path_open uses one stat and one permissions call; non-root drops dupl
   expect(host.readAll(fromRoot.fd)).toBe("hello");
   expect(host.close(fromRoot.fd)).toBe(0);
 
-  // Non-root root-identity check still runs on main's path (2 stats + 1 preopen), plus 1 open stat.
+  // A rooted guest needs no root-identity check for a non-root open: just the open's own stat.
   wrapped.reset();
   const fromSub = host.openRaw(subDir.fd, "hello.txt");
   expect(fromSub.errno).toBe(0);
-  expect(wrapped.counts).toEqual({ stat: 3, preopen: 1, permissions: 1, resolve: 1, create: 0 });
+  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 });
   expect(host.readAll(fromSub.fd)).toBe("hello");
   expect(host.close(fromSub.fd)).toBe(0);
 

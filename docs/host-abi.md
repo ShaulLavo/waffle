@@ -182,8 +182,8 @@ and `/dev/stderr`, plus normalized relative equivalents, only through the `/` pr
 or a directory binding for the filesystem root. Other directory bindings use ordinary
 filesystem resolution. Root and any existing real ancestor directories still require
 search permission; absent ancestors belong to the virtual namespace. Traversal checks
-components before processing `.` or `..`; escaping the capability root returns `EPERM`
-(63), just as ordinary filesystem resolution does. A trailing slash or `/.`
+components before processing `.` or `..`; absolute link targets and `..` follow the
+[symbolic link rules](#symbolic-links) of ordinary filesystem resolution. A trailing slash or `/.`
 requires a directory source (`ENOTDIR`, 54, otherwise), before any truncation. They resolve
 against the **calling process's current descriptor table**, including inherited/remapped
 stdio and fd 3 when the root preopen has moved. They use the same reopen operation,
@@ -196,6 +196,38 @@ For example, redirecting `echo x >/dev/stderr` with `TRUNC` leaves exactly `x\n`
 stderr's original description had `APPEND`. Reopening with `APPEND` (`>>`) preserves old
 bytes and appends `x\n`. Neither operation advances the source description's offset or
 changes its flags. Pipes and terminals keep shared-stream behaviour.
+
+### Symbolic links
+
+A browser worker running over the whole filesystem preopens the filesystem root as `/`. When
+a process's `/` preopen opened the filesystem root (however its path is spelled), every
+Preview1 path call resolves the way Linux does inside that namespace. Path arguments are still
+relative to the directory descriptor they name. The decision is taken at guest entry, after
+exec has installed the descriptors it keeps, and holds for the life of the process image even
+if the guest later closes or renumbers the `/` preopen. File-scoped resident workers start with
+no preopen and are never rooted.
+
+- An absolute link target names a path from `/`, so resolution restarts at the filesystem root.
+- `..` climbs above the directory a call starts from, up to `/`, where it stays. A descriptor
+  for a directory that has since been removed still climbs to the parent it had, as on Linux;
+  names inside the removed directory return `ENOENT` (44).
+- A lookup that follows more than 40 links returns `ELOOP` (32); 40 is allowed.
+- `path_readlink` returns the target exactly as written.
+- Calls that do not follow the last component leave a final link alone: `path_filestat_get`
+  and `path_open` without the follow flag (`path_open` then returns `ELOOP`), unlink, rmdir
+  and rename. A trailing slash demands a directory, so stat, open and readlink follow a final
+  link when the path ends in `/` (readlink of `link/` then returns `EINVAL`, 28), while unlink,
+  rmdir and rename return `ENOTDIR` (54) for it.
+- For `path_open`, a path that reaches `/dev/null`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr`,
+  `/dev/fd/N` or `/proc/self/fd/N` through a link or `..`, from any directory, opens the same
+  virtual entry as spelling that path out; a physical file at one of those paths never stands
+  in for it. Lookups continuing below a directory descriptor's alias (`/dev/fd/N/name`) use
+  that directory and its real parent, within the same 40-link budget.
+
+The same rules hold on every filesystem backend, since they all resolve through one tree.
+Any other preopen layout, such as `/` mapped to a subdirectory or only non-root preopens,
+keeps each lookup beneath the directory it starts from: an absolute target or a `..` that
+would leave it returns `EPERM` (63).
 
 ## Executable access queries
 

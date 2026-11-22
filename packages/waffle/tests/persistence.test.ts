@@ -6,6 +6,7 @@ import { ProcessABI } from "../proc/abi.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { permissionStorageCase } from "./fixtures/permissions-storage.js";
+import { rootedSymlinkStorageCase } from "./fixtures/rooted-symlinks-storage.js";
 import { afterEach, expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import { validatePersistedIndex, type StorageBackend } from "../fs/storage";
@@ -659,6 +660,11 @@ test("a queued deletion checkpoint pins a later cold reattachment until its upse
 test("inode permission contract uses actual persistence, service and client", async () => {
   const store = new Store();
   await permissionStorageCase(async () => store);
+});
+
+test("absolute symlink targets persist and resolve rooted through persistence, service and client", async () => {
+  const store = new Store();
+  await rootedSymlinkStorageCase(async () => store);
 });
 
 test("saved metadata adoption persists defaults without payload reads or format changes", async () => {

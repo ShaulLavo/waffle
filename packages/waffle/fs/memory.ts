@@ -109,6 +109,20 @@ interface TreeWalk {
   depth?: number;
   pathUnits?: number;
   pathBytes?: number;
+  /** A lookup in the guest's root namespace, as Linux does it: absolute link targets restart at
+   * `root`, and `..` climbs above the start directory through `parentOf`, stopping at `root`. */
+  rooted?: RootedWalk;
+}
+interface RootedWalk {
+  readonly root: DirNode;
+  /** The directory holding `dir`, or a WASI errno when it has none. */
+  parentOf(dir: DirNode): DirNode | number;
+}
+/** Where `..` leads when the walk has no directory of its own left to pop. */
+function climbAbove(node: DirNode, start: DirNode, options: TreeWalk): DirNode | number {
+  const rooted = options.rooted;
+  if (rooted) return node === rooted.root ? node : rooted.parentOf(node);
+  return options.clampRoot ? start : 63;
 }
 function treePathError(path: string, limit: number | undefined, bytes?: number): number {
   if (!path) return 44;
@@ -134,7 +148,7 @@ function expandTreeLink(
   const target = child.target;
   if (!target) return 44;
   const absolute = target.startsWith("/");
-  if (absolute && !options.clampRoot) return 63;
+  if (absolute && !options.clampRoot && !options.rooted) return 63;
   const suffix = path.slice(start);
   const expanded = target + (suffix || path.endsWith("/") ? "/" + suffix : "");
   const error = treePathError(expanded, options.pathUnits, options.pathBytes);
@@ -171,9 +185,10 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
     else if (!(node.mode & 0o100)) return 2;
     terminalDot = part === "." || part === "..";
     if (part === ".") continue;
-    if (part === ".." && !dirs.length && !options.clampRoot) return 63;
     if (part === "..") {
-      node = dirs.pop() ?? root;
+      const up: DirNode | number = dirs.pop() ?? climbAbove(node, root, options);
+      if (typeof up === "number") return up;
+      node = up;
       names.pop();
       parent = undefined;
       name = "";
@@ -202,7 +217,7 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
     }
     if (link) {
       expansions++;
-      node = link.absolute ? root : node;
+      if (link.absolute) node = options.rooted?.root ?? root;
       path = link.path;
       targetEnd = link.targetEnd;
       start = 0;
@@ -312,6 +327,19 @@ export class MemFS implements FileSystem {
   private references = new Map<FileHandle, number>();
   private directoryParents = new WeakMap<DirNode, DirNode>();
   private removedDirectories = new WeakSet<DirNode>();
+  private rootedCache?: RootedWalk;
+  private rootedWalk(): RootedWalk {
+    if (this.rootedCache?.root === this.root) return this.rootedCache;
+    this.rootedCache = { root: this.root, parentOf: (dir) => this.liveParent(dir) };
+    return this.rootedCache;
+  }
+  /** Where `..` leads from a directory. As on Linux, a removed directory still leads to the
+   * parent it had, which the walk that reached it recorded. */
+  private liveParent(dir: DirNode): DirNode | number {
+    const parent = this.directoryParents.get(dir) ?? this.directoryParent(dir);
+    if (parent && parent !== dir) return parent;
+    return this.removedDirectories.has(dir) ? 44 : 63;
+  }
   private pages = new WeakMap<DirNode, DirectoryPages>();
   private directoryPages(node: DirNode): DirectoryPages {
     let pages = this.pages.get(node);
@@ -436,9 +464,14 @@ export class MemFS implements FileSystem {
     this.directoryParents.set(node, this.directoryParent(node) ?? node);
     return this.handle(node);
   }
-  resolve(directory: FileHandle, path: string, followFinal = false): ResolvedPath | number {
+  resolve(
+    directory: FileHandle,
+    path: string,
+    followFinal = false,
+    rooted = false,
+  ): ResolvedPath | number {
     if (path.startsWith("/")) return 63;
-    const resolved = this.walk(directory, path, false, followFinal);
+    const resolved = this.walk(directory, path, false, followFinal, undefined, rooted);
     if (typeof resolved === "number") return resolved;
     return {
       name: resolved.name,
@@ -459,11 +492,13 @@ export class MemFS implements FileSystem {
     clampRoot: boolean,
     followFinal: boolean,
     pathBytes?: number,
+    rooted = false,
   ): MemoryPath | number {
     const resolved = walkTree(this.directory(directory), path, {
       clampRoot,
       followFinal,
       pathBytes,
+      rooted: rooted ? this.rootedWalk() : undefined,
       child: (parent, name) => {
         const child = parent.children.get(name);
         if (child?.kind === "dir") this.directoryParents.set(child, parent);

@@ -98,7 +98,15 @@ export interface FileSystem {
   /** One retain/release pair per open description; duplicates share that lifetime. */
   retain(handle: FileHandle): void;
   release(handle: FileHandle): void;
-  resolve(directory: FileHandle, path: string, followFinal?: boolean): ResolvedPath | number;
+  /** `rooted` resolves in the guest's root namespace, as Linux does: an absolute link target
+   * restarts at the filesystem root and `..` climbs above `directory`, stopping at the root.
+   * Without it a lookup stays beneath `directory` and an escape is EPERM. */
+  resolve(
+    directory: FileHandle,
+    path: string,
+    followFinal?: boolean,
+    rooted?: boolean,
+  ): ResolvedPath | number;
   symlink(path: ResolvedPath, target: string): number;
   readlink(handle: FileHandle): string;
   stat(handle: FileHandle): FileStat;

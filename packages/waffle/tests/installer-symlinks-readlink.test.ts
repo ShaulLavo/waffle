@@ -303,7 +303,8 @@ test.each([
   { path: "ordinary.txt", errno: 28 },
   { path: "directory", errno: 28 },
   { path: "missing", errno: 44 },
-  { path: "link/", errno: 54 },
+  // The slash follows the dangling link, as Linux's readlink("link/") does: ENOENT.
+  { path: "link/", errno: 44 },
 ])("D4 valid-memory path failure preserves output and namespace %j", ({ path, errno }) => {
   const f = fixture();
   const len = f.put(path);

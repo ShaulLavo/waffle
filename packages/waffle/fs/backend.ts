@@ -413,7 +413,7 @@ export class MemoryBackend implements FilesystemBackend {
         return this.fs.connectSocket(a, b);
       case "resolve":
         this.check(a, "directory");
-        return this.fs.resolve(a, b, c === true);
+        return this.fs.resolve(a, b, c === true, args[3] === true);
       case "readlink":
         this.check(a);
         return this.fs.readlink(a);

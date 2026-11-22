@@ -127,11 +127,21 @@ test("relative targets keep raw dot and empty components and resolve from their 
   expect(f.fs.readlink(handle(f.fs, "/raw"))).toBe("a//./b/../../directory");
 });
 
+test.each(["../directory", "/directory", "/../directory"])(
+  "alias target %s resolves in the root namespace, where `..` stays at the root",
+  (target) => {
+    const f = fixture(),
+      fd = seed(f);
+    link(f.fs, "/good", target);
+    const alias = f.open(`good/../dev/fd/${fd}`);
+    expect(resource(f, alias).handle).toBe(resource(f, fd).handle);
+    expect(f.tryOpen(`directory/../../../dev/fd/${fd}`)).toBe(0);
+  },
+);
+
 test.each([
   { target: "missing", errno: 44 },
   { target: "file", errno: 54 },
-  { target: "../directory", errno: 63 },
-  { target: "/directory", errno: 63 },
 ])("alias rejects invalid targets without reopening a descriptor", ({ target, errno }) => {
   const f = fixture(),
     fd = seed(f);

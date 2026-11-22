@@ -175,6 +175,18 @@ function decodeBytes(bytes: Uint8Array, ptr: number, len: number, target: TextDe
   return target.decode(needsCopy ? bytes.slice(ptr, ptr + len) : bytes.subarray(ptr, ptr + len));
 }
 
+/** How a path call treats a final symlink. "strict" never follows it (unlink, rename, rmdir:
+ * `link/` there is ENOTDIR); "nofollow" follows only when a trailing slash demands a directory,
+ * as Linux lookups with the follow flag clear do; "follow" always follows. */
+type FinalLookup = "strict" | "nofollow" | "follow";
+function followsFinal(final: FinalLookup, path: string): boolean {
+  return final === "follow" || (final === "nofollow" && path.endsWith("/"));
+}
+/** The lookup a Preview1 lookupflags word asks for. */
+function lookupFlags(flags: number): FinalLookup {
+  return flags & 1 ? "follow" : "nofollow";
+}
+
 function writeUtf8Prefix(target: string, output: Uint8Array): number {
   if (output.length === 0) return 0;
   // Browser encodeInto rejects resizable backing buffers, including fixed-length views.
@@ -248,6 +260,25 @@ export class Wasi {
   private hostWrite?: FdWrite;
   private args: Uint8Array[];
   private env: Uint8Array[];
+  /** Whether the guest's `/` is the filesystem root, so path lookups follow Linux in that
+   * namespace: absolute link targets restart at `/` and `..` climbs to it. Other layouts keep
+   * each lookup beneath its directory. Taken from the descriptor layout at guest entry, after a
+   * host has installed its bindings, and fixed from then on. */
+  private rootedSnapshot?: boolean;
+  /** The handle a `/` preopen spelled exactly `/` opened: the filesystem root, known for free. */
+  private literalRoot?: number;
+  private get rooted(): boolean {
+    return (this.rootedSnapshot ??= this.rootNamespace());
+  }
+  private rootNamespace(): boolean {
+    const root = this.descriptors.rootPreopen();
+    if (root?.resource.kind !== "directory") return false;
+    const handle = root.resource.handle;
+    if (handle === this.literalRoot) return true;
+    // Any other spelling may pass through links, so compare what it actually opened.
+    const fs = this.opts.fs;
+    return fs.stat(handle).ino === fs.stat(fs.preopen("/")).ino;
+  }
 
   private readStdin(iovecs: readonly Uint8Array[]): number {
     if (!this.opts.stdin) return 0;
@@ -317,13 +348,9 @@ export class Wasi {
         fd++;
       }
       if (fd > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
-      this.openFileAt(
-        fd,
-        { kind: "directory", handle: opts.fs.preopen(path) },
-        RIGHTS_ALL,
-        RIGHTS_ALL,
-        name,
-      );
+      const handle = opts.fs.preopen(path);
+      if (name === "/" && path === "/") this.literalRoot = handle;
+      this.openFileAt(fd, { kind: "directory", handle }, RIGHTS_ALL, RIGHTS_ALL, name);
       fd++;
     }
   }
@@ -415,6 +442,8 @@ export class Wasi {
     if (this.boundMemory && this.boundMemory !== memory)
       throw new TypeError("cannot replace bound WASI memory");
     this.memory = memoryViews(memory);
+    // The final startup layout: exec has installed its bindings and closed unlisted preopens.
+    this.rootedSnapshot = this.rootNamespace();
     // Hosts commit entry after all fallible setup, with no user hook before the call.
     beforeStart?.();
     try {
@@ -433,6 +462,7 @@ export class Wasi {
       throw new TypeError("cannot replace bound WASI memory");
     this.boundMemory = memory;
     this.memory = memoryViews(memory);
+    this.rootedSnapshot ??= this.rootNamespace();
   }
 
   /** Preview1 `fd_write` over the bound memory, for a host program that owns no instance. */
@@ -605,13 +635,14 @@ export class Wasi {
     ptr: number,
     len: number,
     right: bigint,
-    followFinal = false,
+    final: FinalLookup = "strict",
   ): ResolvedPath | number {
     const dir = this.descriptors.get(dirfd);
     if (!dir) return EBADF;
     if (dir.resource.kind !== "directory") return ENOTDIR;
     if ((dir.rightsBase & right) !== right) return ENOTCAPABLE;
-    return this.opts.fs.resolve(dir.resource.handle, this.str(ptr, len), followFinal);
+    const path = this.str(ptr, len);
+    return this.opts.fs.resolve(dir.resource.handle, path, followsFinal(final, path), this.rooted);
   }
 
   /** Readiness of this process's guest watches, when its filesystem can watch. */
@@ -695,7 +726,7 @@ export class Wasi {
     if (!entry) return EBADF;
     if (entry.resource.kind !== "directory") return ENOTDIR;
     if (!(entry.rightsBase & RIGHT_PATH_FILESTAT_GET)) return ENOTCAPABLE;
-    const resolved = this.opts.fs.resolve(entry.resource.handle, path);
+    const resolved = this.opts.fs.resolve(entry.resource.handle, path, false, this.rooted);
     if (typeof resolved === "number") return resolved;
     if (resolved.node === undefined) return ENOENT;
     const result = this.opts.fs.permissions?.(resolved.node);
@@ -1073,7 +1104,7 @@ export class Wasi {
         return typeof result === "number" ? SUCCESS : result.error;
       },
       path_filestat_get: (fd: number, flags: number, ptr: number, len: number, buf: number) => {
-        const path = this.resolve(fd, ptr, len, RIGHT_PATH_FILESTAT_GET, (flags & 1) !== 0);
+        const path = this.resolve(fd, ptr, len, RIGHT_PATH_FILESTAT_GET, lookupFlags(flags));
         if (typeof path === "number") return path;
         const node = path.node;
         if (node === undefined) return ENOENT;
@@ -1089,7 +1120,7 @@ export class Wasi {
         mtim: bigint,
         fst: number,
       ) => {
-        const path = this.resolve(fd, ptr, len, RIGHT_PATH_FILESTAT_SET_TIMES, (flags & 1) !== 0);
+        const path = this.resolve(fd, ptr, len, RIGHT_PATH_FILESTAT_SET_TIMES, lookupFlags(flags));
         if (typeof path === "number") return path;
         const node = path.node;
         if (node === undefined) return ENOENT;
@@ -1104,7 +1135,13 @@ export class Wasi {
         newPtr: number,
         newLen: number,
       ) => {
-        const from = this.resolve(oldFd, oldPtr, oldLen, RIGHT_PATH_LINK_SOURCE, (flags & 1) !== 0);
+        const from = this.resolve(
+          oldFd,
+          oldPtr,
+          oldLen,
+          RIGHT_PATH_LINK_SOURCE,
+          lookupFlags(flags),
+        );
         if (typeof from === "number") return from;
         const to = this.resolve(newFd, newPtr, newLen, RIGHT_PATH_LINK_TARGET);
         if (typeof to === "number") return to;
@@ -1137,16 +1174,15 @@ export class Wasi {
           return ENOTCAPABLE;
         fdOut >>>= 0;
         const name = this.str(ptr, len);
+        const exclusive = (oflags & O_CREAT && oflags & O_EXCL) !== 0;
+        const follow = !exclusive && followsFinal(lookupFlags(dirflags), name);
         const alias = resolveDescriptorPath(
           this.descriptors,
           this.opts.fs,
           dir,
           name,
-          oflags & O_CREAT && oflags & O_EXCL
-            ? "exclusive-create"
-            : dirflags & 1
-              ? "follow"
-              : "nofollow",
+          exclusive ? "exclusive-create" : follow ? "follow" : "nofollow",
+          this.rooted,
         );
         if (typeof alias === "number") return alias;
         if (alias !== undefined && !("resolved" in alias)) {
@@ -1159,12 +1195,7 @@ export class Wasi {
           return this.reopen(alias.source, oflags, fdflags, rightsBase, rightsInheriting, fdOut);
         }
         const path =
-          alias?.resolved ??
-          this.opts.fs.resolve(
-            dir.resource.handle,
-            name,
-            (dirflags & 1) !== 0 && !(oflags & O_CREAT && oflags & O_EXCL),
-          );
+          alias?.resolved ?? this.opts.fs.resolve(dir.resource.handle, name, follow, this.rooted);
         if (typeof path === "number") return path;
         let node = path.node;
         let stat: FileStat | undefined;
@@ -1215,7 +1246,8 @@ export class Wasi {
         used >>>= 0;
         const size = this.bytes().length;
         if (ptr + len > size || buf + capacity > size || used + 4 > size) return 21;
-        const path = this.resolve(fd, ptr, len, RIGHT_PATH_READLINK);
+        // `link/` names what the link points to, so readlink of it fails EINVAL, as on Linux.
+        const path = this.resolve(fd, ptr, len, RIGHT_PATH_READLINK, "nofollow");
         if (typeof path === "number") return path;
         if (path.node === undefined) return ENOENT;
         let target: string;

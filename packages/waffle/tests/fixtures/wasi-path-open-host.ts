@@ -37,9 +37,9 @@ export function countingFs(inner: FileSystem): {
       return innerPermissions(handle);
     };
   }
-  fs.resolve = (directory: FileHandle, path: string, followFinal?: boolean) => {
+  fs.resolve = (directory: FileHandle, path: string, followFinal?: boolean, rooted?: boolean) => {
     counts.resolve++;
-    return inner.resolve(directory, path, followFinal);
+    return inner.resolve(directory, path, followFinal, rooted);
   };
   fs.create = (path, kind, exclusive) => {
     counts.create++;

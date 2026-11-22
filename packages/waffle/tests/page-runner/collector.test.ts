@@ -47,8 +47,8 @@ function passed() {
 }
 test("inventory comes from both factories and preserves all required cases under filtering", () => {
   const inventory = storageInventory();
-  expect(inventory.filter((item) => item.backend === "indexeddb")).toHaveLength(67);
-  expect(inventory.filter((item) => item.backend === "opfs")).toHaveLength(33);
+  expect(inventory.filter((item) => item.backend === "indexeddb")).toHaveLength(68);
+  expect(inventory.filter((item) => item.backend === "opfs")).toHaveLength(34);
   expect(() =>
     exactInventory(
       inventory.map((item) => item.id),

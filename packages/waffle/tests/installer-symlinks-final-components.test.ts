@@ -232,13 +232,15 @@ function rejectOpen(f: WasiFixture, path: string, follow: boolean, oflags: numbe
   expect(snapshot(f.fs)).toEqual(before);
 }
 
-test("D1 Preview1 no-follow metadata and readlink slash leave output and namespace unchanged", () => {
+test("D1 Preview1 no-follow metadata and readlink follow a slash, as Linux does, leaving the namespace unchanged", () => {
   const f = wasiFixture(),
     before = snapshot(f.fs);
   f.bytes.fill(0xcc, 512, 1024);
-  expect(f.call("path_filestat_get", 3, 0, 2048, f.put("link///"), 512)).toBe(54);
-  expect(f.bytes.slice(512, 576)).toEqual(new Uint8Array(64).fill(0xcc));
-  expect(f.call("path_readlink", 3, 2048, f.put("link/"), 640, 64, 768)).toBe(54);
+  // The slash demands a directory, so even a no-follow lookup follows the link (lstat("link/")).
+  expect(f.call("path_filestat_get", 3, 0, 2048, f.put("link///"), 512)).toBe(0);
+  expect(f.view.getUint8(528)).toBe(3);
+  // readlink("link/") names the directory, which is no link: EINVAL, with no output written.
+  expect(f.call("path_readlink", 3, 2048, f.put("link/"), 640, 64, 768)).toBe(28);
   expect(f.bytes.slice(640, 704)).toEqual(new Uint8Array(64).fill(0xcc));
   expect(f.view.getUint32(768, true)).toBe(0xcccccccc);
   expect(f.call("path_filestat_get", 3, 1, 2048, f.put("link///"), 512)).toBe(0);
@@ -321,12 +323,14 @@ test("D2 a real link with dot suffix remains intermediate and shares the 40 expa
   rejectOpen(f, `chain0/../dev/fd/${f.fd}`, true, 8, 32);
 });
 
-test("D2 no-follow slash rejects a real final link to a virtual directory alias", () => {
+test("D2 no-follow slash follows a real final link to a virtual directory alias, as Linux does", () => {
   const f = aliasFixture();
   expect(f.open("a/b")).toBe(0);
   const directory = f.view.getUint32(128, true);
   link(f.fs, `/a/dev/fd/${directory}`, `../../../dev/fd/${directory}`);
-  rejectOpen(f, `deep/../dev/fd/${directory}///`, false, 0, 54);
+  expect(f.open(`deep/../dev/fd/${directory}///`, false)).toBe(0);
+  const opened = f.wasi.descriptors.get(f.view.getUint32(128, true))?.resource;
+  expect(opened).toEqual(f.wasi.descriptors.get(directory)?.resource);
 });
 
 test.each([0, 1, 2])(
@@ -347,8 +351,20 @@ test.each([0, 1, 2])(
 );
 
 test.each([
-  { path: "link/", follow: false, oflags: 0, errno: 54 },
-  { path: "link///", follow: false, oflags: 2, errno: 54 },
+  { path: "link/", oflags: 0 },
+  { path: "link///", oflags: 2 },
+])("r34 a slash makes a no-follow open follow a final directory link, as Linux does %j", (row) => {
+  const f = wasiFixture(),
+    before = snapshot(f.fs);
+  expect(f.open(row.path, false, row.oflags)).toBe(0);
+  expect(f.wasi.descriptors.get(f.view.getUint32(128, true))?.resource).toEqual({
+    kind: "directory",
+    handle: handle(f.fs, "/a/b"),
+  });
+  expect(snapshot(f.fs)).toEqual(before);
+});
+
+test.each([
   { path: "link/", follow: false, oflags: 5, errno: 54 },
   { path: "link/", follow: true, oflags: 5, errno: 54 },
   { path: "link", follow: false, oflags: 0, errno: 32 },
