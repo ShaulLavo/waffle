@@ -27,6 +27,8 @@ export function isolatedPipes() {
     typedArraySubarray: native.typedArraySubarray,
     /** Every pipe payload copy, into a ring page or out of one. */
     typedArrayCopy: native.typedArrayCopy,
+    /** Named step boundaries; see pipe-interleave.ts. */
+    pipePause: native.pipePause as (point: string) => void,
   };
   const captured: Record<string, unknown> = { ...native };
   for (const key of Object.keys(native)) {
@@ -52,6 +54,7 @@ export function isolatedPipes() {
     begin: number,
     end: number,
   ) => hooks.typedArrayCopy(target, offset, source, begin, end);
+  captured.pipePause = (point: string) => hooks.pipePause(point);
   const context = {
     ...captured,
     ProcessError,
