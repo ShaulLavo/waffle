@@ -1,4 +1,5 @@
 import type { WaitAsyncWaiterRequest } from "./fixtures/wait-async-waiter.js";
+import { waitAsyncContract, waitAsyncContractExpected } from "./wait-async-contract.js";
 
 const UNTIMED_WAITS = 20;
 
@@ -52,10 +53,13 @@ function runWaits(mode: WaitAsyncWaiterRequest["mode"], waits: number): Promise<
 }
 
 /** @browserEntry Called by the browser bundle through its runtime URL.
- * Timed Atomics.waitAsync racing notifies, then untimed waits in the same Worker. The native
- * run records whether this engine loses a timed wait; the settled helper must finish every wait
- * either way. */
+ * The helper's native-wait contract first, then timed Atomics.waitAsync racing notifies and
+ * untimed waits in the same Worker. The native run records whether this engine loses a timed
+ * wait; the settled helper must finish every wait either way. */
 export async function waitAsyncBrowserCases() {
+  const contract = await waitAsyncContract();
+  if (JSON.stringify(contract) !== JSON.stringify(waitAsyncContractExpected))
+    throw new Error(`wait contract: ${JSON.stringify(contract)}`);
   const timed = 1000;
   const expected = timed + UNTIMED_WAITS;
   const native = await runWaits("native", timed);
