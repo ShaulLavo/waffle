@@ -20,7 +20,7 @@ import {
   storagePageLabelControl,
 } from "./command-controls.js";
 import { tmpdir } from "node:os";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { join, resolve, isAbsolute } from "node:path";
 import { Collector } from "./collector.js";
 import { PlaywrightDriver } from "./playwright-driver.js";
@@ -450,7 +450,8 @@ async function runEngine(engine: string, root: string, results: ControlResults):
 async function isShortExistingDir(path: string | undefined): Promise<boolean> {
   if (!path) return false;
   try {
-    return Buffer.byteLength(await realpath(path), "utf8") <= 48;
+    const resolved = await realpath(path);
+    return Buffer.byteLength(resolved, "utf8") <= 48 && (await stat(resolved)).isDirectory();
   } catch {
     return false;
   }

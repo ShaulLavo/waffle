@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
@@ -113,7 +113,8 @@ export class BrowserRunnerLifecycle {
   private async hasShortTmpDir(): Promise<boolean> {
     if (!process.env.TMPDIR) return false;
     try {
-      return Buffer.byteLength(await realpath(process.env.TMPDIR), "utf8") <= 48;
+      const resolved = await realpath(process.env.TMPDIR);
+      return Buffer.byteLength(resolved, "utf8") <= 48 && (await stat(resolved)).isDirectory();
     } catch {
       return false;
     }
