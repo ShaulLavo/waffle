@@ -659,8 +659,11 @@ jobs:
             ~/.rustup/update-hashes
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-v1-${{ hashFiles('Cargo.lock', 'packages/coreutils/crates/checksums/Cargo.lock', 'packages/tar/producer/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-v1-
+          key: ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-p1-${{ steps.select.outputs.need_rust_wasip1 }}-thr-${{ steps.select.outputs.browser }}-v1-${{ hashFiles('Cargo.lock', 'packages/coreutils/crates/checksums/Cargo.lock', 'packages/tar/producer/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-p1-${{ steps.select.outputs.need_rust_wasip1 }}-thr-${{ steps.select.outputs.browser }}-v1-
+            ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-p1-true-thr-true-v1-
+            ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-
       - uses: dtolnay/rust-toolchain@stable
         if: steps.select.outputs.need_rust_wasip1 == 'true'
         with:
@@ -1090,6 +1093,13 @@ jobs:
           bun run --cwd packages/coreutils build:echo
           bun run --cwd packages/coreutils test:echo:wasi
           bun packages/coreutils/scripts/echo-artifact.ts
+      - uses: actions/upload-artifact@v4
+        if: steps.select.outputs.coreutils == 'true'
+        with:
+          name: echo-process-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/echo-artifact
+          if-no-files-found: error
+          retention-days: 7
 
       # coreutils-checksums
       - uses: actions/cache@v4

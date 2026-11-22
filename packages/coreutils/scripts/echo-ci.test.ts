@@ -66,6 +66,19 @@ test("echo-only changes select a same-run xargs producer without repeating its u
     "${{ github.workspace }}/.build/xargs-process-input",
   );
   assert.ok(String(xargsBuild.run).includes("xargs-artifact.ts .build/xargs-process-input"));
+  const echoUpload = gateSteps.find(
+    (step) =>
+      step.uses === "actions/upload-artifact@v4" &&
+      record(step.with).path === ".build/echo-artifact",
+  );
+  assert.ok(echoUpload);
+  assert.equal(echoUpload.if, "steps.select.outputs.coreutils == 'true'");
+  assert.equal(
+    record(echoUpload.with).name,
+    "echo-process-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+  );
+  assert.equal(record(echoUpload.with)["if-no-files-found"], "error");
+  assert.ok(gateSteps.indexOf(echoStep) < gateSteps.indexOf(echoUpload));
   const suite = steps(producer).find(
     (step) => step.run === "bun run --cwd packages/findutils test:xargs:wasi",
   );

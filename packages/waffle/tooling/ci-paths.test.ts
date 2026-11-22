@@ -692,6 +692,18 @@ test("programs, program leaves and oracles preserve path selection and ordering"
   const libcCache = gateSteps.find((step) => step.id === "wasi-libc-cache");
   expect(String(record(libcCache?.with).key)).toContain("wasi-libc-34.0-runner-temp-v1-");
 
+  const rustCache = gateSteps.find((step) => step.id === "shared-rust-cache");
+  expect(String(record(rustCache?.with).key)).toContain(
+    "p1-${{ steps.select.outputs.need_rust_wasip1 }}-thr-${{ steps.select.outputs.browser }}",
+  );
+
+  const echoArtifact = artifactStep(gateSteps, ".build/echo-artifact");
+  expect(echoArtifact.if).toBe("steps.select.outputs.coreutils == 'true'");
+  expect(record(echoArtifact.with).name).toBe(
+    "echo-process-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+  );
+  expect(record(echoArtifact.with)["if-no-files-found"]).toBe("error");
+
   const checksumOracle = gateSteps.findIndex(
     (step) =>
       step.run === "node packages/coreutils/scripts/build-native-checksum-oracle.ts --verify-only",
