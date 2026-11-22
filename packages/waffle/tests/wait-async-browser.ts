@@ -1,7 +1,7 @@
 import type { WaitAsyncWaiterRequest } from "./fixtures/wait-async-waiter.js";
 import { waitAsyncContract, waitAsyncContractExpected } from "./wait-async-contract.js";
 
-const UNTIMED_WAITS = 20;
+const LONG_WAITS = 20;
 
 interface WaitRun {
   readonly completed: boolean;
@@ -46,22 +46,23 @@ function runWaits(mode: WaitAsyncWaiterRequest["mode"], waits: number): Promise<
       progress,
       mode,
       waits,
-      untimed: UNTIMED_WAITS,
+      longWaits: LONG_WAITS,
+      longTimeout: 1000,
       timeout: 10,
     } satisfies WaitAsyncWaiterRequest);
   });
 }
 
 /** @browserEntry Called by the browser bundle through its runtime URL.
- * The helper's native-wait contract first, then timed Atomics.waitAsync racing notifies and
- * untimed waits in the same Worker. The native run records whether this engine loses a timed
- * wait; the settled helper must finish every wait either way. */
+ * The helper's native-wait contract first, then 10 ms waits racing notifies followed by 1 s
+ * waits in the same Worker. The native run records whether this engine loses a timed wait; the
+ * settled helper must finish every wait either way. */
 export async function waitAsyncBrowserCases() {
   const contract = await waitAsyncContract();
   if (JSON.stringify(contract) !== JSON.stringify(waitAsyncContractExpected))
     throw new Error(`wait contract: ${JSON.stringify(contract)}`);
   const timed = 1000;
-  const expected = timed + UNTIMED_WAITS;
+  const expected = timed + LONG_WAITS;
   const native = await runWaits("native", timed);
   const settled = await runWaits("settled", timed);
   if (!settled.completed || settled.waits !== expected)

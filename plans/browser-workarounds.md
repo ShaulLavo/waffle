@@ -53,7 +53,9 @@ while the underlying behavior persists.
   other async waits in that Worker stop too, until a message or timer wakes it. In Waffle this made
   the WebKit `threads-runtime` suite time out on "sibling descriptor reuse" in about 2 to 5 percent
   of loaded runs (4 of 240 on main, 5 of 240 before PR 598), because the thread service's stdin
-  wait never settled; 0 of 240 with the helper. Chromium 156 and Firefox 157 never stalled.
+  wait never settled; 0 of 240 with the helper. Chromium 156 and Firefox 157 never stalled. Raw
+  untimed waits that follow timed waits in the same Worker stalled in 2 of 3 WebKit runs of the
+  browser check, which is why the teardown loops recheck and the open loops below matter.
   Scope on macOS Safari, iOS Simulator Safari, and physical iPhone is unknown.
   [Browser check](../packages/waffle/tests/wait-async-browser-runner.ts).
 - **Cost.** One host timer per pending timed wait. Teardown waits recheck every 50 ms.
