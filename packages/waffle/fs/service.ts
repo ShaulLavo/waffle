@@ -849,6 +849,7 @@ export class FilesystemService {
         "release",
         "sync",
         "stat",
+        "isRoot",
         "readlink",
         "permissions",
         "setMode",

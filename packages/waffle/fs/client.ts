@@ -468,6 +468,7 @@ export class FilesystemClient implements FileSystem {
   private readonly requests: FilesystemRequestAllocator;
   private reads = new Map<number, { offset: number; bytes: Uint8Array; epoch: number }>();
   private stats = new Map<number, { stat: FileStat; epoch: number }>();
+  private roots = new Map<number, { root: boolean; epoch: number }>();
   private paths = new Map<string, { path: ResolvedPath | number; epoch: number }>();
   private readdirs = new Map<number, { entries: DirectoryEntry[]; epoch: number }>();
   private openHandles = new MapConstructor<number, number>();
@@ -893,6 +894,7 @@ export class FilesystemClient implements FileSystem {
     this.stagedHandles = new SetConstructor();
     this.reads.clear();
     this.stats.clear();
+    this.roots.clear();
     this.paths.clear();
     this.readdirs.clear();
     mapClear(this.openHandles);
@@ -907,6 +909,21 @@ export class FilesystemClient implements FileSystem {
   }
   preopen(path: string): FileHandle {
     return this.call("preopen", [path]);
+  }
+  isRoot(handle: FileHandle): boolean {
+    const epoch = this.version();
+    const cached = this.roots.get(handle);
+    if (!this.resident && !this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
+      return cached.root;
+    const completion = this.submit("isRoot", [handle]);
+    try {
+      const root = completion.wait() === true;
+      if (this.roots.size >= 256) this.roots.clear();
+      this.roots.set(handle, { root, epoch: completion.epoch });
+      return root;
+    } finally {
+      completion.release();
+    }
   }
   private capabilityEntry(handle: FileHandle): number | undefined {
     const cached = mapGet(this.capabilityEntries, handle);

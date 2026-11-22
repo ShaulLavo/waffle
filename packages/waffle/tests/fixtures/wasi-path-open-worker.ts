@@ -32,6 +32,15 @@ self.onmessage = ({ data }: MessageEvent<FilesystemConnection>) => {
     const devNullKind = host.wasi.descriptors.get(devNull.fd)?.resource.kind;
     if (devNull.errno === 0) host.close(devNull.fd);
 
+    host.close(3);
+    wrapped.reset();
+    const afterCloseRoot = host.openRaw(openedRoot.fd, "dev/fd/0", {
+      base: RIGHT_FD_READ,
+      inheriting: 0n,
+    });
+    const afterCloseRootCounts = { ...wrapped.counts };
+    if (afterCloseRoot.errno === 0) host.close(afterCloseRoot.fd);
+
     const epochAfter = Atomics.load(epochView, 0);
     self.postMessage({
       subDirErrno: subDir.errno,
@@ -44,6 +53,8 @@ self.onmessage = ({ data }: MessageEvent<FilesystemConnection>) => {
       devNullErrno: devNull.errno,
       devNullKind,
       devNullCounts,
+      afterCloseRootErrno: afterCloseRoot.errno,
+      afterCloseRootCounts,
     });
   } finally {
     host.wasi.descriptors.dispose();

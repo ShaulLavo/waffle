@@ -30,7 +30,7 @@ function makeHost(
   return host;
 }
 
-test("path_open uses one stat and zero preopen or permissions calls from root and non-root dirfds", () => {
+test("path_open uses one stat, one permissions, and zero preopen calls from root and non-root dirfds", () => {
   const mem = new MemFS();
   mem.writeFile("/work/sub/hello.txt", "hello");
   mem.mkdirp("/work/sub/nested");
@@ -43,27 +43,27 @@ test("path_open uses one stat and zero preopen or permissions calls from root an
   wrapped.reset();
   const fromRoot = host.openRaw(3, "work/sub/hello.txt");
   expect(fromRoot.errno).toBe(0);
-  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 0, resolve: 1, create: 0 });
+  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 });
   expect(host.readAll(fromRoot.fd)).toBe("hello");
   expect(host.close(fromRoot.fd)).toBe(0);
 
   wrapped.reset();
   const fromSub = host.openRaw(subDir.fd, "hello.txt");
   expect(fromSub.errno).toBe(0);
-  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 0, resolve: 1, create: 0 });
+  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 });
   expect(host.readAll(fromSub.fd)).toBe("hello");
   expect(host.close(fromSub.fd)).toBe(0);
 
   wrapped.reset();
   const nestedDir = host.openRaw(subDir.fd, "nested", { oflags: O_DIRECTORY });
   expect(nestedDir.errno).toBe(0);
-  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 0, resolve: 1, create: 0 });
+  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 });
   expect(host.close(nestedDir.fd)).toBe(0);
 
   wrapped.reset();
   const created = host.openRaw(subDir.fd, "created.txt", { oflags: O_CREAT | O_EXCL });
   expect(created.errno).toBe(0);
-  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 0, resolve: 1, create: 1 });
+  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 1 });
   expect(host.close(created.fd)).toBe(0);
 
   wrapped.reset();
@@ -75,7 +75,7 @@ test("path_open uses one stat and zero preopen or permissions calls from root an
   expect(fileForReopen.errno).toBe(0);
   wrapped.reset();
   expect(host.wasi.fdReopen(fileForReopen.fd, 0, 0, RIGHT_FD_READ, 128)).toBe(0);
-  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 0, resolve: 0, create: 0 });
+  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 0, create: 0 });
 });
 
 test("path_open preserves WASI error codes and permission denials without extra metadata calls", () => {
@@ -99,13 +99,10 @@ test("path_open preserves WASI error codes and permission denials without extra 
   expect(host.openRaw(subDir.fd, "missing.txt").errno).toBe(44);
   expect(wrapped.counts).toEqual({ stat: 0, preopen: 0, permissions: 0, resolve: 1, create: 0 });
 
-  // First deep ENOENT lazily caches root's ino once; repeated misses do zero stats and zero preopens.
+  // Deep ENOENT on non-root uses read-only isRoot with zero stats and zero preopens.
   wrapped.reset();
   expect(host.openRaw(subDir.fd, "no-such-dir/child").errno).toBe(44);
-  expect(wrapped.counts.preopen).toBe(0);
-  expect(wrapped.counts.permissions).toBe(0);
-  expect(wrapped.counts.resolve).toBe(1);
-  expect(wrapped.counts.stat).toBeLessThanOrEqual(1);
+  expect(wrapped.counts).toEqual({ stat: 0, preopen: 0, permissions: 0, resolve: 1, create: 0 });
 
   wrapped.reset();
   expect(host.openRaw(subDir.fd, "another-missing/child").errno).toBe(44);
@@ -125,28 +122,28 @@ test("path_open preserves WASI error codes and permission denials without extra 
 
   wrapped.reset();
   expect(host.openRaw(subDir.fd, "file.txt", { oflags: O_DIRECTORY }).errno).toBe(54);
-  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 0, resolve: 1, create: 0 });
+  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 });
 
   wrapped.reset();
   expect(host.openRaw(subDir.fd, "dir", { oflags: O_TRUNC }).errno).toBe(31);
-  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 0, resolve: 1, create: 0 });
+  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 });
 
   const fileHandle = mem.handleForNode(mem.lookup("/work/sub/file.txt")!);
   expect(mem.setMode(fileHandle, 0o400)).toBe(0);
   wrapped.reset();
   expect(host.openRaw(subDir.fd, "file.txt", { base: RIGHT_FD_WRITE }).errno).toBe(2);
-  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 0, resolve: 1, create: 0 });
+  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 });
 
   wrapped.reset();
   const readOnly = host.openRaw(subDir.fd, "file.txt", { base: RIGHT_FD_READ });
   expect(readOnly.errno).toBe(0);
-  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 0, resolve: 1, create: 0 });
+  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 });
   expect(host.close(readOnly.fd)).toBe(0);
 
   expect(mem.setMode(mem.handleForNode(mem.lookup("/work/sub/file.txt")!), 0o200)).toBe(0);
   wrapped.reset();
   expect(host.openRaw(subDir.fd, "file.txt", { base: RIGHT_FD_READ }).errno).toBe(2);
-  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 0, resolve: 1, create: 0 });
+  expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 });
 });
 
 test("openInode falls back to fs.permissions when stat omits mode", () => {
@@ -269,20 +266,148 @@ test("FilesystemClient non-root path_open does not call preopen or bump the glob
     Array.from({ length: 4 }, () => ({
       errno: 0,
       text: "ipc-hello",
-      counts: { stat: 1, preopen: 0, permissions: 0, resolve: 1, create: 0 },
+      counts: { stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 },
     })),
   );
   expect(result.deniedErrno).toBe(2);
   expect(result.deniedCounts).toEqual({
     stat: 1,
     preopen: 0,
-    permissions: 0,
+    permissions: 1,
     resolve: 1,
     create: 0,
   });
   expect(result.devNullErrno).toBe(0);
   expect(result.devNullKind).toBe("device");
   expect((result.devNullCounts as { preopen: number }).preopen).toBe(0);
+  expect(result.afterCloseRootErrno).toBe(0);
+  expect((result.afterCloseRootCounts as { preopen: number }).preopen).toBe(0);
+});
+
+test("retained root keeps virtual aliases after closing preopen and subdirectory preopen does not shadow files", () => {
+  const mem = new MemFS();
+  const host = makeHost(mem);
+  const retainedRoot = host.openRaw(3, ".", { oflags: O_DIRECTORY });
+  expect(retainedRoot.errno).toBe(0);
+  expect(host.close(3)).toBe(0);
+
+  for (const alias of ["dev/fd/0", "proc/self/fd/0", "dev/null"]) {
+    const opened = host.openRaw(retainedRoot.fd, alias, {
+      base: RIGHT_FD_READ,
+      inheriting: 0n,
+    });
+    expect(opened.errno).toBe(0);
+    expect(host.close(opened.fd)).toBe(0);
+  }
+
+  const volumeMem = new MemFS();
+  volumeMem.writeFile("/volume/dev/fd/0", "volume-file");
+  const volumeHost = makeHost(volumeMem, { "/": "/volume" });
+  const sub = volumeHost.openRaw(3, ".", { oflags: O_DIRECTORY });
+  expect(sub.errno).toBe(0);
+  const opened = volumeHost.openRaw(sub.fd, "dev/fd/0", {
+    base: RIGHT_FD_READ,
+    inheriting: 0n,
+  });
+  expect(opened.errno).toBe(0);
+  expect(volumeHost.readAll(opened.fd)).toBe("volume-file");
+  expect(volumeHost.close(opened.fd)).toBe(0);
+});
+
+test("alias root identity follows live root inode and preopen changes without stale caching", () => {
+  const mem = new MemFS();
+  const realRoot = mem.preopen("/");
+  const other = mem.preopen("/other");
+  let rootHandle = realRoot;
+  let otherIno = mem.stat(realRoot).ino;
+
+  const adapter: FileSystem = {
+    preopen: (path) => (path === "/" ? rootHandle : mem.preopen(path)),
+    retain: (h) => mem.retain(h),
+    release: (h) => mem.release(h),
+    resolve: (dir, path, follow) => mem.resolve(dir, path, follow),
+    symlink: (path, target) => mem.symlink(path, target),
+    readlink: (h) => mem.readlink(h),
+    stat: (h) => (h === other ? { ...mem.stat(h), ino: otherIno } : mem.stat(h)),
+    permissions: (h) => mem.permissions(h),
+    read: (h, chunks, offset) => mem.read(h, chunks, offset),
+    write: (h, chunks, offset) => mem.write(h, chunks, offset),
+    append: (h, chunks) => mem.append(h, chunks),
+    resize: (h, size, truncate) => mem.resize(h, size, truncate),
+    setTimes: (h, atime, mtime) => mem.setTimes(h, atime, mtime),
+    readdir: (h) => mem.readdir(h),
+    readdirPage: (h, cookie, len) => mem.readdirPage(h, cookie, len),
+    create: (path, kind, exclusive) => mem.create(path, kind, exclusive),
+    bindSocket: (parent, name, lease) => mem.bindSocket(parent, name, lease),
+    unbindSocket: (binding, name, lease, unlink) => mem.unbindSocket(binding, name, lease, unlink),
+    connectSocket: (dir, path) => mem.connectSocket(dir, path),
+    link: (from, to) => mem.link(from, to),
+    removePath: (path, dir) => mem.removePath(path, dir),
+    rename: (from, to) => mem.rename(from, to),
+  };
+  const host = makeHost(adapter);
+  const distinctDir = host.wasi.descriptors.open(
+    { kind: "directory", handle: other },
+    RIGHTS_ALL,
+    RIGHTS_ALL,
+  );
+  const first = host.openRaw(distinctDir, "dev/fd/0", {
+    base: RIGHT_FD_READ,
+    inheriting: 0n,
+  });
+  expect(first.errno).toBe(0);
+  expect(host.close(first.fd)).toBe(0);
+
+  // Changing the inode behind the existing handle must disable aliases immediately.
+  otherIno = mem.stat(other).ino;
+  expect(host.openRaw(distinctDir, "dev/fd/0", { base: RIGHT_FD_READ, inheriting: 0n }).errno).toBe(
+    44,
+  );
+
+  // Moving preopen("/") to a new handle must disable aliases on a retained old root handle.
+  const retainedOldRoot = host.openRaw(3, ".", { oflags: O_DIRECTORY });
+  expect(retainedOldRoot.errno).toBe(0);
+  const beforeMove = host.openRaw(retainedOldRoot.fd, "dev/fd/0", {
+    base: RIGHT_FD_READ,
+    inheriting: 0n,
+  });
+  expect(beforeMove.errno).toBe(0);
+  expect(host.close(beforeMove.fd)).toBe(0);
+
+  rootHandle = other;
+  expect(
+    host.openRaw(retainedOldRoot.fd, "dev/fd/0", { base: RIGHT_FD_READ, inheriting: 0n }).errno,
+  ).toBe(44);
+});
+
+test("openInode and path_open respect adapter effective permissions even when stat.mode differs", () => {
+  const mem = new MemFS();
+  mem.writeFile("/file", "hello");
+  const fileHandle = mem.handleForNode(mem.lookup("/file")!);
+  let statMode = 0o600;
+  let effectiveAccess = 4;
+  const fs = Object.create(mem) as FileSystem;
+  fs.stat = (h) => (h === fileHandle ? { ...mem.stat(h), mode: statMode } : mem.stat(h));
+  fs.permissions = (h) =>
+    h === fileHandle
+      ? { mode: statMode, modeSupported: 0o600, access: effectiveAccess, accessSupported: 6 }
+      : mem.permissions(h);
+
+  const host = makeHost(fs);
+  // Mode 0o600 says writable, but effective permissions only grant read (access=4).
+  expect(host.openRaw(3, "file", { base: RIGHT_FD_WRITE }).errno).toBe(2);
+  const readable = host.openRaw(3, "file", { base: RIGHT_FD_READ });
+  expect(readable.errno).toBe(0);
+  expect(host.wasi.fdReopen(readable.fd, 0, 0, RIGHT_FD_WRITE, 128)).toBe(2);
+
+  // Mode 0o044 has owner bits clear, but effective permissions grant read (access=4).
+  statMode = 0o044;
+  effectiveAccess = 4;
+  const opened = host.openRaw(3, "file", { base: RIGHT_FD_READ });
+  expect(opened.errno).toBe(0);
+  expect(host.wasi.fdReopen(readable.fd, 0, 0, RIGHT_FD_READ, 128)).toBe(0);
+  expect(host.close(opened.fd)).toBe(0);
+  expect(host.close(readable.fd)).toBe(0);
 });
 
 test("str uses a zero-copy view on fixed unshared memory and copies resizable memory", () => {
