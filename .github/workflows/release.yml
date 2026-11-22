@@ -75,13 +75,12 @@ jobs:
           fi
 
       - name: Create Release Pull Request or Publish to npm
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
-          version: bunx changeset version && bun install --lockfile-only --ignore-scripts
-          publish: bun run release:publish
-          createGithubReleases: true
+          version-script: bun run release:version
+          publish-script: bun run release:publish
+          create-github-releases: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
 
       - uses: ./.github/actions/save-release-downloads

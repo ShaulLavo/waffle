@@ -27,6 +27,7 @@
     "duplicates": "bun run --cwd packages/waffle duplicates",
     "pack:check": "bun run --cwd packages/waffle pack:check",
     "prepare:package": "bun run --cwd packages/waffle prepare",
+    "release:version": "bun scripts/version-runtime.ts",
     "release:publish": "bun scripts/publish-runtime.ts",
     "programs:routes": "bun run --cwd packages/coreutils test:build-routes && bun run --cwd packages/grep test:build-route && bun run --cwd packages/findutils test:build-route && bun run --cwd packages/sed test:build-routes",
     "programs:source": "bun run --cwd packages/findutils test:source && bun run --cwd packages/sed test:source && bun run --cwd packages/ripgrep test:source && bun run --cwd packages/tar test:source",
