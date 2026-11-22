@@ -20,17 +20,12 @@ env:
   BUN_VERSION: "1.4.4"
 
 jobs:
-  gate:
-    name: Complete CI gate
-    # Playwright 1.64.1 browsers are proven on Ubuntu 24.04; move the pin deliberately with a green run.
+  core:
+    name: Core and programs
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 35
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     steps:
-      - name: Require a ready PR
-        if: github.event_name == 'pull_request' && github.event.pull_request.draft
-        run: |
-          echo '::error::Mark this PR ready for review to run the required checks.'
-          exit 1
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: paths
@@ -462,8 +457,8 @@ jobs:
           any() { for v in "$@"; do [[ "$v" == true ]] && { echo true; return; }; done; echo false; }
           libc_or_browser=$(any "$libc" "$browser")
           xargs_or_echo=$(any "$findutils" "$coreutils")
-          need_wasi_sdk=$(any "$libc_or_browser" "$awk" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
-          need_wasmtime=$(any "$libc_or_browser" "$awk" "$diffutils" "$jq" "$tar")
+          need_wasi_sdk=$(any "$awk" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          need_wasmtime=$(any "$awk" "$diffutils" "$jq" "$tar")
           need_optimizer=$(any "$programs" "$awk" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
           need_rust_wasip1=$(any "$programs" "$jq" "$tar" "$xargs_or_echo" "$checksums")
           need_wasi_libc=$(any "$awk" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
@@ -651,7 +646,7 @@ jobs:
         if: steps.select.outputs.need_optimizer == 'true'
       - name: Cache shared Rust toolchain and Cargo downloads
         id: shared-rust-cache
-        if: steps.select.outputs.need_rust_wasip1 == 'true' || steps.select.outputs.browser == 'true'
+        if: steps.select.outputs.need_rust_wasip1 == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -659,9 +654,9 @@ jobs:
             ~/.rustup/update-hashes
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-p1-${{ steps.select.outputs.need_rust_wasip1 }}-thr-${{ steps.select.outputs.browser }}-v1-${{ hashFiles('Cargo.lock', 'packages/coreutils/crates/checksums/Cargo.lock', 'packages/tar/producer/Cargo.toml', 'rust-toolchain.toml') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-p1-true-thr-false-v1-${{ hashFiles('Cargo.lock', 'packages/coreutils/crates/checksums/Cargo.lock', 'packages/tar/producer/Cargo.toml', 'rust-toolchain.toml') }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-p1-${{ steps.select.outputs.need_rust_wasip1 }}-thr-${{ steps.select.outputs.browser }}-v1-
+            ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-p1-true-thr-false-v1-
             ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-p1-true-thr-true-v1-
             ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-
       - uses: dtolnay/rust-toolchain@stable
@@ -670,12 +665,6 @@ jobs:
           toolchain: 1.98.1
           targets: wasm32-wasip1
           components: rustfmt
-      - uses: dtolnay/rust-toolchain@stable
-        if: steps.select.outputs.browser == 'true'
-        with:
-          toolchain: "1.98.1"
-          targets: wasm32-wasip1-threads
-          components: rustfmt
       - name: Cache singular patched libc for guest programs
         id: wasi-libc-cache
         if: steps.select.outputs.need_wasi_libc == 'true'
@@ -683,109 +672,6 @@ jobs:
         with:
           path: .build/wasi-libc
           key: wasi-libc-34.0-runner-temp-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}
-
-      # Libc, memory-group, GPU and Rust threads fixtures (used directly by browser steps below).
-      - uses: actions/cache@v4
-        id: group-fixture
-        if: steps.select.outputs.libc_or_browser == 'true'
-        with:
-          path: ${{ runner.temp }}/memory-group-fixture
-          key: ${{ runner.os }}-memory-group-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/memory-group-member.c', 'packages/waffle/scripts/build-memory-group-fixture.ts') }}
-      - uses: actions/cache@v4
-        id: gpu-fixture
-        if: steps.select.outputs.libc_or_browser == 'true'
-        with:
-          path: ${{ runner.temp }}/gpu-fixture
-          key: ${{ runner.os }}-gpu-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/gpu/triangle.c', 'packages/waffle/tests/fixtures/gpu/scene.c', 'packages/waffle/tests/fixtures/gpu/async.c', 'packages/waffle/tests/fixtures/gpu/async_encode.h', 'packages/waffle/tests/fixtures/gpu/async-expected.json', 'packages/waffle/tests/fixtures/gpu/scene_encode.h', 'packages/waffle/tests/fixtures/gpu/gpu_fixture.h', 'packages/waffle/tests/fixtures/gpu/gpu_encode.h', 'packages/waffle/tests/fixtures/gpu/waffle_gpu_stream.h', 'packages/waffle/tests/fixtures/gpu/expected.json', 'packages/waffle/tests/fixtures/gpu/enums.json', 'packages/waffle/browser/gpu/upstream/LICENSE', 'packages/waffle/browser/gpu/upstream/webgpu.yml', 'packages/waffle/browser/gpu/upstream/webgpu.h', 'packages/waffle/browser/gpu/stream.json', 'packages/waffle/browser/gpu/generated/tables.ts', 'packages/waffle/tooling/gpu-stream*.ts', 'packages/waffle/scripts/build-gpu-fixture.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/browser/gpu/metadata.ts', 'packages/waffle/browser/gpu/codec.ts', 'packages/waffle/tests/fixtures/gpu/scene-expected.json', 'packages/waffle/tests/fixtures/gpu/compute-expected.json', 'packages/waffle/tests/fixtures/gpu/bundle-query-expected.json', 'packages/waffle/tests/fixtures/gpu/copy-draw-expected.json', 'packages/waffle/tests/fixtures/gpu/label-expected.json', 'packages/waffle/browser/display/generated/graphics-layout.ts') }}
-      - uses: actions/cache@v4
-        id: fixtures
-        if: steps.select.outputs.libc == 'true'
-        with:
-          path: ${{ runner.temp }}/libc-fixtures
-          key: ${{ runner.os }}-libc-sdk34-bun${{ env.BUN_VERSION }}-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/scripts/test-wasi-libc.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/patches/wasi-libc/**', 'packages/waffle/tests/fixtures/preopen-guest.c', 'packages/waffle/tests/fixtures/preview1-socket.c', 'packages/waffle/tests/fixtures/wasm-start-section.ts') }}
-      - uses: actions/cache@v4
-        if: steps.select.outputs.libc == 'true' && steps.fixtures.outputs.cache-hit != 'true'
-        with:
-          path: ${{ runner.temp }}/libc-sysroot
-          key: ${{ runner.os }}-libc-sysroot-sdk34-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**') }}
-      - name: Test the wasm32 source sentinel with the pinned SDK
-        if: steps.select.outputs.libc_or_browser == 'true'
-        env:
-          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-        run: |
-          bun test packages/waffle/tests/gpu-async-stream.test.ts --test-name-pattern '^wasm32 C whole-map sentinel normalizes before widening against pinned header$' --reporter=junit --reporter-outfile "$RUNNER_TEMP/gpu-source-tests.xml"
-          python3 - "$RUNNER_TEMP/gpu-source-tests.xml" <<'PYTHON'
-          import sys
-          import xml.etree.ElementTree as ET
-          name = "wasm32 C whole-map sentinel normalizes before widening against pinned header"
-          cases = [case for case in ET.parse(sys.argv[1]).iter("testcase") if case.get("name") == name]
-          assert len(cases) == 1, "Missing or repeated wasm32 source sentinel control"
-          assert all(cases[0].find(tag) is None for tag in ("skipped", "failure", "error")), "Source sentinel control skipped or failed"
-          print("Verified the pinned wasm32 source sentinel without skips")
-          PYTHON
-      - name: Build the memory group fixture once
-        if: steps.select.outputs.libc_or_browser == 'true' && steps.group-fixture.outputs.cache-hit != 'true'
-        run: bun packages/waffle/scripts/build-memory-group-fixture.ts "$RUNNER_TEMP/memory-group-fixture"
-        env:
-          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-      - name: Verify the memory group fixture
-        if: steps.select.outputs.libc_or_browser == 'true'
-        run: bun packages/waffle/scripts/build-memory-group-fixture.ts --verify "$RUNNER_TEMP/memory-group-fixture"
-      - name: Build the compiled GPU guest once
-        if: steps.select.outputs.libc_or_browser == 'true' && steps.gpu-fixture.outputs.cache-hit != 'true'
-        run: bun packages/waffle/scripts/build-gpu-fixture.ts "$RUNNER_TEMP/gpu-fixture"
-        env:
-          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-      - name: Verify the compiled GPU guest
-        if: steps.select.outputs.libc_or_browser == 'true'
-        run: bun packages/waffle/scripts/build-gpu-fixture.ts --verify "$RUNNER_TEMP/gpu-fixture"
-      - name: Test the compiled GPU fixture without rebuilding it
-        if: steps.select.outputs.libc_or_browser == 'true'
-        env:
-          GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture
-        run: |
-          bun test packages/waffle/tests/gpu-fixture.test.ts packages/waffle/tests/gpu-fixture-closed.test.ts packages/waffle/tests/gpu-scene-fixture.test.ts packages/waffle/tests/gpu-fairness-fixture.test.ts packages/waffle/tests/gpu-async-fixture.test.ts --test-name-pattern 'compiled Preview 1 C fixture|compiled C closed replies during waits|compiled C completion handling|bounded frame-mode wire controls|compiled textured depth scene|compiled fairness fixture|real compiled C decoder under protocol controls, not native acceptance' --reporter=junit --reporter-outfile "$RUNNER_TEMP/gpu-fixture-tests.xml"
-          python3 - "$RUNNER_TEMP/gpu-fixture-tests.xml" <<'PYTHON'
-          import sys
-          import xml.etree.ElementTree as ET
-          names = {"compiled Preview 1 C fixture", "compiled C completion handling, not GPU acceptance", "bounded frame-mode wire controls, not native GPU acceptance", "compiled textured depth scene, protocol assertions", "compiled fairness fixture, protocol and deterministic scheduling"}
-          async_name = "real compiled C decoder under protocol controls, not native acceptance"
-          closed_name = "compiled C closed replies during waits"
-          names = names | {async_name, closed_name}
-          suites = [suite for suite in ET.parse(sys.argv[1]).iter("testsuite") if suite.get("name") in names]
-          assert {suite.get("name") for suite in suites} == names, "Missing compiled GPU fixture suite"
-          assert all(suite.findall("testcase") for suite in suites), "Empty compiled GPU fixture suite"
-          cases = [case for suite in suites for case in suite.findall("testcase")]
-          historical = [case for suite in suites if suite.get("name") not in {async_name, closed_name} for case in suite.findall("testcase")]
-          asynchronous = [case for suite in suites if suite.get("name") == async_name for case in suite.findall("testcase")]
-          closed = [case for suite in suites if suite.get("name") == closed_name for case in suite.findall("testcase")]
-          assert len(closed) >= 84, "Compiled closed-reply fixture tests did not execute"
-          assert len(historical) >= 35, "Historical compiled GPU fixture tests did not execute"
-          assert len(asynchronous) >= 20, "Compiled async GPU fixture tests did not execute"
-          assert all(case.find(tag) is None for case in cases for tag in ("skipped", "failure", "error")), "Compiled GPU fixture tests skipped or failed"
-          print(f"Verified {len(cases)} compiled GPU fixture tests without skips")
-          PYTHON
-      - run: bun run test:libc
-        if: steps.select.outputs.libc == 'true'
-        env:
-          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
-          WASMTIME: wasmtime
-          WASI_LIBC_FIXTURE_CACHE: ${{ runner.temp }}/libc-fixtures
-          WASI_LIBC_SYSROOT_CACHE: ${{ runner.temp }}/libc-sysroot
-      - name: Build the real Rust threads fixture twice and verify receipts and tamper failures
-        if: steps.select.outputs.browser == 'true'
-        run: |
-          bun test ./packages/waffle/scripts/threads-fixture-producer.test.ts --timeout 120000
-          rustfmt +1.98.1 --check packages/waffle/tests/fixtures/threads.rs
-        env:
-          THREAD_FIXTURE_TEST_ROOT: ${{ runner.temp }}
-          THREAD_FIXTURE_EXPORT_DIR: ${{ runner.temp }}/threads-fixture
-      - name: Verify the Rust threads fixture without a compiler
-        if: steps.select.outputs.browser == 'true'
-        run: bun packages/waffle/scripts/build-thread-fixture.ts --verify
-        env:
-          THREAD_FIXTURE_DIR: ${{ runner.temp }}/threads-fixture
 
       # Programs checks (each gated by its exact path filter).
       - name: Fetch locked Cargo sources for selected program checks
@@ -1171,6 +1057,359 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Require successful change detection and site checks
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+        env:
+          PATHS_RESULT: ${{ steps.paths.outcome }}
+          SITE_BUILD: ${{ steps.site-build.outcome }}
+          SITE_TYPECHECK: ${{ steps.site-typecheck.outcome }}
+        run: |
+          if [[ "$PATHS_RESULT" != success ]]; then
+            echo '::error::Complete CI requires successful change detection.'
+            exit 1
+          fi
+          if [[ "$SITE_BUILD" != success || "$SITE_TYPECHECK" != success ]]; then
+            echo '::error::Complete CI requires a successful site build and site typecheck.'
+            exit 1
+          fi
+      - uses: ./.github/actions/save-release-downloads
+        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
+
+  browser:
+    name: Browser and libc
+    # Playwright 1.64.1 browsers are proven on Ubuntu 24.04; move the pin deliberately with a green run.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: paths
+        continue-on-error: true
+        with:
+          base: ${{ github.ref }}
+          filters: |
+            browser:
+              - ".github/workflows/ci.yml"
+              - ".github/workflows/threads-fixture.yml"
+              - ".github/actions/release-downloads/**"
+              - ".github/actions/save-release-downloads/**"
+              - ".github/actions/setup-tools/**"
+              - "tools/ci-*.ts"
+              - "packages/waffle/Cargo.toml"
+              - "packages/waffle/Cargo.lock"
+              - "packages/waffle/rust-toolchain.toml"
+              - "packages/waffle/network/**"
+              - "packages/waffle/tooling/build-network.ts"
+              - "packages/waffle/tooling/network-translator.ts"
+              - "packages/waffle/tooling/network-translator.test.ts"
+              - "packages/waffle/tooling/network-source-smoke.ts"
+              - "packages/waffle/tooling/network-translator/**"
+              - "packages/waffle/tooling/network-growth.ts"
+              - "packages/waffle/tooling/check-network-rust.ts"
+              - "packages/waffle/build.ts"
+              - "packages/waffle/prepare.ts"
+              - "packages/waffle/core/**"
+              - "packages/waffle/fs/**"
+              - "packages/waffle/proc/**"
+              - "packages/waffle/interrupt/**"
+              - "packages/waffle/thread/**"
+              - "packages/waffle/memory/**"
+              - "packages/waffle/browser/**"
+              - "packages/waffle/search/**"
+              - "packages/waffle/group/**"
+              - "packages/waffle/link/**"
+              - "packages/waffle/runtime.ts"
+              - "packages/waffle/index.ts"
+              - "package.json"
+              - "packages/waffle/package.json"
+              - "bun.lock"
+              - "rust-toolchain.toml"
+              - "packages/waffle/scripts/build-thread-fixture.ts"
+              - "packages/waffle/scripts/threads-fixture-producer.test.ts"
+              - "packages/waffle/scripts/build-memory-group-fixture.ts"
+              - "packages/waffle/scripts/build-gpu-fixture.ts"
+              - "packages/waffle/scripts/test-browser.ts"
+              - "packages/waffle/scripts/browser-command.ts"
+              - "packages/waffle/scripts/browser-supervisor.ts"
+              - "packages/waffle/scripts/owned-command.ts"
+              - "packages/waffle-relay/scripts/prepare-native.ts"
+              - "packages/waffle-relay/tests/prepare-native.test.ts"
+              - "packages/waffle-relay/src/**"
+              - "packages/waffle-relay/package.json"
+              - "packages/waffle/tooling/workspace-safari-runner.ts"
+              - "packages/waffle/tests/**"
+            libc:
+              - ".github/actions/setup-wasmtime/**"
+              - ".github/workflows/ci.yml"
+              - ".github/actions/release-downloads/**"
+              - ".github/actions/save-release-downloads/**"
+              - ".github/actions/setup-tools/**"
+              - "tools/ci-*.ts"
+              - "packages/waffle/patches/**"
+              - "packages/waffle/scripts/build-wasi-libc.sh"
+              - "packages/waffle/scripts/test-wasi-libc.ts"
+              - "packages/waffle/scripts/owned-command.ts"
+              - "packages/waffle/core/**"
+              - "packages/waffle/fs/**"
+              - "packages/waffle/proc/**"
+              - "packages/waffle/interrupt/**"
+              - "packages/waffle/browser/**"
+              - "packages/waffle/runtime.ts"
+              - "packages/waffle/index.ts"
+              - "package.json"
+              - "packages/waffle/package.json"
+              - "bun.lock"
+              - "packages/waffle/tests/wasi-libc.test.ts"
+              - "packages/waffle/tests/preview1-socket-libc.test.ts"
+              - "packages/waffle/tests/preview1-socket-support.ts"
+              - "packages/waffle/tests/fixtures/**"
+              - "packages/waffle/scripts/build-memory-group-fixture.ts"
+      - name: Resolve browser and libc checks
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PATHS_OUTCOME: ${{ steps.paths.outcome }}
+          P_BROWSER: ${{ steps.paths.outputs.browser }}
+          P_LIBC: ${{ steps.paths.outputs.libc }}
+        run: |
+          set -euo pipefail
+          fallback=false
+          if [[ "$EVENT_NAME" == workflow_dispatch || "$PATHS_OUTCOME" != success ]]; then
+            fallback=true
+          fi
+          browser=$([[ "$fallback" == true || "$P_BROWSER" != false ]] && echo true || echo false)
+          libc=$([[ "$fallback" == true || "$P_LIBC" == true ]] && echo true || echo false)
+          libc_or_browser=$([[ "$libc" == true || "$browser" == true ]] && echo true || echo false)
+          {
+            echo "browser=$browser"
+            echo "libc=$libc"
+            echo "libc_or_browser=$libc_or_browser"
+            echo "need_wasi_sdk=$libc_or_browser"
+          } | tee -a "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/release-downloads
+        if: steps.select.outputs.libc_or_browser == 'true'
+      - uses: ./.github/actions/setup-tools
+        if: steps.select.outputs.libc_or_browser == 'true'
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+          node-version: "26.12.1"
+      - name: Restore Bun package downloads
+        if: steps.select.outputs.libc_or_browser == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        if: steps.select.outputs.libc_or_browser == 'true'
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+            packages/waffle/browser/net/network.buffer.js
+            packages/waffle/browser/net/network.buffer.sha256
+            packages/waffle/browser/net/network.growth.json
+          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
+      - name: Restore pinned network translator
+        if: steps.select.outputs.libc_or_browser == 'true' && steps.network-artifact.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .network-tools
+          key: network-translator-v1-${{ hashFiles('packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**') }}
+      - name: Restore Rust toolchain for network fallback build
+        if: steps.select.outputs.libc_or_browser == 'true' && steps.network-artifact.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/waffle/target
+          key: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-${{ hashFiles('packages/waffle/network/**/*.rs') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.select.outputs.libc_or_browser == 'true' && steps.network-artifact.outputs.cache-hit != 'true'
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+      - name: Build network artifact on cache miss
+        if: steps.select.outputs.libc_or_browser == 'true' && steps.network-artifact.outputs.cache-hit != 'true'
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/packages/waffle/target
+          WAFFLE_TOOL_CACHE: ${{ github.workspace }}/.network-tools
+        run: bun run --cwd packages/waffle build:network
+      - name: Verify exact-input network artifact before installation
+        if: steps.select.outputs.libc_or_browser == 'true'
+        run: |
+          bun run --cwd packages/waffle tooling/build-network.ts --verify
+          echo 'WAFFLE_NETWORK_PREBUILT=1' >> "$GITHUB_ENV"
+      - run: bun install --frozen-lockfile --ignore-scripts
+        if: steps.select.outputs.libc_or_browser == 'true'
+      - name: Restore standard native relay prebuild downloads
+        if: steps.select.outputs.libc_or_browser == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.npm/_prebuilds
+          key: ${{ runner.os }}-${{ runner.arch }}-relay-prebuild-v1-${{ hashFiles('bun.lock', 'packages/waffle-relay/package.json', 'packages/waffle-relay/scripts/prepare-native.ts', 'packages/waffle-relay/src/webtransport-integrity.ts') }}
+      - name: Prepare and verify the required native relay prebuild
+        if: steps.select.outputs.libc_or_browser == 'true'
+        run: bun packages/waffle-relay/scripts/prepare-native.ts
+      - run: bun run prepare:package
+        if: steps.select.outputs.libc_or_browser == 'true'
+      - uses: actions/cache@v4
+        id: sdk
+        if: steps.select.outputs.need_wasi_sdk == 'true'
+        with:
+          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
+      - name: Install pinned wasi-sdk 34
+        if: steps.select.outputs.need_wasi_sdk == 'true' && steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz wasi-sdk.tar.gz 300000
+          printf '%s  %s\n' b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4 wasi-sdk.tar.gz | sha256sum --check --status
+          tar -xzf wasi-sdk.tar.gz
+          rm wasi-sdk.tar.gz
+      - uses: actions/cache@v4
+        id: wasmtime
+        if: steps.select.outputs.libc_or_browser == 'true'
+        with:
+          path: ~/downloader/bin/wasmtime
+          key: ${{ runner.os }}-wasmtime-49.0.3
+      - uses: ./.github/actions/setup-wasmtime
+        if: steps.select.outputs.libc_or_browser == 'true' && steps.wasmtime.outputs.cache-hit != 'true'
+      - name: Add cached Wasmtime to PATH
+        if: steps.select.outputs.libc_or_browser == 'true'
+        run: |
+          echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
+          "$HOME/downloader/bin/wasmtime" --version
+      - name: Cache Rust threads toolchain for browser fixtures
+        id: browser-rust-cache
+        if: steps.select.outputs.browser == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-p1-false-thr-true-v1-${{ hashFiles('Cargo.lock', 'packages/coreutils/crates/checksums/Cargo.lock', 'packages/tar/producer/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-p1-false-thr-true-v1-
+            ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-p1-true-thr-true-v1-
+            ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.select.outputs.browser == 'true'
+        with:
+          toolchain: "1.98.1"
+          targets: wasm32-wasip1-threads
+          components: rustfmt
+      # Libc, memory-group, GPU and Rust threads fixtures (used directly by browser steps below).
+      - uses: actions/cache@v4
+        id: group-fixture
+        if: steps.select.outputs.libc_or_browser == 'true'
+        with:
+          path: ${{ runner.temp }}/memory-group-fixture
+          key: ${{ runner.os }}-memory-group-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/memory-group-member.c', 'packages/waffle/scripts/build-memory-group-fixture.ts') }}
+      - uses: actions/cache@v4
+        id: gpu-fixture
+        if: steps.select.outputs.libc_or_browser == 'true'
+        with:
+          path: ${{ runner.temp }}/gpu-fixture
+          key: ${{ runner.os }}-gpu-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/gpu/triangle.c', 'packages/waffle/tests/fixtures/gpu/scene.c', 'packages/waffle/tests/fixtures/gpu/async.c', 'packages/waffle/tests/fixtures/gpu/async_encode.h', 'packages/waffle/tests/fixtures/gpu/async-expected.json', 'packages/waffle/tests/fixtures/gpu/scene_encode.h', 'packages/waffle/tests/fixtures/gpu/gpu_fixture.h', 'packages/waffle/tests/fixtures/gpu/gpu_encode.h', 'packages/waffle/tests/fixtures/gpu/waffle_gpu_stream.h', 'packages/waffle/tests/fixtures/gpu/expected.json', 'packages/waffle/tests/fixtures/gpu/enums.json', 'packages/waffle/browser/gpu/upstream/LICENSE', 'packages/waffle/browser/gpu/upstream/webgpu.yml', 'packages/waffle/browser/gpu/upstream/webgpu.h', 'packages/waffle/browser/gpu/stream.json', 'packages/waffle/browser/gpu/generated/tables.ts', 'packages/waffle/tooling/gpu-stream*.ts', 'packages/waffle/scripts/build-gpu-fixture.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/browser/gpu/metadata.ts', 'packages/waffle/browser/gpu/codec.ts', 'packages/waffle/tests/fixtures/gpu/scene-expected.json', 'packages/waffle/tests/fixtures/gpu/compute-expected.json', 'packages/waffle/tests/fixtures/gpu/bundle-query-expected.json', 'packages/waffle/tests/fixtures/gpu/copy-draw-expected.json', 'packages/waffle/tests/fixtures/gpu/label-expected.json', 'packages/waffle/browser/display/generated/graphics-layout.ts') }}
+      - uses: actions/cache@v4
+        id: fixtures
+        if: steps.select.outputs.libc == 'true'
+        with:
+          path: ${{ runner.temp }}/libc-fixtures
+          key: ${{ runner.os }}-libc-sdk34-bun${{ env.BUN_VERSION }}-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/scripts/test-wasi-libc.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/patches/wasi-libc/**', 'packages/waffle/tests/fixtures/preopen-guest.c', 'packages/waffle/tests/fixtures/preview1-socket.c', 'packages/waffle/tests/fixtures/wasm-start-section.ts') }}
+      - uses: actions/cache@v4
+        if: steps.select.outputs.libc == 'true' && steps.fixtures.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/libc-sysroot
+          key: ${{ runner.os }}-libc-sysroot-sdk34-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**') }}
+      - name: Test the wasm32 source sentinel with the pinned SDK
+        if: steps.select.outputs.libc_or_browser == 'true'
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+        run: |
+          bun test packages/waffle/tests/gpu-async-stream.test.ts --test-name-pattern '^wasm32 C whole-map sentinel normalizes before widening against pinned header$' --reporter=junit --reporter-outfile "$RUNNER_TEMP/gpu-source-tests.xml"
+          python3 - "$RUNNER_TEMP/gpu-source-tests.xml" <<'PYTHON'
+          import sys
+          import xml.etree.ElementTree as ET
+          name = "wasm32 C whole-map sentinel normalizes before widening against pinned header"
+          cases = [case for case in ET.parse(sys.argv[1]).iter("testcase") if case.get("name") == name]
+          assert len(cases) == 1, "Missing or repeated wasm32 source sentinel control"
+          assert all(cases[0].find(tag) is None for tag in ("skipped", "failure", "error")), "Source sentinel control skipped or failed"
+          print("Verified the pinned wasm32 source sentinel without skips")
+          PYTHON
+      - name: Build the memory group fixture once
+        if: steps.select.outputs.libc_or_browser == 'true' && steps.group-fixture.outputs.cache-hit != 'true'
+        run: bun packages/waffle/scripts/build-memory-group-fixture.ts "$RUNNER_TEMP/memory-group-fixture"
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+      - name: Verify the memory group fixture
+        if: steps.select.outputs.libc_or_browser == 'true'
+        run: bun packages/waffle/scripts/build-memory-group-fixture.ts --verify "$RUNNER_TEMP/memory-group-fixture"
+      - name: Build the compiled GPU guest once
+        if: steps.select.outputs.libc_or_browser == 'true' && steps.gpu-fixture.outputs.cache-hit != 'true'
+        run: bun packages/waffle/scripts/build-gpu-fixture.ts "$RUNNER_TEMP/gpu-fixture"
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+      - name: Verify the compiled GPU guest
+        if: steps.select.outputs.libc_or_browser == 'true'
+        run: bun packages/waffle/scripts/build-gpu-fixture.ts --verify "$RUNNER_TEMP/gpu-fixture"
+      - name: Test the compiled GPU fixture without rebuilding it
+        if: steps.select.outputs.libc_or_browser == 'true'
+        env:
+          GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture
+        run: |
+          bun test packages/waffle/tests/gpu-fixture.test.ts packages/waffle/tests/gpu-fixture-closed.test.ts packages/waffle/tests/gpu-scene-fixture.test.ts packages/waffle/tests/gpu-fairness-fixture.test.ts packages/waffle/tests/gpu-async-fixture.test.ts --test-name-pattern 'compiled Preview 1 C fixture|compiled C closed replies during waits|compiled C completion handling|bounded frame-mode wire controls|compiled textured depth scene|compiled fairness fixture|real compiled C decoder under protocol controls, not native acceptance' --reporter=junit --reporter-outfile "$RUNNER_TEMP/gpu-fixture-tests.xml"
+          python3 - "$RUNNER_TEMP/gpu-fixture-tests.xml" <<'PYTHON'
+          import sys
+          import xml.etree.ElementTree as ET
+          names = {"compiled Preview 1 C fixture", "compiled C completion handling, not GPU acceptance", "bounded frame-mode wire controls, not native GPU acceptance", "compiled textured depth scene, protocol assertions", "compiled fairness fixture, protocol and deterministic scheduling"}
+          async_name = "real compiled C decoder under protocol controls, not native acceptance"
+          closed_name = "compiled C closed replies during waits"
+          names = names | {async_name, closed_name}
+          suites = [suite for suite in ET.parse(sys.argv[1]).iter("testsuite") if suite.get("name") in names]
+          assert {suite.get("name") for suite in suites} == names, "Missing compiled GPU fixture suite"
+          assert all(suite.findall("testcase") for suite in suites), "Empty compiled GPU fixture suite"
+          cases = [case for suite in suites for case in suite.findall("testcase")]
+          historical = [case for suite in suites if suite.get("name") not in {async_name, closed_name} for case in suite.findall("testcase")]
+          asynchronous = [case for suite in suites if suite.get("name") == async_name for case in suite.findall("testcase")]
+          closed = [case for suite in suites if suite.get("name") == closed_name for case in suite.findall("testcase")]
+          assert len(closed) >= 84, "Compiled closed-reply fixture tests did not execute"
+          assert len(historical) >= 35, "Historical compiled GPU fixture tests did not execute"
+          assert len(asynchronous) >= 20, "Compiled async GPU fixture tests did not execute"
+          assert all(case.find(tag) is None for case in cases for tag in ("skipped", "failure", "error")), "Compiled GPU fixture tests skipped or failed"
+          print(f"Verified {len(cases)} compiled GPU fixture tests without skips")
+          PYTHON
+      - run: bun run test:libc
+        if: steps.select.outputs.libc == 'true'
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+          WASMTIME: wasmtime
+          WASI_LIBC_FIXTURE_CACHE: ${{ runner.temp }}/libc-fixtures
+          WASI_LIBC_SYSROOT_CACHE: ${{ runner.temp }}/libc-sysroot
+      - name: Build the real Rust threads fixture twice and verify receipts and tamper failures
+        if: steps.select.outputs.browser == 'true'
+        run: |
+          bun test ./packages/waffle/scripts/threads-fixture-producer.test.ts --timeout 120000
+          rustfmt +1.98.1 --check packages/waffle/tests/fixtures/threads.rs
+        env:
+          THREAD_FIXTURE_TEST_ROOT: ${{ runner.temp }}
+          THREAD_FIXTURE_EXPORT_DIR: ${{ runner.temp }}/threads-fixture
+      - name: Verify the Rust threads fixture without a compiler
+        if: steps.select.outputs.browser == 'true'
+        run: bun packages/waffle/scripts/build-thread-fixture.ts --verify
+        env:
+          THREAD_FIXTURE_DIR: ${{ runner.temp }}/threads-fixture
+
       # Browser matrix (all runtime + reporter checks on this same runner).
       - name: Resolve the Playwright browser cache key
         if: steps.select.outputs.browser == 'true'
@@ -1232,20 +1471,37 @@ jobs:
           path: ${{ runner.temp }}/waffle-browser-protocol.log
           retention-days: 7
 
-      - name: Require successful change detection and site checks
+      - name: Require successful change detection
         if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
         env:
           PATHS_RESULT: ${{ steps.paths.outcome }}
-          SITE_BUILD: ${{ steps.site-build.outcome }}
-          SITE_TYPECHECK: ${{ steps.site-typecheck.outcome }}
         run: |
           if [[ "$PATHS_RESULT" != success ]]; then
             echo '::error::Complete CI requires successful change detection.'
             exit 1
           fi
-          if [[ "$SITE_BUILD" != success || "$SITE_TYPECHECK" != success ]]; then
-            echo '::error::Complete CI requires a successful site build and site typecheck.'
-            exit 1
-          fi
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
+
+  gate:
+    name: Complete CI gate
+    needs: [core, browser]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require a ready PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+        run: |
+          echo '::error::Mark this PR ready for review to run the required checks.'
+          exit 1
+      - name: Require core and browser gates
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+        env:
+          CORE: ${{ needs.core.result }}
+          BROWSER: ${{ needs.browser.result }}
+        run: |
+          if [[ "$CORE" != success || "$BROWSER" != success ]]; then
+            echo "::error::Complete CI requires core ($CORE) and browser ($BROWSER) to succeed."
+            exit 1
+          fi

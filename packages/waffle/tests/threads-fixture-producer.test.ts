@@ -25,15 +25,15 @@ const producer = record(record(workflow.jobs).producer);
 const compile =
   "bun test ./packages/waffle/scripts/threads-fixture-producer.test.ts --timeout 120000";
 
-test("real fixture compilation follows browser selection on the single CI runner", () => {
+test("real fixture compilation follows browser selection on the dedicated browser runner", () => {
   const ci = record(
     YAML.parse(readFileSync(new URL("../../../.github/workflows/ci.yml", import.meta.url), "utf8")),
   );
   const jobs = record(ci.jobs);
-  expect(Object.keys(jobs)).toEqual(["gate"]);
-  const gate = record(jobs.gate);
-  if (!Array.isArray(gate.steps)) throw new Error("expected gate steps");
-  const ciSteps = gate.steps.map(record);
+  expect(Object.keys(jobs)).toEqual(["core", "browser", "gate"]);
+  const browserJob = record(jobs.browser);
+  if (!Array.isArray(browserJob.steps)) throw new Error("expected browser steps");
+  const ciSteps = browserJob.steps.map(record);
   const buildIndex = ciSteps.findIndex((step) => String(step.run ?? "").includes(compile));
   const verifyIndex = ciSteps.findIndex(
     (step) => step.run === "bun packages/waffle/scripts/build-thread-fixture.ts --verify",

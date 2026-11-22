@@ -17,13 +17,22 @@ const workflow = record(
   YAML.parse(readFileSync(new URL("../../../.github/workflows/ci.yml", import.meta.url), "utf8")),
 );
 const jobs = record(workflow.jobs);
+const core = record(jobs.core);
+const browserJob = record(jobs.browser);
 const gate = record(jobs.gate);
 const packageTestsCommand = "bun run test --parallel=2 && bun run test:ci";
+if (!Array.isArray(core.steps)) throw new Error("expected core steps");
+if (!Array.isArray(browserJob.steps)) throw new Error("expected browser steps");
 if (!Array.isArray(gate.steps)) throw new Error("expected gate steps");
+const coreSteps = core.steps.map(record);
+const browserSteps = browserJob.steps.map(record);
 const gateSteps = gate.steps.map(record);
-const paths = gateSteps.find((step) => step.id === "paths");
-const select = gateSteps.find((step) => step.id === "select");
+const paths = coreSteps.find((step) => step.id === "paths");
+const select = coreSteps.find((step) => step.id === "select");
+const browserPaths = browserSteps.find((step) => step.id === "paths");
+const browserSelect = browserSteps.find((step) => step.id === "select");
 const filters = record(YAML.parse(String(record(paths?.with).filters)));
+const browserFilters = record(YAML.parse(String(record(browserPaths?.with).filters)));
 
 function selected(name: string, path: string): boolean {
   const patterns = filters[name];
@@ -40,18 +49,47 @@ function artifactStep(steps: readonly Record<string, unknown>[], path: string) {
   return step;
 }
 
-test("CI runs as a single Complete CI gate job on pinned ubuntu-24.04", () => {
-  expect(Object.keys(jobs)).toEqual(["gate"]);
-  expect(gate.name).toBe("Complete CI gate");
+test("CI runs core and browser jobs in parallel behind one Complete CI gate on pinned ubuntu-24.04", () => {
+  expect(Object.keys(jobs)).toEqual(["core", "browser", "gate"]);
+  expect(core["runs-on"]).toBe("ubuntu-24.04");
+  expect(browserJob["runs-on"]).toBe("ubuntu-24.04");
   expect(gate["runs-on"]).toBe("ubuntu-24.04");
-  expect(gate.needs).toBeUndefined();
+  expect(core.needs).toBeUndefined();
+  expect(browserJob.needs).toBeUndefined();
+  expect(gate.name).toBe("Complete CI gate");
+  expect(gate.needs).toEqual(["core", "browser"]);
+  expect(gate.if).toBe("always()");
+  const readyGuard = "github.event_name != 'pull_request' || !github.event.pull_request.draft";
+  expect(core.if).toBe(readyGuard);
+  expect(browserJob.if).toBe(readyGuard);
   expect(gateSteps[0]?.name).toBe("Require a ready PR");
   expect(gateSteps[0]?.if).toBe(
     "github.event_name == 'pull_request' && github.event.pull_request.draft",
   );
-  expect(gateSteps.filter((step) => step.uses === "actions/checkout@v4")).toHaveLength(1);
+  const gateCheck = gateSteps.find((step) => step.name === "Require core and browser gates");
+  expect(gateCheck).toBeDefined();
+  const gateCommand = ["bash", "-eo", "pipefail", "-c", String(gateCheck?.run)];
+  expect(
+    Bun.spawnSync(gateCommand, { env: { ...process.env, CORE: "success", BROWSER: "success" } })
+      .exitCode,
+  ).toBe(0);
+  for (const field of ["CORE", "BROWSER"])
+    for (const bad of ["failure", "skipped", "cancelled", ""])
+      expect(
+        Bun.spawnSync(gateCommand, {
+          env: { ...process.env, CORE: "success", BROWSER: "success", [field]: bad },
+        }).exitCode,
+      ).toBe(1);
+  expect(coreSteps.filter((step) => step.uses === "actions/checkout@v4")).toHaveLength(1);
+  expect(browserSteps.filter((step) => step.uses === "actions/checkout@v4")).toHaveLength(1);
+  expect(gateSteps.filter((step) => step.uses === "actions/checkout@v4")).toHaveLength(0);
   expect(paths?.["continue-on-error"]).toBe(true);
-  expect(gateSteps.indexOf(record(paths))).toBeLessThan(gateSteps.indexOf(record(select)));
+  expect(browserPaths?.["continue-on-error"]).toBe(true);
+  expect(coreSteps.indexOf(record(paths))).toBeLessThan(coreSteps.indexOf(record(select)));
+  expect(browserSteps.indexOf(record(browserPaths))).toBeLessThan(
+    browserSteps.indexOf(record(browserSelect)),
+  );
+  expect(browserFilters).toEqual({ browser: filters.browser, libc: filters.libc });
 });
 
 test("selection step resolves path filters, workflow dispatch and filter-failure fallbacks", () => {
@@ -112,8 +150,8 @@ test("selection step resolves path filters, workflow dispatch and filter-failure
   expect(browserOnly.browser).toBe("true");
   expect(browserOnly.libc).toBe("false");
   expect(browserOnly.libc_or_browser).toBe("true");
-  expect(browserOnly.need_wasi_sdk).toBe("true");
-  expect(browserOnly.need_wasmtime).toBe("true");
+  expect(browserOnly.need_wasi_sdk).toBe("false");
+  expect(browserOnly.need_wasmtime).toBe("false");
 
   const fallbacks: readonly Record<string, string>[] = [
     { EVENT_NAME: "workflow_dispatch" },
@@ -190,31 +228,45 @@ test("browser relay inputs select the normal gate and native prebuild runs befor
     "packages/waffle/tooling/workspace-safari-runner.ts",
   ])
     expect(selected("browser", path), path).toBe(true);
-  const install = gateSteps.findIndex(
+  const install = coreSteps.findIndex(
     (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
   );
-  const cache = gateSteps.findIndex(
+  const cache = coreSteps.findIndex(
     (step) => step.name === "Cache standard native relay prebuild downloads",
   );
-  const prepare = gateSteps.findIndex(
+  const prepare = coreSteps.findIndex(
     (step) => step.run === "bun packages/waffle-relay/scripts/prepare-native.ts",
   );
-  const relay = gateSteps.findIndex((step) => step.run === "bun run relay:check");
-  const browser = gateSteps.findIndex((step) =>
-    String(step.run ?? "").startsWith("bun run test:browser "),
-  );
+  const relay = coreSteps.findIndex((step) => step.run === "bun run relay:check");
   expect(install).toBeGreaterThanOrEqual(0);
   expect(cache).toBeGreaterThan(install);
   expect(prepare).toBeGreaterThan(cache);
   expect(prepare).toBeLessThan(relay);
-  expect(prepare).toBeLessThan(browser);
-  expect(gateSteps[cache]?.uses).toBe("actions/cache@v4");
-  expect(record(gateSteps[cache]?.with).path).toBe("~/.npm/_prebuilds");
-  const key = String(record(gateSteps[cache]?.with).key);
+  expect(coreSteps[cache]?.uses).toBe("actions/cache@v4");
+  expect(record(coreSteps[cache]?.with).path).toBe("~/.npm/_prebuilds");
+  const key = String(record(coreSteps[cache]?.with).key);
   expect(key).toContain("${{ runner.os }}-${{ runner.arch }}");
   expect(key).toContain("bun.lock");
   expect(key).toContain("src/webtransport-integrity.ts");
-  expect(record(gateSteps[cache]?.with)["restore-keys"]).toBeUndefined();
+  expect(record(coreSteps[cache]?.with)["restore-keys"]).toBeUndefined();
+
+  const browserInstall = browserSteps.findIndex(
+    (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
+  );
+  const browserCache = browserSteps.findIndex(
+    (step) => step.name === "Restore standard native relay prebuild downloads",
+  );
+  const browserPrepare = browserSteps.findIndex(
+    (step) => step.run === "bun packages/waffle-relay/scripts/prepare-native.ts",
+  );
+  const browser = browserSteps.findIndex((step) =>
+    String(step.run ?? "").startsWith("bun run test:browser "),
+  );
+  expect(browserInstall).toBeGreaterThanOrEqual(0);
+  expect(browserCache).toBeGreaterThan(browserInstall);
+  expect(browserPrepare).toBeGreaterThan(browserCache);
+  expect(browserPrepare).toBeLessThan(browser);
+  expect(record(browserSteps[browserCache]?.with).key).toBe(key);
 });
 
 const consumerFilters = [
@@ -394,7 +446,7 @@ const recoveryReportPath = "${{ runner.temp }}/recovery-r42-report.json";
 const browserProtocolPath = "${{ runner.temp }}/waffle-browser-protocol.log";
 
 test("browser runs the complete suite once, preserves publication checks and retains evidence", () => {
-  const browserTest = gateSteps.find(
+  const browserTest = browserSteps.find(
     (step) =>
       step.run === 'bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"',
   );
@@ -413,7 +465,7 @@ test("browser runs the complete suite once, preserves publication checks and ret
   const result = "${{ runner.temp }}/browser-controls-results.json";
   expect(record(browserTest?.env).BROWSER_CONTROLS_RESULT).toBe(result);
 
-  const publication = gateSteps.find(
+  const publication = browserSteps.find(
     (step) =>
       step.run === "bun packages/waffle/tests/publication-browser-runner.ts --workspace chromium",
   );
@@ -421,19 +473,19 @@ test("browser runs the complete suite once, preserves publication checks and ret
     "${{ !cancelled() && steps.select.outputs.browser == 'true' && (steps.browser-tests.outcome == 'success' || steps.browser-tests.outcome == 'failure') }}",
   );
 
-  const recoveryUpload = artifactStep(gateSteps, recoveryReportPath);
-  const controlsUpload = artifactStep(gateSteps, `${result}*`);
-  const protocolUpload = artifactStep(gateSteps, browserProtocolPath);
+  const recoveryUpload = artifactStep(browserSteps, recoveryReportPath);
+  const controlsUpload = artifactStep(browserSteps, `${result}*`);
+  const protocolUpload = artifactStep(browserSteps, browserProtocolPath);
   expect(recoveryUpload.if).toBe("failure() && steps.select.outputs.browser == 'true'");
   expect(record(recoveryUpload.with)["if-no-files-found"]).toBe("ignore");
   expect(controlsUpload.if).toBe("always() && steps.select.outputs.browser == 'true'");
   expect(record(controlsUpload.with)["if-no-files-found"]).toBe("warn");
   expect(protocolUpload.if).toBe("failure() && steps.select.outputs.browser == 'true'");
-  expect(gateSteps.indexOf(recoveryUpload)).toBeLessThan(gateSteps.indexOf(protocolUpload));
+  expect(browserSteps.indexOf(recoveryUpload)).toBeLessThan(browserSteps.indexOf(protocolUpload));
 });
 
 test("site runs independently before network preparation and blocks Complete CI gate on failure", () => {
-  const site = gateSteps.filter((step) => step["working-directory"] === "site");
+  const site = coreSteps.filter((step) => step["working-directory"] === "site");
   expect(site.map((step) => step.run)).toEqual([
     "bun install --frozen-lockfile",
     "bun run build",
@@ -443,12 +495,12 @@ test("site runs independently before network preparation and blocks Complete CI 
   expect(install?.if).toBeUndefined();
   expect(build?.if).toBe("steps.site-install.outcome == 'success'");
   expect(typecheck?.if).toBe("steps.site-install.outcome == 'success'");
-  const networkCache = gateSteps.findIndex((step) => step.id === "network-artifact");
+  const networkCache = coreSteps.findIndex((step) => step.id === "network-artifact");
   for (const step of site) {
     expect(step["continue-on-error"]).toBe(true);
-    expect(gateSteps.indexOf(step)).toBeLessThan(networkCache);
+    expect(coreSteps.indexOf(step)).toBeLessThan(networkCache);
   }
-  const finalGate = gateSteps.find(
+  const finalGate = coreSteps.find(
     (step) => step.name === "Require successful change detection and site checks",
   );
   expect(finalGate?.if).toBe(
@@ -468,7 +520,7 @@ test("site runs independently before network preparation and blocks Complete CI 
 });
 
 test("Bun cache, network verification, workspace install and package checks run once in order", () => {
-  const bunCaches = gateSteps.filter(
+  const bunCaches = coreSteps.filter(
     (step) => step.uses === "actions/cache@v4" && record(step.with).path === "~/.bun/install/cache",
   );
   expect(bunCaches).toHaveLength(1);
@@ -476,32 +528,32 @@ test("Bun cache, network verification, workspace install and package checks run 
     "${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}",
   );
 
-  const networkCache = gateSteps.findIndex((step) => step.id === "network-artifact");
-  const verify = gateSteps.findIndex((step) =>
+  const networkCache = coreSteps.findIndex((step) => step.id === "network-artifact");
+  const verify = coreSteps.findIndex((step) =>
     String(step.run ?? "").includes(
       "bun run --cwd packages/waffle tooling/build-network.ts --verify",
     ),
   );
-  const install = gateSteps.findIndex(
+  const install = coreSteps.findIndex(
     (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
   );
-  const native = gateSteps.findIndex(
+  const native = coreSteps.findIndex(
     (step) => step.run === "bun packages/waffle-relay/scripts/prepare-native.ts",
   );
-  const prepare = gateSteps.findIndex((step) => step.run === "bun run prepare:package");
-  const adapter = gateSteps.findIndex(
+  const prepare = coreSteps.findIndex((step) => step.run === "bun run prepare:package");
+  const adapter = coreSteps.findIndex(
     (step) => step.run === "bun run --cwd packages/git/node_modules/bun-wasm prepare",
   );
-  const quality = gateSteps.findIndex(
+  const quality = coreSteps.findIndex(
     (step) => step.run === "bun run --cwd packages/waffle quality",
   );
-  const allocRef = gateSteps.findIndex(
+  const allocRef = coreSteps.findIndex(
     (step) => step.run === "bun packages/waffle/tooling/prepare-allocation-reference.ts",
   );
-  const tests = gateSteps.findIndex((step) => step.run === packageTestsCommand);
-  const smoke = gateSteps.find((step) => step.run === "bun run pack:check");
+  const tests = coreSteps.findIndex((step) => step.run === packageTestsCommand);
+  const smoke = coreSteps.find((step) => step.run === "bun run pack:check");
 
-  expect(networkCache).toBeGreaterThan(gateSteps.indexOf(bunCaches[0]!));
+  expect(networkCache).toBeGreaterThan(coreSteps.indexOf(bunCaches[0]!));
   expect(verify).toBeGreaterThan(networkCache);
   expect(install).toBeGreaterThan(verify);
   expect(native).toBeGreaterThan(install);
@@ -511,9 +563,9 @@ test("Bun cache, network verification, workspace install and package checks run 
   expect(allocRef).toBeGreaterThan(quality);
   expect(tests).toBeGreaterThan(allocRef);
   expect(record(smoke?.env).TMPDIR).toBe("${{ runner.temp }}");
-  expect(gateSteps.filter((step) => step.run === packageTestsCommand)).toHaveLength(1);
+  expect(coreSteps.filter((step) => step.run === packageTestsCommand)).toHaveLength(1);
   expect(
-    gateSteps.filter((step) =>
+    coreSteps.filter((step) =>
       String(step.run ?? "").includes("bun run --cwd packages/waffle build:network"),
     ),
   ).toHaveLength(1);
@@ -561,7 +613,7 @@ test("network producer shares its exact cache key with release, echo and xargs w
   for (const path of ["docs/network.md", "site/src/pages/index.astro", "site/bun.lock"])
     expect(selected("network", path), path).toBe(false);
 
-  const producer = gateSteps.find((step) => step.id === "network-artifact");
+  const producer = coreSteps.find((step) => step.id === "network-artifact");
   expect(record(producer?.with)["restore-keys"]).toBeUndefined();
   const key = String(record(producer?.with).key);
   expect(key).toContain("network-wasm-v2-");
@@ -574,8 +626,10 @@ test("network producer shares its exact cache key with release, echo and xargs w
     "network.growth.json",
   ])
     expect(String(record(producer?.with).path)).toContain(artifact);
+  const browserNetwork = browserSteps.find((step) => step.id === "network-artifact");
+  expect(record(browserNetwork?.with).key).toBe(key);
 
-  const rustTest = gateSteps.find(
+  const rustTest = coreSteps.find(
     (step) => step.name === "Rust native, state and actual WASM tests",
   );
   expect(String(rustTest?.run)).toContain("bun tooling/check-network-rust.ts");
@@ -583,7 +637,7 @@ test("network producer shares its exact cache key with release, echo and xargs w
     "cargo test --release -p waffle-tcp --features module-tests --locked",
   );
   expect(record(rustTest?.env).WAFFLE_TCP_MODULE).toContain("network.wasm");
-  expect(gateSteps.some((step) => String(step.run ?? "").includes("network-source-smoke.ts"))).toBe(
+  expect(coreSteps.some((step) => String(step.run ?? "").includes("network-source-smoke.ts"))).toBe(
     true,
   );
 
@@ -630,11 +684,11 @@ test("programs, program leaves and oracles preserve path selection and ordering"
   for (const path of ["docs/development.md", "site/src/pages/index.astro", "site/bun.lock"])
     expect(selected("programs", path), path).toBe(false);
 
-  const optimizer = gateSteps.findIndex(
+  const optimizer = coreSteps.findIndex(
     (step) => step.uses === "./.github/actions/program-optimizer",
   );
-  const sdk = gateSteps.findIndex((step) => step.id === "sdk");
-  const fetchCargo = gateSteps.findIndex((step) => step.run === "cargo fetch --locked");
+  const sdk = coreSteps.findIndex((step) => step.id === "sdk");
+  const fetchCargo = coreSteps.findIndex((step) => step.run === "cargo fetch --locked");
   expect(optimizer).toBeGreaterThanOrEqual(0);
   expect(sdk).toBeGreaterThanOrEqual(0);
   expect(fetchCargo).toBeGreaterThan(optimizer);
@@ -647,7 +701,7 @@ test("programs, program leaves and oracles preserve path selection and ordering"
     "bun run --cwd packages/coreutils build:echo",
     "bun run --cwd packages/coreutils build:checksums",
   ]) {
-    const index = gateSteps.findIndex((step) => String(step.run ?? "").includes(command));
+    const index = coreSteps.findIndex((step) => String(step.run ?? "").includes(command));
     expect(index, command).toBeGreaterThan(optimizer);
   }
   for (const filter of [
@@ -666,13 +720,13 @@ test("programs, program leaves and oracles preserve path selection and ordering"
   }
 
   // Verify specific leaf contracts: diffutils, jq, awk, tar, gh, procps, curl, checksums
-  const diffutilsOracle = gateSteps.findIndex(
+  const diffutilsOracle = coreSteps.findIndex(
     (step) => step.run === "bun run --cwd packages/diffutils native-oracle",
   );
-  const diffutilsBuild = gateSteps.findIndex((step) => step.name === "Build and test diffutils");
+  const diffutilsBuild = coreSteps.findIndex((step) => step.name === "Build and test diffutils");
   expect(diffutilsOracle).toBeGreaterThan(0);
   expect(diffutilsBuild).toBeGreaterThan(diffutilsOracle);
-  expect(record(gateSteps[diffutilsBuild]?.env).GNU_DIFF).toBe(
+  expect(record(coreSteps[diffutilsBuild]?.env).GNU_DIFF).toBe(
     "${{ github.workspace }}/.build/diffutils-native-oracle/diff",
   );
   const { diffutils } = await import("../../diffutils/src/index.ts");
@@ -681,7 +735,7 @@ test("programs, program leaves and oracles preserve path selection and ordering"
     "/usr/bin/cmp",
   ]);
 
-  const jqStep = gateSteps.find(
+  const jqStep = coreSteps.find(
     (step) => step.name === "Verify pinned jq native oracle and run jq checks",
   );
   expect(String(jqStep?.run)).toContain('test "$(command -v jq)" = "$JQ_NATIVE_DIR/jq"');
@@ -689,59 +743,59 @@ test("programs, program leaves and oracles preserve path selection and ordering"
   expect(String(jqStep?.run)).toContain("bun run programs:jq");
   expect(String(jqStep?.run)).not.toContain("apt-get");
 
-  const awkStep = gateSteps.find((step) => step.run === "bun run programs:awk");
+  const awkStep = coreSteps.find((step) => step.run === "bun run programs:awk");
   expect(record(awkStep?.env).AWK_SCRATCH_ROOT).toBe("${{ runner.temp }}");
 
-  const tarScratch = gateSteps.findIndex((step) => step.name === "Set run-owned tar scratch root");
-  const tarBuild = gateSteps.findIndex((step) => step.name === "Build and verify tar");
+  const tarScratch = coreSteps.findIndex((step) => step.name === "Set run-owned tar scratch root");
+  const tarBuild = coreSteps.findIndex((step) => step.name === "Build and verify tar");
   expect(tarScratch).toBeGreaterThan(0);
   expect(tarBuild).toBeGreaterThan(tarScratch);
-  expect(String(gateSteps[tarScratch]?.run)).toContain("TAR_SCRATCH_ROOT=%s");
+  expect(String(coreSteps[tarScratch]?.run)).toContain("TAR_SCRATCH_ROOT=%s");
 
-  const procpsLint = gateSteps.find((step) => step.name === "Lint procps");
-  const procpsFmt = gateSteps.find((step) => step.name === "Check procps formatting");
+  const procpsLint = coreSteps.find((step) => step.name === "Lint procps");
+  const procpsFmt = coreSteps.find((step) => step.name === "Check procps formatting");
   expect(procpsLint?.["working-directory"]).toBe("packages/procps");
   expect(procpsFmt?.["working-directory"]).toBe("packages/procps");
 
-  const curlProvision = gateSteps.findIndex(
+  const curlProvision = coreSteps.findIndex(
     (step) => step.run === "bun packages/curl/scripts/native-oracle.ts provision",
   );
-  const curlRun = gateSteps.findIndex((step) => step.run === "bun run programs:curl");
+  const curlRun = coreSteps.findIndex((step) => step.run === "bun run programs:curl");
   expect(curlProvision).toBeGreaterThan(0);
   expect(curlRun).toBeGreaterThan(curlProvision);
 
-  const xargsSuite = gateSteps.find((step) => step.name === "Run findutils xargs WASI suite");
+  const xargsSuite = coreSteps.find((step) => step.name === "Run findutils xargs WASI suite");
   expect(record(xargsSuite?.env).WASI_SDK_PATH).toBe(
     "${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux",
   );
   expect(record(xargsSuite?.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
 
-  const libcCache = gateSteps.find((step) => step.id === "wasi-libc-cache");
+  const libcCache = coreSteps.find((step) => step.id === "wasi-libc-cache");
   expect(String(record(libcCache?.with).key)).toContain("wasi-libc-34.0-runner-temp-v1-");
 
-  const rustCache = gateSteps.find((step) => step.id === "shared-rust-cache");
-  expect(String(record(rustCache?.with).key)).toContain(
-    "p1-${{ steps.select.outputs.need_rust_wasip1 }}-thr-${{ steps.select.outputs.browser }}",
-  );
+  const rustCache = coreSteps.find((step) => step.id === "shared-rust-cache");
+  expect(String(record(rustCache?.with).key)).toContain("p1-true-thr-false-v1-");
+  const browserRustCache = browserSteps.find((step) => step.id === "browser-rust-cache");
+  expect(String(record(browserRustCache?.with).key)).toContain("p1-false-thr-true-v1-");
 
-  const echoArtifact = artifactStep(gateSteps, ".build/echo-artifact");
+  const echoArtifact = artifactStep(coreSteps, ".build/echo-artifact");
   expect(echoArtifact.if).toBe("steps.select.outputs.coreutils == 'true'");
   expect(record(echoArtifact.with).name).toBe(
     "echo-process-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
   );
   expect(record(echoArtifact.with)["if-no-files-found"]).toBe("error");
 
-  const checksumOracle = gateSteps.findIndex(
+  const checksumOracle = coreSteps.findIndex(
     (step) =>
       step.run === "node packages/coreutils/scripts/build-native-checksum-oracle.ts --verify-only",
   );
-  const checksumBuild = gateSteps.findIndex(
+  const checksumBuild = coreSteps.findIndex(
     (step) => step.run === "bun run --cwd packages/coreutils build:checksums",
   );
-  const checksumReadback = gateSteps.findIndex(
+  const checksumReadback = coreSteps.findIndex(
     (step) => step.name === "Read back the exact admitted checksum guests",
   );
-  const checksumTest = gateSteps.findIndex(
+  const checksumTest = coreSteps.findIndex(
     (step) => step.run === "bun run --cwd packages/coreutils test:checksums:wasi",
   );
   expect(checksumBuild).toBeGreaterThan(fetchCargo);
