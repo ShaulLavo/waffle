@@ -1,0 +1,20 @@
+package waffle:experiment;
+
+interface window {
+  record surface-info {
+    width: u32,
+    height: u32,
+    scale-milli: u32,
+    %flags: u32,
+  }
+
+  resource surface {
+    info: func() -> option<surface-info>;
+  }
+
+  acquire: func(id: u32) -> option<surface>;
+}
+
+world guest {
+  import window;
+}

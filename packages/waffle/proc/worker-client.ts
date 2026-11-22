@@ -1,3 +1,9 @@
+import {
+  commandExecTransfer,
+  commandTransferFailed,
+  initializeCommandExec,
+  recordCommandTransferFailure,
+} from "./command-transfer.js";
 import { captureNativeReturn } from "./observation.js";
 import { EXEC_COMPLETION_BYTES } from "./exec.js";
 import type { PipePublicationRegistryHandle } from "./pipes.js";
@@ -25,7 +31,7 @@ import {
 import { spawnError, startFailure } from "./start-failure.js";
 import { describeStartError } from "./start-diagnostic.ts";
 import { MAX_ACCESS_REQUESTS } from "./access.js";
-import { controlLoad, controlStore } from "./control.js";
+import { controlCas, controlLoad, controlStore } from "./control.js";
 import {
   createDirectory,
   beginDirectoryAdmission,
@@ -102,6 +108,7 @@ export interface WorkerDescriptorCodec {
 export interface WorkerProcessTransport {
   readonly kind: "directory";
   readonly generation: number;
+  readonly commandTransfer?: SharedArrayBuffer;
   directory: SharedArrayBuffer;
   readonly lifetime: SharedArrayBuffer;
   identity: SharedArrayBuffer;
@@ -183,7 +190,10 @@ export type WorkerProcessMessage =
 
 export const workerProcessState = directoryState;
 function reserveRecord(
-  transport: Pick<WorkerProcessTransport, "directory" | "slot" | "pid" | "identity">,
+  transport: Pick<
+    WorkerProcessTransport,
+    "directory" | "slot" | "pid" | "identity" | "commandTransfer"
+  >,
   pid: number,
   parentPid: number,
   job: number,
@@ -194,7 +204,7 @@ function reserveRecord(
   cwd = "/",
   processKind: ProcessKind = "process",
 ): WorkerProcessTransport {
-  return {
+  const reserved: WorkerProcessTransport = {
     ...reserveDirectoryProcess(
       transport,
       pid,
@@ -212,6 +222,10 @@ function reserveRecord(
     resources: [],
     cwd,
   };
+  if (!transport.commandTransfer) return reserved;
+  const scoped = { ...reserved, commandTransfer: transport.commandTransfer };
+  initializeCommandExec(scoped);
+  return scoped;
 }
 export function workerProcessDirectoryId(transport: WorkerProcessTransport): string {
   const header = new Uint32ArrayConstructor(transport.directory, 0, 8);
@@ -282,8 +296,9 @@ export interface WorkerProcessClientOptions {
   descriptors: DescriptorTable;
   postMessage(message: WorkerProcessMessage): void;
   codec: WorkerDescriptorCodec;
-  prepareSpawn?(pid: number): WorkerSpawnTransfer;
-  prepareExec?(pid: number): WorkerSpawnTransfer;
+  beginSpawnTransfer?(): () => void;
+  prepareSpawn?(pid: number, cleanupFailed?: (error: unknown) => void): WorkerSpawnTransfer;
+  prepareExec?(pid: number, cleanupFailed?: (error: unknown) => void): WorkerSpawnTransfer;
   registerRevocation?(hook: () => void): () => void;
   /** Synchronously freeze shared endpoint cursors after default signal death is selected.
    * A shared pipe publication registry supplies this hook without entering the guest worker.
@@ -354,7 +369,7 @@ export class WorkerProcessClient {
     }
   }
   exec(pid: number, request: ExecRequest): SharedArrayBuffer {
-    this.admit();
+    this.admitTransfer();
     if (workerProcessState(this.options.transport).processKind === "thread")
       throw new ProcessError(ProcessErrno.NOTSUP, "thread members cannot exec");
     if ("processKind" in request)
@@ -380,12 +395,19 @@ export class WorkerProcessClient {
       bindings: [],
       resources: [],
     };
+    const handoff = commandExecTransfer(staged);
+    let published = false;
     try {
-      transfer = this.options.prepareExec(pid);
+      transfer = this.options.prepareExec(pid, (error) =>
+        recordCommandTransferFailure(this.options.transport, "exec", staged.generation, error),
+      );
       codec = transfer.codec ?? codec;
       staged.data = transfer.data;
       this.exportBindings(staged, snapshot, sources, references, codec);
-      this.admit();
+      this.admitTransfer();
+      if (handoff && controlCas(handoff, 0, 0, staged.generation) !== 0)
+        throw new ProcessError(ProcessErrno.NOTSUP, "an exec transfer is already pending");
+      published = true;
       this.options.postMessage({
         type: "runtime-proc",
         operation: "exec",
@@ -400,10 +422,10 @@ export class WorkerProcessClient {
         completion,
       });
     } catch (error) {
-      for (let index = 0; index < staged.resources.length; index++)
-        this.discardSpawnResource(codec, staged.resources[index]);
       try {
-        transfer?.cancel?.();
+        if (!published || !handoff)
+          this.rollbackTransfer(codec, staged.resources, transfer, "exec", staged.generation);
+        else recordCommandTransferFailure(this.options.transport, "exec", staged.generation, error);
       } finally {
         transfer?.release?.();
       }
@@ -412,11 +434,13 @@ export class WorkerProcessClient {
     try {
       transfer?.commit?.();
     } catch (error) {
+      recordCommandTransferFailure(this.options.transport, "exec", staged.generation, error);
       this.report(error);
     }
     try {
       transfer?.release?.();
     } catch (error) {
+      recordCommandTransferFailure(this.options.transport, "exec", staged.generation, error);
       this.report(error);
     }
     return completion;
@@ -446,6 +470,11 @@ export class WorkerProcessClient {
           : {}),
       });
     }
+  }
+  private admitTransfer(): void {
+    this.admit();
+    if (commandTransferFailed(this.options.transport.commandTransfer))
+      throw new ProcessError(ProcessErrno.SRCH, "command transfer cleanup failed");
   }
   private admit(): void {
     if (readOutcome(this.signals.outcome)) {
@@ -554,14 +583,20 @@ export class WorkerProcessClient {
   }
   private reserveSpawn(parentPid: number, request: SpawnRequest): number {
     // A collected caller has no authority even to stamp this shared directory.
-    this.admit();
+    this.admitTransfer();
     if (parentPid !== this.pid)
       throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
-    const release = beginDirectoryAdmission(this.options.transport.directory);
+    const endTransfer = this.options.beginSpawnTransfer?.();
+    let release: (() => void) | undefined;
     try {
+      release = beginDirectoryAdmission(this.options.transport.directory);
       return this.reserveSpawnIntent(parentPid, request);
     } finally {
-      release();
+      try {
+        release?.();
+      } finally {
+        endTransfer?.();
+      }
     }
   }
   private reserveSpawnIntent(parentPid: number, request: SpawnRequest): number {
@@ -601,7 +636,9 @@ export class WorkerProcessClient {
     try {
       // Acquire the host admission fence before touching shared membership. Fatal
       // teardown must not stop this worker with an anonymous outstanding reservation.
-      transfer = this.options.prepareSpawn?.(pid);
+      transfer = this.options.prepareSpawn?.(pid, (error) =>
+        recordCommandTransferFailure(this.options.transport, "spawn", pid, error),
+      );
       codec = transfer?.codec ?? codec;
       child = reserveRecord(
         this.options.transport,
@@ -636,8 +673,10 @@ export class WorkerProcessClient {
         request: snapshot,
       });
     } catch (error) {
-      if (publishing) this.releaseUncertainSpawn(transfer);
-      else this.rollbackSpawn(child, transfer, codec, error);
+      if (publishing) {
+        recordCommandTransferFailure(this.options.transport, "spawn", pid, error);
+        this.releaseUncertainSpawn(transfer);
+      } else this.rollbackSpawn(pid, child, transfer, codec, error);
       throw error;
     }
     // Publication transferred ownership. Never discard published resources if a host
@@ -645,11 +684,13 @@ export class WorkerProcessClient {
     try {
       transfer?.commit?.();
     } catch (error) {
+      recordCommandTransferFailure(this.options.transport, "spawn", pid, error);
       this.report(error);
     } finally {
       try {
         transfer?.release?.();
       } catch (error) {
+        recordCommandTransferFailure(this.options.transport, "spawn", pid, error);
         this.report(error);
       }
     }
@@ -662,16 +703,36 @@ export class WorkerProcessClient {
       this.report(error);
     }
   }
-  private discardSpawnResource(codec: WorkerDescriptorCodec, resource: unknown): boolean {
-    try {
-      codec.discard(resource);
-      return true;
-    } catch (error) {
+  private rollbackTransfer(
+    codec: WorkerDescriptorCodec,
+    resources: readonly unknown[],
+    transfer: WorkerSpawnTransfer | undefined,
+    kind: "spawn" | "exec",
+    target: number,
+  ): boolean {
+    let cleaned = true;
+    const fail = (error: unknown) => {
+      cleaned = false;
+      recordCommandTransferFailure(this.options.transport, kind, target, error);
       this.report(error);
-      return false;
+    };
+    for (let index = 0; index < resources.length; index++) {
+      try {
+        codec.discard(resources[index]);
+      } catch (error) {
+        fail(error);
+      }
     }
+    try {
+      transfer?.cancel?.();
+    } catch (error) {
+      fail(error);
+    }
+    return cleaned;
   }
+
   private rollbackSpawn(
+    pid: number,
     child: WorkerProcessTransport | undefined,
     transfer: WorkerSpawnTransfer | undefined,
     codec: WorkerDescriptorCodec,
@@ -689,15 +750,7 @@ export class WorkerProcessClient {
           describeStartError(error),
         );
       }
-      const resources = child?.resources ?? [];
-      for (let index = 0; index < resources.length; index++)
-        if (!this.discardSpawnResource(codec, resources[index])) cleaned = false;
-      try {
-        transfer?.cancel?.();
-      } catch (cleanupError) {
-        cleaned = false;
-        this.report(cleanupError);
-      }
+      cleaned = this.rollbackTransfer(codec, child?.resources ?? [], transfer, "spawn", pid);
       if (child && state && cleaned) {
         captureNativeReturn(child)();
         controlStore(state.confirmed, 0, 1);

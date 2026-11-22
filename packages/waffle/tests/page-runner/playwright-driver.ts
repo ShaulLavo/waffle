@@ -96,7 +96,7 @@ export class PlaywrightDriver implements Driver {
         })),
     };
   }
-  private current(): Page {
+  protected current(): Page {
     if (!this.page) throw new Error("No page");
     return this.page;
   }

@@ -106,6 +106,7 @@ interface ProcessAccesses {
 
 export interface SupervisorOptions {
   registry: ExecutableRegistry;
+  byteBackedGuestOnly?(rootPid: number | undefined): boolean;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
   launchCommand?(context: CommandProcessContext): ProcessHandle | Promise<ProcessHandle>;
   /** Emit while inherited output is owned; an asynchronous sink must stop when active is false.
@@ -272,6 +273,19 @@ export class ProcessSupervisor {
     }
     return complete;
   }
+  /** A guest wait can consume its job while its physical stops remain in this owner. */
+  rootConsumersRetired(rootPid: number): boolean {
+    let complete = true;
+    for (const records of this.consumers.values()) {
+      for (const record of records) {
+        if (record.rootPid !== rootPid || record.pid === rootPid) continue;
+        if (record.retirement?.kind === "failed") throw record.retirement.error;
+        if (!record.retirement) complete = false;
+      }
+    }
+    return complete;
+  }
+
   cwd(pid: number): string {
     return this.accessOwner(pid).image.cwd;
   }
@@ -834,6 +848,7 @@ export class ProcessSupervisor {
             throw new Error("process exited before executable admission completed");
         },
         image.request!.argv,
+        this.options.byteBackedGuestOnly?.(record.rootPid),
       );
       if (record.result || record.revoked) return;
       const settled = readOutcome(record.outcome);
@@ -930,7 +945,7 @@ export class ProcessSupervisor {
       descriptors: DescriptorTable;
       complete(result: number, error?: unknown): void;
       install(): void;
-      discard(): void | Promise<void>;
+      discard(descriptors: DescriptorTable): void | Promise<void>;
     },
   ): ProcessReplacement {
     const record = this.accessOwner(pid);
@@ -956,10 +971,7 @@ export class ProcessSupervisor {
       },
       discard: () => {
         if (transferred) return Promise.resolve();
-        return (discarded ??= Promise.resolve().then(async () => {
-          this.disposeDescriptors(staged.descriptors);
-          await staged.discard();
-        }));
+        return (discarded ??= Promise.resolve().then(() => staged.discard(staged.descriptors)));
       },
       cancel: async (error = new ProcessError(ProcessErrno.SRCH, "replacement cancelled")) => {
         if (replacement.state.phase === "done") return;
@@ -1007,6 +1019,7 @@ export class ProcessSupervisor {
         replacement.request.cwd,
         active,
         replacement.request.argv,
+        this.options.byteBackedGuestOnly?.(record.rootPid),
       );
       active();
       if (record.processKind === "thread")
@@ -1086,7 +1099,8 @@ export class ProcessSupervisor {
     if (image.stopping) return image.stopping;
     const stop = async () => {
       this.revokeImage(image);
-      this.disposeDescriptors(image.descriptors);
+      if (this.options.byteBackedGuestOnly?.(record.rootPid)) image.descriptors.dispose();
+      else this.disposeDescriptors(image.descriptors);
       await this.options.stopImage!(record.pid, image.generation, () =>
         this.replacementActive(record, replacement),
       );
@@ -1543,7 +1557,14 @@ export class ProcessSupervisor {
     record.revocations.clear();
     for (const hook of hooks) this.safely(hook);
     this.revokeImage(record.image);
-    this.disposeDescriptors(record.image.descriptors);
+    this.disposeDescriptors(record.image.descriptors, (error) => {
+      if (!this.options.byteBackedGuestOnly?.(record.rootPid)) {
+        this.report(error);
+        return;
+      }
+      fenceFailed = true;
+      this.failRetirementFence(record, error);
+    });
     // Invoke the fence while broker child/identity records are still present. Every observer
     // must wait for admitted filesystem and adapter work (for example a terminal section),
     // independently of the physical worker's potentially delayed termination.
@@ -1826,13 +1847,17 @@ export class ProcessSupervisor {
     // already have retired it while its separately captured physical stop was pending.
     if (this.table.job(job.id) === job) this.reapJob(owner, job.id);
   }
-  private disposeDescriptors(descriptors: DescriptorTable): void {
+  private disposeDescriptors(
+    descriptors: DescriptorTable,
+    onError?: (error: unknown) => void,
+  ): void {
     // dispose drains every entry before reporting release errors. These errors are diagnostics,
     // not transient work: report once and continue to the explicit host quiescence fence.
     try {
       descriptors.dispose();
     } catch (error) {
-      this.report(error);
+      if (onError) onError(error);
+      else this.report(error);
     }
   }
   private safely(operation: () => void): void {

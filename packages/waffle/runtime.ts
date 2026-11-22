@@ -1,3 +1,4 @@
+import { commandDisposals, commandOwners } from "./browser/command-owner.js";
 import { installSharedControlAllocator } from "./memory/control.js";
 import { defaultSharedMemoryPlatform, validateDeclaration } from "./memory/platform.js";
 import {
@@ -100,12 +101,22 @@ export type RuntimeSupervisor = Omit<
   | "onJobRetirement"
   | "jobRetired"
   | "retireFencedProcesses"
+  | "rootConsumersRetired"
   | "beginReplacement"
   | "acknowledgeReplacement"
 >;
 export type ProcessService = Omit<
   BrowserProcessBroker,
-  "dispose" | "suspend" | "quiesce" | "ready" | "retainRootGraphics"
+  | "dispose"
+  | "suspend"
+  | "quiesce"
+  | "ready"
+  | "retainRootGraphics"
+  | "adoptCommandRoot"
+  | "retireCommandRoot"
+  | "commandPipeHost"
+  | "checkCommandCleanup"
+  | "stopCommandRoot"
 > & {
   ready(): Promise<RuntimeSupervisor>;
 };
@@ -867,6 +878,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           assertLive,
           new Map([["ready", ready]]),
         );
+        commandOwners.set(service, owner);
         return service;
       });
       return activation;
@@ -965,6 +977,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       // Publish owned process outcomes before consumer callbacks or display revocation can wake
       // guests. Physical stops still wait for terminationFence and the existing quiescence gates.
       suspend(failures);
+      commandDisposals.get(runtime)?.abort();
       // Wake page operations before activation/drain can await startup. Keep the worker
       // and any acquired ownership alive until admitted consumer sections have fenced;
       // the normal final filesystem.dispose() then performs the startup abort handshake.

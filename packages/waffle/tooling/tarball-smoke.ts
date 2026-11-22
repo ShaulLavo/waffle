@@ -118,6 +118,8 @@ async function run(): Promise<void> {
   }
   const nodeScript = `
     for (const specifier of ${JSON.stringify(nodeSpecifiers)}) await import(specifier);
+    const { startCommand } = await import("@waffle-os/runtime/command");
+    if (typeof startCommand !== "function") throw new Error("packed command entry failed");
     const link = await import("@waffle-os/runtime/link");
     if (link.adoptLinkPlan !== link.PreparedLinkPlan.adopt || link.prepareLinkPlan !== link.PreparedLinkPlan.prepare)
       throw new Error("packed link exports changed");
@@ -152,7 +154,7 @@ async function run(): Promise<void> {
   );
   await writeFile(
     join(consumerDirectory, "src/main.ts"),
-    'import { bootstrap } from "@waffle-os/runtime/browser/worker";\nimport { adoptLinkPlan, prepareLinkPlan } from "@waffle-os/runtime/link";\nimport searchUrl from "@waffle-os/runtime/search/search-worker?worker&url";\nimport shardUrl from "@waffle-os/runtime/search/shard-worker?worker&url";\nexport { bootstrap, adoptLinkPlan, prepareLinkPlan, searchUrl, shardUrl };\n',
+    'import { bootstrap } from "@waffle-os/runtime/browser/worker";\nimport { startCommand } from "@waffle-os/runtime/command";\nimport { adoptLinkPlan, prepareLinkPlan } from "@waffle-os/runtime/link";\nimport searchUrl from "@waffle-os/runtime/search/search-worker?worker&url";\nimport shardUrl from "@waffle-os/runtime/search/shard-worker?worker&url";\nexport { bootstrap, startCommand, adoptLinkPlan, prepareLinkPlan, searchUrl, shardUrl };\n',
   );
   execFileSync("bun", ["run", "vite", "build", "--outDir", join(scratch, "vite-dist")], {
     cwd: consumerDirectory,

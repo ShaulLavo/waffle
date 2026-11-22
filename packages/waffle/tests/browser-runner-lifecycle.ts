@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
 import { SerializableAggregateError } from "./error-serialization.js";
+import { boundWebKitError } from "./webkit-diagnostics.js";
 import {
   stopBrowserResource,
   type BrowserResourceOwner,
@@ -15,6 +16,11 @@ import {
 } from "./storage-navigation-diagnostics.js";
 
 export const engines = { chromium, firefox, webkit };
+function launchFailure(engine: keyof typeof engines, error: unknown): never {
+  // Control reports can nest the launch error in JSON before printing it.
+  if (engine === "webkit") boundWebKitError(error);
+  throw error;
+}
 type Owner<T extends Browser | BrowserContext> = BrowserResourceOwner & {
   creation: Promise<T>;
   parent?: Owner<Browser>;
@@ -163,12 +169,14 @@ export class BrowserRunnerLifecycle {
     this.assertLive();
     const owner: Owner<Browser> = {
       observeClose: this.observeBrowserClose,
-      creation: engines[name].launch({
-        ...this.callerSignalOptions(),
-        headless: true,
-        downloadsPath: this.scratch,
-        tracesDir: this.scratch,
-      }),
+      creation: engines[name]
+        .launch({
+          ...this.callerSignalOptions(),
+          headless: true,
+          downloadsPath: this.scratch,
+          tracesDir: this.scratch,
+        })
+        .catch((error: unknown) => launchFailure(name, error)),
       stopped: false,
     };
     this.browsers.add(owner);
@@ -183,13 +191,15 @@ export class BrowserRunnerLifecycle {
   ): Promise<BrowserContext> {
     this.assertLive();
     const owner: Owner<BrowserContext> = {
-      creation: engines[name].launchPersistentContext(profile, {
-        ...(args === undefined ? {} : { args: Array.from(args) }),
-        ...this.callerSignalOptions(),
-        headless: true,
-        downloadsPath: this.scratch,
-        tracesDir: this.scratch,
-      }),
+      creation: engines[name]
+        .launchPersistentContext(profile, {
+          ...(args === undefined ? {} : { args: Array.from(args) }),
+          ...this.callerSignalOptions(),
+          headless: true,
+          downloadsPath: this.scratch,
+          tracesDir: this.scratch,
+        })
+        .catch((error: unknown) => launchFailure(name, error)),
       stopped: false,
     };
     this.contexts.add(owner);

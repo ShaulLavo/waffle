@@ -123,16 +123,34 @@ control each time, all different:
 - canonical-ownership: `Process browser resource closure did not settle during teardown`,
   twice, from `process-recycling-browser-runner-control.ts:20`, through the 5 s
   `BrowserRunnerLifecycle` cleanup cap: run 44150624471 (job 134281761723).
-- worker-capability-in-flight-loss: `Control lost initiating document before settlement`
-  and a leftover owned service worker: runs 43479634957 and 43231333992.
+- worker-capability-in-flight-loss: jobs 132073113045 and 131228509004 deliberately
+  navigated away while the registration settlement was held. Both then reported an
+  unconfirmed registration and hit `script probe timed out` during independent cleanup
+  verification. The deliberate navigation is part of the control. The logs do not
+  establish a browser page closure. [November 13 job](https://github.com/ShaulLavo/waffle/actions/runs/43479634957/job/132073113045) ·
+  [November 12 job](https://github.com/ShaulLavo/waffle/actions/runs/43231333992/job/131228509004)
+
+  Linux WebKit 2370 reproduced the failure in the worker-capability control family on
+  one CPU core. The verification document had already read the root worker identity.
+  It blocked while unregistering fixture workers, with its page open and browser
+  connected. The verification document now reads the registration map and identities.
+  Its disposable browser context owns teardown, and the control requires confirmation
+  of both session and browser closure. The verification page rejects any added call to
+  `unregister()`. The finish document still exercises the actual cleanup logic, and the
+  in-flight control still requires an unconfirmed registration attempt.
 - framework-extra: `Registered framework context closed timed out`
   (`page-runner/framework-host.ts:732`): run 43394478779.
 - host-deadline-teardown: `Body timeout extension changed the independent teardown clock`
   (`page-runner/host-drive-controls.ts:146`): run 43072689064.
 
-Link runner (`tests/link-browser-runner.ts webkit`): `evaluate: Target page, context or
-browser has been closed` right after navigation, without a page `crash` event: runs
-44729859695 and 44132865705.
+The link runner hit `evaluate: Target page, context or browser has been closed` in
+run 44729859695, attempt 1. Navigation returned before evaluation began. The runner had
+no listeners for Playwright's `close` or `crash` events, so the error does not identify the
+lost target. Run 44132865705 failed the `group cleanup` assertion on a branch that checked
+the group without waiting for its exit-lock proof. Linux WebKit 2370 passed 24 ordinary
+link runs and another 24 on one CPU core. [Link failure](https://github.com/ShaulLavo/waffle/actions/runs/44729859695/attempts/1) ·
+[Group cleanup failure](https://github.com/ShaulLavo/waffle/actions/runs/44132865705/attempts/1) ·
+[PR 548](https://github.com/ShaulLavo/waffle/pull/548)
 
 Others were branch-specific or appeared only once: process-recycling
 `stale checks leave the entire directory untouched` (two runs on one branch,
@@ -140,11 +158,11 @@ Others were branch-specific or appeared only once: process-recycling
 storage (43976877773), asset-load-recovery (44712567168), notification-fairness
 (44451516070).
 
-The only theme shared by several classes is WebKit close and teardown taking longer than
-the harness allows on hosted runners: canonical-ownership and framework-extra both failed
-on close caps. Next step: measure `context.close()` and `browser.close()` durations for
-WebKit in the serial job (log them from `BrowserRunnerLifecycle` cleanup). If they approach
-the 5 s cap, raise the cap for WebKit as a hang cap, not a speed check. The link and
-in-flight-loss drops lost the page with no crash event. For them, record WebKit's stderr
-and the page `close` and `crash` events in the runner, so the next failure shows whether
-the web process died.
+The canonical-ownership failure only recorded two expired resource-close waits. The
+framework-extra failure recorded a different wait, `Registered framework context closed`,
+after the fixture's WebDriver session deletion succeeded. Compare those waits with the
+native process start and exit records before changing a hang cap. The link runner now
+records its navigation or evaluation phase, page events, and WebKit stderr. If evaluation
+reports a closed target while the page stays open and the browser stays connected, collect
+`DEBUG=pw:protocol` for that runner and look for the active WebKit target's destruction or
+provisional target commit.

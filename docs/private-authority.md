@@ -91,6 +91,12 @@ handles are named private types in the checker. None of these modules is classif
 page-only trusted implementation, and no payload exception exempts their private buffers
 or collections.
 
+The installed command entry and its owner map stay on the page. Guest transports carry only
+their command's shared rollback report. It identifies the producing image and exact spawn
+intent or staged exec generation, with a bounded copy of the error text. The guest writes it
+with captured atomics before dropping its transfer fence. A tagged cell for the process slot carries the
+staged exec generation until the broker confirms transfer or discard.
+
 The page-only supervisor, table, registry, broker and lazy facade are named in
 `trustedModules`. The Node WASI descriptor adapter is also trusted because it is an explicit
 Node embedding leaf and is not imported by the guest bootstrap. `WorkerPipeBroker` alone is
@@ -183,8 +189,8 @@ the callbacks retain private wait ownership. No payload exception is added for e
 
 ## GPU guest boundary
 
-`browser/display/guest.ts`, `browser/gpu/guest.ts`, `browser/gpu/ring.ts` and
-`browser/gpu/transport.ts` are checked guest-reachable implementations. The inventory names
+`browser/display/guest.ts`, `browser/display/surface-info.ts`, `browser/gpu/guest.ts`,
+`browser/gpu/ring.ts` and `browser/gpu/transport.ts` are checked guest-reachable implementations. The inventory names
 `GraphicsConnection`, `GraphicsGrant`, `GraphicsOpen`, `GuestGpuConnection`, `RecordRing`,
 `RingWriter`, `PayloadDirectory`, `LogicalAppend` and `LogicalReader` as private authority. Launch ports and their
 native send/close methods are captured before executor hooks or guest execution. Fixed GPU
