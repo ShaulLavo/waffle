@@ -16,6 +16,7 @@ export const PIPE_PAUSE_POINTS = [
   "release.page",
   "sweep.cursors",
   "sweep.entry",
+  "sweep.retag",
   "scavenge.ring",
   "relay.recover",
   "relay.head",

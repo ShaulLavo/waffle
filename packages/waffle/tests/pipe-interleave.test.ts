@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { pipeSharedPagesInUse } from "../proc/pipes.js";
-import { PipeRealm, PipeStreams as Streams, plainRealm } from "./fixtures/pipe-interleave.ts";
+import {
+  PipeRealm,
+  PipeStreams as Streams,
+  auditPipePages,
+  plainRealm,
+} from "./fixtures/pipe-interleave.ts";
 
 type Controller = InstanceType<PipeRealm["pipes"]["PipeController"]>;
 type Endpoint = ReturnType<Controller["retain"]>;
@@ -159,4 +164,33 @@ describe("review round 2 reproductions", () => {
     expect(pipeSharedPagesInUse(reader.handle()).records).toBe(before);
     expect(Atomics.load(pipe.notification, 0)).not.toBe(observed);
   });
+});
+
+describe("review round 3 reproductions", () => {
+  for (const consumed of [4095, 16383] as const) {
+    test(`a tag-back that lands after the reader passed the page frees it (${consumed === 4095 ? "first page" : "whole ring"} read)`, () => {
+      const page = new PipeRealm();
+      const pipe = new page.pipes.PipeController({ capacity: 16384, relay: "manual" });
+      const reader = pipe.retain(1, "read");
+      const wrapper = pipe.retain(2, "write");
+      const guestReader = plainRealm.adopt(reader);
+      const filler = pipe.retain(3, "write");
+      // The wrapper's page 0 is a shared page; it reads 1 byte of it, so 4095 stay unread.
+      expect(wrapper.tryWrite([new Uint8Array(16384)])).toBe(16384);
+      expect(filler.tryWrite([new Uint8Array(12288)])).toBe(12288);
+      expect(guestReader.tryRead([new Uint8Array(1)])).toBe(1);
+      // A 1-byte write at 16384 retags page 0 for lap 1, then is revoked before publishing;
+      // its fenced sweep decides to tag page 0 back, and the reader passes it first.
+      page.pause("write.copied", () => pipe.revoke(2));
+      let observed = 0;
+      page.pause("sweep.retag", () => {
+        expect(guestReader.tryRead([new Uint8Array(consumed)])).toBe(consumed);
+        observed = Atomics.load(pipe.notification, 0);
+      });
+      expect(wrapper.tryWrite([new Uint8Array(1)])).toBe(-8);
+      expect(page.settled).toBe(true);
+      expect(auditPipePages(reader.handle())).toEqual([]);
+      expect(Atomics.load(pipe.notification, 0)).not.toBe(observed);
+    });
+  }
 });

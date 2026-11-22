@@ -434,7 +434,9 @@ class PageMap {
       const verdict = this.judge(page, tag, consumed, published, fenced);
       if (verdict === KEEP) continue;
       if (verdict === RETAG) {
-        atomicsCompareExchange(this.entries, page, entry, pack(id, (tag - 1) & this.lapMask));
+        const retagged = pack(id, (tag - 1) & this.lapMask);
+        pipePause("sweep.retag");
+        atomicsCompareExchange(this.entries, page, entry, retagged);
         continue;
       }
       if (this.clear(page, entry)) freed = true;

@@ -263,8 +263,13 @@ function scenario(
 
 const fired = new Map<string, number>();
 afterAll(() => {
-  // Every point was paused at, with some other party running, in at least one scenario.
-  expect(PIPE_PAUSE_POINTS.filter((point) => !fired.get(point))).toEqual([]);
+  // Every point was paused at, with some other party running, in at least one scenario. A
+  // tag-back needs an aborted write that wrapped onto unread bytes; pipe-interleave.test.ts
+  // pauses there directly.
+  const targeted = new Set(["sweep.retag"]);
+  expect(PIPE_PAUSE_POINTS.filter((point) => !fired.get(point) && !targeted.has(point))).toEqual(
+    [],
+  );
 });
 
 for (const mode of ["direct", "relay"] as const) {
