@@ -7,11 +7,12 @@ process.once("SIGTERM", stop);
 const gpuRunner = "tests/gpu-browser-runner.ts";
 const asyncGpuRunner = "tests/gpu-async-browser-runner.ts";
 const reporterControls = "tests/page-runner/browser-controls-runner.ts";
+const storageRunner = "tests/storage-browser-runner.ts";
 const runners = [
   "tests/browser-navigation-browser-runner.ts",
   "tests/link-browser-runner.ts",
   "tests/safe-staging-browser-runner.ts",
-  "tests/storage-browser-runner.ts",
+  storageRunner,
   "tests/storage-lock-browser-runner.ts",
   "tests/process-recycling-browser-runner.ts",
   "tests/network-browser-runner.ts",
@@ -36,7 +37,7 @@ const parallel = [
   [{ runner: "tests/gpu-native-browser-runner.ts", engines: ["chromium"] }],
   [{ runner: asyncGpuRunner, engines: ["chromium", "firefox"] }],
 ]);
-const serial = runners
+const serialBeforeReporter = runners
   .map((runner) => [{ runner, engines: ["webkit"] }])
   .concat(
     [[{ runner: "tests/bootstrap-arrival-browser-runner.ts", engines: ["webkit"] }]],
@@ -54,34 +55,53 @@ const serial = runners
     [[{ runner: "tests/network-browser-runner.ts", engines: ["--page-controls", "chromium"] }]],
     [[{ runner: "tests/memory-group-browser-runner.ts", engines: ["chromium"] }]],
     [[{ runner: "tests/fs-socket-browser-runner.ts", engines: ["firefox"] }]],
-    [[{ runner: reporterControls, engines: ["--prepare"] }]],
-    [[{ runner: reporterControls, engines: ["chromium", "--prepared"] }]],
-    [[{ runner: reporterControls, engines: ["webkit", "--prepared"] }]],
-    [
-      [
-        {
-          runner: "tests/process-recycling-browser-runner.ts",
-          engines: ["--page-controls", "chromium"],
-        },
-      ],
-    ],
-    [
-      [
-        {
-          runner: "tests/page-runner/gpu-async-controls-runner.ts",
-          engines: ["--ci", "chromium", "webkit"],
-        },
-      ],
-    ],
-    [[{ runner: "tests/notification-browser-runner.ts", engines: [] }]],
-    [[{ runner: "tests/asset-load-recovery-browser-runner.ts", engines: [] }]],
-    [[{ runner: "tests/notification-fairness-browser-runner.ts", engines: [] }]],
   );
-// CI runs the two groups on separate runners; each keeps its own order.
+const reporter = [
+  [{ runner: reporterControls, engines: ["--prepare"] }],
+  [{ runner: reporterControls, engines: ["chromium", "--prepared"] }],
+  [{ runner: reporterControls, engines: ["webkit", "--prepared"] }],
+];
+const serialAfterReporter = [
+  [
+    {
+      runner: "tests/process-recycling-browser-runner.ts",
+      engines: ["--page-controls", "chromium"],
+    },
+  ],
+  [
+    {
+      runner: "tests/page-runner/gpu-async-controls-runner.ts",
+      engines: ["--ci", "chromium", "webkit"],
+    },
+  ],
+  [{ runner: "tests/notification-browser-runner.ts", engines: [] }],
+  [{ runner: "tests/asset-load-recovery-browser-runner.ts", engines: [] }],
+  [{ runner: "tests/notification-fairness-browser-runner.ts", engines: [] }],
+];
+function selectBatches(group: string | undefined) {
+  switch (group) {
+    case undefined:
+      return parallel.concat(serialBeforeReporter, reporter, serialAfterReporter);
+    case "parallel":
+      return parallel;
+    case "serial":
+      return serialBeforeReporter.concat(reporter, serialAfterReporter);
+    case "runtime":
+      return parallel.concat(serialBeforeReporter, serialAfterReporter);
+    case "reporter":
+      return reporter;
+    default:
+      throw new Error(`Unknown WAFFLE_BROWSER_GROUP: ${group}`);
+  }
+}
 const group = process.env.WAFFLE_BROWSER_GROUP;
-if (group !== undefined && group !== "parallel" && group !== "serial")
-  throw new Error(`Unknown WAFFLE_BROWSER_GROUP: ${group}`);
-const batches = (group === "serial" ? [] : parallel).concat(group === "parallel" ? [] : serial);
+const batches = selectBatches(group);
+
+function invocationEnv(runner: string, engines: readonly string[]) {
+  if (group !== "runtime" || runner !== storageRunner) return process.env;
+  return { ...process.env, STORAGE_LIFECYCLE_OBSERVER: engines.includes("webkit") ? "0" : "1" };
+}
+
 let failures: Error[] = [];
 try {
   for (const batch of batches) {
@@ -89,7 +109,7 @@ try {
       batch.map(({ runner, engines }) =>
         runBrowserSuite([process.execPath, runner].concat(engines), {
           cwd: import.meta.dir + "/..",
-          env: process.env,
+          env: invocationEnv(runner, engines),
           signal: stopped.signal,
         }),
       ),

@@ -55,7 +55,7 @@ bun packages/waffle/tests/storage-browser-runner.ts chromium
 bun run test:browser
 ```
 
-Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite. Each runner removes its own browser profile and processes when it finishes. Other suites take `PROCESS_SCRATCH_ROOT` or `NETWORK_SCRATCH_ROOT`. `bun run test:browser` runs Chromium and Firefox together and WebKit afterwards, as CI does.
+Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite. Each runner removes its own browser profile and processes when it finishes. Other suites take `PROCESS_SCRATCH_ROOT` or `NETWORK_SCRATCH_ROOT`. `bun run test:browser` runs the full suite locally, with Chromium and Firefox first. CI uses two browser jobs. The runtime job runs the Chromium and Firefox batches first, then the remaining serial and isolated checks. The reporter job prepares its bundle once and runs its controls in Chromium and WebKit.
 
 [Run storage tests on iOS Safari](storage-browser-runner.md) covers the native command and local reporter failure controls. [Run process recycling tests on iOS Safari](process-recycling-browser-runner.md) covers the complete process command and its failure controls.
 
@@ -79,7 +79,7 @@ Playwright controls do not establish iOS Safari acceptance.
 ### Run the complete notification command
 
 The notification runner keeps all nine original lifecycle scenarios in one page. Its stock
-command uses Chromium and runs once in the serial CI group, without engine arguments.
+command uses Chromium and runs once in the serial portion of the CI runtime job, without engine arguments.
 
 ```sh
 bun packages/waffle/tests/notification-browser-runner.ts
@@ -215,7 +215,7 @@ disposal during traffic, idle event-driven waits, queued and briefly empty write
 and replacement-scope isolation. A blocked guest races each finite network wait with
 completed unrelated filesystem writes while its wall clock jumps. Every wait must retain
 the original monotonic deadline. Handshakes have ten-second hang caps; the whole command
-has a two-minute supervisor. It runs once in the serial CI group. Playwright WebKit is
+has a two-minute supervisor. It runs once in the serial portion of the CI runtime job. Playwright WebKit is
 engine coverage, not native Safari qualification.
 
 The libc suite builds guest binaries with a pinned wasi-sdk and runs them under Wasmtime. See [Guest libc](wasi-libc.md) for its requirements. `bun run test:libc` runs it.
@@ -303,6 +303,6 @@ packages/waffle/tests/page-runner/worker-lifecycle-browser.test.ts`. These contr
 publication results do not qualify actual iOS Safari.
 
 The no-guest bootstrap arrival controls run with
-`bun packages/waffle/tests/bootstrap-arrival-browser-runner.ts webkit` and in the serial browser
-CI group. A held arrival response must settle before the native driver admits observation
+`bun packages/waffle/tests/bootstrap-arrival-browser-runner.ts webkit` and in the serial portion
+of the CI runtime job. A held arrival response must settle before the native driver admits observation
 and the next navigation. Missing arrival and real transport failure remain startup failures.

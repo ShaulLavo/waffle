@@ -84,7 +84,7 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
-test("browser relay inputs select the normal gate and only its parallel group installs native peers", () => {
+test("browser relay inputs select the normal gate and only the runtime shard installs native peers", () => {
   for (const path of [
     "packages/waffle/tests/network-relay-browser-runner.ts",
     "packages/waffle/tests/network-relay-worker.ts",
@@ -102,7 +102,7 @@ test("browser relay inputs select the normal gate and only its parallel group in
   const native = steps
     .map(record)
     .find((step) => step.name === "Prepare and verify the required native relay prebuild");
-  expect(native?.if).toBe("matrix.group == 'parallel'");
+  expect(native?.if).toBe("matrix.group == 'runtime'");
   expect(native?.run).toBe("bun packages/waffle-relay/scripts/prepare-native.ts");
 });
 
@@ -282,7 +282,7 @@ test("one pinned Rust producer exports its exact uploaded artifact through the r
   expect(threadsSteps.some((step) => String(step.run).includes("cache-hit="))).toBe(true);
 });
 
-test("both browser groups download the producer ID and verify it without compiling Rust", () => {
+test("browser groups that run Rust threads verify the producer artifact without compiling", () => {
   const steps = stepsFor("browser");
   const downloads = steps.filter(
     (step) =>
@@ -297,8 +297,9 @@ test("both browser groups download the producer ID and verify it without compili
   expect(inputs["merge-multiple"]).toBe(true);
   for (const field of ["name", "pattern", "run-id", "github-token"])
     expect(inputs[field]).toBeUndefined();
-  expect(download.if).toBeUndefined();
+  expect(download.if).toBe("matrix.group == 'runtime'");
   const guard = steps.find((step) => step.name === "Require the Rust threads fixture artifact ID");
+  expect(guard?.if).toBe(download.if);
   expect(record(guard?.env).THREAD_ARTIFACT_ID).toBe(inputs["artifact-ids"]);
   expect(steps.indexOf(record(guard))).toBeLessThan(steps.indexOf(download));
   for (const id of ["", "45678"]) {
@@ -310,6 +311,7 @@ test("both browser groups download the producer ID and verify it without compili
   const verify = steps.find(
     (step) => step.run === "bun packages/waffle/scripts/build-thread-fixture.ts --verify",
   );
+  expect(verify?.if).toBe(download.if);
   const browser = steps.find((step) => String(step.run).startsWith("bun run test:browser"));
   expect(record(verify?.env).THREAD_FIXTURE_DIR).toBe(inputs.path);
   expect(record(browser?.env).THREAD_FIXTURE_DIR).toBe(inputs.path);
@@ -333,6 +335,7 @@ test("Complete CI gate rejects a failed or cancelled required threads producer",
     const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(check?.run)], {
       env: {
         ...process.env,
+        BROWSER_REQUIRED: "false",
         RESULTS: JSON.stringify({
           browser: { result: "skipped" },
           "threads-fixture": { result },
@@ -340,6 +343,82 @@ test("Complete CI gate rejects a failed or cancelled required threads producer",
       },
     });
     expect(command.exitCode).toBe(result === "success" || result === "skipped" ? 0 : 1);
+  }
+});
+
+function browserShardOutputs() {
+  const browser = record(jobs.browser);
+  const groups = record(record(browser.strategy).matrix).group;
+  if (!Array.isArray(groups) || !groups.every((group) => typeof group === "string"))
+    throw new Error("expected browser matrix groups");
+  expect(Object.keys(record(browser.outputs)).sort()).toEqual(groups.toSorted());
+  const step = stepsFor("browser").at(-2);
+  expect(step?.id).toBe("browser-result");
+  expect(step?.if).toBeUndefined();
+  expect(record(step?.env).BROWSER_SHARD).toBe("${{ matrix.group }}");
+  return Object.fromEntries(
+    groups.map((group: string) => {
+      expect(record(browser.outputs)[group]).toBe(`\${{ steps.browser-result.outputs.${group} }}`);
+      const script = `
+        GITHUB_OUTPUT=$(mktemp)
+        trap 'rm -f "$GITHUB_OUTPUT"' EXIT
+        ${step?.run}
+        cat "$GITHUB_OUTPUT"
+      `;
+      const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", script], {
+        env: { ...process.env, BROWSER_SHARD: group },
+      });
+      expect(command.exitCode, command.stderr.toString()).toBe(0);
+      const output = command.stdout.toString();
+      expect(output).toBe(`${group}=passed\n`);
+      return [group, output.trimEnd().split("=")[1]];
+    }),
+  );
+}
+
+test("Complete CI gate requires success from each selected browser shard", () => {
+  const gate = record(jobs.gate);
+  expect(gate.needs).toContain("browser");
+  const step = stepsFor("gate").find((step) => step.name === "Reject failed or cancelled CI jobs");
+  const selection =
+    "github.event_name == 'workflow_dispatch' || needs.changes.outputs.browser != 'false'";
+  expect(record(step?.env).BROWSER_REQUIRED).toBe(`\${{ ${selection} }}`);
+  expect(record(jobs.browser).if).toContain(selection);
+  const allPassed = browserShardOutputs();
+  const missingShards = Object.keys(allPassed).map((group) => {
+    const partial = { ...allPassed };
+    delete partial[group];
+    return { result: "success", outputs: partial };
+  });
+  const passed = { result: "success", outputs: allPassed };
+  const outcomes = [
+    [passed, "true", 0],
+    [{ result: "failure", outputs: allPassed }, "true", 1],
+    [{ result: "cancelled", outputs: allPassed }, "true", 1],
+    [{ result: "skipped" }, "true", 1],
+    [{ result: "success" }, "true", 1],
+    [{ result: "skipped" }, "false", 0],
+    [{ result: "failure" }, "false", 1],
+    [{ result: "cancelled" }, "false", 1],
+    [undefined, "true", 1],
+    [undefined, "false", 1],
+  ] satisfies [object | undefined, string, number][];
+  for (const [browser, required, expected] of outcomes.concat(
+    missingShards.map((browser) => [browser, "true", 1]),
+  )) {
+    const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(step?.run)], {
+      env: {
+        ...process.env,
+        BROWSER_REQUIRED: required,
+        RESULTS: JSON.stringify({
+          changes: { result: "success" },
+          browser,
+        }),
+      },
+    });
+    expect(command.exitCode, `browser=${JSON.stringify(browser)}, required=${required}`).toBe(
+      expected,
+    );
   }
 });
 
@@ -364,7 +443,7 @@ test("browser failure retains structured recovery evidence before full protocol"
   expect(record(recoveryUpload.with).path).not.toBe(record(protocolUpload.with).path);
 });
 
-test("serial browser controls retain durable process evidence even when the command fails", () => {
+test("reporter controls retain durable process evidence even when the command fails", () => {
   const steps = stepsFor("browser");
   const browserTest = steps.find(
     (step) =>
@@ -373,7 +452,7 @@ test("serial browser controls retain durable process evidence even when the comm
   const result = "${{ runner.temp }}/browser-controls-results.json";
   expect(record(browserTest?.env).BROWSER_CONTROLS_RESULT).toBe(result);
   const upload = artifactStep(steps, `${result}*`);
-  expect(upload.if).toBe("always() && matrix.group == 'serial'");
+  expect(upload.if).toBe("always() && matrix.group == 'reporter'");
   expect(record(upload.with).name).toBe(
     "browser-controls-${{ github.run_id }}-${{ github.run_attempt }}",
   );
@@ -381,12 +460,26 @@ test("serial browser controls retain durable process evidence even when the comm
   expect(record(upload.with)["if-no-files-found"]).toBe("warn");
 });
 
-test("the browser suite runs its two ordered groups on separate runners", () => {
+test("the browser suite dispatches the runtime and reporter groups separately with failures blocking", () => {
+  expect(record(jobs.browser).strategy).toEqual({
+    "fail-fast": false,
+    matrix: { group: ["runtime", "reporter"] },
+  });
   const browserTest = stepsFor("browser").find(
     (step) =>
       step.run === 'bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"',
   );
+  expect(browserTest?.if).toBeUndefined();
+  expect(browserTest?.shell).toBe("bash");
   expect(record(browserTest?.env).WAFFLE_BROWSER_GROUP).toBe("${{ matrix.group }}");
+  const publication = stepsFor("browser").find(
+    (step) =>
+      step.run === "bun packages/waffle/tests/publication-browser-runner.ts --workspace chromium",
+  );
+  expect(browserTest?.id).toBe("browser-tests");
+  expect(publication?.if).toBe(
+    "${{ !cancelled() && matrix.group == 'runtime' && (steps.browser-tests.outcome == 'success' || steps.browser-tests.outcome == 'failure') }}",
+  );
 });
 
 test("missing recovery report does not replace the browser failure", () => {
@@ -918,9 +1011,10 @@ test("the browser rejects a missing fixture artifact ID before download", () => 
   expect(record(guard?.env).MEMORY_GROUP_ARTIFACT_ID).toBe(
     "${{ needs.libc.outputs.memory-group-artifact-id }}",
   );
-  expect(guard?.if).toBeUndefined();
+  expect(guard?.if).toBe("matrix.group == 'runtime'");
   expect(guard?.["continue-on-error"]).toBeUndefined();
   const downloadIndex = steps.findIndex((step) => step.uses === "actions/download-artifact@v8");
+  expect(steps[downloadIndex]?.if).toBe(guard?.if);
   expect(guard).toBeDefined();
   expect(steps.indexOf(record(guard))).toBeLessThan(downloadIndex);
   for (const id of ["", "12345"]) {
@@ -1629,8 +1723,8 @@ test("native relay setup requires prebuilt bytes before package and parallel bro
     expect(record(cache?.with)["restore-keys"]).toBeUndefined();
     if (!cache) throw new Error("Missing prebuild cache step");
     expect(steps.indexOf(cache)).toBeLessThan(prepare);
-    expect(cache?.if).toBe(name === "browser" ? "matrix.group == 'parallel'" : undefined);
-    expect(steps[prepare]?.if).toBe(name === "browser" ? "matrix.group == 'parallel'" : undefined);
+    expect(cache?.if).toBe(name === "browser" ? "matrix.group == 'runtime'" : undefined);
+    expect(steps[prepare]?.if).toBe(name === "browser" ? "matrix.group == 'runtime'" : undefined);
   }
 });
 
@@ -1746,15 +1840,38 @@ test("change detection shares the network producer's runner and remains blocking
   expect(gate.needs).toContain("changes");
   expect(gate.needs).not.toContain("network-wasm");
   expect(gate.name).toBe("Complete CI gate");
-  const check = stepsFor("gate").find(
-    (step) => step.name === "Require successful change detection",
-  );
+  const gateSteps = stepsFor("gate");
+  const check = gateSteps.find((step) => step.name === "Require successful change detection");
   expect(record(check?.env).PATHS_RESULT).toBe("${{ needs.changes.outputs.paths-result }}");
-  for (const result of ["success", "failure", "cancelled", "skipped", ""]) {
-    const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(check?.run)], {
-      env: { ...process.env, PATHS_RESULT: result },
-    });
-    expect(command.exitCode, result).toBe(result === "success" ? 0 : 1);
+  const reject = gateSteps.find((step) => step.name === "Reject failed or cancelled CI jobs");
+  expect(gateSteps.indexOf(record(check))).toBeLessThan(gateSteps.indexOf(record(reject)));
+  const outcomes = [
+    ["success", "success", 0],
+    ["failure", "success", 1],
+    ["cancelled", "success", 1],
+    ["success", "failure", 1],
+    ["success", "cancelled", 1],
+    ["success", "skipped", 1],
+    ["success", "", 1],
+    ["skipped", "", 1],
+    [undefined, "", 1],
+  ] as const;
+  for (const [producer, pathsResult, expected] of outcomes) {
+    const command = Bun.spawnSync(
+      ["bash", "-eo", "pipefail", "-c", `${check?.run}\n${reject?.run}`],
+      {
+        env: {
+          ...process.env,
+          PATHS_RESULT: pathsResult,
+          BROWSER_REQUIRED: "false",
+          RESULTS: JSON.stringify({
+            changes: producer === undefined ? undefined : { result: producer },
+            browser: { result: "skipped" },
+          }),
+        },
+      },
+    );
+    expect(command.exitCode, `producer=${producer}, paths=${pathsResult}`).toBe(expected);
   }
 });
 

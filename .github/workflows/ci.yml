@@ -1320,13 +1320,17 @@ jobs:
       WAFFLE_NETWORK_PREBUILT: "1"
     needs: [changes, libc, threads-fixture]
     if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.browser != 'false')) }}
+    # A matrix result can report success when a shard never acquired a runner.
+    outputs:
+      runtime: ${{ steps.browser-result.outputs.runtime }}
+      reporter: ${{ steps.browser-result.outputs.reporter }}
     # Playwright 1.64.1 browsers are proven on Ubuntu 24.04; move the pin deliberately with a green run.
     runs-on: ubuntu-24.04
-    # Chromium/Firefox plus recovery on one runner, serial WebKit and the isolated runners on the other.
+    # Reporter controls share one prepared bundle and run independently of the other suites.
     strategy:
       fail-fast: false
       matrix:
-        group: [parallel, serial]
+        group: [runtime, reporter]
     name: browser (${{ matrix.group }})
     steps:
       - uses: actions/checkout@v4
@@ -1355,13 +1359,13 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile --ignore-scripts
       - name: Cache standard native relay prebuild downloads
-        if: matrix.group == 'parallel'
+        if: matrix.group == 'runtime'
         uses: actions/cache@v4
         with:
           path: ~/.npm/_prebuilds
           key: ${{ runner.os }}-${{ runner.arch }}-relay-prebuild-v1-${{ hashFiles('bun.lock', 'packages/waffle-relay/package.json', 'packages/waffle-relay/scripts/prepare-native.ts', 'packages/waffle-relay/src/webtransport-integrity.ts') }}
       - name: Prepare and verify the required native relay prebuild
-        if: matrix.group == 'parallel'
+        if: matrix.group == 'runtime'
         run: bun packages/waffle-relay/scripts/prepare-native.ts
       # Browser directories are named by revision only, so the key carries the OS release too.
       - name: Resolve the Playwright browser cache key
@@ -1378,41 +1382,50 @@ jobs:
       - uses: ./.github/actions/ubuntu-main-archive
       - run: bunx playwright install --with-deps chromium firefox webkit
       - name: Require the producer's fixture artifact ID
+        if: matrix.group == 'runtime'
         run: test -n "$MEMORY_GROUP_ARTIFACT_ID"
         env:
           MEMORY_GROUP_ARTIFACT_ID: ${{ needs.libc.outputs.memory-group-artifact-id }}
       - uses: actions/download-artifact@v8
+        if: matrix.group == 'runtime'
         with:
           digest-mismatch: error
           artifact-ids: ${{ needs.libc.outputs.memory-group-artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/memory-group-fixture
       - name: Require the compiled GPU guest artifact
+        if: matrix.group == 'runtime'
         run: test -n "$GPU_ARTIFACT_ID"
         env:
           GPU_ARTIFACT_ID: ${{ needs.libc.outputs.gpu-artifact-id }}
       - uses: actions/download-artifact@v8
+        if: matrix.group == 'runtime'
         with:
           digest-mismatch: error
           artifact-ids: ${{ needs.libc.outputs.gpu-artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/gpu-fixture
       - run: bun packages/waffle/scripts/build-gpu-fixture.ts --verify "$RUNNER_TEMP/gpu-fixture"
+        if: matrix.group == 'runtime'
       - name: Require the Rust threads fixture artifact ID
+        if: matrix.group == 'runtime'
         run: test -n "$THREAD_ARTIFACT_ID"
         env:
           THREAD_ARTIFACT_ID: ${{ needs.threads-fixture.outputs.artifact-id }}
       - uses: actions/download-artifact@v8
+        if: matrix.group == 'runtime'
         with:
           digest-mismatch: error
           artifact-ids: ${{ needs.threads-fixture.outputs.artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/threads-fixture
       - name: Verify the Rust threads fixture without a compiler
+        if: matrix.group == 'runtime'
         run: bun packages/waffle/scripts/build-thread-fixture.ts --verify
         env:
           THREAD_FIXTURE_DIR: ${{ runner.temp }}/threads-fixture
       - run: bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"
+        id: browser-tests
         shell: bash
         env:
           GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture
@@ -1421,11 +1434,10 @@ jobs:
           RECOVERY_R42_REPORT: ${{ runner.temp }}/recovery-r42-report.json
           BROWSER_CONTROLS_RESULT: ${{ runner.temp }}/browser-controls-results.json
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
-          STORAGE_LIFECYCLE_OBSERVER: ${{ matrix.group == 'parallel' && '1' || '0' }}
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
           WAFFLE_BROWSER_GROUP: ${{ matrix.group }}
       - run: bun packages/waffle/tests/publication-browser-runner.ts --workspace chromium
-        if: matrix.group == 'parallel'
+        if: ${{ !cancelled() && matrix.group == 'runtime' && (steps.browser-tests.outcome == 'success' || steps.browser-tests.outcome == 'failure') }}
         env:
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
       - name: Retain recovery failure report
@@ -1437,7 +1449,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - name: Retain browser controls result and process outcome
-        if: always() && matrix.group == 'serial'
+        if: always() && matrix.group == 'reporter'
         uses: actions/upload-artifact@v4
         with:
           name: browser-controls-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1451,6 +1463,11 @@ jobs:
           name: browser-protocol-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/waffle-browser-protocol.log
           retention-days: 7
+      - name: Record successful browser shard
+        id: browser-result
+        env:
+          BROWSER_SHARD: ${{ matrix.group }}
+        run: printf '%s=passed\n' "$BROWSER_SHARD" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   findutils-xargs:
@@ -1707,8 +1724,16 @@ jobs:
       - name: Reject failed or cancelled CI jobs
         env:
           RESULTS: ${{ toJSON(needs) }}
+          BROWSER_REQUIRED: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.browser != 'false' }}
         run: |
-          echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'
+          jq -e --arg browser_required "$BROWSER_REQUIRED" '
+            type == "object" and has("browser") and
+            all(.[]; .result == "success" or .result == "skipped") and
+            ($browser_required == "false" or (
+              .browser.result == "success" and
+              (.browser.outputs | [.runtime, .reporter] | all(.[]; . == "passed"))
+            ))
+          ' <<< "$RESULTS"
       - name: Require successful package and site checks
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
