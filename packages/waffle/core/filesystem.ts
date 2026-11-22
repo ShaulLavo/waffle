@@ -95,8 +95,6 @@ export interface ResolvedPath {
  */
 export interface FileSystem {
   preopen(path: string): FileHandle;
-  /** Read-only check for whether a directory handle currently refers to the filesystem root "/". */
-  isRoot?(handle: FileHandle): boolean;
   /** One retain/release pair per open description; duplicates share that lifetime. */
   retain(handle: FileHandle): void;
   release(handle: FileHandle): void;

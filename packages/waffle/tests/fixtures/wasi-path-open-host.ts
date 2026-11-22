@@ -91,10 +91,17 @@ export function createPathOpenHost(
   const openRaw = (
     dirfd: number,
     path: string,
-    options: { dirflags?: number; oflags?: number; base?: bigint; inheriting?: bigint } = {},
+    options: {
+      dirflags?: number;
+      oflags?: number;
+      base?: bigint;
+      inheriting?: bigint;
+      fdOut?: number;
+    } = {},
   ) => {
     const encoded = encoder.encode(path);
     new Uint8Array(memory.buffer).set(encoded, 1024);
+    const out = options.fdOut ?? 128;
     const errno = pathOpen(
       dirfd,
       options.dirflags ?? 1,
@@ -104,9 +111,9 @@ export function createPathOpenHost(
       options.base ?? RIGHTS_ALL,
       options.inheriting ?? RIGHTS_ALL,
       0,
-      128,
+      out,
     );
-    return { errno, fd: errno === 0 ? view().getUint32(128, true) : -1 };
+    return { errno, fd: errno === 0 ? view().getUint32(out >>> 0, true) : -1 };
   };
   const readAll = (fd: number) => {
     view().setUint32(256, 4096, true);

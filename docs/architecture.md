@@ -47,10 +47,8 @@ Path operations use positive errno (creation wraps errors to distinguish them fr
 `append` selects EOF and writes the complete iovec atomically, returning both committed bytes and
 the resulting description offset. `create` carries exclusivity so competing nonexclusive creators
 open the same current entry instead of replacing it or failing spuriously.
-`readdir` produces one entry list per call. Adapters may also implement an optional read-only
-`isRoot(handle)` query that compares a directory handle against the filesystem's live root
-without acquiring a preopen or mutating filesystem state. The blocking worker adapter implements
-this interface with `Atomics.wait`, without changing preview1.
+`readdir` produces one entry list per call. The blocking worker adapter implements this interface
+with `Atomics.wait`, without changing preview1.
 
 ## Process service
 

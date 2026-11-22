@@ -420,9 +420,6 @@ export class MemoryBackend implements FilesystemBackend {
       case "stat":
         this.check(a);
         return this.shared.stat(a)!;
-      case "isRoot":
-        this.check(a, "directory");
-        return this.fs.isRoot(a);
       case "permissions":
         this.check(a);
         return this.fs.permissions(a);

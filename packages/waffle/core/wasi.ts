@@ -1177,6 +1177,7 @@ export class Wasi {
           if (!(oflags & O_CREAT) || path.trailingSlash) return ENOENT;
           if (oflags & O_DIRECTORY) return EINVAL;
         }
+        fdOut >>>= 0;
         if (fdOut + 4 > this.bytes().length) return EFAULT;
         if (node === undefined) {
           const result = this.opts.fs.create(path, "file", (oflags & O_EXCL) !== 0);

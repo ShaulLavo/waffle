@@ -436,9 +436,6 @@ export class MemFS implements FileSystem {
     this.directoryParents.set(node, this.directoryParent(node) ?? node);
     return this.handle(node);
   }
-  isRoot(handle: FileHandle): boolean {
-    return this.nodeForHandle(handle) === this.root;
-  }
   resolve(directory: FileHandle, path: string, followFinal = false): ResolvedPath | number {
     if (path.startsWith("/")) return 63;
     const resolved = this.walk(directory, path, false, followFinal);

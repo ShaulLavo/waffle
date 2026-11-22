@@ -10,14 +10,6 @@ import { normalize } from "./path.js";
 
 export type DescriptorPath = { source: number } | { device: "null" } | { resolved: ResolvedPath };
 
-function isRootDirectory(fs: FileSystem, directory: Descriptor): boolean {
-  if (directory.resource.kind !== "directory") return false;
-  if (directory.preopen === "/") return true;
-  const handle = directory.resource.handle;
-  if (fs.isRoot) return fs.isRoot(handle);
-  return fs.stat(handle).ino === fs.stat(fs.preopen("/")).ino;
-}
-
 /** Open the inode again, not its old pathname. Negative results are WASI errno. */
 export function reopenDescriptor(
   table: DescriptorTable,
@@ -143,33 +135,40 @@ function nullDeviceParent(fs: FileSystem, root: number, path: ResolvedPath): boo
 
 type FinalLinkPolicy = "follow" | "nofollow" | "exclusive-create";
 
-function isAliasCandidate(path: string): boolean {
-  if (!path.includes("dev") && !path.includes("proc")) return false;
-  const normalized = normalize(path);
-  return descriptorPath(normalized) !== undefined || devicePath(normalized) !== undefined;
-}
-
 function resolveOrdinaryPath(
   fs: FileSystem,
-  directory: Descriptor,
   handle: number,
   path: string,
   finalLink: FinalLinkPolicy,
 ): { resolved: ResolvedPath } | number | undefined {
-  const resolved = fs.resolve(handle, path, finalLink === "follow");
-  if (typeof resolved === "number")
-    return resolved !== 44 || !isRootDirectory(fs, directory) ? resolved : undefined;
-  if (resolved.name !== "null" || !isRootDirectory(fs, directory)) return { resolved };
-  return nullDeviceParent(fs, handle, resolved) ? undefined : { resolved };
+  let candidate = false;
+  if (path.includes("dev") || path.includes("proc")) {
+    const normalized = normalize(path);
+    candidate = descriptorPath(normalized) !== undefined || devicePath(normalized) !== undefined;
+  }
+  if (!candidate) {
+    const resolved = fs.resolve(handle, path, finalLink === "follow");
+    if (typeof resolved === "number" && resolved !== 44) return resolved;
+    if (typeof resolved !== "number" && !nullDeviceParent(fs, handle, resolved))
+      return { resolved };
+  }
+  return undefined;
 }
 
-function walkDescriptorPath(
+/** Ordinary root paths return their one resolved result; virtual aliases use the component walker. */
+export function resolveDescriptorPath(
   table: DescriptorTable,
   fs: FileSystem,
-  handle: number,
+  directory: Descriptor,
   path: string,
   finalLink: FinalLinkPolicy,
 ): DescriptorPath | number | undefined {
+  if (directory.resource.kind !== "directory") return undefined;
+  const handle = directory.resource.handle;
+  if (directory.preopen !== "/" && fs.stat(handle).ino !== fs.stat(fs.preopen("/")).ino)
+    return undefined;
+  const ordinary = resolveOrdinaryPath(fs, handle, path, finalLink);
+  if (ordinary !== undefined) return ordinary;
   // Resolve candidates and unresolved aliases against original components, not normalized text.
   let current: PathEntry = { prefix: "", kind: "directory", handle };
   const parents: PathEntry[] = [];
@@ -209,23 +208,4 @@ function walkDescriptorPath(
   if (path.endsWith("/") && current.kind !== "directory") return 54;
   if (current.source !== undefined) return { source: current.source };
   return current.kind === "device" ? { device: "null" } : undefined;
-}
-
-/** Ordinary paths return their one resolved result; virtual root aliases use the component walker. */
-export function resolveDescriptorPath(
-  table: DescriptorTable,
-  fs: FileSystem,
-  directory: Descriptor,
-  path: string,
-  finalLink: FinalLinkPolicy,
-): DescriptorPath | number | undefined {
-  if (directory.resource.kind !== "directory") return undefined;
-  const handle = directory.resource.handle;
-  if (!isAliasCandidate(path)) {
-    const ordinary = resolveOrdinaryPath(fs, directory, handle, path, finalLink);
-    if (ordinary !== undefined) return ordinary;
-  } else if (!isRootDirectory(fs, directory)) {
-    return undefined;
-  }
-  return walkDescriptorPath(table, fs, handle, path, finalLink);
 }

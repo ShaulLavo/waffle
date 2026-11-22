@@ -849,7 +849,6 @@ export class FilesystemService {
         "release",
         "sync",
         "stat",
-        "isRoot",
         "readlink",
         "permissions",
         "setMode",
@@ -1462,10 +1461,6 @@ export class FilesystemService {
       domain = backend.shared.publication!,
       connection = session.connection.publication;
     if (!connection) throw new FilesystemError(2);
-    if (operation === "isRoot") {
-      domain.assertLive();
-      return this.execute(session, id, operation, args, data);
-    }
     backend.shared.beginServiceMutation(new Int32Array(session.connection.epoch));
     try {
       domain.assertLive();
