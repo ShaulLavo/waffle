@@ -39,7 +39,7 @@ function pathAuditEntries(path: string, source: string): string[] {
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
       const callee = node.expression.getText(tree);
       if (
-        /^(?:.*\.)?(?:readFile|readFileSync|open|openSync|file|join|resolve|fileURLToPath|fetch|importScripts|require)$/.test(
+        /^(?:.*\.)?(?:readFile|readFileSync|read|readSync|readdir|readdirSync|stat|statSync|lstat|lstatSync|access|accessSync|existsSync|createReadStream|open|openSync|file|join|resolve|fileURLToPath|fetch|importScripts|require|register|addModule)$/.test(
           callee,
         ) ||
         /^(?:URL|Worker|SharedWorker)$/.test(callee) ||
