@@ -89,6 +89,8 @@ const isolatedTasks: SuiteTask[] = [
     engines: ["--ci", "chromium", "webkit"],
   },
   { runner: "tests/notification-browser-runner.ts", engines: [] },
+];
+const timingSensitiveIsolatedTasks: SuiteTask[] = [
   { runner: "tests/asset-load-recovery-browser-runner.ts", engines: [] },
   { runner: "tests/notification-fairness-browser-runner.ts", engines: [] },
 ];
@@ -96,6 +98,7 @@ const serialRuntime: SuiteBatch[] = [
   { concurrency: 3, tasks: webkitTasks },
   { concurrency: 1, tasks: [{ runner: crossTabRunner, engines: ["webkit"] }] },
   { concurrency: 4, tasks: isolatedTasks },
+  { concurrency: 1, tasks: timingSensitiveIsolatedTasks },
 ];
 const reporter: SuiteBatch[] = [
   { concurrency: 1, tasks: [{ runner: reporterControls, engines: ["--prepare"] }] },
