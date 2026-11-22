@@ -460,12 +460,25 @@ async function pinControlTmp(parent: string): Promise<() => Promise<void>> {
   const previousTmp = process.env.TMPDIR;
   if (await isShortExistingDir(previousTmp)) return async () => {};
   const owned = await mkdtemp(join(parent, "wt-"));
-  process.env.TMPDIR = owned;
-  return async () => {
+  const cleanup = async () => {
     if (previousTmp === undefined) delete process.env.TMPDIR;
     else process.env.TMPDIR = previousTmp;
     await rm(owned, { recursive: true, force: true });
   };
+  if (!(await isShortExistingDir(owned))) {
+    await cleanup();
+    throw new Error("Use a data-drive scratch root short enough for a <=48-byte browser TMPDIR");
+  }
+  process.env.TMPDIR = owned;
+  return cleanup;
+}
+
+async function settleCleanupSteps(steps: readonly (() => Promise<void>)[]): Promise<void> {
+  const settled = await Promise.allSettled(steps.map((step) => step()));
+  const failures = settled.flatMap((entry) => (entry.status === "rejected" ? [entry.reason] : []));
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "Browser controls scratch cleanup failed");
 }
 
 async function main(controls: ControlRun): Promise<void> {
@@ -501,8 +514,10 @@ async function main(controls: ControlRun): Promise<void> {
       for (const engine of requested) await runEngine(engine, root, results);
     },
     async () => {
-      if (root) await rm(root, { recursive: true, force: true });
-      await releaseTmp?.();
+      await settleCleanupSteps([
+        () => (root ? rm(root, { recursive: true, force: true }) : Promise.resolve()),
+        () => releaseTmp?.() ?? Promise.resolve(),
+      ]);
     },
   );
   if (!controls.results.length || controls.results.some((result) => result.status === "fail"))
