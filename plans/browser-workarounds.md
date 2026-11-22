@@ -38,10 +38,13 @@ while the underlying behavior persists.
 - **Site.** `atomicsWaitAsyncFor` in
   [host intrinsics](../packages/waffle/proc/intrinsics/host.ts) keeps each finite-timeout async
   wait a fresh native timed wait and adds a `setTimeout` just after its deadline. The timer wakes
-  the Worker, yields one task so a native result already due wins, and otherwise settles
-  `"timed-out"`. Native semantics hold: "ok" only for a notify during the call, a zero timeout is
-  a synchronous poll, and the native waiter leaves at its own deadline, so none lingers to take a
-  later count-1 notify. Used by the thread service's pipe and offset waits, the terminal session,
+  the Worker, yields one task so a native result already due wins, and otherwise reads the cell:
+  changed settles `"ok"`, unchanged `"timed-out"`. WebKit also delivers native wakes late (230 of
+  698 count-1 notifies arrived after a 2 ms grace in review), so the result is a hint; every
+  caller rechecks its own state, and every served cell is incremented or cleared before its
+  notify. "ok" never reports a notify from before the call, a zero timeout is a synchronous poll,
+  and the native waiter leaves at its own deadline, so none lingers to take a later count-1
+  notify. Deadlines past the host timer limit get no backstop, like untimed waits. Used by the thread service's pipe and offset waits, the terminal session,
   the GPU command ring, and the filesystem request-memory retirement and quiescence waits (50 ms
   recheck). An earlier version shared one untimed native wait per view; review found it left
   waiters that took count-1 notifies, reported notifies from before a retry, and turned zero

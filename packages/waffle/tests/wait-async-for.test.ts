@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { atomicsWaitAsyncFor } from "../proc/intrinsics.ts";
 import {
   abandonedPollsLeaveNoWaiter,
+  lateNativeResult,
+  longTimeouts,
   notifyDuringWaitWakes,
   retryIgnoresEarlierNotify,
   waitAsyncContractExpected as expected,
@@ -22,6 +24,14 @@ test("a zero timeout stays a synchronous poll, also through RecordRing", () => {
 
 test("a notify during the wait wakes it", async () => {
   expect(await notifyDuringWaitWakes()).toEqual(expected.notify);
+});
+
+test("a native result arriving after the backstop is read from the cell", async () => {
+  expect(await lateNativeResult()).toEqual(expected.late);
+});
+
+test("timeouts at or past the timer limit do not settle early or strand a waiter", async () => {
+  expect(await longTimeouts()).toEqual(expected.long);
 });
 
 test("a changed word answers not-equal without waiting", () => {

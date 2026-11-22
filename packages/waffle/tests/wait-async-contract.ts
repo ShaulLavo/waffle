@@ -1,5 +1,5 @@
 import { RecordRing } from "../browser/gpu/ring.ts";
-import { atomicsWaitAsyncFor } from "../proc/intrinsics.ts";
+import { atomicsWaitAsyncFor, timedWaitAsync } from "../proc/intrinsics.ts";
 
 // Contract cases for atomicsWaitAsyncFor, shared by the Bun unit test and the browser check.
 // Each returns what it observed; callers compare against the native Atomics.waitAsync contract.
@@ -62,6 +62,55 @@ export async function notifyDuringWaitWakes() {
   return { woken, result: await settle(waiting) };
 }
 
+/** A native wait whose "ok" arrives 60 ms late, as WebKit sometimes delivers it. */
+const lateNative: NativeWaitAsync = () => ({
+  async: true,
+  value: new Promise<string>((resolve) => setTimeout(resolve, 60, "ok")),
+});
+
+/** The backstop fires before a late native result: a changed cell is a wake, an unchanged one is
+ * a timeout. Callers treat either as a hint and recheck their own state. */
+export async function lateNativeResult() {
+  const changed = new Int32Array(new SharedArrayBuffer(4));
+  const unchanged = new Int32Array(new SharedArrayBuffer(4));
+  const wait = timedWaitAsync(lateNative);
+  const changedWait = wait(changed, 0, 0, 10);
+  const unchangedWait = wait(unchanged, 0, 0, 10);
+  setTimeout(() => Atomics.store(changed, 0, 1), 3);
+  return { changed: await settle(changedWait), unchanged: await settle(unchangedWait) };
+}
+
+async function pendingAfter(
+  waiting: { async: false; value: string } | { async: true; value: Promise<string> },
+  ms: number,
+) {
+  if (!waiting.async) return false;
+  const early = await Promise.race([
+    waiting.value.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(resolve, ms, false)),
+  ]);
+  return !early;
+}
+
+/** Timeouts at or past the host timer limit must not fire early or strand a native waiter. */
+export async function longTimeouts() {
+  const results: Record<string, { pending: boolean; result: string; leftover: number }> = {};
+  for (const [name, timeout] of [
+    ["limit", 0x7fffffff],
+    ["belowLimit", 0x7fffffff - 1],
+    ["infinity", Infinity],
+  ] as const) {
+    const cells = new Int32Array(new SharedArrayBuffer(4));
+    const waiting = atomicsWaitAsyncFor(cells, 0, 0, timeout);
+    const pending = await pendingAfter(waiting, 50);
+    Atomics.store(cells, 0, 1);
+    Atomics.notify(cells, 0);
+    const result = await settle(waiting);
+    results[name] = { pending, result, leftover: Atomics.notify(cells, 0) };
+  }
+  return results;
+}
+
 export const waitAsyncContractExpected = {
   abandoned: { woken: 1, liveResult: "ok", leftover: 0 },
   retry: { first: "timed-out", earlier: 0, retry: "timed-out" },
@@ -71,6 +120,12 @@ export const waitAsyncContractExpected = {
     leftover: 0,
   },
   notify: { woken: 1, result: "ok" },
+  late: { changed: "ok", unchanged: "timed-out" },
+  long: {
+    limit: { pending: true, result: "ok", leftover: 0 },
+    belowLimit: { pending: true, result: "ok", leftover: 0 },
+    infinity: { pending: true, result: "ok", leftover: 0 },
+  },
 } as const;
 
 export async function waitAsyncContract() {
@@ -79,5 +134,7 @@ export async function waitAsyncContract() {
     retry: await retryIgnoresEarlierNotify(),
     zero: zeroTimeoutPolls(),
     notify: await notifyDuringWaitWakes(),
+    late: await lateNativeResult(),
+    long: await longTimeouts(),
   };
 }

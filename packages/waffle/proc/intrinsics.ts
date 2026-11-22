@@ -29,6 +29,7 @@ export {
   atomicsOr,
   atomicsWaitAsync,
   atomicsWaitAsyncFor,
+  timedWaitAsync,
   atomicsWaitAsyncBigInt,
   Uint8ArrayConstructor,
   Uint32ArrayConstructor,

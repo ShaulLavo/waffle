@@ -1,4 +1,5 @@
 import {
+  atomicsLoad,
   descriptor,
   reflectApply as apply,
   objectGetPrototypeOf,
@@ -360,30 +361,44 @@ const LONGEST_TIMER_MS = 0x7fffffff;
 // The backstop fires just after the native deadline, so the native timeout normally wins.
 const BACKSTOP_GRACE_MS = 2;
 /** A native timed Atomics.waitAsync whose promise always settles. WebKit (27.2 in Playwright)
- * can lose the Worker wake for a waitAsync resolution or timeout, leaving the wait, and the
- * Worker's other async waits, pending until something else wakes the Worker. A host timer
+ * can lose or delay the Worker wake for a waitAsync resolution or timeout, leaving the wait, and
+ * the Worker's other async waits, pending until something else wakes the Worker. A host timer
  * registered by the Worker itself still fires: just after the native deadline it wakes the
- * Worker, yields one task so a native result already due is delivered first, and otherwise
- * settles "timed-out". Results keep native semantics: each call is one fresh native wait, so
- * "ok" means a notify during this call, a zero timeout is a synchronous poll, and the native
- * waiter leaves the list at its own deadline instead of lingering to take later notifies.
+ * Worker and yields one task so a native result already due is delivered first. If none is,
+ * it reads the cell: a changed value settles "ok", an unchanged one "timed-out". A late native
+ * "ok" for a notify that left the value unchanged therefore reads as "timed-out", so the result
+ * is a hint: every caller rechecks its own state after any result. Each call is one fresh native
+ * wait, so "ok" never reports a notify from before the call, a zero timeout is a synchronous
+ * poll, and the native waiter leaves the list at its own deadline instead of lingering to take
+ * later notifies. A deadline past the host timer limit gets no backstop, like an untimed wait.
  */
-export function atomicsWaitAsyncFor(
+type TimedWaitAsync = (
   array: Int32Array,
   index: number,
   value: number,
   timeout: number,
-): WaitAsyncResult {
-  const waiting = atomicsWaitAsync(array, index, value, timeout);
-  if (!waiting.async || !(timeout >= 0 && timeout <= LONGEST_TIMER_MS)) return waiting;
-  return { async: true, value: backstopped(waiting.value, timeout) };
+) => WaitAsyncResult;
+export function timedWaitAsync(native: TimedWaitAsync): TimedWaitAsync {
+  return (array, index, value, timeout) => {
+    const waiting = native(array, index, value, timeout);
+    if (!waiting.async || !(timeout >= 0 && timeout <= LONGEST_TIMER_MS - BACKSTOP_GRACE_MS))
+      return waiting;
+    return { async: true, value: backstopped(waiting.value, timeout, array, index, value) };
+  };
 }
-function backstopped(native: Promise<string>, timeout: number): Promise<string> {
+export const atomicsWaitAsyncFor = timedWaitAsync(atomicsWaitAsync);
+function backstopped(
+  native: Promise<string>,
+  timeout: number,
+  array: Int32Array,
+  index: number,
+  value: number,
+): Promise<string> {
   return new PromiseConstructor<string>((resolve) => {
     let settled = false;
     let timer = scheduleTimeout(() => {
       timer = scheduleTimeout(() => {
-        if (!settled) resolve("timed-out");
+        if (!settled) resolve(atomicsLoad(array, index) === value ? "timed-out" : "ok");
       }, 0);
     }, timeout + BACKSTOP_GRACE_MS);
     afterNativePromise(
