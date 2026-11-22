@@ -68,6 +68,30 @@ const splitEngineRunners = ["process-recycling", "storage", "gpu"];
 function runnerParallelPhases(runner: string): readonly string[] {
   return splitEngineRunners.includes(runner) ? ["chromium", "firefox"] : ["chromium,firefox"];
 }
+function expectedParallelMarkers(runner: string): readonly [string, string][] {
+  return splitEngineRunners.includes(runner)
+    ? [
+        [`${runner}.parallel.chromium.finished`, "chromium"],
+        [`${runner}.parallel.firefox.finished`, "firefox"],
+      ]
+    : [[`${runner}.parallel.finished`, "chromium,firefox"]];
+}
+function expectedFailureMessage(entry: string): string {
+  const [name, rawEngines = ""] = entry.split(":");
+  const runner = entry.startsWith(`${gpuAsyncControls}:`)
+    ? "tests/page-runner/gpu-async-controls-runner.ts"
+    : entry.startsWith("reporter-controls-")
+      ? "tests/page-runner/browser-controls-runner.ts"
+      : entry.startsWith(`${processControls}:`)
+        ? "tests/process-recycling-browser-runner.ts"
+        : entry.startsWith(`${networkControls}:`)
+          ? "tests/network-browser-runner.ts"
+          : entry.startsWith(`${rootControls}:`)
+            ? `tests/${rootContinuity}-browser-runner.ts`
+            : `tests/${name}-browser-runner.ts`;
+  const engines = rawEngines ? rawEngines.split(",").join(" ") : "";
+  return engines ? `${runner} ${engines} failed` : `${runner} failed`;
+}
 const parallelFinishedHelper = `
 const split = ${JSON.stringify(splitEngineRunners)};
 const parallelFinished = (entry) =>
@@ -227,6 +251,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
         cwd: root,
         env: {
           ...process.env,
+          STORAGE_TEST_PORT: undefined,
           WAFFLE_BROWSER_GROUP: undefined,
           MATRIX_FAIL: failing.join("|"),
           STORAGE_SCRATCH_ROOT: root,
@@ -269,21 +294,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
     expect((await readdir(root)).filter((name) => name.startsWith("wb-"))).toEqual([]);
     expect(cleanupError).toBeUndefined();
     expect(failure instanceof Error).toBe(failing.length !== 0);
-    const expectedFailures = failing
-      .map((entry) =>
-        entry.startsWith(`${gpuAsyncControls}:`)
-          ? "tests/page-runner/gpu-async-controls-runner.ts failed"
-          : entry.startsWith("reporter-controls-")
-            ? "tests/page-runner/browser-controls-runner.ts failed"
-            : entry.startsWith(`${processControls}:`)
-              ? "tests/process-recycling-browser-runner.ts failed"
-              : entry.startsWith(`${networkControls}:`)
-                ? "tests/network-browser-runner.ts failed"
-                : entry.startsWith(`${rootControls}:`)
-                  ? `tests/${rootContinuity}-browser-runner.ts failed`
-                  : `tests/${entry.split(":")[0]}-browser-runner.ts failed`,
-      )
-      .toSorted();
+    const expectedFailures = failing.map(expectedFailureMessage).toSorted();
     expect(
       (JSON.parse(await readFile(join(root, "failures.json"), "utf8")) as string[]).toSorted(),
     ).toEqual(expectedFailures);
@@ -292,18 +303,8 @@ async function matrix(failing: readonly string[]): Promise<void> {
     );
     expect(await readFile(join(root, `${bootstrapArrival}.invocations`), "utf8")).toBe("webkit\n");
     for (const runner of runners) {
-      if (splitEngineRunners.includes(runner)) {
-        expect(await readFile(join(root, `${runner}.parallel.chromium.finished`), "utf8")).toBe(
-          "chromium",
-        );
-        expect(await readFile(join(root, `${runner}.parallel.firefox.finished`), "utf8")).toBe(
-          "firefox",
-        );
-      } else {
-        expect(await readFile(join(root, `${runner}.parallel.finished`), "utf8")).toBe(
-          "chromium,firefox",
-        );
-      }
+      for (const [marker, expected] of expectedParallelMarkers(runner))
+        expect(await readFile(join(root, marker), "utf8")).toBe(expected);
       expect(await readFile(join(root, `${runner}.webkit.finished`), "utf8")).toBe("webkit");
     }
   } finally {
@@ -388,6 +389,7 @@ test("native GPU failure remains blocking in its single supervised Chromium invo
 async function discoverCommands(
   group: string | undefined,
   failingRunner?: string,
+  extraEnv?: Record<string, string | undefined>,
 ): Promise<{
   commands: string[];
   storageObservers: string[];
@@ -430,7 +432,13 @@ export async function runBrowserSuite(command, options) {
     try {
       await runOwned([process.execPath, "scripts/matrix-entry.ts"], {
         cwd: root,
-        env: { ...process.env, WAFFLE_BROWSER_GROUP: group, MATRIX_FAIL: failingRunner ?? "" },
+        env: {
+          ...process.env,
+          STORAGE_TEST_PORT: undefined,
+          WAFFLE_BROWSER_GROUP: group,
+          MATRIX_FAIL: failingRunner ?? "",
+          ...extraEnv,
+        },
       });
     } catch (error) {
       cleanupError = error instanceof CommandCleanupError ? error : undefined;
@@ -501,7 +509,8 @@ async function nativeDiscovery(
     failingRunner === "gpu-async-controls"
       ? "tests/page-runner/gpu-async-controls-runner.ts"
       : `tests/${failingRunner}-browser-runner.ts`;
-  expect(result.failures).toEqual(failingRunner ? [`${failed} failed`] : []);
+  const matching = failingRunner ? commands.filter((command) => command[0] === failed) : [];
+  expect(result.failures).toEqual(matching.map((command) => `${command.join(" ")} failed`));
 }
 
 test("CI shards dispatch each command in the full browser matrix exactly once within pool limits", async () => {
@@ -526,6 +535,17 @@ test("CI shards dispatch each command in the full browser matrix exactly once wi
   expect(reporter.peakConcurrency).toBe(2);
 });
 
+test("a configured STORAGE_TEST_PORT keeps storage Chromium and Firefox paired", async () => {
+  const fixedPort = await discoverCommands("runtime", undefined, { STORAGE_TEST_PORT: "41234" });
+  expect(fixedPort.failed).toBe(false);
+  const commands: string[][] = fixedPort.commands.map((line) => JSON.parse(line));
+  expect(commands.filter((command) => command[0] === "tests/storage-browser-runner.ts")).toEqual([
+    ["tests/storage-browser-runner.ts", "chromium", "firefox"],
+    ["tests/storage-browser-runner.ts", "webkit"],
+  ]);
+  expect(fixedPort.storageObservers).toEqual(["chromium,firefox=1", "webkit=0"]);
+});
+
 test("the runtime shard preserves batch order and storage observer scope after an early failure", async () => {
   const [parallel, serial, reporter, runtime] = await Promise.all([
     discoverCommands("parallel"),
@@ -538,7 +558,7 @@ test("the runtime shard preserves batch order and storage observer scope after a
     reporter.commands,
   );
   expect(runtime.failed).toBe(true);
-  expect(runtime.failures).toEqual(["tests/gpu-native-browser-runner.ts failed"]);
+  expect(runtime.failures).toEqual(["tests/gpu-native-browser-runner.ts chromium failed"]);
   expect(runtime.commands).toEqual(
     parallel.commands.concat(serial.commands.filter((command) => !reporterCommands.has(command))),
   );

@@ -36,8 +36,9 @@ const splitEngines = new Set([
   storageRunner,
   gpuRunner,
 ]);
+const fixedStoragePort = Number(process.env.STORAGE_TEST_PORT ?? 0) !== 0;
 function parallelTasks(runner: string): SuiteTask[] {
-  if (splitEngines.has(runner))
+  if (splitEngines.has(runner) && !(runner === storageRunner && fixedStoragePort))
     return [
       { runner, engines: ["chromium"] },
       { runner, engines: ["firefox"] },
@@ -130,6 +131,10 @@ function invocationEnv(runner: string, engines: readonly string[]) {
   return { ...process.env, STORAGE_LIFECYCLE_OBSERVER: engines.includes("webkit") ? "0" : "1" };
 }
 
+function taskLabel(task: SuiteTask): string {
+  return task.engines.length ? `${task.runner} ${task.engines.join(" ")}` : task.runner;
+}
+
 async function runSuiteTask(task: SuiteTask, failures: Error[]): Promise<void> {
   try {
     await runBrowserSuite([process.execPath, task.runner].concat(task.engines), {
@@ -138,7 +143,7 @@ async function runSuiteTask(task: SuiteTask, failures: Error[]): Promise<void> {
       signal: stopped.signal,
     });
   } catch (reason) {
-    failures.push(new Error(`${task.runner} failed`, { cause: reason }));
+    failures.push(new Error(`${taskLabel(task)} failed`, { cause: reason }));
   }
 }
 
