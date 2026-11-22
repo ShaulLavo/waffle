@@ -34,7 +34,8 @@ async function eagerInputs(entry: string): Promise<Set<string>> {
   return inputs;
 }
 
-// The filesystem service and its storage engines run only inside the filesystem worker.
+// The filesystem service and its storage engines run only inside the filesystem worker, which
+// loads them statically so worker disposal never waits on a module fetch.
 const filesystemWorkerOnly = [
   "fs/service.ts",
   "fs/backend.ts",
@@ -55,8 +56,7 @@ for (const entry of ["index.ts", "runtime.ts", "browser/worker.ts"]) {
   });
 }
 
-test("the filesystem worker loads the OPFS engine only when it is selected", async () => {
+test("the filesystem worker itself still loads every filesystem-worker module", async () => {
   const inputs = await eagerInputs("browser/fs-worker.ts");
-  expect(inputs.has("fs/indexeddb.ts")).toBe(true);
-  expect(inputs.has("fs/opfs.ts")).toBe(false);
+  for (const path of filesystemWorkerOnly) expect(inputs.has(path), path).toBe(true);
 });
