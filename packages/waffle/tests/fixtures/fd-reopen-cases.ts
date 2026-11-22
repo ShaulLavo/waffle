@@ -275,18 +275,18 @@ test("direct and alias output spans are validated before TRUNC or allocation", (
 });
 test("inode open failures keep positive errno and leave output and bytes untouched", (f) => {
   const source = seed(f);
-  const permissions = f.fs.permissions.bind(f.fs);
+  const stat = f.fs.stat.bind(f.fs);
   const resize = f.fs.resize.bind(f.fs);
   f.view().setUint32(128, 0xabcdef01, true);
   const traces = f.traces.length;
-  f.fs.permissions = () => {
+  f.fs.stat = () => {
     throw new FilesystemError(2);
   };
   equal(f.wasi.fdReopen(source, 8, 0, WRITE, 128), 2);
   equal(f.tryPath(`dev/fd/${source}`, 8, WRITE), 2);
   equal(f.tryPath("file", 8, WRITE), 2);
   equal(f.traces.length, traces);
-  f.fs.permissions = permissions;
+  f.fs.stat = stat;
   f.fs.resize = () => 29;
   equal(f.wasi.fdReopen(source, 8, 0, WRITE, 128), 29);
   equal(f.tryPath(`dev/fd/${source}`, 8, WRITE), 29);
@@ -306,9 +306,9 @@ test("ordinary opens and descriptor reopens keep their original policy order", (
 });
 test("direct reopen propagates unknown host errors while preview1 wraps them", (f) => {
   const source = seed(f);
-  const permissions = f.fs.permissions.bind(f.fs);
+  const stat = f.fs.stat.bind(f.fs);
   const failure = new Error("fixture inode failure");
-  f.fs.permissions = () => {
+  f.fs.stat = () => {
     throw failure;
   };
   let caught: unknown;
@@ -319,7 +319,7 @@ test("direct reopen propagates unknown host errors while preview1 wraps them", (
   }
   equal(caught, failure);
   equal(f.tryPath(`dev/fd/${source}`), 29);
-  f.fs.permissions = permissions;
+  f.fs.stat = stat;
 });
 
 test("only root directory bindings resolve normalized descriptor aliases", (f) => {

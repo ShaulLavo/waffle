@@ -4,11 +4,35 @@ import {
   RIGHT_PATH_OPEN as PATH_OPEN,
   RIGHT_PATH_FILESTAT_SET_SIZE as PATH_RESIZE,
 } from "./rights.js";
-import type { Descriptor, DescriptorTable } from "./descriptors.js";
-import type { FileSystem, ResolvedPath } from "./filesystem.js";
+import type { Descriptor, DescriptorTable, OpenDescription, Resource } from "./descriptors.js";
+import type { FileStat, FileSystem, ResolvedPath } from "./filesystem.js";
 import { normalize } from "./path.js";
 
 export type DescriptorPath = { source: number } | { device: "null" } | { resolved: ResolvedPath };
+
+const directoryInos = new WeakMap<OpenDescription, number>();
+
+function directoryIno(fs: FileSystem, descriptor: Descriptor): number {
+  let ino = directoryInos.get(descriptor.description);
+  if (ino !== undefined) return ino;
+  ino = fs.stat((descriptor.resource as Extract<Resource, { kind: "directory" }>).handle).ino;
+  directoryInos.set(descriptor.description, ino);
+  return ino;
+}
+
+function isRootDirectory(table: DescriptorTable, fs: FileSystem, directory: Descriptor): boolean {
+  if (directory.resource.kind !== "directory") return false;
+  if (directory.preopen === "/") return true;
+  const root = table.rootPreopen();
+  if (!root || root.resource.kind !== "directory") return false;
+  if (directory.resource.handle === root.resource.handle) return true;
+  return directoryIno(fs, directory) === directoryIno(fs, root);
+}
+
+function hasPermissionDenial(fs: FileSystem, handle: number, access: number): boolean {
+  const permissions = fs.permissions?.(handle);
+  return Boolean(permissions && permissions.accessSupported & access & ~permissions.access);
+}
 
 /** Open the inode again, not its old pathname. Negative results are WASI errno. */
 export function reopenDescriptor(
@@ -51,11 +75,17 @@ export function openInode(
   fdflags: number,
   base: bigint,
   inheriting: bigint,
+  stat: FileStat = fs.stat(handle),
 ): number {
-  if (fs.stat(handle).kind === "socket") return -60;
+  if (stat.kind === "socket") return -60;
   const access = (base & READ ? 4 : 0) | (base & WRITE ? 2 : 0);
-  const permissions = fs.permissions?.(handle);
-  if (permissions && permissions.accessSupported & access & ~permissions.access) return -2;
+  if (access) {
+    const denied =
+      stat.mode !== undefined
+        ? (access & ~(stat.mode >>> 6)) !== 0
+        : hasPermissionDenial(fs, handle, access);
+    if (denied) return -2;
+  }
   if (oflags & 2 && kind !== "directory") return -54;
   if (oflags & 8) {
     if (kind === "directory") return -31;
@@ -63,7 +93,7 @@ export function openInode(
     if (error) return -error;
   }
   fs.retain(handle);
-  return table.open(
+  const fd = table.open(
     kind === "directory"
       ? { kind, handle }
       : { kind, handle, offset: 0, append: (fdflags & 1) !== 0, fdflags },
@@ -71,6 +101,8 @@ export function openInode(
     inheriting,
     () => fs.release(handle),
   );
+  if (kind === "directory") directoryInos.set(table.get(fd)!.description, stat.ino);
+  return fd;
 }
 
 /** These names are process-local WASI paths, never entries in the shared filesystem. */
@@ -134,40 +166,34 @@ function nullDeviceParent(fs: FileSystem, root: number, path: ResolvedPath): boo
 
 type FinalLinkPolicy = "follow" | "nofollow" | "exclusive-create";
 
+function isAliasCandidate(path: string): boolean {
+  if (!path.includes("dev") && !path.includes("proc")) return false;
+  const normalized = normalize(path);
+  return descriptorPath(normalized) !== undefined || devicePath(normalized) !== undefined;
+}
+
 function resolveOrdinaryPath(
+  table: DescriptorTable,
   fs: FileSystem,
+  directory: Descriptor,
   handle: number,
   path: string,
   finalLink: FinalLinkPolicy,
 ): { resolved: ResolvedPath } | number | undefined {
-  let candidate = false;
-  if (path.includes("dev") || path.includes("proc")) {
-    const normalized = normalize(path);
-    candidate = descriptorPath(normalized) !== undefined || devicePath(normalized) !== undefined;
-  }
-  if (!candidate) {
-    const resolved = fs.resolve(handle, path, finalLink === "follow");
-    if (typeof resolved === "number" && resolved !== 44) return resolved;
-    if (typeof resolved !== "number" && !nullDeviceParent(fs, handle, resolved))
-      return { resolved };
-  }
-  return undefined;
+  const resolved = fs.resolve(handle, path, finalLink === "follow");
+  if (typeof resolved === "number")
+    return resolved !== 44 || !isRootDirectory(table, fs, directory) ? resolved : undefined;
+  if (resolved.name !== "null" || !isRootDirectory(table, fs, directory)) return { resolved };
+  return nullDeviceParent(fs, handle, resolved) ? undefined : { resolved };
 }
 
-/** Ordinary root paths return their one resolved result; virtual aliases use the component walker. */
-export function resolveDescriptorPath(
+function walkDescriptorPath(
   table: DescriptorTable,
   fs: FileSystem,
-  directory: Descriptor,
+  handle: number,
   path: string,
   finalLink: FinalLinkPolicy,
 ): DescriptorPath | number | undefined {
-  if (directory.resource.kind !== "directory") return undefined;
-  const handle = directory.resource.handle;
-  if (directory.preopen !== "/" && fs.stat(handle).ino !== fs.stat(fs.preopen("/")).ino)
-    return undefined;
-  const ordinary = resolveOrdinaryPath(fs, handle, path, finalLink);
-  if (ordinary !== undefined) return ordinary;
   // Resolve candidates and unresolved aliases against original components, not normalized text.
   let current: PathEntry = { prefix: "", kind: "directory", handle };
   const parents: PathEntry[] = [];
@@ -207,4 +233,23 @@ export function resolveDescriptorPath(
   if (path.endsWith("/") && current.kind !== "directory") return 54;
   if (current.source !== undefined) return { source: current.source };
   return current.kind === "device" ? { device: "null" } : undefined;
+}
+
+/** Ordinary paths return their one resolved result; virtual root aliases use the component walker. */
+export function resolveDescriptorPath(
+  table: DescriptorTable,
+  fs: FileSystem,
+  directory: Descriptor,
+  path: string,
+  finalLink: FinalLinkPolicy,
+): DescriptorPath | number | undefined {
+  if (directory.resource.kind !== "directory") return undefined;
+  const handle = directory.resource.handle;
+  if (!isAliasCandidate(path)) {
+    const ordinary = resolveOrdinaryPath(table, fs, directory, handle, path, finalLink);
+    if (ordinary !== undefined) return ordinary;
+  } else if (!isRootDirectory(table, fs, directory)) {
+    return undefined;
+  }
+  return walkDescriptorPath(table, fs, handle, path, finalLink);
 }
