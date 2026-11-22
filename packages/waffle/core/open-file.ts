@@ -3,6 +3,7 @@ import type { Resource } from "./descriptors.js";
 import { FilesystemError } from "./filesystem.js";
 import { FilesystemSection, isRevoked } from "../fs/section.js";
 import type { FilesystemIdentity } from "../fs/protocol.js";
+import { atomicsWait } from "../proc/intrinsics/core.ts";
 
 type FileResource = Extract<Resource, { kind: "file" }>;
 interface SharedOffset {
@@ -168,6 +169,6 @@ function acquireFileOffset({ cells, identity }: SharedOffset, nonblocking: boole
     if (nonblocking) return -6;
     // Revocation and reaping notify the identity signal, not this lock word.
     // Recheck both after a bounded park, even if the owner never unlocks.
-    Atomics.wait(cells, 0, owner, 10);
+    atomicsWait(cells, 0, owner, 10);
   }
 }

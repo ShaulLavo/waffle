@@ -79,6 +79,7 @@ import {
   SharedArrayBufferConstructor,
   typedArrayLength,
   atomicsWait,
+  installCooperativeWait,
   objectEntries,
   reflectApply,
   SetConstructor,
@@ -602,6 +603,8 @@ async function bootstrapWorker<R extends RuntimeWorkerRequest>(
   operations?: GuestOperationBinding,
 ): Promise<void> {
   const hooks = captureWorkerHost(host);
+  // Guest JavaScript in this realm sleeps through the same wait as the process host does.
+  installCooperativeWait();
   if (!req.controlGrant) throw new TypeError("Worker bootstrap requires a shared control grant");
   const allocateShared = createSharedControlAllocator(req.controlGrant, (buffer) =>
     hooks.postToHost({ type: "shared-control-allocation", buffer }),

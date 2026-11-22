@@ -8,7 +8,7 @@ export const atomicsCompareExchange = Atomics.compareExchange;
 export const atomicsAdd = Atomics.add;
 export const atomicsExchange = Atomics.exchange;
 export const atomicsNotify = Atomics.notify;
-export const atomicsWait = Atomics.wait;
+export { atomicsWait } from "./wait.ts";
 export const BigInt64ArrayConstructor = BigInt64Array;
 export const Int32ArrayConstructor = Int32Array;
 export const objectFreeze = Object.freeze;

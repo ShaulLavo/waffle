@@ -82,6 +82,9 @@ export default {
         "tests/operation-diagnostics-browser.ts",
         "tests/fixtures/operation-{fs-worker,observer-worker,page}.ts",
         "tests/bootstrap-arrival-browser-runner.ts",
+        // WebKit sleeping-collector test (scripts/test-browser.ts). Its runner bundles page and worker.
+        "tests/sleeping-collector-browser{,-runner}.ts",
+        "tests/fixtures/sleeping-collector-worker.ts",
         // Bundled by the link browser runner before the linker imports execute.
         "tests/fixtures/link-relay-worker.ts",
         "tests/gpu-async-browser-runner.ts",

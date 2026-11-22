@@ -1,5 +1,6 @@
 import { allocateSharedControl } from "../../memory/control.js";
 import {
+  atomicsWait,
   Int32ArrayConstructor,
   typedArrayBuffer,
   typedArrayByteOffset,
@@ -145,7 +146,7 @@ export class RingReader extends RingBase {
 
   /** Sleeps until the generation differs from `seen` or `timeoutMs` passes (negative: forever). */
   wait(seen: number, timeoutMs: number): "ok" | "not-equal" | "timed-out" {
-    return Atomics.wait(this.cells, GEN, seen, timeoutMs < 0 ? Infinity : timeoutMs);
+    return atomicsWait(this.cells, GEN, seen, timeoutMs < 0 ? Infinity : timeoutMs);
   }
 
   /** Release a host's ring watcher when it is disposed. */

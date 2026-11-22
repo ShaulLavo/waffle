@@ -68,6 +68,7 @@ const webkitTasks: SuiteTask[] = runners
   .map((runner) => ({ runner, engines: ["webkit"] }))
   .concat(
     [{ runner: "tests/bootstrap-arrival-browser-runner.ts", engines: ["webkit"] }],
+    [{ runner: "tests/sleeping-collector-browser-runner.ts", engines: ["webkit"] }],
     [{ runner: asyncGpuRunner, engines: ["webkit"] }],
   );
 const isolatedTasks: SuiteTask[] = [

@@ -5,6 +5,7 @@ import {
   atomicsAdd,
   atomicsLoad,
   atomicsNotify,
+  atomicsWait,
   atomicsWaitAsync,
   scheduleTimeout,
   SetConstructor,
@@ -732,7 +733,7 @@ export class NetHost {
     const reply = allocateSharedControl(12);
     const cells = new Int32Array(reply);
     this.send({ ...request, reply }, transfer);
-    while (Atomics.load(cells, 0) === 0) Atomics.wait(cells, 0, 0);
+    while (Atomics.load(cells, 0) === 0) atomicsWait(cells, 0, 0);
     return [Atomics.load(cells, 1), Atomics.load(cells, 2)];
   }
 

@@ -101,6 +101,39 @@ while the underlying behavior persists.
   upfront reservation on supported Safari targets. Record native macOS, iOS Simulator, and
   physical iPhone separately and check first use and same-page disposal.
 
+## A sleeping Worker stops collection in other Workers
+
+- **Site.** On WebKit, `atomicsWait` wakes a long wait at growing intervals and allocates a
+  little, and a process Worker installs the same function as its realm's `Atomics.wait`.
+  [Wait](../packages/waffle/proc/intrinsics/wait.ts) and
+  [behavior](../docs/webkit-blocking-waits.md).
+- **Evidence.** Reproduced with Playwright 1.64.1, WebKit 2370 (27.2). On GitHub-hosted Ubuntu
+  26.04 runners with four cores, bun-wasm's storage scenario stalled in 4 of 31 unmodified runs:
+  a late `/bin/node` child of Vite's bundler stopped at `instantiating`. Native stacks of the
+  four stalls agree. The child is inside `Wasm::Memory::tryCreate`, waiting on the synchronous
+  collection WebKit runs once eight fast memories are live. Its collector thread waits in
+  `SlotVisitor::drainInParallelPassively` with no timeout, and all three marking helpers are
+  parked in another cycle. Twelve of thirteen sleeping Workers were in JavaScript
+  `Atomics.wait`. An isolated page reproduces it on the Linux PC without Waffle: 12 of 21 runs
+  stalled with native waits and 0 of 22 with waits that wake and allocate. It also reproduced
+  with eight visible cores (3 of 8). The same scenario ran about 200 times on the Linux PC
+  without a stall, so the full scenario's timing matters. Chromium 156 and Firefox 157 passed
+  the same scenario in CI throughout. macOS Safari, iOS Simulator Safari and physical iPhone
+  are unmeasured; iOS allows fewer fast memories, so the synchronous collection is more
+  frequent there. Reported: no. The diagnosis and archives are in
+  `/work/reports/waffle-20261121/webkit-storage-start/RESULT.md`.
+  [Runner](../packages/waffle/tests/sleeping-collector-browser-runner.ts).
+- **Cost.** A sleeping Worker wakes after 16 ms, then at doubling intervals up to about two
+  seconds, and allocates about 32 KiB each time. A wait that is notified within 16 ms is
+  unchanged. A notify that lands during a wake reads as `"not-equal"`, or is missed when the
+  value did not change.
+- **Gap.** A Wasm guest that parks with `memory.atomic.wait32` cannot be wrapped and can still
+  hold the helpers. Guest-instantiated Wasm past the fast-memory limit takes the same
+  synchronous collection.
+- **Removal check.** Run the sleeping-collector runner on each supported WebKit. Remove the
+  wrapper when its native-wait control no longer stalls across repeated runs on an engine that
+  includes a fix, and the bun-wasm storage scenario passes a long hosted loop without it.
+
 ## Fixed views of growing Wasm memory
 
 - **Site.** `memoryViews()` attempts `toResizableBuffer()` where allowed. If it is absent

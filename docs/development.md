@@ -302,6 +302,11 @@ Local adapter controls run with `PUBLICATION_BROWSER_CONTROLS=1 bun test
 packages/waffle/tests/page-runner/worker-lifecycle-browser.test.ts`. These controls and desktop
 publication results do not qualify actual iOS Safari.
 
+The sleeping-collector test runs with
+`bun packages/waffle/tests/sleeping-collector-browser-runner.ts webkit` and in the serial portion
+of the CI runtime job. Starts beside Workers that sleep through Waffle's wait must all finish; the
+native-wait control and its count are explained in [Blocking waits on WebKit](webkit-blocking-waits.md).
+
 The no-guest bootstrap arrival controls run with
 `bun packages/waffle/tests/bootstrap-arrival-browser-runner.ts webkit` and in the serial portion
 of the CI runtime job. A held arrival response must settle before the native driver admits observation

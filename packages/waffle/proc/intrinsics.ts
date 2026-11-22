@@ -25,6 +25,7 @@ export {
   isInstance,
   arrayAppend,
 } from "./intrinsics/core.ts";
+export { installCooperativeWait } from "./intrinsics/wait.ts";
 export {
   atomicsOr,
   atomicsWaitAsync,

@@ -201,6 +201,14 @@ writeFileSync("bootstrap-arrival.finished", engines);
 if (process.env.MATRIX_FAIL.split("|").includes("bootstrap-arrival:" + engines)) throw Error("bootstrap arrival fixture failure");
 `;
 
+const sleepingCollectorFixture = `
+import { appendFileSync, existsSync } from "node:fs";
+const engines = process.argv.slice(2).join(",");
+if (engines !== "webkit") throw Error("changed sleeping collector engine");
+if (!existsSync("gpu-async.parallel.finished")) throw Error("early sleeping collector");
+appendFileSync("sleeping-collector.invocations", engines + "\\n");
+`;
+
 const matrixEntry = `
 import { writeFileSync } from "node:fs";
 let failures = [];
@@ -241,6 +249,10 @@ async function matrix(failing: readonly string[]): Promise<void> {
     await writeFile(
       join(root, "tests/bootstrap-arrival-browser-runner.ts"),
       bootstrapArrivalFixture,
+    );
+    await writeFile(
+      join(root, "tests/sleeping-collector-browser-runner.ts"),
+      sleepingCollectorFixture,
     );
     await mkdir(join(root, "tests/page-runner"));
     await writeFile(join(root, "tests/page-runner/browser-controls-runner.ts"), fixture);
@@ -302,6 +314,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
       "chromium,firefox\nwebkit\n",
     );
     expect(await readFile(join(root, `${bootstrapArrival}.invocations`), "utf8")).toBe("webkit\n");
+    expect(await readFile(join(root, "sleeping-collector.invocations"), "utf8")).toBe("webkit\n");
     for (const runner of runners) {
       for (const [marker, expected] of expectedParallelMarkers(runner))
         expect(await readFile(join(root, marker), "utf8")).toBe(expected);
@@ -526,7 +539,7 @@ test("CI shards dispatch each command in the full browser matrix exactly once wi
     expect(run.commands.length).toBeGreaterThan(0);
     expect(new Set(run.commands).size).toBe(run.commands.length);
   }
-  expect(full.commands).toHaveLength(56);
+  expect(full.commands).toHaveLength(57);
   expect(runtime.commands.concat(reporter.commands).toSorted()).toEqual(full.commands.toSorted());
   expect(parallel.peakConcurrency).toBeGreaterThan(1);
   expect(parallel.peakConcurrency).toBeLessThanOrEqual(6);

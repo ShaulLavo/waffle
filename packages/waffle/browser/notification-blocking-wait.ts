@@ -1,4 +1,5 @@
 import type { NotificationWord } from "./notification-relay.js";
+import { atomicsWait } from "../proc/intrinsics/core.ts";
 
 export interface NotificationBlockingRequest {
   readonly type: "wait";
@@ -50,5 +51,5 @@ export function createNotificationWaiters(url: string) {
 
 /** The worker repeats this handler only when the relay rearms it, never on a timer. */
 export function notificationBlockingWait({ word, seen }: NotificationBlockingRequest): void {
-  globalThis.postMessage(Atomics.wait(word.cells, word.index, seen));
+  globalThis.postMessage(atomicsWait(word.cells, word.index, seen));
 }
