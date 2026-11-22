@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import ts from "typescript-api";
 import { NETWORK_ASSETS } from "./build-network.js";
 import { assertWasiLibcBuildInputs, wasiLibcBuildInputs } from "./package-inputs.js";
 
@@ -26,6 +27,30 @@ function verifyExportTargets(root: string, entry: Record<string, unknown>): void
     if (typeof target !== "string" || !target.startsWith("./"))
       throw new Error("invalid export target");
     if (!existsSync(join(root, target))) throw new Error(`archive is missing export ${target}`);
+  }
+}
+
+function verifyImportClosure(root: string, packed: string, targets: readonly string[]): void {
+  const pending = targets.map((target) => resolve(root, target));
+  const visited = new Set<string>();
+  while (pending.length) {
+    const path = pending.pop();
+    if (path === undefined || visited.has(path)) continue;
+    visited.add(path);
+    const name = relative(root, path);
+    if (!existsSync(join(packed, name))) throw new Error(`archive is missing import ${name}`);
+    if (!/\.[jt]s$/.test(path)) continue;
+    const imports = ts.preProcessFile(readFileSync(path, "utf8"), true, true).importedFiles;
+    for (const entry of imports) {
+      if (!entry.fileName.startsWith(".")) continue;
+      const base = resolve(dirname(path), entry.fileName);
+      const candidates = name.startsWith("dist/")
+        ? [base, base.replace(/\.js$/, ".ts"), `${base}.ts`, join(base, "index.ts")]
+        : [base.replace(/\.js$/, ".ts"), base, `${base}.ts`, join(base, "index.ts")];
+      const dependency = candidates.find(existsSync);
+      if (!dependency) throw new Error(`cannot resolve ${entry.fileName} imported by ${name}`);
+      pending.push(dependency);
+    }
   }
 }
 
@@ -110,12 +135,17 @@ async function run(): Promise<void> {
   const metadata = record(JSON.parse(await readFile(join(packedRoot, "package.json"), "utf8")));
   const exports = record(metadata.exports);
   const nodeSpecifiers: string[] = [];
+  const targets: string[] = ["tests/page-runner/framework-bootstrap-main.ts"];
   for (const [key, target] of Object.entries(exports)) {
     const entry = record(target);
     verifyExportTargets(packedRoot, entry);
+    for (const target of Object.values(entry)) {
+      if (typeof target === "string") targets.push(target);
+    }
     if (typeof entry.node === "string")
       nodeSpecifiers.push(key === "." ? "@waffle-os/runtime" : `@waffle-os/runtime${key.slice(1)}`);
   }
+  verifyImportClosure(packageRoot, packedRoot, targets);
   const nodeScript = `
     for (const specifier of ${JSON.stringify(nodeSpecifiers)}) await import(specifier);
     const { startCommand } = await import("@waffle-os/runtime/command");
