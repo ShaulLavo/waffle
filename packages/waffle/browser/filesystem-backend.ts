@@ -1,6 +1,8 @@
-import type { MemoryBackendSharedRoot } from "../fs/backend.js";
+import { MemoryBackend, type MemoryBackendSharedRoot } from "../fs/backend.js";
 import type { MemoryBudget } from "../fs/memory-budget.js";
-import { MemoryBackend, PersistentBackend, IndexedDBStorage, OpfsStorage } from "../fs/index.js";
+import { PersistentBackend } from "../fs/persistent.js";
+import { IndexedDBStorage } from "../fs/indexeddb.js";
+import { OpfsStorage } from "../fs/opfs.js";
 import type { StorageBackend } from "../fs/storage.js";
 import type { RuntimeStartupObserver } from "../fs/startup.js";
 import { resolveVfs, requireVfsCapabilities } from "../fs/vfs.js";
