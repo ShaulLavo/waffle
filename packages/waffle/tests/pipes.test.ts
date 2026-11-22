@@ -184,19 +184,19 @@ describe("process pipe endpoints", () => {
     const { controller, reader, writer } = pipe();
     writer.tryWrite([encode.encode("good")]);
     const source = encode.encode("evil");
-    const original = hooks.typedArraySubarray;
+    const original = hooks.typedArrayCopy;
     let intercepted = false;
-    hooks.typedArraySubarray = (view, begin, end) => {
+    hooks.typedArrayCopy = (target, offset, view, begin, end) => {
       if (view === source) {
         intercepted = true;
         controller.revoke(2);
       }
-      return original(view, begin, end);
+      original(target, offset, view, begin, end);
     };
     try {
       expect(writer.tryWrite([source])).toBe(-PipeErrno.BADF);
     } finally {
-      hooks.typedArraySubarray = original;
+      hooks.typedArrayCopy = original;
     }
     expect(intercepted).toBe(true);
     expect(output(reader)).toBe("good");
@@ -915,11 +915,7 @@ describe("causal write ordering and small-write atomicity", () => {
 });
 
 function ringOffset(handle: ReturnType<ReturnType<PipeController["retain"]>["handle"]>): number {
-  return (
-    40 +
-    (handle.slot + (handle.mode === "read" ? handle.maxWriters : 0)) *
-      (40 + handle.capacity + Math.min(handle.capacity, 1024) * 16)
-  );
+  return pipes.pipeRingOffset(handle);
 }
 async function asynchronousOutput(endpoint: ReturnType<PipeController["retain"]>): Promise<string> {
   for (;;) {
@@ -1052,21 +1048,20 @@ describe("ordered record adversarial boundaries", () => {
     const { controller, reader, writer } = pipe();
     const survivor = writer.forProcess(3),
       source = encode.encode("lost"),
-      subarray = hooks.typedArraySubarray;
+      copy = hooks.typedArrayCopy;
     let intercepted = false;
-    hooks.typedArraySubarray = (view, start, end) => {
-      const chunk = subarray(view, start, end);
+    hooks.typedArrayCopy = (target, offset, view, start, end) => {
+      copy(target, offset, view, start, end);
       if (view === source) {
         intercepted = true;
         controller.revoke(2);
         survivor.tryWrite([encode.encode("good")]);
       }
-      return chunk;
     };
     try {
       expect(writer.tryWrite([source])).toBe(-PipeErrno.BADF);
     } finally {
-      hooks.typedArraySubarray = subarray;
+      hooks.typedArrayCopy = copy;
     }
     expect(intercepted).toBe(true);
     expect(output(reader)).toBe("good");

@@ -48,6 +48,7 @@ export {
   typedArraySet,
   typedArrayFill,
   typedArraySubarray,
+  typedArrayCopy,
   mapClear,
   isInt32Array,
   isBigInt64Array,

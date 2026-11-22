@@ -7,8 +7,7 @@ const { PipeController, PipeErrno, PipePublicationRegistry, attachPipeEndpoint }
 const controllers: InstanceType<typeof PipeController>[] = [];
 const STOP = 1n << 32n;
 function words(handle: PipeEndpointHandle) {
-  const stride = 40 + handle.capacity + Math.min(handle.capacity, 1024) * 16;
-  const offset = 40 + (handle.maxWriters + handle.slot) * stride;
+  const offset = pipes.pipeRingOffset(handle);
   return {
     owner: new Int32Array(handle.buffer, offset, 1),
     refs: new Int32Array(handle.buffer, offset + 4, 1),
@@ -39,7 +38,7 @@ for (const phase of ["payload", "published"] as const) {
     const stale = attachPipeEndpoint(structuredClone(reader.handle()));
     const state = words(reader.handle());
     const cas = A.compareExchange,
-      subarray = hooks.typedArraySubarray;
+      copy = hooks.typedArrayCopy;
     const payload = new Uint8Array([10, 11, 12]);
     expect(writer.tryWrite([payload])).toBe(3);
     expect(reader.tryRead([new Uint8Array(8)])).toBe(-PipeErrno.AGAIN);
@@ -53,9 +52,9 @@ for (const phase of ["payload", "published"] as const) {
       expect(() => pipe.retain(4, "read")).toThrow("busy");
       expect(Atomics.load(state.epoch, 0)).toBe(256 + 2);
     }
-    hooks.typedArraySubarray = (view, begin, end) => {
+    hooks.typedArrayCopy = (target, offset, view, begin, end) => {
       if (phase === "payload" && !paused && Atomics.load(state.epoch, 0) === 258) pause();
-      return subarray(view, begin, end);
+      copy(target, offset, view, begin, end);
     };
     A.compareExchange = ((array: BigInt64Array, index: number, old: bigint, next: bigint) => {
       const result = cas(array, index, old, next);
@@ -67,7 +66,7 @@ for (const phase of ["payload", "published"] as const) {
       pipe.pumpRelay();
     } finally {
       A.compareExchange = cas;
-      hooks.typedArraySubarray = subarray;
+      hooks.typedArrayCopy = copy;
     }
     expect(paused).toBe(true);
     expect(Atomics.load(state.epoch, 0)).toBe(256);
@@ -154,9 +153,9 @@ test("a relay-mode read holds its incarnation through consumption and demand", (
   expect(reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
   pipe.pumpRelay();
   const state = words(reader.handle()),
-    subarray = hooks.typedArraySubarray;
+    copy = hooks.typedArrayCopy;
   let paused = false;
-  hooks.typedArraySubarray = (view, begin, end) => {
+  hooks.typedArrayCopy = (target, offset, view, begin, end) => {
     if (!paused && view.buffer === reader.handle().buffer) {
       paused = true;
       reader.close();
@@ -164,12 +163,12 @@ test("a relay-mode read holds its incarnation through consumption and demand", (
       expect(() => pipe.retain(4, "read")).toThrow("busy");
       expect(Atomics.load(state.consumed, 0) & STOP).toBe(STOP);
     }
-    return subarray(view, begin, end);
+    copy(target, offset, view, begin, end);
   };
   try {
     expect(reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
   } finally {
-    hooks.typedArraySubarray = subarray;
+    hooks.typedArrayCopy = copy;
   }
   expect(paused).toBe(true);
   expect(Atomics.load(state.epoch, 0)).toBe(256);

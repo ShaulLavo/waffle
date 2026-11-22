@@ -410,8 +410,19 @@ stale endpoint writes, closes and pid revocation cannot change its replacement. 
 terminated inside a section leaves the slot quarantined rather than permitting unsafe reuse.
 Raw buffers remain private runtime authority, not a guest corruption sandbox.
 
-The default pipe retains one fixed 2,622,760-byte buffer and admits 16 simultaneous writing
-processes and 16 reading processes. Closed writer rings can append new owners after unread
+Ring storage is paged, the way Linux backs a pipe with `pipe_buffer` pages. Each ring keeps its
+full virtual capacity (65,536 bytes and 1,024 write records by default), but its page table maps
+4 KiB payload pages and 64-record pages only for data that is not yet read. A consumer frees a
+page once its cursor passes the page's end; the producer maps a page, or retags the previous
+lap's page, before copying into it. One shared pool per pipe holds a full ring's worth of pages
+plus two that only relay deliveries may take. Every writer slot also owns two private pages of
+each kind, so a writer can always write `PIPE_BUF` bytes once its own data is read, whatever
+other writers, or a Worker stopped mid-write, still hold. Readers copy committed bytes before
+their consuming CAS, so a reader that loses a race to a freed page discards what it copied.
+
+The default pipe retains one fixed 261,944-byte buffer (it was 2,622,760 bytes with a dedicated
+ring per slot) and admits 16 simultaneous writing processes and 16 reading processes. A
+four-stage pipeline's three pipes reserve 785,832 bytes. Closed writer rings can append new owners after unread
 committed records, preserving tickets, record pins and cursor counters. Reader rings must be
 fully drained or recovered by the relay before reuse. Reclaiming a direct reader switches to
 relay mode before publishing its replacement. Fresh slots are preferred. Each slot permits

@@ -18,6 +18,7 @@ export async function isolatedProcess() {
   const atomics = Object.create(Atomics) as typeof Atomics;
   const hooks = {
     typedArraySubarray: native.typedArraySubarray,
+    typedArrayCopy: native.typedArrayCopy,
     encodeUtf8Prefix: native.encodeUtf8Prefix,
   };
   const intrinsics: Record<string, unknown> = { ...native };
@@ -30,6 +31,13 @@ export async function isolatedProcess() {
   }
   intrinsics.typedArraySubarray = (view: Uint8Array, begin?: number, end?: number) =>
     hooks.typedArraySubarray(view, begin, end);
+  intrinsics.typedArrayCopy = (
+    target: Uint8Array,
+    offset: number,
+    source: Uint8Array,
+    begin: number,
+    end: number,
+  ) => hooks.typedArrayCopy(target, offset, source, begin, end);
   intrinsics.encodeUtf8Prefix = (text: string, capacity: number) =>
     hooks.encodeUtf8Prefix(text, capacity);
   const result = await Bun.build({

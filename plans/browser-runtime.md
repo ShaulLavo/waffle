@@ -242,3 +242,39 @@ incarnation, plus proof that no admitted native copy can still finish. Browser `
 and registry collection do not provide that proof. Add delayed-copy, stale acknowledgement,
 replaced incarnation and physical-death controls before clearing any abandoned count. Keep
 finite quarantine if no platform-independent proof is available.
+
+A quarantined writer slot now also keeps the pages its interrupted write mapped: at most one
+write's worth (17 payload pages and one record page) from the pipe's shared pool. Its two
+reserved pages, and every other writer's, are untouched, so the pipe keeps working with less
+burst room. Recovery returns those pages through the same proof.
+
+## Pipe memory and small-write follow-ups
+
+Status: Approved. Owner: process-lifecycle track. The paged-ring change (perf lane "pipes",
+2026-11-22) cut a default pipe from 2,622,760 to 261,944 reserved bytes and made a 64-byte
+`tryWrite` plus `tryRead` about twice as fast. Guard each step with outcome tests like
+`packages/waffle/tests/pipe-pages.test.ts`, measure it with the perf suite's section 4.5 rows,
+and record before and after numbers in the PR.
+
+1. **Pipe registry maximum.** Each runtime root's `PipePublicationRegistry` is a growable
+   buffer declaring 16,785,424 bytes (1,048,576 append-only cells), which Safari reserves in
+   full at construction (`docs/shared-memory.md`). Cells are never reused because a retained raw
+   view must never alias another cursor. Design incarnation-tagged cells (or cell pages that a
+   collected owner returns once no endpoint can name them) so the declared maximum can drop to
+   about 1 MiB without lowering the lifetime pipe count. Check how gVisor and FreeBSD bound
+   per-process pipe metadata first. Reproduce the reservation with
+   `runtime.sharedMemory.snapshot()` after `createRuntime()` and one root adoption.
+2. **Shell pipelines always relay.** A shell holds its read end while it forks the reading
+   child, so `retain(child, "read")` sees two reader processes and switches the pipe to relay
+   mode for good; every byte of `cat | grep` then crosses the page's relay. Defer the switch
+   until a second reader process actually reads, which needs the direct consumer lease
+   (`Ring.bind(pid, "consumed")`) to move from the parent to the child when the parent closes.
+   The relay 64-byte round trip measured 4.9 µs on main against 1.9 µs direct.
+3. **Idle writers' shared pages.** A writer returns a partly used shared page only on its next
+   write, so 16 idle writers could each pin one shared page and leave others their reserved
+   8 KiB. The last page of every write prefers a reserved page, so this needs an unusual
+   pattern; add a pressure test before changing anything.
+4. **Remaining small-write costs.** Each write and read still sends two notify pairs
+   (`changed` and the service wake), allocates a 64-bit ticket and scans all 16 writer slots
+   in `PipeState.source`. A count of occupied writer slots, or one notify word, would remove
+   most of the rest. Keep the scan's ceiling rule.

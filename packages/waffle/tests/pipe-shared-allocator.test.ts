@@ -5,9 +5,13 @@ import {
   PipeController,
   PipeEndpoint,
   PipePublicationRegistry,
+  pipeReservationBytes,
+  pipeRingOffset,
 } from "../proc/pipes.js";
 import { WorkerPipeHost } from "../proc/worker-pipes.js";
 import { createWorkerProcessTransport } from "../proc/worker-client.js";
+
+const TINY = pipeReservationBytes({ capacity: 8, maxWriters: 2, maxReaders: 1 });
 
 function allocator() {
   const calls: number[] = [];
@@ -30,13 +34,13 @@ test("fixed pipe, local wake and endpoint controls charge exact allocations", ()
     allocateShared: allocation.allocateShared,
   });
   try {
-    expect(allocation.calls).toEqual([4, 568]);
+    expect(allocation.calls).toEqual([4, TINY]);
     const reader = pipe.retain(1, "read"),
       writer = pipe.retain(2, "write");
-    expect(allocation.calls).toEqual([4, 568, 4, 4, 4, 4]);
+    expect(allocation.calls).toEqual([4, TINY, 4, 4, 4, 4]);
     const alias = pipe.duplicate(writer),
       child = writer.forProcess(3);
-    expect(allocation.calls).toEqual([4, 568, 4, 4, 4, 4, 4, 4]);
+    expect(allocation.calls).toEqual([4, TINY, 4, 4, 4, 4, 4, 4]);
     expect(alias.handle().fdflags).toBe(writer.handle().fdflags);
     expect(child.handle().fdflags).toBe(writer.handle().fdflags);
     expect(writer.tryWrite([new Uint8Array([9])])).toBe(1);
@@ -89,7 +93,7 @@ test("fixed backing allocation failure propagates before creating a pipe", () =>
         },
       }),
   ).toThrow(failure);
-  expect(calls).toEqual([568]);
+  expect(calls).toEqual([TINY]);
 });
 
 for (const failAt of [2, 3]) {
@@ -113,7 +117,8 @@ for (const failAt of [2, 3]) {
       fail = false;
       const reader = pipe.retain(1, "read");
       expect(reader.handle().incarnation).toBe(0);
-      expect(Atomics.load(new Int32Array(reader.handle().buffer, 40 + 2 * 176 + 4, 1), 0)).toBe(1);
+      const refs = pipeRingOffset(reader.handle()) + 4;
+      expect(Atomics.load(new Int32Array(reader.handle().buffer, refs, 1), 0)).toBe(1);
     } finally {
       pipe.dispose();
     }
@@ -153,15 +158,15 @@ test("worker host and imported codec endpoints retain their realm-local allocato
   if (!announced) throw new Error("pipe was not announced");
   const controller = attachPipeController(pair[0].handle(), { relay: "manual" });
   try {
-    expect(allocation.calls).toEqual([568, 4, 4, 4, 4]);
+    expect(allocation.calls).toEqual([TINY, 4, 4, 4, 4]);
     expect(announced).toEqual(structuredClone(pair[0].handle()));
     const codec = host.codec();
     const imported = codec.import({ kind: "pipe", endpoint: structuredClone(pair[1].handle()) }, 1);
-    expect(allocation.calls).toEqual([568, 4, 4, 4, 4]);
+    expect(allocation.calls).toEqual([TINY, 4, 4, 4, 4]);
     expect(imported.resource).toBeInstanceOf(PipeEndpoint);
     if (!(imported.resource instanceof PipeEndpoint)) throw new Error("missing imported pipe");
     imported.resource.forProcess(2).close();
-    expect(allocation.calls).toEqual([568, 4, 4, 4, 4, 4]);
+    expect(allocation.calls).toEqual([TINY, 4, 4, 4, 4, 4]);
   } finally {
     registry.collectProcess(1);
     registry.collectProcess(2);

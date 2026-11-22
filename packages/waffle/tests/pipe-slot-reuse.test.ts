@@ -16,8 +16,7 @@ function fixture(maxWriters = 1, capacity = 8) {
   return { pipe, reader, writer };
 }
 function words(handle: PipeEndpointHandle) {
-  const stride = 40 + handle.capacity + Math.min(handle.capacity, 1024) * 16;
-  const offset = 40 + handle.slot * stride;
+  const offset = pipes.pipeRingOffset(handle);
   return {
     owner: new Int32Array(handle.buffer, offset, 1),
     refs: new Int32Array(handle.buffer, offset + 4, 1),
@@ -48,21 +47,22 @@ for (const action of ["close", "revoke"] as const) {
   test(`payload copy ${action} quarantines its active incarnation until it leaves`, () => {
     const { pipe, reader, writer } = fixture();
     const handle = writer.handle();
-    const subarray = hooks.typedArraySubarray;
+    const copy = hooks.typedArrayCopy;
     let paused = false;
-    hooks.typedArraySubarray = (view, begin, end) => {
-      if (view !== byte || paused) return subarray(view, begin, end);
-      paused = true;
-      if (action === "close") writer.close();
-      else pipe.revoke(2);
-      fence(handle, 2, action === "close" ? 0 : -1, 1);
-      expect(() => pipe.retain(3, "write")).toThrow("busy");
-      return subarray(view, begin, end);
+    hooks.typedArrayCopy = (target, offset, view, begin, end) => {
+      if (view === byte && !paused) {
+        paused = true;
+        if (action === "close") writer.close();
+        else pipe.revoke(2);
+        fence(handle, 2, action === "close" ? 0 : -1, 1);
+        expect(() => pipe.retain(3, "write")).toThrow("busy");
+      }
+      copy(target, offset, view, begin, end);
     };
     try {
       expect(writer.tryWrite([byte])).toBe(-PipeErrno.BADF);
     } finally {
-      hooks.typedArraySubarray = subarray;
+      hooks.typedArrayCopy = copy;
     }
     expect(paused).toBe(true);
     fence(handle, 2, action === "close" ? 0 : -1, 0);
