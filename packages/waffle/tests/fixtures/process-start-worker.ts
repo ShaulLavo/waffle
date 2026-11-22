@@ -1,4 +1,5 @@
 import { bootstrap, type RuntimeWorkerRequest } from "../../browser/worker.js";
+import { atomicsWait, atomicsWaitNative } from "../../proc/intrinsics/core.ts";
 
 export interface ProcessStartWorkerRequest extends RuntimeWorkerRequest {
   readonly gates: SharedArrayBuffer;
@@ -25,6 +26,12 @@ globalThis.onmessage = ({ data }: MessageEvent<ProcessStartWorkerRequest>) => {
       return new WebAssembly.Instance(data.module, imports);
     },
     instantiated({ instance }) {
+      // What guest JavaScript in this realm would call (docs/webkit-blocking-waits.md).
+      globalThis.postMessage({
+        type: "realm-wait",
+        installed: Atomics.wait === atomicsWait,
+        cooperative: atomicsWait !== atomicsWaitNative,
+      });
       globalThis.postMessage({ type: "stop-order-memory", memory: instance.exports.memory });
     },
     run: (_context, exited) => exited ?? 0,

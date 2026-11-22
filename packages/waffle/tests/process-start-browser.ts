@@ -20,6 +20,16 @@ export interface ProcessStartReport {
   readonly heldKilled: number;
   /** Exit code of a start whose worker script answered 404. */
   readonly missing: number;
+  /** The normal start's realm `Atomics.wait`, read after bootstrap. */
+  readonly realmWait: RealmWait | undefined;
+}
+
+/** docs/webkit-blocking-waits.md: a process Worker's realm wait is the runtime's wait. */
+interface RealmWait {
+  /** The realm's `Atomics.wait` is the runtime's wait. */
+  readonly installed: boolean;
+  /** The runtime's wait wraps the engine's on this engine. */
+  readonly cooperative: boolean;
 }
 
 const pause = (ms = 1) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -38,6 +48,7 @@ async function until<T>(read: () => T | undefined, label: string): Promise<T> {
 export async function processStarts(): Promise<ProcessStartReport> {
   const runtime = createRuntime({ filesystem: { workerURL: "/fs-worker.js", mode: "memory" } });
   const memories = new Map<number, WebAssembly.Memory>();
+  let realmWait: RealmWait | undefined;
   const stages = ["installing-bindings", "bindings-installed", "instantiating"] as const;
   const gates = new Int32Array(new SharedArrayBuffer(stages.length * Int32Array.BYTES_PER_ELEMENT));
   const release = (index: number) => {
@@ -59,7 +70,9 @@ export async function processStarts(): Promise<ProcessStartReport> {
           gates: gates.buffer,
         },
         onMessage(message) {
-          const data = message as { type?: string; memory?: WebAssembly.Memory };
+          const data = message as { type?: string; memory?: WebAssembly.Memory } & RealmWait;
+          if (data.type === "realm-wait")
+            realmWait = { installed: data.installed, cooperative: data.cooperative };
           if (data.type === "stop-order-memory" && data.memory)
             memories.set(context.pid, data.memory);
         },
@@ -172,7 +185,7 @@ export async function processStarts(): Promise<ProcessStartReport> {
       () => (service.startStates().length === 0 ? true : undefined),
       "start states to empty",
     );
-    return { stages: observed, normal, held, heldLater, heldKilled, missing };
+    return { stages: observed, normal, held, heldLater, heldKilled, missing, realmWait };
   } finally {
     for (const index of stages.keys()) release(index);
     descriptors.dispose();

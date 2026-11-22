@@ -103,8 +103,9 @@ while the underlying behavior persists.
 
 ## A sleeping Worker stops collection in other Workers
 
-- **Site.** On WebKit, `atomicsWait` wakes a long wait at growing intervals and allocates a
-  little, and a process Worker installs the same function as its realm's `Atomics.wait`.
+- **Site.** On WebKit, `atomicsWait` wakes the first seconds of a sleep at growing intervals and
+  allocates a little, and a process Worker installs the same function as its realm's
+  `Atomics.wait`.
   [Wait](../packages/waffle/proc/intrinsics/wait.ts) and
   [behavior](../docs/webkit-blocking-waits.md).
 - **Evidence.** Reproduced with Playwright 1.64.1, WebKit 2370 (27.2). On GitHub-hosted Ubuntu
@@ -123,13 +124,15 @@ while the underlying behavior persists.
   frequent there. Reported: no. The diagnosis and archives are in
   `/work/reports/waffle-20261121/webkit-storage-start/RESULT.md`.
   [Runner](../packages/waffle/tests/sleeping-collector-browser-runner.ts).
-- **Cost.** A sleeping Worker wakes after 16 ms, then at doubling intervals up to about two
-  seconds, and allocates about 32 KiB each time. A wait that is notified within 16 ms is
-  unchanged. A notify that lands during a wake reads as `"not-equal"`, or is missed when the
-  value did not change.
-- **Gap.** A Wasm guest that parks with `memory.atomic.wait32` cannot be wrapped and can still
-  hold the helpers. Guest-instantiated Wasm past the fast-memory limit takes the same
-  synchronous collection.
+- **Cost.** A sleep wakes eight times in its first four seconds, at 16 ms and then doubling
+  intervals, and allocates about 32 KiB each time. A wait that is notified within 16 ms is
+  unchanged. A notify that lands in the microseconds of a wake reads as `"not-equal"`, or is
+  missed when the value did not change. Waffle's own words always change first. Guest
+  JavaScript in a process Worker gets the same wait and the same caveat.
+- **Gap.** Guest futexes (the group `futex_wait` and supervised Wasm waits) keep the native wait
+  for its exact queue semantics, and a Wasm guest that parks with `memory.atomic.wait32` cannot
+  be wrapped. Both can still hold the helpers. Guest-instantiated Wasm past the fast-memory
+  limit takes the same synchronous collection.
 - **Removal check.** Run the sleeping-collector runner on each supported WebKit. Remove the
   wrapper when its native-wait control no longer stalls across repeated runs on an engine that
   includes a fix, and the bun-wasm storage scenario passes a long hosted loop without it.

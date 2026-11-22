@@ -6,6 +6,7 @@ export {
   atomicsExchange,
   atomicsNotify,
   atomicsWait,
+  atomicsWaitNative,
   BigInt64ArrayConstructor,
   Int32ArrayConstructor,
   objectFreeze,

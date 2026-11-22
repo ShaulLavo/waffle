@@ -53,6 +53,15 @@ function failures(report: ProcessStartReport): string[] {
   return found;
 }
 
+/** A process Worker's guest JavaScript sleeps through the runtime's wait, wrapped only on WebKit. */
+function realmWaitFailures(report: ProcessStartReport, engine: string | undefined): string[] {
+  const wait = report.realmWait;
+  if (!wait?.installed) return ["the process Worker's Atomics.wait is not the runtime's wait"];
+  if (wait.cooperative !== (engine === "webkit"))
+    return [`the runtime's wait is ${wait.cooperative ? "" : "not "}cooperative on ${engine}`];
+  return [];
+}
+
 await runIsolatedPages({
   label: "process-start-browser",
   scratchRoot: resolve(process.env.STORAGE_SCRATCH_ROOT ?? "/work/tmp"),
@@ -83,7 +92,7 @@ await runIsolatedPages({
     });
     const engine = page.context().browser()?.browserType().name();
     console.log(JSON.stringify({ engine, ...report }));
-    const found = failures(report);
+    const found = failures(report).concat(realmWaitFailures(report, engine));
     if (found.length) throw new Error(`${engine}: ${found.join("; ")}`);
     return { engine };
   },

@@ -1,7 +1,7 @@
 import {
   atomicsLoad,
   atomicsStore,
-  atomicsWait,
+  atomicsWaitNative,
   BigInt64ArrayConstructor,
   Int32ArrayConstructor,
   typedArrayLength,
@@ -93,10 +93,16 @@ export function createSupervisedWaitImports(
     timeout: bigint,
   ): number {
     const milliseconds = timeout < 0n ? Infinity : number(timeout) / 1_000_000;
+    // A guest futex: its waker may leave the word unchanged, so the waiter stays queued.
     const result =
       typeof expected === "bigint"
-        ? atomicsWait(new BigInt64ArrayConstructor(buffer), address / 8, expected, milliseconds)
-        : atomicsWait(new Int32ArrayConstructor(buffer), address / 4, expected, milliseconds);
+        ? atomicsWaitNative(
+            new BigInt64ArrayConstructor(buffer),
+            address / 8,
+            expected,
+            milliseconds,
+          )
+        : atomicsWaitNative(new Int32ArrayConstructor(buffer), address / 4, expected, milliseconds);
     return result === "ok" ? 0 : result === "not-equal" ? 1 : 2;
   }
 

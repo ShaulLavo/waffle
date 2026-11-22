@@ -2,20 +2,26 @@ import { expect, test } from "bun:test";
 import {
   createCooperativeWait,
   FIRST_WAKE_MS,
-  LONGEST_WAKE_MS,
+  LAST_WAKE_MS,
   needsCooperativeWait,
   youngCells,
 } from "../proc/intrinsics/wait.ts";
 
 type Result = "ok" | "not-equal" | "timed-out";
 
-/** A native wait on a manual clock: each call sleeps its whole timeout unless an answer is queued. */
-function harness(answers: Array<{ result: Result; after: number }> = []) {
+/**
+ * A native wait on a manual clock: each call sleeps its whole timeout unless an answer is
+ * queued. `allocationMs` is how long each wake's allocation takes.
+ */
+function harness(answers: Array<{ result: Result; after: number }> = [], allocationMs = 0) {
   let now = 1000;
-  const slices: number[] = [];
+  let clockReads = 0;
+  const calls: unknown[][] = [];
   let allocations = 0;
-  const native = ((_array: Int32Array, _index: number, _value: number, timeout: number) => {
-    slices.push(timeout);
+  const native = ((...args: unknown[]) => {
+    calls.push(args);
+    const raw = args[3];
+    const timeout = typeof raw !== "number" || Number.isNaN(raw) ? Infinity : Math.max(0, raw);
     const answer = answers.shift();
     if (answer && answer.after <= timeout) {
       now += answer.after;
@@ -27,16 +33,24 @@ function harness(answers: Array<{ result: Result; after: number }> = []) {
   }) as typeof Atomics.wait;
   const wait = createCooperativeWait(
     native,
-    () => now,
+    () => {
+      clockReads++;
+      return now;
+    },
     () => {
       allocations++;
+      now += allocationMs;
     },
   );
   const cells = new Int32Array(new SharedArrayBuffer(4));
   return {
+    cells,
     wait: (timeout?: number) => wait(cells, 0, 0, timeout),
-    slices,
+    raw: wait as (...args: unknown[]) => Result,
+    calls,
+    slices: () => calls.map((call) => call[3]),
     allocations: () => allocations,
+    clockReads: () => clockReads,
     now: () => now,
     run: (ms: number) => {
       now += ms;
@@ -45,17 +59,18 @@ function harness(answers: Array<{ result: Result; after: number }> = []) {
 }
 
 test("a wait that is answered before the first wake is one native call", () => {
-  const { wait, slices, allocations } = harness([{ result: "ok", after: 3 }]);
+  const { wait, slices, allocations, clockReads } = harness([{ result: "ok", after: 3 }]);
   expect(wait()).toBe("ok");
-  expect(slices).toEqual([FIRST_WAKE_MS]);
+  expect(slices()).toEqual([FIRST_WAKE_MS]);
   expect(allocations()).toBe(0);
+  expect(clockReads()).toBe(2);
 });
 
 test("a short timeout passes through and returns timed-out on time", () => {
   const { wait, slices, allocations, now } = harness();
   const start = now();
   expect(wait(5)).toBe("timed-out");
-  expect(slices).toEqual([5]);
+  expect(slices()).toEqual([5]);
   expect(now() - start).toBe(5);
   expect(allocations()).toBe(0);
 });
@@ -65,7 +80,7 @@ test("a long wait wakes at doubling intervals and allocates each time", () => {
   const start = now();
   expect(wait(1000)).toBe("timed-out");
   expect(now() - start).toBe(1000);
-  expect(slices).toEqual([16, 32, 64, 128, 256, 504]);
+  expect(slices()).toEqual([16, 32, 64, 128, 256, 504]);
   expect(allocations()).toBe(5);
 });
 
@@ -87,11 +102,18 @@ test("a wake allocates fresh cells for the collector by default", () => {
   expect(length).toBe(1024);
 });
 
-test("the interval stops growing at the longest wake", () => {
-  const { wait, slices } = harness();
-  wait(20_000);
-  expect(Math.max(...slices)).toBe(LONGEST_WAKE_MS);
-  expect(slices.filter((slice) => slice === LONGEST_WAKE_MS).length).toBeGreaterThan(3);
+test("a sleep stops waking after the last interval and finishes in one native wait", () => {
+  const { wait, slices, allocations } = harness();
+  expect(wait(20_000)).toBe("timed-out");
+  expect(slices()).toEqual([16, 32, 64, 128, 256, 512, 1024, LAST_WAKE_MS, 20_000 - 4080]);
+  expect(allocations()).toBe(8);
+});
+
+test("an untimed sleep ends in an untimed native wait", () => {
+  const { wait, slices } = harness([{ result: "ok", after: 60_000 }]);
+  expect(wait()).toBe("ok");
+  expect(slices().at(-1)).toBe(Infinity);
+  expect(slices()).toHaveLength(9);
 });
 
 test("a notify between wakes returns the native result", () => {
@@ -108,29 +130,78 @@ test("back-to-back short waits share one schedule", () => {
   expect(allocations()).toBe(2);
 });
 
-test("running between waits restarts the schedule", () => {
-  const { wait, slices, run } = harness();
-  wait(200);
-  run(5);
-  slices.length = 0;
-  wait(20);
-  expect(slices).toEqual([FIRST_WAKE_MS, 4]);
+test("back-to-back short waits stop waking once the schedule is done", () => {
+  const { wait, allocations } = harness();
+  for (let slice = 0; slice < 1000; slice++) wait(10);
+  expect(allocations()).toBe(8);
 });
 
-test("timeouts follow Atomics.wait: NaN and undefined wait forever, negatives do not wait", () => {
+test("running between waits restarts the schedule", () => {
+  const { wait, calls, slices, run } = harness();
+  wait(200);
+  run(5);
+  calls.length = 0;
+  wait(20);
+  expect(slices()).toEqual([FIRST_WAKE_MS, 4]);
+});
+
+test("a wake that outlasts the deadline returns timed-out without waiting again", () => {
+  const { wait, calls } = harness([], 30);
+  expect(wait(20)).toBe("timed-out");
+  expect(calls).toHaveLength(1);
+});
+
+test("a call that does not wait goes straight to the native wait", () => {
+  const zero = harness();
+  expect(zero.wait(0)).toBe("timed-out");
+  const negative = harness();
+  expect(negative.wait(-5)).toBe("timed-out");
+  expect(zero.slices()).toEqual([0]);
+  expect(negative.slices()).toEqual([-5]);
+  expect(zero.clockReads() + negative.clockReads()).toBe(0);
+});
+
+test("NaN and a missing timeout wait forever", () => {
   const forever = harness([{ result: "ok", after: 10_000 }]);
   expect(forever.wait(Number.NaN)).toBe("ok");
   const missing = harness([{ result: "ok", after: 10_000 }]);
   expect(missing.wait()).toBe("ok");
-  const negative = harness();
-  expect(negative.wait(-5)).toBe("timed-out");
-  expect(negative.slices).toEqual([0]);
+});
+
+test("arguments the native wait would convert reach it once and untouched", () => {
+  let conversions = 0;
+  const value = {
+    valueOf() {
+      conversions++;
+      return 0;
+    },
+  };
+  const timeout = { valueOf: () => 500 };
+  const first = harness();
+  first.raw(first.cells, 0, value, 500);
+  const second = harness();
+  second.raw(second.cells, 0, 0, timeout);
+  const third = harness();
+  third.raw(third.cells, "0", 0, 500);
+  expect(first.calls).toEqual([[first.cells, 0, value, 500]]);
+  expect(second.calls).toEqual([[second.cells, 0, 0, timeout]]);
+  expect(third.calls).toEqual([[third.cells, "0", 0, 500]]);
+  expect(conversions).toBe(0);
+  expect(first.clockReads() + second.clockReads() + third.clockReads()).toBe(0);
+});
+
+test("a 64-bit wait is cooperative too", () => {
+  const { raw, slices, allocations } = harness();
+  const cells = new BigInt64Array(new SharedArrayBuffer(8));
+  expect(raw(cells, 0, 0n, 100)).toBe("timed-out");
+  expect(slices()).toEqual([16, 32, 52]);
+  expect(allocations()).toBe(2);
 });
 
 test("a value mismatch returns at once", () => {
-  const { wait, slices } = harness([{ result: "not-equal", after: 0 }]);
+  const { wait, calls } = harness([{ result: "not-equal", after: 0 }]);
   expect(wait(500)).toBe("not-equal");
-  expect(slices.length).toBe(1);
+  expect(calls).toHaveLength(1);
 });
 
 test("only WebKit user agents need the cooperative wait", () => {

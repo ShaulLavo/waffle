@@ -5,6 +5,7 @@ import {
   atomicsNotify,
   atomicsStore,
   atomicsWait,
+  atomicsWaitNative,
   BigInt64ArrayConstructor,
   Int32ArrayConstructor,
   dataViewSetUint32,
@@ -219,13 +220,15 @@ export function createGroupMember(
     if (atomicsLoad(reply, WAIT_CLOSED) !== 0) stopped();
     return status(result);
   };
+  // A guest may wake this address without changing the word, so the waiter must stay queued:
+  // the engine's own wait, never the cooperative one (docs/webkit-blocking-waits.md).
   const nativeWait = (addr: number, width: 4 | 8, expected: number | bigint, ns: bigint) => {
     if (width === 4 && typeof expected === "number")
-      return atomicsWait(words(), addr / 4, expected | 0, timeout(ns));
+      return atomicsWaitNative(words(), addr / 4, expected | 0, timeout(ns));
     if (typeof expected !== "bigint" || width !== 8)
       throw new TypeError("invalid futex expected value");
     const cells = new BigInt64ArrayConstructor(buffer());
-    return atomicsWait(cells as never, addr / 8, asIntN(64, expected) as never, timeout(ns));
+    return atomicsWaitNative(cells as never, addr / 8, asIntN(64, expected) as never, timeout(ns));
   };
 
   /** The oldest still-pending live watch on addr, or -1. A hit watch is never reselected. */
