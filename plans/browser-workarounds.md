@@ -33,6 +33,35 @@ while the underlying behavior persists.
   affected engines. Require each successful notify to settle without an unrelated message and
   the guest to receive the notice. Retain the blocking-worker path as a positive control.
 
+## Timed async waits lose their wake
+
+- **Site.** `atomicsWaitAsyncFor` in
+  [host intrinsics](../packages/waffle/proc/intrinsics/host.ts) builds every finite-timeout async
+  wait from one shared untimed native wait and a `setTimeout` of the same length. Used by the
+  thread service's pipe and offset waits, the terminal session, the GPU command ring, and the
+  filesystem request-memory retirement and quiescence waits (50 ms recheck).
+- **Evidence.** Reproduced on Linux with Playwright 1.64.1, WebKit 2370 (27.2). This is the same
+  lost resolution wake as the guest watch entry above, much more frequent for timed waits. A
+  Worker looping `Atomics.waitAsync(word, 0, seen, 10)` against a Worker that notifies every 0 to
+  3 ms stops after 6 to 8 waits; untimed, 2 of 12 pages stopped within 30 s. After one lost wake,
+  other async waits in that Worker stop too, until a message or timer wakes it. In Waffle this made
+  the WebKit `threads-runtime` suite time out on "sibling descriptor reuse" in about 2 to 5 percent
+  of loaded runs (4 of 240 on main, 5 of 240 before PR 598), because the thread service's stdin
+  wait never settled; 0 of 240 with the helper. Chromium 156 and Firefox 157 never stalled.
+  Scope on macOS Safari, iOS Simulator Safari, and physical iPhone is unknown.
+  [Browser check](../packages/waffle/tests/wait-async-browser-runner.ts).
+- **Cost.** One host timer per pending timed wait. Teardown waits recheck every 50 ms.
+- **Removal check.** Run the browser check with the helper replaced by native timed waits on each
+  supported engine; remove the helper when the native run never stalls.
+- **Open.** Other `waitAsync` loops have no backstop and can still hang on WebKit when a wake is
+  lost: the network ring's 100 ms write wait (`browser/net/ring.ts`), `waitForFilesystemQuiescence`
+  (`fs/protocol.ts`), the pipe relay (`waitChanged` in `proc/pipes.ts`), the filesystem client
+  (`fs/client.ts`), filesystem watch and publication attachment waits, and the process broker and
+  terminal input loops in `browser/`. Each loop rechecks its state, so a bounded
+  `atomicsWaitAsyncFor` recheck would cover it. The network ring and quiescence tests replace the
+  global `Atomics.waitAsync` to count or race waits, so they need a seam on the captured intrinsic
+  first. Measure the idle timer cost before converting the long-lived loops.
+
 ## Worker termination and shared-page reuse
 
 - **Site.** For applicable process Workers, the broker selects SIGKILL and waits for a running

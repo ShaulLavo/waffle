@@ -6,6 +6,7 @@ import {
   atomicsStore,
   atomicsWait,
   atomicsWaitAsync,
+  atomicsWaitAsyncFor,
   BigInt64ArrayConstructor,
   BigIntConstructor,
   DataViewConstructor,
@@ -224,7 +225,7 @@ export class RecordRing {
   waitAsync(seen: number, timeoutMs: number): ReturnType<typeof atomicsWaitAsync> {
     const timeout = waitSlice(seen, timeoutMs);
     if (this.terminal()) return { async: false, value: "terminal" };
-    return atomicsWaitAsync(this.#cells, WAKE, seen, timeout);
+    return atomicsWaitAsyncFor(this.#cells, WAKE, seen, timeout);
   }
 
   #write(record: Uint8Array): RingWriteResult {

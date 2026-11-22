@@ -258,9 +258,12 @@ export async function runCThreadsRuntime(
     while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);
     await supervisor.start(pid);
     const exit = await bounded(supervisor.waitForExit(root.pid, pid), "C Runtime exit deadline");
+    // A pipe read returns at most one writer's record, so read until nothing is queued.
+    const decoder = new TextDecoder();
     const chunk = new Uint8Array(4096);
-    const size = reader.tryRead([chunk]);
-    const output = new TextDecoder().decode(chunk.subarray(0, Math.max(0, size)));
+    let output = "";
+    for (let size = reader.tryRead([chunk]); size > 0; size = reader.tryRead([chunk]))
+      output += decoder.decode(chunk.subarray(0, size));
     reader.close();
     await bounded(runtime.dispose(), "C Runtime disposal deadline");
     const snapshot = runtime.sharedMemory.snapshot();

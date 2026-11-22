@@ -20,6 +20,7 @@ const runners = [
   "filesystem-transport",
   "running-member-reuse",
   "stop-order",
+  "wait-async",
   "process-start",
   "gpu",
 ];
@@ -526,7 +527,7 @@ test("CI shards dispatch each command in the full browser matrix exactly once wi
     expect(run.commands.length).toBeGreaterThan(0);
     expect(new Set(run.commands).size).toBe(run.commands.length);
   }
-  expect(full.commands).toHaveLength(56);
+  expect(full.commands).toHaveLength(58);
   expect(runtime.commands.concat(reporter.commands).toSorted()).toEqual(full.commands.toSorted());
   expect(parallel.peakConcurrency).toBeGreaterThan(1);
   expect(parallel.peakConcurrency).toBeLessThanOrEqual(6);

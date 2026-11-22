@@ -1,4 +1,5 @@
 import {
+  atomicsLoad,
   descriptor,
   reflectApply as apply,
   objectGetPrototypeOf,
@@ -354,6 +355,66 @@ export const atomicsWaitAsyncBigInt = (
     ): { async: false; value: string } | { async: true; value: Promise<string> };
   }
 ).waitAsync;
+
+type WaitAsyncResult = { async: false; value: string } | { async: true; value: Promise<string> };
+interface ParkedWait {
+  readonly index: number;
+  readonly value: number;
+  readonly waiters: Set<(result: string) => void>;
+}
+const LONGEST_TIMER_MS = 0x7fffffff;
+const parkedWaits = new WeakMapConstructor<Int32Array, ParkedWait>();
+/** Atomics.waitAsync with a finite timeout, built from an untimed native wait and a host timer.
+ * WebKit (27.2 in Playwright) can lose the Worker wake for a waitAsync resolution, leaving that
+ * wait and the Worker's other async waits pending until something else wakes it. A timed native
+ * wait hits this within a few waits under racing notifies; an untimed one far more rarely. The
+ * host timer is registered by the Worker itself, so it still fires and bounds the wait. Repeated
+ * polls of the same word and value share one native wait, so an idle poll loop does not pile up
+ * native waiters until the next notify.
+ */
+export function atomicsWaitAsyncFor(
+  array: Int32Array,
+  index: number,
+  value: number,
+  timeout: number,
+): WaitAsyncResult {
+  if (!(timeout >= 0 && timeout <= LONGEST_TIMER_MS))
+    return atomicsWaitAsync(array, index, value, timeout);
+  if (atomicsLoad(array, index) !== value) return { async: false, value: "not-equal" };
+  const parked = parkedWait(array, index, value);
+  if (!parked) return { async: false, value: "not-equal" };
+  return {
+    async: true,
+    value: new PromiseConstructor<string>((resolve) => {
+      const settle = (result: string) => {
+        cancelTimeout(timer);
+        resolve(result);
+      };
+      const timer = scheduleTimeout(() => {
+        setDelete(parked.waiters, settle);
+        resolve("timed-out");
+      }, timeout);
+      setAdd(parked.waiters, settle);
+    }),
+  };
+}
+function parkedWait(array: Int32Array, index: number, value: number): ParkedWait | undefined {
+  const current = weakMapGet(parkedWaits, array);
+  if (current && current.index === index && current.value === value) return current;
+  const waiting = atomicsWaitAsync(array, index, value);
+  if (!waiting.async) return undefined;
+  const parked: ParkedWait = { index, value, waiters: new SetConstructor() };
+  weakMapSet(parkedWaits, array, parked);
+  afterNativePromise(
+    waiting.value,
+    (result) => {
+      if (weakMapGet(parkedWaits, array) === parked) weakMapDelete(parkedWaits, array);
+      setForEach(parked.waiters, (settle) => settle(result));
+    },
+    () => {},
+  );
+  return parked;
+}
 
 export function afterNativePromise<T>(
   promise: Promise<T>,
