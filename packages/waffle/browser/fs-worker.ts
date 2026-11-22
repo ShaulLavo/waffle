@@ -1,4 +1,4 @@
-import { installFilesystemWorker } from "../fs/index.js";
+import { installFilesystemWorker } from "../fs/service.js";
 import { openFilesystemWorkerBackend } from "./filesystem-worker-backend.js";
 
 installFilesystemWorker(self, (options, onStartupStage, signal, onWaiting) =>

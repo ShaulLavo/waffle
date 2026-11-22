@@ -67,7 +67,9 @@ async function directoryRun(count: number) {
     Array.from({ length: count }, (_, index) => `entry-${String(index).padStart(5, "0")}`),
   );
   for (const name of expected.slice(2)) fs.writeFile(`/${name}`, "");
-  const index = indexCounter(fs["directoryPages"](fs.root));
+  const pages = fs["directoryPages"](fs.root);
+  Array.from(pages.entriesAfter(0n));
+  const index = indexCounter(pages);
   const entriesAfter = DirectoryPages.prototype.entriesAfter;
   DirectoryPages.prototype.entriesAfter = function* (cookie: bigint) {
     for (const entry of entriesAfter.call(this, cookie)) {

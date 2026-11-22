@@ -14,19 +14,7 @@ import {
   DEFAULT_SHARED_MAX_BYTES,
   MAX_CONNECTION_OWNERS,
   SHARED_SEGMENT_BYTES,
-} from "../fs/protocol.js";
-import { mutationValue, type PublicationAdmission } from "../fs/publication.js";
-import {
-  reportRuntimeStartup,
-  isWorkerStartupMessage,
-  type RuntimeStartupObserver,
-} from "../fs/startup.js";
-import {
-  createWorkspaceVfs,
-  type WorkspaceVfs,
-  FilesystemClient,
   FilesystemError,
-  resolveWriteFileMode,
   createFilesystemConnection,
   createFilesystemIdentity,
   createProcessFilesystemIdentity,
@@ -37,10 +25,18 @@ import {
   waitForFilesystemQuiescence,
   type FilesystemIdentity,
   type FilesystemConnection,
-  type WriteFileMode,
-} from "../fs/index.js";
+} from "../fs/protocol.js";
+import { mutationValue, type PublicationAdmission } from "../fs/publication.js";
+import {
+  reportRuntimeStartup,
+  isWorkerStartupMessage,
+  type RuntimeStartupObserver,
+} from "../fs/startup.js";
+import { createWorkspaceVfs } from "../fs/workspace.js";
+import type { WorkspaceVfs } from "../fs/workspace-types.js";
+import { FilesystemClient, resolveWriteFileMode, type WriteFileMode } from "../fs/client.js";
 
-export type { WriteFileOptions, WriteFileMode } from "../fs/index.js";
+export type { WriteFileOptions, WriteFileMode } from "../fs/client.js";
 
 import { vfsImplementation } from "../fs/vfs-internal.js";
 import {
