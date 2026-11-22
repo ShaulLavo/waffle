@@ -19,7 +19,7 @@ import {
   atomicsExchange,
   atomicsCompareExchange,
   atomicsNotify,
-  atomicsWaitAsync,
+  atomicsWaitAsyncFor,
   sharedArrayBufferByteLength,
   sharedArrayBufferMaxByteLength,
   sharedArrayBufferGrow,
@@ -33,6 +33,8 @@ import {
 import { PAGE } from "./shared-capacity.js";
 
 export const REQUEST_HEADER = 32;
+// Teardown loops recheck their state, so a bounded wait survives WebKit losing a waitAsync wake.
+const TEARDOWN_RECHECK_MS = 50;
 export const REQUEST_BUDGET_BYTES = 32;
 export const REQUEST_CONTROL_BYTES = 72;
 /** Inputs above this size travel as a transferred private buffer. */
@@ -207,7 +209,7 @@ export async function waitForRequestQuiescence(
       atomicsLoad(new Int32ArrayConstructor(connection.revocations[0]!), 0) === 2
     )
       return;
-    const waiting = atomicsWaitAsync(signal, 0, observed);
+    const waiting = atomicsWaitAsyncFor(signal, 0, observed, TEARDOWN_RECHECK_MS);
     if (waiting.async) await waiting.value;
   }
 }
@@ -576,7 +578,7 @@ export async function waitForFilesystemTransportRetirement(
       if (errno) throw new FilesystemError(errno, "filesystem transport retirement failed");
       return;
     }
-    const waiting = atomicsWaitAsync(signal, 0, observed);
+    const waiting = atomicsWaitAsyncFor(signal, 0, observed, TEARDOWN_RECHECK_MS);
     if (waiting.async) await waiting.value;
   }
 }

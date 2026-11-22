@@ -24,7 +24,7 @@ import {
   waitForFilesystemTransportRetirement,
   FilesystemTransportError,
 } from "../fs/request-memory.ts";
-import { atomicsLoad, atomicsWaitAsync } from "../proc/intrinsics.ts";
+import { atomicsLoad, atomicsWaitAsyncFor } from "../proc/intrinsics.ts";
 import type {
   CallKey,
   GuestSpan,
@@ -384,7 +384,7 @@ export class ThreadService {
   }
 
   private async wait(word: Int32Array, observed: number): Promise<void> {
-    const waiting = atomicsWaitAsync(word, 0, observed, 10);
+    const waiting = atomicsWaitAsyncFor(word, 0, observed, 10);
     if (waiting.async) await waiting.value;
     else await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }

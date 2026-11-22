@@ -33,6 +33,16 @@ import {
 import { RuntimeDescriptorCase } from "./threads-runtime-fd-browser.js";
 export type { RuntimeThreadCase } from "./threads-runtime-cases.js";
 
+/** A pipe read returns at most one writer's record, so read until the pipe has nothing queued. */
+function drainPipe(reader: PipeEndpoint): string {
+  const decoder = new TextDecoder();
+  const buffer = new Uint8Array(4096);
+  let text = "";
+  for (let n = reader.tryRead([buffer]); n > 0; n = reader.tryRead([buffer]))
+    text += decoder.decode(buffer.subarray(0, n));
+  return text;
+}
+
 function checkStockBackings(
   observations: readonly (readonly SharedGuestSnapshot[])[],
   retired: readonly SharedGuestSnapshot[],
@@ -452,11 +462,7 @@ export async function runThreadsRuntime(
     };
     while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);
     await supervisor.start(pid);
-    const draining = (drainingOutput = setInterval(() => {
-      const buffer = new Uint8Array(4096);
-      const n = reader.tryRead([buffer]);
-      if (n > 0) output += new TextDecoder().decode(buffer.subarray(0, n));
-    }, 5));
+    const draining = (drainingOutput = setInterval(() => (output += drainPipe(reader)), 5));
     if (needsFence) {
       if (selected === "kill-start") await until(() => constructionKilled);
       if (killed && selected !== "kill-start")
@@ -486,9 +492,7 @@ export async function runThreadsRuntime(
     } finally {
       clearInterval(draining);
     }
-    const buffer = new Uint8Array(4096);
-    const n = reader.tryRead([buffer]);
-    if (n > 0) output += new TextDecoder().decode(buffer.subarray(0, n));
+    output += drainPipe(reader);
     checkExit(selected, exit, output, errors);
     if (fatal) regression = await checkFatalRetirement(observations, pid);
     check(

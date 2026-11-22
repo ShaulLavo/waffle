@@ -76,6 +76,9 @@ export default {
         // Broker stop order test (scripts/test-browser.ts). Its runner bundles page and worker.
         "tests/stop-order-browser{,-runner}.ts",
         "tests/fixtures/stop-order-worker.ts",
+        // Timed wait settlement test (scripts/test-browser.ts). Its runner bundles both Workers.
+        "tests/wait-async-browser{,-runner}.ts",
+        "tests/fixtures/wait-async-{waiter,notifier}.ts",
         // Process start states test (scripts/test-browser.ts). Its runner bundles the page.
         "tests/process-start-browser{,-runner}.ts",
         // The packed operation controls bundle a page and two Worker entries by path.
