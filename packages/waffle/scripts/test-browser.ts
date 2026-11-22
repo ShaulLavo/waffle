@@ -31,16 +31,27 @@ const runners = [
   "tests/process-start-browser-runner.ts",
   gpuRunner,
 ];
+const splitEngines = new Set([
+  "tests/process-recycling-browser-runner.ts",
+  storageRunner,
+  gpuRunner,
+]);
+function parallelTasks(runner: string): SuiteTask[] {
+  if (splitEngines.has(runner))
+    return [
+      { runner, engines: ["chromium"] },
+      { runner, engines: ["firefox"] },
+    ];
+  return [{ runner, engines: ["chromium", "firefox"] }];
+}
 const parallel: SuiteBatch[] = [
   {
     concurrency: 6,
-    tasks: runners
-      .filter((runner) => runner !== gpuRunner)
-      .map((runner) => ({ runner, engines: ["chromium", "firefox"] })),
+    tasks: runners.filter((runner) => runner !== gpuRunner).flatMap(parallelTasks),
   },
   {
-    concurrency: 1,
-    tasks: [{ runner: gpuRunner, engines: ["chromium", "firefox"] }],
+    concurrency: 2,
+    tasks: parallelTasks(gpuRunner),
   },
   {
     concurrency: 3,

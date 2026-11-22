@@ -64,9 +64,21 @@ function isolatedEngines(runner: string): string {
     return "--page-controls,chromium";
   return "chromium";
 }
+const splitEngineRunners = ["process-recycling", "storage", "gpu"];
+function runnerParallelPhases(runner: string): readonly string[] {
+  return splitEngineRunners.includes(runner) ? ["chromium", "firefox"] : ["chromium,firefox"];
+}
+const parallelFinishedHelper = `
+const split = ${JSON.stringify(splitEngineRunners)};
+const parallelFinished = (entry) =>
+  split.includes(entry)
+    ? existsSync(entry + ".parallel.chromium.finished") && existsSync(entry + ".parallel.firefox.finished")
+    : existsSync(entry + ".parallel.finished");
+`;
 const fixture = `
 import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 const names = ${JSON.stringify(runners)};
+${parallelFinishedHelper}
 const file = process.argv[1].endsWith("/gpu-async-controls-runner.ts") ? "gpu-async-controls" : process.argv[1].includes("/page-runner/") ? "reporter-controls" : process.argv[1].split("/").at(-1).replace("-browser-runner.ts", "");
 const modes = ${JSON.stringify({ "root-continuity": "root-continuity-controls", "process-recycling": "process-recycling-controls", network: networkControls })};
 const reporter = process.argv[2] === "--prepare" ? "reporter-controls-prepare" : "reporter-controls-" + process.argv[2];
@@ -95,29 +107,34 @@ if (${JSON.stringify(isolatedRunners)}.includes(name)) {
   if (process.env.MATRIX_FAIL.split("|").includes(name + ":" + engines)) throw Error("fixture failure");
   process.exit(0);
 }
-if (engines === "chromium,firefox") {
+const isSplitParallel = split.includes(name) && (engines === "chromium" || engines === "firefox");
+const isPairedParallel = !split.includes(name) && engines === "chromium,firefox";
+if (isSplitParallel || isPairedParallel) {
   const cohort = names.filter((entry) => entry !== "gpu");
   if (name === "gpu") {
     if (existsSync("gpu-async.parallel.finished")) throw Error("async ran before compiled draw");
-    if (!cohort.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("GPU overlapped another browser suite");
+    if (!cohort.every(parallelFinished)) throw Error("GPU overlapped another browser suite");
   }
+  const marker = isSplitParallel ? name + ".parallel." + engines + ".finished" : name + ".parallel.finished";
+  writeFileSync(marker, engines);
 } else if (engines === "webkit") {
-  if (!names.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("early WebKit");
+  if (!names.every(parallelFinished)) throw Error("early WebKit");
   if (!existsSync("gpu-async.parallel.finished")) throw Error("early WebKit before async");
+  writeFileSync(name + ".webkit.finished", engines);
 } else throw Error("missing engine");
-writeFileSync(name + (engines === "webkit" ? ".webkit.finished" : ".parallel.finished"), engines);
 if (process.env.MATRIX_FAIL.split("|").includes(name + ":" + engines)) throw Error("fixture failure");
 `;
 
 const recoveryFixture = `
 import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 const names = ${JSON.stringify(runners)};
+${parallelFinishedHelper}
 const engines = process.argv.slice(2);
 const scratch = process.env.STORAGE_SCRATCH_ROOT;
 const supervised = Boolean(process.env.WAFFLE_BROWSER_PARENT);
 const ownedScratch = Boolean(scratch && existsSync(scratch) && scratch === process.env.PROCESS_SCRATCH_ROOT);
 appendFileSync("recovery-r42.invocations", JSON.stringify({ engines, supervised, ownedScratch }) + "\\n");
-if (!names.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("early recovery");
+if (!names.every(parallelFinished)) throw Error("early recovery");
 if (names.some((entry) => existsSync(entry + ".webkit.finished"))) throw Error("late recovery");
 if (!scratch || !statSync(scratch).isDirectory() || realpathSync(scratch) !== scratch) throw Error("recovery scratch not an actual directory");
 if (process.platform === "linux") {
@@ -133,13 +150,14 @@ const nativeGpuFixture = recoveryFixture.replaceAll("recovery-r42", "gpu-native"
 
 const asyncGpuFixture = `
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+${parallelFinishedHelper}
 const engines = process.argv.slice(2).join(",");
 const scratch = process.env.STORAGE_SCRATCH_ROOT;
 const phase = engines === "chromium,firefox" ? "parallel" : "webkit";
 if (engines !== "chromium,firefox" && engines !== "webkit") throw Error("changed async engine group");
 appendFileSync("gpu-async.invocations", engines + "\\n");
 if (existsSync("gpu-async." + phase + ".finished")) throw Error("async repeated");
-if (phase === "parallel" && !${JSON.stringify(runners)}.every((name) => existsSync(name + ".parallel.finished"))) throw Error("async ran before compiled draw");
+if (phase === "parallel" && !${JSON.stringify(runners)}.every(parallelFinished)) throw Error("async ran before compiled draw");
 if (phase === "webkit" && !existsSync("gpu-async.parallel.finished")) throw Error("early async WebKit");
 writeFileSync("gpu-async." + phase + ".scratch", scratch);
 writeFileSync("gpu-async.scratch", scratch);
@@ -274,9 +292,18 @@ async function matrix(failing: readonly string[]): Promise<void> {
     );
     expect(await readFile(join(root, `${bootstrapArrival}.invocations`), "utf8")).toBe("webkit\n");
     for (const runner of runners) {
-      expect(await readFile(join(root, `${runner}.parallel.finished`), "utf8")).toBe(
-        "chromium,firefox",
-      );
+      if (splitEngineRunners.includes(runner)) {
+        expect(await readFile(join(root, `${runner}.parallel.chromium.finished`), "utf8")).toBe(
+          "chromium",
+        );
+        expect(await readFile(join(root, `${runner}.parallel.firefox.finished`), "utf8")).toBe(
+          "firefox",
+        );
+      } else {
+        expect(await readFile(join(root, `${runner}.parallel.finished`), "utf8")).toBe(
+          "chromium,firefox",
+        );
+      }
       expect(await readFile(join(root, `${runner}.webkit.finished`), "utf8")).toBe("webkit");
     }
   } finally {
@@ -294,7 +321,7 @@ test("bootstrap arrival failure remains independently blocking before later seri
 }, 15_000);
 
 for (const runner of runners) {
-  for (const phase of ["chromium,firefox", "webkit"]) {
+  for (const phase of runnerParallelPhases(runner).concat(["webkit"])) {
     test(`${runner} ${phase} failure remains blocking without hiding other suites`, async () => {
       await matrix([`${runner}:${phase}`]);
     }, 15_000);
@@ -320,7 +347,7 @@ test("both root continuity modes retain their independent blocking failures", as
 test("browser matrix reports ordered failures after every other suite finishes", async () => {
   await matrix([
     `${rootContinuity}:chromium`,
-    "storage:chromium,firefox",
+    "storage:chromium",
     `${continuity}:chromium`,
     "safe-staging:chromium,firefox",
     "network:webkit",
@@ -332,7 +359,7 @@ test("Chromium-only recovery failure blocks matrix without hiding later WebKit s
 }, 15_000);
 
 test("recovery failure preserves earlier and later suite failures in the aggregate", async () => {
-  await matrix(["storage:chromium,firefox", `${recovery}:chromium`, "publication:webkit"]);
+  await matrix(["storage:firefox", `${recovery}:chromium`, "publication:webkit"]);
 }, 15_000);
 
 test("combined isolated Chromium failures retain supervised order and cleanup", async () => {
@@ -341,7 +368,7 @@ test("combined isolated Chromium failures retain supervised order and cleanup", 
     "network:webkit",
     `${continuity}:chromium`,
     `${recovery}:chromium`,
-    "storage:chromium,firefox",
+    "storage:chromium",
   ]);
 }, 15_000);
 
@@ -490,7 +517,7 @@ test("CI shards dispatch each command in the full browser matrix exactly once wi
     expect(run.commands.length).toBeGreaterThan(0);
     expect(new Set(run.commands).size).toBe(run.commands.length);
   }
-  expect(full.commands).toHaveLength(53);
+  expect(full.commands).toHaveLength(56);
   expect(runtime.commands.concat(reporter.commands).toSorted()).toEqual(full.commands.toSorted());
   expect(parallel.peakConcurrency).toBeGreaterThan(1);
   expect(parallel.peakConcurrency).toBeLessThanOrEqual(6);
@@ -515,7 +542,8 @@ test("the runtime shard preserves batch order and storage observer scope after a
   expect(runtime.commands).toEqual(
     parallel.commands.concat(serial.commands.filter((command) => !reporterCommands.has(command))),
   );
-  expect(runtime.storageObservers).toEqual(["chromium,firefox=1", "webkit=0"]);
+  expect(runtime.storageObservers.slice(0, 2).toSorted()).toEqual(["chromium=1", "firefox=1"]);
+  expect(runtime.storageObservers.slice(2)).toEqual(["webkit=0"]);
 });
 
 test("an unknown CI shard fails before dispatch", async () => {
@@ -544,10 +572,7 @@ test("process page controls fail separately after reporter controls without repe
 }, 15_000);
 
 test("both process modes retain their independent failures in normal discovery order", async () => {
-  await matrix([
-    "process-recycling:chromium,firefox",
-    `${processControls}:--page-controls,chromium`,
-  ]);
+  await matrix(["process-recycling:chromium", `${processControls}:--page-controls,chromium`]);
 }, 15_000);
 
 for (const engines of ["chromium,firefox", "webkit"])
