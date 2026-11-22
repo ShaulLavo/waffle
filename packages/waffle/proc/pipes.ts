@@ -984,7 +984,8 @@ class Ring {
   private copyIn(chunks: readonly Uint8Array[], position: number, count: number): void {
     const unit = this.space.layout.pageBytes;
     let copied = 0;
-    for (const chunk of chunks) {
+    for (let index = 0; index < chunks.length; index++) {
+      const chunk = chunks[index]!;
       const take = Math.min(typedArrayLength(chunk), count - copied);
       for (let at = 0; at < take;) {
         const target = (position + copied + at) >>> 0,
