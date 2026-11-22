@@ -894,11 +894,12 @@ jobs:
         with:
           path: ${{ steps.curl-native-key.outputs.directory }}
           key: ${{ steps.curl-native-key.outputs.key }}-${{ steps.curl-image.outputs.identity }}
-      - name: Provision and run curl gate
+      - name: Provision native curl oracle
         if: steps.select.outputs.curl == 'true'
-        run: |
-          bun packages/curl/scripts/native-oracle.ts provision
-          bun run programs:curl
+        run: bun packages/curl/scripts/native-oracle.ts provision
+      - name: Run curl gate
+        if: steps.select.outputs.curl == 'true'
+        run: bun run programs:curl
       - name: Save only a validated curl oracle after the curl gate passes
         if: steps.select.outputs.curl == 'true' && steps.curl-native.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

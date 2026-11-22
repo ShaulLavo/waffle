@@ -683,6 +683,13 @@ test("programs, program leaves and oracles preserve path selection and ordering"
   expect(procpsLint?.["working-directory"]).toBe("packages/procps");
   expect(procpsFmt?.["working-directory"]).toBe("packages/procps");
 
+  const curlProvision = gateSteps.findIndex(
+    (step) => step.run === "bun packages/curl/scripts/native-oracle.ts provision",
+  );
+  const curlRun = gateSteps.findIndex((step) => step.run === "bun run programs:curl");
+  expect(curlProvision).toBeGreaterThan(0);
+  expect(curlRun).toBeGreaterThan(curlProvision);
+
   const xargsSuite = gateSteps.find((step) => step.name === "Run findutils xargs WASI suite");
   expect(record(xargsSuite?.env).WASI_SDK_PATH).toBe(
     "${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux",
