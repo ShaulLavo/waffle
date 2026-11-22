@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { pipeSharedPagesInUse } from "../proc/pipes.js";
-import { PipeRealm, plainRealm } from "./fixtures/pipe-interleave.ts";
+import { PipeRealm, PipeStreams as Streams, plainRealm } from "./fixtures/pipe-interleave.ts";
 
 type Controller = InstanceType<PipeRealm["pipes"]["PipeController"]>;
 type Endpoint = ReturnType<Controller["retain"]>;
@@ -9,39 +9,6 @@ const AGAIN = -6;
 function sharedTotal(endpoint: Endpoint): number {
   const used = pipeSharedPagesInUse(endpoint.handle());
   return used.bytes + used.records;
-}
-/** Each byte names its writer (top two bits) and that writer's byte counter (low six). */
-class Streams {
-  readonly written = [0, 0, 0, 0];
-  readonly read = [0, 0, 0, 0];
-  payload(writer: number, length: number): Uint8Array {
-    const bytes = new Uint8Array(length);
-    for (let index = 0; index < length; index++)
-      bytes[index] = (writer << 6) | ((this.written[writer]! + index) & 63);
-    return bytes;
-  }
-  write(endpoint: Endpoint, writer: number, length: number): number {
-    const count = endpoint.tryWrite([this.payload(writer, length)]);
-    if (count > 0) this.written[writer]! += count;
-    return count;
-  }
-  /** One read holds bytes of exactly one write, in that writer's order. */
-  take(endpoint: Endpoint, length: number): number {
-    const buffer = new Uint8Array(length);
-    const count = endpoint.tryRead([buffer]);
-    if (count <= 0) return count;
-    const writer = buffer[0]! >> 6;
-    for (let index = 0; index < count; index++) {
-      const expected = (writer << 6) | ((this.read[writer]! + index) & 63);
-      if (buffer[index] !== expected)
-        throw new Error(`writer ${writer} byte ${this.read[writer]! + index} is ${buffer[index]}`);
-    }
-    this.read[writer]! += count;
-    return count;
-  }
-  get pending(): number {
-    return this.written.reduce((total, count, writer) => total + count - this.read[writer]!, 0);
-  }
 }
 
 describe("review round 2 reproductions", () => {

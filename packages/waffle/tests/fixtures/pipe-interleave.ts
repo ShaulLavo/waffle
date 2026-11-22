@@ -233,6 +233,41 @@ class KindAudit {
   }
 }
 
+/** Tracks every writer's stream. Each byte names its writer (top two bits) and that writer's
+ * byte counter (low six), so `take` proves one read holds bytes of exactly one write, in that
+ * writer's order, and `pending` counts committed bytes nobody has read. */
+export class PipeStreams {
+  readonly written = [0, 0, 0, 0];
+  readonly read = [0, 0, 0, 0];
+  /** Write `length` bytes as `writer`; a missing endpoint counts as closed (EBADF). */
+  write(endpoint: Endpoint | undefined, writer: number, length: number): number {
+    if (!endpoint) return -8;
+    const bytes = new Uint8Array(length);
+    for (let index = 0; index < length; index++)
+      bytes[index] = (writer << 6) | ((this.written[writer]! + index) & 63);
+    const count = endpoint.tryWrite([bytes]);
+    if (count > 0) this.written[writer]! += count;
+    return count;
+  }
+  take(endpoint: Endpoint | undefined, length: number): number {
+    if (!endpoint) return -8;
+    const buffer = new Uint8Array(length);
+    const count = endpoint.tryRead([buffer]);
+    if (count <= 0) return count;
+    const writer = buffer[0]! >> 6;
+    for (let index = 0; index < count; index++) {
+      const expected = (writer << 6) | ((this.read[writer]! + index) & 63);
+      if (buffer[index] !== expected)
+        throw new Error(`writer ${writer} byte ${this.read[writer]! + index} is ${buffer[index]}`);
+    }
+    this.read[writer]! += count;
+    return count;
+  }
+  get pending(): number {
+    return this.written.reduce((total, count, writer) => total + count - this.read[writer]!, 0);
+  }
+}
+
 /** A realm with no pause hooks: the production module itself. */
 export const plainRealm = {
   pipes: production,

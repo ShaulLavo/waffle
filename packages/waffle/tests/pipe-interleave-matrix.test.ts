@@ -1,6 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { pipeSharedPagesInUse } from "../proc/pipes.js";
-import { PIPE_PAUSE_POINTS, PipeRealm, auditPipePages } from "./fixtures/pipe-interleave.ts";
+import {
+  PIPE_PAUSE_POINTS,
+  PipeRealm,
+  PipeStreams as Streams,
+  auditPipePages,
+} from "./fixtures/pipe-interleave.ts";
 
 // Pause one party at every named step of the pipe and run another party's operation there,
 // then check that the pipe still delivers every committed byte once, in order, one write per
@@ -16,37 +21,6 @@ const realms: Record<RealmName, PipeRealm> = {
   a: new PipeRealm(),
   b: new PipeRealm(),
 };
-
-class Streams {
-  readonly written = [0, 0, 0, 0];
-  readonly read = [0, 0, 0, 0];
-  write(endpoint: Endpoint | undefined, writer: number, length: number): number {
-    if (!endpoint) return -8;
-    const bytes = new Uint8Array(length);
-    for (let index = 0; index < length; index++)
-      bytes[index] = (writer << 6) | ((this.written[writer]! + index) & 63);
-    const count = endpoint.tryWrite([bytes]);
-    if (count > 0) this.written[writer]! += count;
-    return count;
-  }
-  take(endpoint: Endpoint | undefined, length: number): number {
-    if (!endpoint) return -8;
-    const buffer = new Uint8Array(length);
-    const count = endpoint.tryRead([buffer]);
-    if (count <= 0) return count;
-    const writer = buffer[0]! >> 6;
-    for (let index = 0; index < count; index++) {
-      const expected = (writer << 6) | ((this.read[writer]! + index) & 63);
-      if (buffer[index] !== expected)
-        throw new Error(`writer ${writer} byte ${this.read[writer]! + index} is ${buffer[index]}`);
-    }
-    this.read[writer]! += count;
-    return count;
-  }
-  get pending(): number {
-    return this.written.reduce((total, count, writer) => total + count - this.read[writer]!, 0);
-  }
-}
 
 /** One scenario's pipe: the page owns the controller, writer 0 and the host reader; guest a
  * owns reader 1 and writer 1; guest b owns reader 2 (relay) and writers 2 and 3. */
