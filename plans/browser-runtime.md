@@ -278,7 +278,8 @@ seven constraints surfaced in PR 600 review rounds 1 to 3:
 5. **Publication-mode lock and epoch.** In publication mode, `executePublication` wraps requests in
    `beginServiceMutation` / `endServiceMutation`, which takes the global mutation lock and advances
    the epoch by two on every read-only check. The root check must run as a plain read everywhere,
-   including publication mode, with no mutation lock and no epoch bump.
+   including publication mode, with no mutation lock and no epoch bump, while still applying
+   publication's session, handle and activation authorization checks.
 6. **Resident-grant exclusion (`EBUSY`) after rename.** Bypassing `beginServiceMutation` in
    publication mode also bypasses `assertCurrent()`. After a service rename changes a directory's
    `ctime`, `MemoryBackend.check` -> `sync` -> `shared.register` can take the global lock without

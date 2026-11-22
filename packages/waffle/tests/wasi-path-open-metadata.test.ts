@@ -230,6 +230,16 @@ test("str uses a zero-copy view on fixed unshared memory and copies resizable or
   });
 });
 
+test("an empty path over detached memory still fails with EIO", () => {
+  const mem = new MemFS();
+  const memory = new WebAssembly.Memory({ initial: 4 });
+  if (typeof Reflect.get(memory, "toFixedLengthBuffer") !== "function") return;
+  const host = makeHost(mem, { "/": "/" }, memory);
+  // Detach the resizable buffer WASI cached at start, then decode an empty path at offset 0.
+  Reflect.apply(Reflect.get(memory, "toFixedLengthBuffer"), memory, []);
+  expect(host.pathOpen(3, 1, 0, 0, 0, RIGHT_FD_READ, 0n, 0, 128)).toBe(29);
+});
+
 test("path_permissions_get reuses its decoder across invalid UTF-8, BOM and valid paths", async () => {
   const { permissionsHost } = await import("./fixtures/permissions-guest.js");
   const mem = new MemFS();

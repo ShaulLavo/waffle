@@ -167,8 +167,8 @@ const perfNow = performance.now.bind(performance);
 const timeOrigin = performance.timeOrigin;
 const getRandomValues = crypto.getRandomValues.bind(crypto);
 
+// No zero-length shortcut: decoding a view over detached memory must still fail as it did.
 function decodeBytes(bytes: Uint8Array, ptr: number, len: number, target: TextDecoder): string {
-  if (len === 0) return "";
   const buffer = bytes.buffer;
   const needsCopy =
     !(buffer instanceof ArrayBuffer) || ("resizable" in buffer && Boolean(buffer.resizable));

@@ -124,5 +124,5 @@ export function createPathOpenHost(
     return decoder.decode(new Uint8Array(memory.buffer, 4096, n).slice());
   };
   const close = (fd: number) => fdClose(fd);
-  return { wasi, memory, openRaw, readAll, close };
+  return { wasi, memory, pathOpen, openRaw, readAll, close };
 }
