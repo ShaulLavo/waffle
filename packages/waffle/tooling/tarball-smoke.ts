@@ -45,6 +45,17 @@ async function run(): Promise<void> {
   const archive = join(archiveDirectory, archives[0]!);
   execFileSync("tar", ["-xzf", archive, "-C", extractDirectory], { stdio: "pipe" });
   const packedRoot = join(extractDirectory, "package");
+  // Test files and GPU code-generation inputs are never loaded by a consumer.
+  const listing = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" }).split("\n");
+  const unwanted = listing.filter(
+    (entry) =>
+      entry.endsWith(".test.ts") ||
+      entry === "package/browser/gpu/upstream/webgpu.h" ||
+      entry === "package/browser/gpu/upstream/webgpu.yml" ||
+      entry === "package/browser/gpu/stream.json" ||
+      entry === "package/browser/gpu/method-coverage.json",
+  );
+  if (unwanted.length > 0) throw new Error(`package includes ${unwanted.slice(0, 5).join(", ")}`);
   const required = [
     "package.json",
     "LICENSE",
