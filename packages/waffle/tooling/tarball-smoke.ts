@@ -50,7 +50,8 @@ async function run(): Promise<void> {
   const unwanted = listing.filter(
     (entry) =>
       entry.endsWith(".test.ts") ||
-      entry.startsWith("package/browser/gpu/upstream/webgpu.") ||
+      entry === "package/browser/gpu/upstream/webgpu.h" ||
+      entry === "package/browser/gpu/upstream/webgpu.yml" ||
       entry === "package/browser/gpu/stream.json" ||
       entry === "package/browser/gpu/method-coverage.json",
   );
