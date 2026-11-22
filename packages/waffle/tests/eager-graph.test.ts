@@ -35,7 +35,7 @@ async function eagerInputs(entry: string): Promise<Set<string>> {
 }
 
 // The filesystem service and its storage engines run only inside the filesystem worker, which
-// loads them statically so worker disposal never waits on a module fetch.
+// loads them statically so no module fetch starts after the worker has booted.
 const filesystemWorkerOnly = [
   "fs/service.ts",
   "fs/backend.ts",
