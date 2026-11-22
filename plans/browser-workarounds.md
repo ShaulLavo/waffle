@@ -44,9 +44,9 @@ while the underlying behavior persists.
   caller rechecks its own state, and every served cell is incremented or cleared before its
   notify. "ok" never reports a notify from before the call, a zero timeout is a synchronous poll,
   and the native waiter leaves at its own deadline, so none lingers to take a later count-1
-  notify. Deadlines past the host timer limit get no backstop, like untimed waits. Used by the thread service's pipe and offset waits, the terminal session,
-  the GPU command ring, and the filesystem request-memory retirement and quiescence waits (50 ms
-  recheck). An earlier version shared one untimed native wait per view; review found it left
+  notify. Deadlines past the host timer limit get no backstop, like untimed waits. Used by the
+  thread service's pipe and offset waits and the filesystem request-memory retirement and
+  quiescence waits (50 ms recheck). An earlier version shared one untimed native wait per view; review found it left
   waiters that took count-1 notifies, reported notifies from before a retry, and turned zero
   timeouts async.
 - **Evidence.** Reproduced on Linux with Playwright 1.64.1, WebKit 2370 (27.2). This is the same
@@ -75,6 +75,14 @@ while the underlying behavior persists.
   `atomicsWaitAsyncFor` recheck would cover it. The network ring and quiescence tests replace the
   global `Atomics.waitAsync` to count or race waits, so they need a seam on the captured intrinsic
   first. Measure the idle timer cost before converting the long-lived loops.
+  Two more were converted and then taken back out of PR 603 after review. The GPU command ring
+  (`RecordRing.waitAsync` in `browser/gpu/ring.ts`): the backstop's cell read can run after the
+  grant is sealed or the service reader fence has joined, so it needs fresh admission or a
+  backstop that requests a recheck without reading the ring. The terminal session's
+  `waitForChange` (`browser/terminal-session.ts`): continuing the native promise through the
+  captured `then` consults guest-modifiable Promise species there, so a throwing species getter
+  could reject the wait before the cursor rechecks geometry or revocation; it needs a
+  continuation that never reads `constructor` or species.
 
 ## Worker termination and shared-page reuse
 

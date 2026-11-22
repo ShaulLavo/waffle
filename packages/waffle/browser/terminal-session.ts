@@ -247,7 +247,6 @@ import {
   atomicsNotify,
   atomicsWait,
   atomicsWaitAsync,
-  atomicsWaitAsyncFor,
   BigInt64ArrayConstructor,
   BigIntConstructor,
   Int32ArrayConstructor,
@@ -1703,7 +1702,7 @@ async function waitForChange(session: Session, seen: number): Promise<void> {
     await new PromiseConstructor<void>((resolve) => scheduleTimeout(resolve, 10));
     return;
   }
-  const waiting = atomicsWaitAsyncFor(session.wake, 0, seen, 10);
+  const waiting = timedWaitAsync(session.wake, 0, seen, 10);
   if (waiting.async) await waiting.value;
 }
 function errno(failure: TerminalFailure): number {
