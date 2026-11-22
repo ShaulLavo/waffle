@@ -32,6 +32,7 @@
     "Cargo.lock",
     "rust-toolchain.toml",
     "network",
+    "README.md",
     "LICENSE",
     "LICENSES"
   ],
