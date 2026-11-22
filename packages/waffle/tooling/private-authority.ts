@@ -161,6 +161,7 @@ export const enforcedModules = [
   "browser/operations/writer.ts",
   "browser/display/protocol.ts",
   "browser/display/guest.ts",
+  "browser/display/surface-info.ts",
   "browser/gpu/guest.ts",
   "browser/gpu/ring.ts",
   "browser/gpu/payload.ts",

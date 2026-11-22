@@ -89,6 +89,8 @@ export interface Driver {
   handles(signal: AbortSignal): Promise<string[]>;
   url(signal: AbortSignal): Promise<string>;
   script(source: string, signal: AbortSignal): Promise<unknown>;
+  /** Optional read-only check while the session is still live. Stop must settle admitted work. */
+  verifyBeforeStop?(signal: AbortSignal): Promise<void>;
   stop(): Promise<DriverCleanup>;
   readonly uncertain: boolean;
 }

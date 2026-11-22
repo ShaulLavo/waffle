@@ -84,17 +84,15 @@ Waffle can therefore define these interfaces in WIT and serve them to threaded P
 
 ### First experiment: issue #286
 
-`runtime_window` is the candidate for [#286](https://github.com/ShaulLavo/waffle/issues/286). It
-carries a resource (the surface grant) with real lifetime and revocation rules, its call rate is
-modest, and it has a Rust consumer (the winit fork) and a C fixture. The experiment writes it in
-WIT, compares that with `wasi-gfx:surface`, generates the Rust bindings, serves them through the
-#286 adapter, and measures against a handwritten version of the same calls: loaded bytes, the cost
-of a blocking event read, release after revocation and kill, and toolchain needs.
+The [#286 experiment](../.internal/wit-surface/RESULT.md) matched generated Rust and TypeScript
+bindings for one existing, page-granted canvas. The guest borrowed a read-only resource with GPU
+disabled. The experiment exercised deterministic drop, revocation, cancellation, and process
+retirement. It compared the existing handwritten surface calls on the same canvas.
 
-If #286 adopts it, the GPU calls that return data follow the same route. If it defers or rejects,
-the handwritten imports in the [window](guest-windows.md#guest-abi-runtime_window) and
-[GPU](gpu-bridge.md#guest-abi-runtime_gpu) plans stand, and the record formats are unchanged
-either way.
+**Decision: defer the Microsoft host adapter.** The generated Rust wire worked with Waffle's
+Preview 1 worker. The pinned browser package needed an initialization patch and added a 21 KiB
+gzip chunk for three imports. Keep the handwritten window and GPU imports in production. Revisit
+WIT with a smaller synchronous host adapter and qualification of its authority boundary.
 
 ### When the stack can move to the standards entirely
 

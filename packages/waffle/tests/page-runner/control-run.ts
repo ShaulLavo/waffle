@@ -1,3 +1,5 @@
+import { boundWebKitLogReplay } from "../webkit-diagnostics.js";
+
 type ControlResult = {
   engine: string;
   control: string;
@@ -29,7 +31,13 @@ export class ControlRun {
       this.throwIfInterrupted();
       this.results.push({ engine, control, status: "pass" });
     } catch (error) {
-      this.results.push({ engine, control, status: "fail", error: String(error) });
+      const detail = String(error);
+      this.results.push({
+        engine,
+        control,
+        status: "fail",
+        error: engine === "webkit" ? boundWebKitLogReplay(detail) : detail,
+      });
     }
     console.log(JSON.stringify(this.results[this.results.length - 1]));
   }

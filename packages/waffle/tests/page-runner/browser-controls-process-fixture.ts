@@ -3,6 +3,29 @@ import { join } from "node:path";
 import { withStorageCleanup } from "../storage-allocation.js";
 import { runControlProcess } from "./browser-controls-runner.js";
 import { checkControl } from "./browser-controls-suite.js";
+import { captureWebKitDiagnostics } from "../webkit-diagnostics.js";
+
+function nativeDiagnostics(): void {
+  const {
+    debug,
+  }: {
+    debug(namespace: string): (message: string) => void;
+  } = require("playwright-core/lib/utilsBundle");
+  debug("pw:protocol")("PROTOCOL_BEFORE_CAPTURE");
+  const restore = captureWebKitDiagnostics();
+  try {
+    const browser = debug("pw:browser");
+    const payload = "é".repeat(20_000);
+    browser(`[pid=123][err] NATIVE_RETAINED ${payload}`);
+    browser(`[pid=123][out] NATIVE_OVER_LIMIT ${payload}`);
+    browser("[pid=123][err] NATIVE_DROPPED");
+    browser("[pid=123] <process did exit: exitCode=0, signal=null>");
+    console.error("NON_NATIVE_FAILURE");
+  } finally {
+    restore();
+  }
+  debug("pw:browser")("BROWSER_LOGGING_RESTORED");
+}
 
 async function interruptControl(signal: "SIGINT" | "SIGTERM"): Promise<void> {
   const received = Promise.withResolvers<void>();
@@ -51,6 +74,7 @@ if (mode === "supervise") {
       mode,
       async () => {
         if (mode === "verdict-failure") throw new TypeError("CONTROL_ASSERTION");
+        if (mode === "native-diagnostics") nativeDiagnostics();
         if (mode === "interrupted-SIGINT") await interruptControl("SIGINT");
         if (mode === "interrupted-SIGTERM") await interruptControl("SIGTERM");
       },

@@ -358,6 +358,31 @@ async function stopDriver(driver: Driver, ms: number): Promise<DriverCleanup> {
     };
   }
 }
+async function verifyAndStopDriver(
+  driver: Driver,
+  cleanupMs: number,
+  collector: Collector,
+): Promise<DriverCleanup> {
+  const verify = driver.verifyBeforeStop?.bind(driver);
+  if (!verify) return stopDriver(driver, cleanupMs);
+  const cancel = new AbortController();
+  const verification = Promise.resolve().then(() => verify(cancel.signal));
+  try {
+    await bounded(verification, 5000, "driver cleanup verification");
+  } catch (error) {
+    collector.fail("cleanup-verification", String(error));
+    cancel.abort(error);
+  }
+  const cleanup = await stopDriver(driver, cleanupMs);
+  if (cancel.signal.aborted) {
+    // Browser closure cancels admitted Playwright calls. Join their verifier independently.
+    const settled = Promise.allSettled([verification]);
+    await bounded(settled, 1000, "driver cleanup verification settlement").catch((error) => {
+      collector.fail("cleanup-verification", String(error));
+    });
+  }
+  return cleanup;
+}
 async function stopCollector(
   server: ReturnType<typeof Bun.serve>,
   stopped: boolean,
@@ -537,7 +562,7 @@ export async function runPageSuite<R>(
       joinPreparation(preparation, cleanupMs),
       consumers.join(cleanupMs),
       driver
-        ? stopDriver(driver, cleanupMs).then((result) => {
+        ? verifyAndStopDriver(driver, cleanupMs, collector).then((result) => {
             driverCleanup = result;
           })
         : undefined,

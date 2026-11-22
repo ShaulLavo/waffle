@@ -1,7 +1,11 @@
 import { keyPressControl } from "./key-press-controls.js";
 import { ControlRun } from "./control-run.js";
 import { fixtureCapabilityControl, fixtureControlModes } from "./fixture-capability-controls.js";
-import { workerCapabilityControl, workerControlModes } from "./worker-capability-controls.js";
+import {
+  webKitWorkerVerificationModes,
+  workerCapabilityControl,
+  workerControlModes,
+} from "./worker-capability-controls.js";
 import { retainedWorkerControl, retainedWorkerControlModes } from "./retained-worker-controls.js";
 import { peerControl, peerControlModes } from "./peer-controls.js";
 import { buildFrameworkBootstrap } from "../../build.js";
@@ -27,6 +31,7 @@ import { bounded } from "./driver.js";
 import { storageWorker } from "./storage-worker.js";
 import { withStorageCleanup } from "../storage-allocation.js";
 import { browserBundle, engines } from "../browser-runner-lifecycle.js";
+import { captureWebKitDiagnostics } from "../webkit-diagnostics.js";
 function hangWorker(): void {
   globalThis.onmessage = () => {};
 }
@@ -301,7 +306,11 @@ async function engineControls(
       () => fixtureCapabilityControl(engine, mode, root),
       results,
     );
-  for (const mode of workerControlModes.filter(
+  const workerModes =
+    engine === "webkit"
+      ? workerControlModes.concat(webKitWorkerVerificationModes)
+      : workerControlModes;
+  for (const mode of workerModes.filter(
     (mode) => !selected || `worker-capability-${mode}`.includes(selected),
   ))
     await checkControl(
@@ -379,6 +388,14 @@ async function engineControls(
       results,
     );
 }
+async function runEngine(engine: string, root: string, results: ControlResults): Promise<void> {
+  const restore = engine === "webkit" ? captureWebKitDiagnostics() : undefined;
+  try {
+    await engineControls(engine, root, results);
+  } finally {
+    restore?.();
+  }
+}
 async function main(controls: ControlRun): Promise<void> {
   controls.throwIfInterrupted();
   const args = process.argv.slice(2),
@@ -406,7 +423,7 @@ async function main(controls: ControlRun): Promise<void> {
         await buildFrameworkBootstrap();
       root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "pr-results-"));
       await mkdir(root, { recursive: true });
-      for (const engine of requested) await engineControls(engine, root, results);
+      for (const engine of requested) await runEngine(engine, root, results);
     },
     async () => {
       if (root) await rm(root, { recursive: true, force: true });

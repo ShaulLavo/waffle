@@ -5,6 +5,7 @@ import { writeResult } from "./result-file.js";
 
 function spawnControls(command: string[], controlsPath: string) {
   return Bun.spawn(command.concat(["--result", controlsPath]), {
+    env: process.env,
     stdin: "ignore",
     stdout: "inherit",
     stderr: "pipe",

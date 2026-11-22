@@ -1,4 +1,5 @@
 import type { GraphicsConnection } from "./protocol.js";
+import { readSurfaceInfo } from "./surface-info.js";
 import {
   atomicsLoad,
   DataViewConstructor,
@@ -59,7 +60,7 @@ export function createDisplayImports(
         const output = guestOutput(memory, ptr, 16);
         for (let index = 0; index < surfaces.length; index++) {
           if (surfaces[index]!.id !== id) continue;
-          return readInfo(new Int32ArrayConstructor(surfaces[index]!.info), output);
+          return readSurfaceInfo(new Int32ArrayConstructor(surfaces[index]!.info), output);
         }
         return -8;
       } catch {
@@ -67,21 +68,4 @@ export function createDisplayImports(
       }
     },
   };
-}
-function readInfo(info: Int32Array, output: DataView): number {
-  for (let attempt = 0; attempt < 16; attempt++) {
-    const version = atomicsLoad(info, 0);
-    if (version & 1) continue;
-    const width = atomicsLoad(info, 1),
-      height = atomicsLoad(info, 2);
-    const scale = atomicsLoad(info, 3),
-      flags = atomicsLoad(info, 4);
-    if (version !== atomicsLoad(info, 0)) continue;
-    dataViewSetUint32(output, 0, width, true);
-    dataViewSetUint32(output, 4, height, true);
-    dataViewSetUint32(output, 8, scale, true);
-    dataViewSetUint32(output, 12, flags, true);
-    return 0;
-  }
-  return -6;
 }

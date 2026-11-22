@@ -1,0 +1,12 @@
+--- a/wasm-component-model/src/browser/ril.ts
++++ b/wasm-component-model/src/browser/ril.ts
+@@ -8 +7,0 @@
+-import * as connection from './connection';
+@@ -75 +74,2 @@
+-			return new connection.WorkerConnection(port, world, timeout);
++			const { WorkerConnection } = await import('./connection.js');
++			return new WorkerConnection(port, world, timeout);
+@@ -81 +81,2 @@
+-			return new connection.MainConnection(port);
++			const { MainConnection } = await import('./connection.js');
++			return new MainConnection(port);
