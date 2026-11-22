@@ -9,8 +9,17 @@ self.onmessage = ({ data }: MessageEvent<FilesystemConnection>) => {
   try {
     const subDir = host.openRaw(3, "work/sub", { oflags: 2, base: RIGHTS_ALL });
     const openedRoot = host.openRaw(3, ".", { oflags: 2, base: RIGHTS_ALL });
+    const rootRes = host.wasi.descriptors.get(openedRoot.fd)!.resource;
+    const subRes = host.wasi.descriptors.get(subDir.fd)!.resource;
+    if (rootRes.kind !== "directory" || subRes.kind !== "directory")
+      throw new Error("expected directory descriptors");
     const epochView = new Int32Array(data.epoch);
     const epochBefore = Atomics.load(epochView, 0);
+
+    const isRootFirst = [client.isRoot(rootRes.handle), client.isRoot(subRes.handle)];
+    const epochAfterFirstIsRoot = Atomics.load(epochView, 0);
+    const isRootSecond = [client.isRoot(rootRes.handle), client.isRoot(subRes.handle)];
+    const epochAfterSecondIsRoot = Atomics.load(epochView, 0);
 
     const opens: { errno: number; text: string; counts: typeof wrapped.counts }[] = [];
     for (let i = 0; i < 4; i++) {
@@ -46,7 +55,11 @@ self.onmessage = ({ data }: MessageEvent<FilesystemConnection>) => {
       subDirErrno: subDir.errno,
       openedRootErrno: openedRoot.errno,
       epochBefore,
+      epochAfterFirstIsRoot,
+      epochAfterSecondIsRoot,
       epochAfter,
+      isRootFirst,
+      isRootSecond,
       opens,
       deniedErrno: denied.errno,
       deniedCounts,

@@ -241,48 +241,77 @@ test("root, opened-root, non-root and sandboxed dirfds keep alias isolation with
   });
 });
 
-test("FilesystemClient non-root path_open does not call preopen or bump the global epoch", async () => {
-  const backend = new MemoryBackend();
-  backend.fs.writeFile("/work/sub/hello.txt", "ipc-hello");
-  backend.fs.writeFile("/work/sub/readonly.txt", "locked");
-  backend.fs.setMode(backend.fs.handleForNode(backend.fs.lookup("/work/sub/readonly.txt")!), 0o400);
-  const service = new FilesystemService(backend);
-  cleanup.push(() => service.dispose());
-  const pair = createFilesystemConnection();
-  service.connect(pair.server);
-  const worker = new Worker(new URL("./fixtures/wasi-path-open-worker.ts", import.meta.url).href);
-  cleanup.push(() => worker.terminate());
+for (const publication of [false, true]) {
+  test(`FilesystemClient non-root path_open and isRoot do not call preopen or bump epoch (publication=${publication})`, async () => {
+    const backend = new MemoryBackend();
+    backend.fs.writeFile("/work/sub/hello.txt", "ipc-hello");
+    backend.fs.writeFile("/work/sub/readonly.txt", "locked");
+    backend.fs.setMode(
+      backend.fs.handleForNode(backend.fs.lookup("/work/sub/readonly.txt")!),
+      0o400,
+    );
+    const service = new FilesystemService(backend);
+    cleanup.push(() => service.dispose());
+    const pair = createFilesystemConnection(
+      undefined,
+      publication
+        ? {
+            observe: true,
+            limits: {
+              sessions: 4,
+              operations: 8,
+              inputBytes: 64,
+              argumentBytes: 512,
+              effectBytes: 2048,
+              effects: 16,
+              resultBytes: 128,
+              logRecords: 2,
+              logBytes: 4096,
+              pins: 2,
+              pinBytes: 4096,
+            },
+          }
+        : undefined,
+    );
+    service.connect(pair.server);
+    const worker = new Worker(new URL("./fixtures/wasi-path-open-worker.ts", import.meta.url).href);
+    cleanup.push(() => worker.terminate());
 
-  const result = await new Promise<Record<string, unknown>>((resolve, reject) => {
-    worker.onmessage = (event) => resolve(event.data as Record<string, unknown>);
-    worker.onerror = reject;
-    worker.postMessage(pair.client, [pair.client.port]);
-  });
+    const result = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      worker.onmessage = (event) => resolve(event.data as Record<string, unknown>);
+      worker.onerror = reject;
+      worker.postMessage(pair.client, [pair.client.port]);
+    });
 
-  expect(result.subDirErrno).toBe(0);
-  expect(result.openedRootErrno).toBe(0);
-  expect(result.epochAfter).toBe(result.epochBefore);
-  expect(result.opens).toEqual(
-    Array.from({ length: 4 }, () => ({
-      errno: 0,
-      text: "ipc-hello",
-      counts: { stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 },
-    })),
-  );
-  expect(result.deniedErrno).toBe(2);
-  expect(result.deniedCounts).toEqual({
-    stat: 1,
-    preopen: 0,
-    permissions: 1,
-    resolve: 1,
-    create: 0,
+    expect(result.subDirErrno).toBe(0);
+    expect(result.openedRootErrno).toBe(0);
+    expect(result.isRootFirst).toEqual([true, false]);
+    expect(result.isRootSecond).toEqual([true, false]);
+    expect(result.epochAfterFirstIsRoot).toBe(result.epochBefore);
+    expect(result.epochAfterSecondIsRoot).toBe(result.epochBefore);
+    if (!publication) expect(result.epochAfter).toBe(result.epochBefore);
+    expect(result.opens).toEqual(
+      Array.from({ length: 4 }, () => ({
+        errno: 0,
+        text: "ipc-hello",
+        counts: { stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 0 },
+      })),
+    );
+    expect(result.deniedErrno).toBe(2);
+    expect(result.deniedCounts).toEqual({
+      stat: 1,
+      preopen: 0,
+      permissions: 1,
+      resolve: 1,
+      create: 0,
+    });
+    expect(result.devNullErrno).toBe(0);
+    expect(result.devNullKind).toBe("device");
+    expect((result.devNullCounts as { preopen: number }).preopen).toBe(0);
+    expect(result.afterCloseRootErrno).toBe(0);
+    expect((result.afterCloseRootCounts as { preopen: number }).preopen).toBe(0);
   });
-  expect(result.devNullErrno).toBe(0);
-  expect(result.devNullKind).toBe("device");
-  expect((result.devNullCounts as { preopen: number }).preopen).toBe(0);
-  expect(result.afterCloseRootErrno).toBe(0);
-  expect((result.afterCloseRootCounts as { preopen: number }).preopen).toBe(0);
-});
+}
 
 test("retained root keeps virtual aliases after closing preopen and subdirectory preopen does not shadow files", () => {
   const mem = new MemFS();
