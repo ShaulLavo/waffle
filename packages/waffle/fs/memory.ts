@@ -333,11 +333,12 @@ export class MemFS implements FileSystem {
     this.rootedCache = { root: this.root, parentOf: (dir) => this.liveParent(dir) };
     return this.rootedCache;
   }
-  /** Where `..` leads from a directory, as Linux does it: a removed directory has no parent. */
+  /** Where `..` leads from a directory. As on Linux, a removed directory still leads to the
+   * parent it had, which the walk that reached it recorded. */
   private liveParent(dir: DirNode): DirNode | number {
-    if (this.removedDirectories.has(dir)) return 44;
     const parent = this.directoryParents.get(dir) ?? this.directoryParent(dir);
-    return parent && parent !== dir ? parent : 63;
+    if (parent && parent !== dir) return parent;
+    return this.removedDirectories.has(dir) ? 44 : 63;
   }
   private pages = new WeakMap<DirNode, DirectoryPages>();
   private directoryPages(node: DirNode): DirectoryPages {

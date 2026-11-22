@@ -9,7 +9,12 @@ const encoder = new TextEncoder(),
 
 /** One process's Preview1 path calls over `fs`, set up and checked only through those calls, so
  * every backend runs the same scenario. Paths start at fd 3, the `/` preopen. */
-export function preview1(fs: FileSystem, preopens: Record<string, string> = { "/": "/" }) {
+export function preview1(
+  fs: FileSystem,
+  preopens: Record<string, string> = { "/": "/" },
+  /** Host setup between construction and guest entry, as exec's binding installation runs. */
+  beforeEntry?: (wasi: Wasi) => void,
+) {
   const wasi = new Wasi({
     args: [],
     env: {},
@@ -19,6 +24,7 @@ export function preview1(fs: FileSystem, preopens: Record<string, string> = { "/
     stderr() {},
     sleep() {},
   });
+  beforeEntry?.(wasi);
   const memory = new WebAssembly.Memory({ initial: 1 });
   wasi.start({ exports: { memory, _start() {} } });
   const bytes = new Uint8Array(memory.buffer);
@@ -51,7 +57,14 @@ export function preview1(fs: FileSystem, preopens: Record<string, string> = { "/
     return error ? -error : decoder.decode(bytes.slice(5000, 5000 + view.getUint32(4096, true)));
   };
   return {
+    wasi,
     dispose: () => wasi.descriptors.dispose(),
+    rmdir: (name: string) => calls.path_remove_directory(3, 256, put(name, 256)),
+    /** The open description's inode handle, to tell a live descriptor from a physical file. */
+    handleOf: (fd: number) => {
+      const resource = wasi.descriptors.get(fd)?.resource;
+      return resource?.kind === "file" || resource?.kind === "directory" ? resource.handle : undefined;
+    },
     symlink: (target: string, name: string, fd = 3) =>
       calls.path_symlink(256, put(target, 256), fd, 2048, put(name, 2048)),
     /** The filetype, or a negative errno. */
