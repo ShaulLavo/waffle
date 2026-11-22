@@ -147,6 +147,15 @@ The shared filesystem supports memory, IndexedDB and OPFS backends behind the sa
 protocol. The network helper receives an injected `fetch` implementation and sends framed responses
 through shared rings. Preview URL routing and service-worker scope remain consumer choices.
 
+## npm package contents
+
+The npm package leaves out test files and GPU code-generation inputs (2.77 MB packed, from
+4.27 MB). About 4.5 MB unpacked of non-test `tests/` files still ships, because the exported
+`./testing/*` helpers import from `tests/` and some load fixtures by path. A hand-kept allowlist
+reached 1.73 MB but kept missing path-loaded fixtures (PR 596 review rounds 1 to 3). To get the
+rest safely, move the exported helpers and the fixtures they use out of `tests/` into their own
+directory, publish that directory, and stop publishing `tests/`.
+
 ## Verification
 
 The standalone gates run package install and `prepare`, TypeScript checking, unit tests, installed

@@ -166,3 +166,17 @@ records its navigation or evaluation phase, page events, and WebKit stderr. If e
 reports a closed target while the page stays open and the browser stays connected, collect
 `DEBUG=pw:protocol` for that runner and look for the active WebKit target's destruction or
 provisional target commit.
+
+## Failures seen during the 2026-11-22 performance lane
+
+Each passed on rerun with no code change, and none touches the code those PRs changed.
+
+- `tests/process-root-navigation-diagnostic.test.ts:296` threw `Synthetic collector readiness
+  timeout` once in a local full `bun run test` at load average 54; the file then passed 56 of 56
+  twice at the same load. The readiness wait is a fixed 5 s limit inside the test. Make it a
+  generous hang cap or wait on the fixture's readiness signal instead of elapsed time.
+- `tests/threads-runtime-browser-runner.ts webkit` failed `sibling descriptor reuse`
+  (`tests/threads-runtime-fd-browser.ts:188`, a 15 s `until` cap) on PR 598, run 45003846225
+  attempt 1; attempt 2 passed.
+- `tests/page-runner/gpu-async-controls-runner.ts --ci chromium webkit` failed with
+  `host-body-failure` on main ecf82eee, run 45003278103 attempt 1; attempt 2 passed.
