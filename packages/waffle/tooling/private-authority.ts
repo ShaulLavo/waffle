@@ -89,28 +89,6 @@ interface PayloadException {
 // here require a payload provenance explanation in docs/private-authority.md.
 export const payloadExceptions: readonly PayloadException[] = [
   {
-    file: "proc/pipes.ts",
-    scope: "length",
-    rule: "mutable-builtin",
-    expression: "chunks.reduce((total, chunk) => total + typedArrayLength(chunk), 0)",
-    reason:
-      "Caller-owned byte iovecs; no private ring, cursor or endpoint is an element or callback capture.",
-  },
-  {
-    file: "proc/pipes.ts",
-    scope: "Ring.writeEntered",
-    rule: "private-iteration",
-    expression: "chunks",
-    reason: "Caller-owned source iovecs; ring copies use captured natives.",
-  },
-  {
-    file: "proc/pipes.ts",
-    scope: "Ring.read",
-    rule: "private-iteration",
-    expression: "chunks",
-    reason: "Caller-owned destination iovecs; ring copies use captured natives.",
-  },
-  {
     file: "browser/worker.ts",
     scope: "bootstrapAllocated.output",
     rule: "mutable-getter",

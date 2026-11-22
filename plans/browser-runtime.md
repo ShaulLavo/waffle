@@ -252,6 +252,61 @@ and registry collection do not provide that proof. Add delayed-copy, stale ackno
 replaced incarnation and physical-death controls before clearing any abandoned count. Keep
 finite quarantine if no platform-independent proof is available.
 
+A quarantined writer slot now also keeps the pages its interrupted write mapped: at most 16
+shared payload pages (writers leave the pool's last two to deliveries) and one record page.
+Its two reserved pages, and every other writer's, are untouched, so the pipe keeps working
+with less burst room. Those pages lie ahead of the slot's published cursor, where only a fenced
+sweep may free them; recovery runs `Ring.sweep(true)` once it has the same proof.
+
+## Pipe memory and small-write follow-ups
+
+Status: Approved. Owner: process-lifecycle track. The paged-ring change (perf lane "pipes",
+2026-11-22) cut a default pipe from 2,622,760 to 266,040 reserved bytes and made a 64-byte
+`tryWrite` plus `tryRead` about twice as fast. Guard each step with outcome tests like
+`packages/waffle/tests/pipe-pages.test.ts`, measure it with the perf suite's section 4.5 rows,
+and record before and after numbers in the PR.
+
+1. **Pipe registry maximum.** Each runtime root's `PipePublicationRegistry` is a growable
+   buffer declaring 16,785,424 bytes (1,048,576 append-only cells), which Safari reserves in
+   full at construction (`docs/shared-memory.md`). Cells are never reused because a retained raw
+   view must never alias another cursor. Design incarnation-tagged cells (or cell pages that a
+   collected owner returns once no endpoint can name them) so the declared maximum can drop to
+   about 1 MiB without lowering the lifetime pipe count. Check how gVisor and FreeBSD bound
+   per-process pipe metadata first. Reproduce the reservation with
+   `runtime.sharedMemory.snapshot()` after `createRuntime()` and one root adoption.
+2. **Shell pipelines always relay.** A shell holds its read end while it forks the reading
+   child, so `retain(child, "read")` sees two reader processes and switches the pipe to relay
+   mode for good; every byte of `cat | grep` then crosses the page's relay. Defer the switch
+   until a second reader process actually reads, which needs the direct consumer lease
+   (`Ring.bind(pid, "consumed")`) to move from the parent to the child when the parent closes.
+   The relay 64-byte round trip measured 4.9 µs on main against 1.9 µs direct.
+3. **Idle writers' shared pages.** A writer returns a partly used shared page only on its next
+   write, so 16 idle writers could each pin one shared page and leave others their reserved
+   8 KiB. The last page of every write prefers a reserved page, so this needs an unusual
+   pattern; add a pressure test before changing anything.
+4. **Remaining small-write costs.** Each write and read still sends two notify pairs
+   (`changed` and the service wake), allocates a 64-bit ticket and scans all 16 writer slots
+   in `PipeState.source`. A count of occupied writer slots, or one notify word, would remove
+   most of the rest. Keep the scan's ceiling rule.
+5. **Interleaving harness gaps.** `tests/pipe-interleave-matrix.test.ts` pauses the page or a
+   guest realm at every point in `PIPE_PAUSE_POINTS` while another realm runs one of 12
+   actions, in direct and relay mode. Injecting each round 1 and round 2 bug back into the
+   fixed code, it catches all but two: a retire that frees pages without a wake (another wake
+   always follows in its workload; `pipe-page-recovery.test.ts` catches it), and an unfenced
+   sweep judging against a stale cursor (unreachable in a test now that laps are full width:
+   half the lap space is 2 GiB of traffic). It runs no registry-backed pipes and no real Worker
+   termination; add both when the registry or quarantine recovery changes. A tag-back
+   (`sweep.retag`) needs an aborted write that wrapped onto unread bytes, which the matrix
+   workload never makes; `pipe-interleave.test.ts` pauses there directly.
+6. **Mixed-size atomics on page entries.** `PageMap.find` and `reservedBusy` read the low and
+   high halves of a 64-bit entry with 32-bit `Atomics.load`, while every write and CAS is 64-bit.
+   Tearing is harmless (a producer reads only its own stable entries, and a reader that copies
+   through a torn view loses its consuming CAS), and aligned halves are single-copy atomic on
+   x86-64 and ARM64, but ECMA-262 calls overlapping mixed-size atomics a data race. If a strict
+   memory-model checker (TSan on a JS engine, or a spec-level model) is ever run over the pipe
+   suite, switch those reads to 64-bit loads and measure the small-write cost (about one BigInt
+   per lookup).
+
 ## Non-root openat without a filesystem mutation
 
 Status: Approved follow-up, split out of [PR 600](https://github.com/ShaulLavo/waffle/pull/600)

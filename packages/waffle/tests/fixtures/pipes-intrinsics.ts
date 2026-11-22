@@ -9,7 +9,7 @@ const source = new Bun.Transpiler({ loader: "ts" }).transformSync(
     .replace(/^import\b[^;]*;\n/gm, "")
     .replace(/^export /gm, "")
     .concat(
-      "\nglobalThis.pipeExports = { attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry };\n",
+      "\nglobalThis.pipeExports = { attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry, pipeReservationBytes, pipeRingOffset };\n",
     ),
 );
 
@@ -25,6 +25,10 @@ export function isolatedPipes() {
     SharedArrayBufferConstructor: native.SharedArrayBufferConstructor,
     sharedArrayBufferGrow: native.sharedArrayBufferGrow,
     typedArraySubarray: native.typedArraySubarray,
+    /** Every pipe payload copy, into a ring page or out of one. */
+    typedArrayCopy: native.typedArrayCopy,
+    /** Named step boundaries; see pipe-interleave.ts. */
+    pipePause: native.pipePause as (point: string) => void,
   };
   const captured: Record<string, unknown> = { ...native };
   for (const key of Object.keys(native)) {
@@ -43,6 +47,14 @@ export function isolatedPipes() {
     hooks.sharedArrayBufferGrow(buffer, length);
   captured.typedArraySubarray = (view: Uint8Array, begin?: number, end?: number) =>
     hooks.typedArraySubarray(view, begin, end);
+  captured.typedArrayCopy = (
+    target: Uint8Array,
+    offset: number,
+    source: Uint8Array,
+    begin: number,
+    end: number,
+  ) => hooks.typedArrayCopy(target, offset, source, begin, end);
+  captured.pipePause = (point: string) => hooks.pipePause(point);
   const context = {
     ...captured,
     ProcessError,

@@ -102,6 +102,26 @@ export function typedArraySubarray<T extends Int32Array | Uint8Array | BigInt64A
       throw new TypeError("unsupported internal typed array");
   }
 }
+/** A named step boundary in pipe code. A no-op in production; the pipe interleaving harness
+ * (tests/fixtures/pipe-interleave.ts) replaces it to run another party at that point. */
+export function pipePause(_point: string): void {}
+/** Copy source[begin, end) into target at offset. Short copies use indexed element access,
+ * which never consults a prototype, so small pipe writes avoid creating a subarray view. */
+export function typedArrayCopy(
+  target: Uint8Array,
+  offset: number,
+  source: Uint8Array,
+  begin: number,
+  end: number,
+): void {
+  const count = end - begin;
+  if (count <= 64) {
+    for (let index = 0; index < count; index++) target[offset + index] = source[begin + index]!;
+    return;
+  }
+  if (begin === 0 && end === typedArrayLength(source)) apply(setMethod, target, [source, offset]);
+  else apply(setMethod, target, [typedArraySubarray(source, begin, end), offset]);
+}
 
 const mapClearMethod = Map.prototype.clear;
 export function mapClear<K, V>(map: Map<K, V>): void {

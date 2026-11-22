@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { PipeController, PipeErrno } from "../proc/pipes.js";
+import { PipeController, PipeErrno, pipeReservationBytes, pipeRingOffset } from "../proc/pipes.js";
 
 function message(worker: Worker): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -48,7 +48,7 @@ test("a pre-cloned blocked Bun Worker reads 3001 reused writer lifetimes", async
     }
     pipe.revoke(1);
     expect(await completed).toBe(3001);
-    expect(root.handle().buffer.byteLength).toBe(2622760);
+    expect(root.handle().buffer.byteLength).toBe(pipeReservationBytes());
   } finally {
     pipe.revoke(1);
     await child.terminate();
@@ -68,7 +68,7 @@ for (const terminate of [false, true]) {
     const other = terminate ? pipe.retain(3, "write") : undefined;
     const gate = new Int32Array(new SharedArrayBuffer(4));
     const handle = writer.handle();
-    const offset = 40 + handle.slot * (40 + 8 + 8 * 16);
+    const offset = pipeRingOffset(handle);
     const epoch = new Int32Array(handle.buffer, offset + 36, 1);
     const owner = new Int32Array(handle.buffer, offset, 1);
     const refs = new Int32Array(handle.buffer, offset + 4, 1);

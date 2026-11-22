@@ -793,19 +793,19 @@ test("authorized worker kill freezes publication before parent-visible completio
   const inherited = guest.options.descriptors.get(17)!.resource as PipeEndpoint;
   expect(inherited.tryWrite([encoder.encode("good")])).toBe(4);
   const late = encoder.encode("late"),
-    subarray = isolated.hooks.typedArraySubarray;
+    copy = isolated.hooks.typedArrayCopy;
   let intercepted = false;
-  isolated.hooks.typedArraySubarray = (view, start, end) => {
+  isolated.hooks.typedArrayCopy = (target, offset, view, start, end) => {
     if (view === late) {
       intercepted = true;
       f.root.kill(pid, 9);
     }
-    return subarray(view, start, end);
+    copy(target, offset, view, start, end);
   };
   try {
     expect(inherited.tryWrite([late])).toBe(-PipeErrno.BADF);
   } finally {
-    isolated.hooks.typedArraySubarray = subarray;
+    isolated.hooks.typedArrayCopy = copy;
   }
   expect(intercepted).toBe(true);
   expect(f.root.wait(1, pid)).toBeNull();

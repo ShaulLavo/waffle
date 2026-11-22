@@ -410,8 +410,35 @@ stale endpoint writes, closes and pid revocation cannot change its replacement. 
 terminated inside a section leaves the slot quarantined rather than permitting unsafe reuse.
 Raw buffers remain private runtime authority, not a guest corruption sandbox.
 
-The default pipe retains one fixed 2,622,760-byte buffer and admits 16 simultaneous writing
-processes and 16 reading processes. Closed writer rings can append new owners after unread
+Ring storage is paged, the way Linux backs a pipe with `pipe_buffer` pages. Each ring keeps its
+full virtual capacity (65,536 bytes and 1,024 write records by default), but its page table maps
+4 KiB payload pages and 64-record pages only for data that is not yet read. A consumer frees a
+page once its cursor passes the page's end; the producer maps a page, or retags the previous
+lap's page, before copying into it. One shared pool per pipe holds a full ring's worth of pages
+plus two that only relay deliveries may take. Every writer slot also owns two private pages of
+each kind, so a writer can always write `PIPE_BUF` bytes once its own data is read, whatever
+other writers, or a Worker stopped mid-write, still hold. Readers copy committed bytes before
+their consuming CAS, so a reader that loses a race to a freed page discards what it copied.
+
+Every page outside a ring's unread window is free. Normal reads and writes keep that true as
+they go; one sweep restores it wherever a path can stop halfway: a write that fails to
+publish, a reader stopped between its consuming CAS and its page release, or a slot reused
+before the relay saw it drain. Without a fence the sweep frees only pages an earlier lap left
+behind, which a producer can only retag by CAS on the same entry; an exhausted pool runs it over
+every ring. With a fence (the ring's own producer, the relay on a delivery ring it owns, or a
+slot reclaim after its incarnation advanced) it frees every page that holds no unread data.
+Any sweep that frees a page wakes waiting endpoints. Each page-table entry is one 64-bit word
+holding the physical page and a lap counter as wide as the cursor, so a reused entry cannot
+repeat its value inside the 4 GiB cursor wrap. An unfenced sweep judges each entry against a
+consumer cursor read after the entry, so it never frees a mapping newer than its cursor.
+
+Named pause points between the atomic steps (a no-op in production) let
+`tests/pipe-interleave-matrix.test.ts` pause the page or a guest realm at every step while
+another party runs, then audit the page invariant and wakes after each step.
+
+The default pipe retains one fixed 266,040-byte buffer (it was 2,622,760 bytes with a dedicated
+ring per slot) and admits 16 simultaneous writing processes and 16 reading processes. A
+four-stage pipeline's three pipes reserve 798,120 bytes. Closed writer rings can append new owners after unread
 committed records, preserving tickets, record pins and cursor counters. Reader rings must be
 fully drained or recovered by the relay before reuse. Reclaiming a direct reader switches to
 relay mode before publishing its replacement. Fresh slots are preferred. Each slot permits

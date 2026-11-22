@@ -6,6 +6,7 @@ import {
   PipeErrno,
   PipePublicationRegistry,
   attachPipeEndpoint,
+  pipeReservationBytes,
 } from "../proc/pipes.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
@@ -66,7 +67,7 @@ test("one parent-held default pipe survives repeated inherited child writers thr
       if (!(inherited instanceof PipeEndpoint)) throw new Error("missing child writer");
       stale ??= attachPipeEndpoint(structuredClone(inherited.handle()));
       expect(inherited.handle().id).toBe(f.writer.handle().id);
-      expect(inherited.handle().buffer.byteLength).toBe(2622760);
+      expect(inherited.handle().buffer.byteLength).toBe(pipeReservationBytes());
       expect(inherited.tryWrite([byte])).toBe(1);
       const output = new Uint8Array(1);
       expect(attachedReader.tryRead([output])).toBe(1);
@@ -116,7 +117,7 @@ test("one registry-backed worker pipe survives 3001 inherited writer identities"
       else registry.revoke(pid);
       registry.collectProcess(pid);
       expect(stale.tryWrite([byte])).toBe(-PipeErrno.BADF);
-      expect(attached.handle().buffer.byteLength).toBe(2622760);
+      expect(attached.handle().buffer.byteLength).toBe(pipeReservationBytes());
       expect(backing.byteLength).toBe(initialBytes);
       // One publication cell per child. A fresh direct writer also binds a reader lease.
       const fresh = Math.min(index + 1, 15);

@@ -487,7 +487,9 @@ committed records; reader reuse waits for full relay recovery. A terminated sect
 quarantines its slot. The registry retains append-only cells and its unchanged default cap.
 The earlier wrap/copy scheme originated in Waffle's `browser/worker.ts` SharedPipe, not an
 external source. These lifetime rules and host allocation hook are original adapters, with
-no upstream code copied or adapted.
+no upstream code copied or adapted. Paged ring storage, with a per-pipe page pool and
+writer-reserved pages, is an original design modeled on the Linux `pipe_buffer` page ring
+(`fs/pipe.c`); no Linux code was copied or adapted.
 
 ## Preview 1 launch socket adapter
 
