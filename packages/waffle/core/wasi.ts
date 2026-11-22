@@ -162,9 +162,18 @@ export interface WasiOptions {
 // bun.wasm, which calls clock_time_get / random_get here.
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const fatalDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const perfNow = performance.now.bind(performance);
 const timeOrigin = performance.timeOrigin;
 const getRandomValues = crypto.getRandomValues.bind(crypto);
+
+// No zero-length shortcut: decoding a view over detached memory must still fail as it did.
+function decodeBytes(bytes: Uint8Array, ptr: number, len: number, target: TextDecoder): string {
+  const buffer = bytes.buffer;
+  const needsCopy =
+    !(buffer instanceof ArrayBuffer) || ("resizable" in buffer && Boolean(buffer.resizable));
+  return target.decode(needsCopy ? bytes.slice(ptr, ptr + len) : bytes.subarray(ptr, ptr + len));
+}
 
 function writeUtf8Prefix(target: string, output: Uint8Array): number {
   if (output.length === 0) return 0;
@@ -522,11 +531,13 @@ export class Wasi {
     len >>>= 0;
     const bytes = this.bytes();
     if (ptr > bytes.length || len > bytes.length - ptr) throw new FilesystemError(EFAULT);
-    return decoder.decode(bytes.slice(ptr, ptr + len));
+    return decodeBytes(bytes, ptr, len, decoder);
   }
 
   private iovecs(ptr: number, count: number): Uint8Array[] {
     const view = this.view();
+    if (count === 1)
+      return [this.memory.range(view.getUint32(ptr, true), view.getUint32(ptr + 4, true))];
     const out: Uint8Array[] = [];
     for (let i = 0; i < count; i++) {
       const buf = view.getUint32(ptr + i * 8, true);
@@ -675,9 +686,7 @@ export class Wasi {
     if (ptr + len > bytes.length || out + 16 > bytes.length) return 21;
     let path: string;
     try {
-      path = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-        bytes.slice(ptr, ptr + len),
-      );
+      path = decodeBytes(bytes, ptr, len, fatalDecoder);
     } catch {
       return EINVAL;
     }
@@ -726,20 +735,27 @@ export class Wasi {
   ): number {
     if (count === 0) return 0;
     const chunks = this.iovecs(iovs, count);
-    if (chunks.every((chunk) => chunk.length === 0)) return 0;
-    const write = () => {
-      if (at === null && file.append) {
+    let empty = true;
+    for (let i = 0; i < chunks.length; i++) {
+      if (chunks[i]!.length !== 0) {
+        empty = false;
+        break;
+      }
+    }
+    if (empty) return 0;
+    if (at !== null) return this.opts.fs.write(file.handle, chunks, at);
+    return withFileOffset(file, () => {
+      if (file.append) {
         const result = this.opts.fs.append(file.handle, chunks);
         if (typeof result === "number") return result;
         file.offset = result.offset;
         return result.written;
       }
-      const pos = at ?? file.offset;
+      const pos = file.offset;
       const written = this.opts.fs.write(file.handle, chunks, pos);
-      if (written >= 0 && at === null) file.offset = pos + written;
+      if (written >= 0) file.offset = pos + written;
       return written;
-    };
-    return at === null ? withFileOffset(file, write) : write();
+    });
   }
 
   private readIn(
@@ -747,13 +763,13 @@ export class Wasi {
     chunks: Uint8Array[],
     at: number | null,
   ): number {
-    const read = () => {
-      const pos = at ?? file.offset;
+    if (at !== null) return this.opts.fs.read(file.handle, chunks, at);
+    return withFileOffset(file, () => {
+      const pos = file.offset;
       const count = this.opts.fs.read(file.handle, chunks, pos);
-      if (count >= 0 && at === null) file.offset = pos + count;
+      if (count >= 0) file.offset = pos + count;
       return count;
-    };
-    return at === null ? withFileOffset(file, read) : read();
+    });
   }
 
   private descriptorCall<Args extends unknown[]>(
@@ -1151,28 +1167,35 @@ export class Wasi {
           );
         if (typeof path === "number") return path;
         let node = path.node;
-        if (node !== undefined && oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
-        if (node !== undefined && this.opts.fs.stat(node).kind === "symlink") return ELOOP;
-        if (node === undefined && (!(oflags & O_CREAT) || path.trailingSlash)) return ENOENT;
-        if (node === undefined && oflags & O_DIRECTORY) return EINVAL;
-        if (node !== undefined && this.opts.fs.stat(node).kind === "socket") return 60;
+        let stat: FileStat | undefined;
+        if (node !== undefined) {
+          if (oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
+          stat = this.opts.fs.stat(node);
+          if (stat.kind === "symlink") return ELOOP;
+          if (stat.kind === "socket") return 60;
+        } else {
+          if (!(oflags & O_CREAT) || path.trailingSlash) return ENOENT;
+          if (oflags & O_DIRECTORY) return EINVAL;
+        }
         fdOut >>>= 0;
         if (fdOut + 4 > this.bytes().length) return EFAULT;
         if (node === undefined) {
           const result = this.opts.fs.create(path, "file", (oflags & O_EXCL) !== 0);
           if (typeof result !== "number") return result.error;
           node = result;
+          stat = this.opts.fs.stat(node);
         }
         return this.writeResult(
           openInode(
             this.descriptors,
             this.opts.fs,
             node,
-            this.opts.fs.stat(node).kind === "directory" ? "directory" : "file",
+            stat!.kind === "directory" ? "directory" : "file",
             oflags,
             fdflags,
             rightsBase,
             rightsInheriting,
+            stat,
           ),
           fdOut,
         );

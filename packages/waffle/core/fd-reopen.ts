@@ -5,7 +5,7 @@ import {
   RIGHT_PATH_FILESTAT_SET_SIZE as PATH_RESIZE,
 } from "./rights.js";
 import type { Descriptor, DescriptorTable } from "./descriptors.js";
-import type { FileSystem, ResolvedPath } from "./filesystem.js";
+import type { FileStat, FileSystem, ResolvedPath } from "./filesystem.js";
 import { normalize } from "./path.js";
 
 export type DescriptorPath = { source: number } | { device: "null" } | { resolved: ResolvedPath };
@@ -51,8 +51,9 @@ export function openInode(
   fdflags: number,
   base: bigint,
   inheriting: bigint,
+  stat: FileStat = fs.stat(handle),
 ): number {
-  if (fs.stat(handle).kind === "socket") return -60;
+  if (stat.kind === "socket") return -60;
   const access = (base & READ ? 4 : 0) | (base & WRITE ? 2 : 0);
   const permissions = fs.permissions?.(handle);
   if (permissions && permissions.accessSupported & access & ~permissions.access) return -2;
