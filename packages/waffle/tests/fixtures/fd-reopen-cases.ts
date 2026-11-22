@@ -368,7 +368,8 @@ for (const parent of ["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"]
 
 const traversalShapes = [
   { shape: "noaccess/../%", error: 2 },
-  { shape: "../%", error: 63 },
+  // `..` at the root of the `/`-rooted namespace stays at the root, as on Linux.
+  { shape: "../%", error: 0 },
   { shape: "parent//../%", error: 0 },
   { shape: "parent/./../%", error: 0 },
   { shape: "%/", error: undefined },
