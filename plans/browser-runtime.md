@@ -243,10 +243,11 @@ and registry collection do not provide that proof. Add delayed-copy, stale ackno
 replaced incarnation and physical-death controls before clearing any abandoned count. Keep
 finite quarantine if no platform-independent proof is available.
 
-A quarantined writer slot now also keeps the pages its interrupted write mapped: at most one
-write's worth (17 payload pages and one record page) from the pipe's shared pool. Its two
-reserved pages, and every other writer's, are untouched, so the pipe keeps working with less
-burst room. Recovery returns those pages through the same proof.
+A quarantined writer slot now also keeps the pages its interrupted write mapped: at most 16
+shared payload pages (writers leave the pool's last two to deliveries) and one record page.
+Its two reserved pages, and every other writer's, are untouched, so the pipe keeps working
+with less burst room. Those pages lie ahead of the slot's published cursor, where only a fenced
+sweep may free them; recovery runs `Ring.sweep(true)` once it has the same proof.
 
 ## Pipe memory and small-write follow-ups
 

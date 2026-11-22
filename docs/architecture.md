@@ -420,6 +420,15 @@ each kind, so a writer can always write `PIPE_BUF` bytes once its own data is re
 other writers, or a Worker stopped mid-write, still hold. Readers copy committed bytes before
 their consuming CAS, so a reader that loses a race to a freed page discards what it copied.
 
+Every page outside a ring's unread window is free. Normal reads and writes keep that true as
+they go; one sweep restores it wherever a path can stop halfway: a write that fails to
+publish, a reader stopped between its consuming CAS and its page release, or a slot reused
+before the relay saw it drain. Without a fence the sweep frees only pages an earlier lap left
+behind, which a producer can only retag by CAS on the same entry; an exhausted pool runs it over
+every ring. With a fence (the ring's own producer, the relay on a delivery ring it owns, or a
+slot reclaim after its incarnation advanced) it frees every page that holds no unread data.
+Any sweep that frees a page wakes waiting endpoints.
+
 The default pipe retains one fixed 261,944-byte buffer (it was 2,622,760 bytes with a dedicated
 ring per slot) and admits 16 simultaneous writing processes and 16 reading processes. A
 four-stage pipeline's three pipes reserve 785,832 bytes. Closed writer rings can append new owners after unread

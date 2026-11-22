@@ -247,19 +247,24 @@ class PagePool {
   get available(): number {
     return this.shared - atomicsLoad(this.used, 0);
   }
+  /** Set by the pipe: return pages earlier laps left in any ring. True when it freed one. */
+  scavenge?: () => boolean;
   /** Claim one shared page, leaving at least `floor` free. Returns its id or -1. */
   take(floor: number): number {
-    for (;;) {
-      const used = atomicsLoad(this.used, 0);
-      if (this.shared - used <= floor) return -1;
-      if (atomicsCompareExchange(this.used, 0, used, used + 1) === used) break;
-    }
+    if (!this.admit(floor) && !(this.scavenge?.() && this.admit(floor))) return -1;
     // The count admitted us, so some bit is clear or about to be cleared by a returning page.
     for (;;)
       for (let index = 0; index < typedArrayLength(this.bits); index++) {
         const id = this.claim(index);
         if (id >= 0) return id;
       }
+  }
+  private admit(floor: number): boolean {
+    for (;;) {
+      const used = atomicsLoad(this.used, 0);
+      if (this.shared - used <= floor) return false;
+      if (atomicsCompareExchange(this.used, 0, used, used + 1) === used) return true;
+    }
   }
   private claim(index: number): number {
     const mask = index === typedArrayLength(this.bits) - 1 ? this.lastMask : -1;
@@ -296,8 +301,6 @@ class PageMap {
   private readonly pageMask: number;
   private readonly lapMask: number;
   private readonly wrapMask: number;
-  private fresh?: Int32Array;
-  private freshCount = 0;
   constructor(
     private readonly table: Int32Array,
     private readonly hints: Int32Array,
@@ -334,7 +337,6 @@ class PageMap {
   }
   /** Producer: map pages for [position, position + count). Returns the units now mapped. */
   ensure(position: number, count: number): number {
-    this.freshCount = 0;
     const unit = 1 << this.unitShift;
     let covered = 0;
     while (covered < count) {
@@ -364,8 +366,6 @@ class PageMap {
     if (id < 0 && !last) id = this.takeReserved(page);
     if (id < 0) return false;
     atomicsStore(this.table, page, (lap << 16) | (id + 1));
-    this.fresh ??= new Int32ArrayConstructor(typedArrayLength(this.table) + 1);
-    this.fresh[this.freshCount++] = page;
     return true;
   }
   private takeReserved(page: number): number {
@@ -381,13 +381,33 @@ class PageMap {
     const hint = atomicsLoad(this.hints, slot);
     return hint !== 0 && (atomicsLoad(this.table, hint - 1) & 0xffff) === this.reserved + slot + 1;
   }
-  /** Producer: undo the pages the last ensure() mapped. Nothing committed lives in them. */
-  rollback(): void {
-    for (let index = 0; index < this.freshCount; index++) {
-      const page = this.fresh![index]!;
-      this.clear(page, atomicsLoad(this.table, page));
+  /** Restore the invariant that every page outside the unread window [consumed, published) is
+   * free, whatever path left one mapped: a failed write, a reader stopped between its CAS and
+   * release(), or a slot reused before anyone looked. Returns whether it freed a page.
+   *
+   * Each virtual page is judged by its next occurrence at or after the page holding
+   * `consumed`. An entry tagged for an earlier lap holds only consumed data and goes in every
+   * mode: a producer retagging it races this CAS on the same entry. Entries for the current lap
+   * (or the next, when the producer has wrapped into the page being read) stay unless `fenced`
+   * says no producer can be writing; then only pages touching unread data stay. A stale
+   * `consumed` only keeps more. */
+  sweep(consumed: number, published: number, fenced: boolean): boolean {
+    const unit = 1 << this.unitShift;
+    const base = this.wrap(consumed - (consumed & (unit - 1)));
+    const window = consumed === published ? 0 : this.wrap(published - base);
+    const first = this.page(base),
+      half = this.lapMask >>> 1;
+    let freed = false;
+    for (let page = 0; page < typedArrayLength(this.table); page++) {
+      const entry = atomicsLoad(this.table, page);
+      if (!entry) continue;
+      const offset = ((page - first) & this.pageMask) << this.unitShift;
+      const age = ((entry >>> 16) - this.lap(this.wrap(base + offset))) & this.lapMask;
+      // age 0 is the current lap, small ages are later laps, and the upper half is behind.
+      if (age <= half && (!fenced || offset < window)) continue;
+      if (this.clear(page, entry)) freed = true;
     }
-    this.freshCount = 0;
+    return freed;
   }
   /** Consumer: after committing [from, from + count), free each page whose end it passed. */
   release(from: number, count: number): void {
@@ -415,10 +435,11 @@ class PageMap {
     if (this.pool.available > this.floor) return true;
     return this.reserved >= 0 && (!this.reservedBusy(0) || !this.reservedBusy(1));
   }
-  private clear(page: number, entry: number): void {
-    if (!entry || atomicsCompareExchange(this.table, page, entry, 0) !== entry) return;
+  private clear(page: number, entry: number): boolean {
+    if (!entry || atomicsCompareExchange(this.table, page, entry, 0) !== entry) return false;
     const id = (entry & 0xffff) - 1;
     if (id < this.pool.shared) this.pool.give(id);
+    return true;
   }
 }
 
@@ -877,16 +898,6 @@ class Ring {
       this.bytes.canMap(position)
     );
   }
-  /** Producer of an empty ring: return the partly used page it would otherwise keep idle. */
-  releaseIdle(): void {
-    const consumed = atomicsLoad(this.consumed, 0),
-      published = atomicsLoad(this.published, 0);
-    const position = low(published),
-      record = recordCounter(published);
-    if (position !== low(consumed) || record !== recordCounter(consumed)) return;
-    this.bytes.releaseIdle(position, this.writer);
-    this.records.releaseIdle(record, this.writer);
-  }
   freezeWriter(): void {
     atomicsOr(this.localPublished, 0, STOP);
     atomicsOr(this.published, 0, STOP);
@@ -947,9 +958,9 @@ class Ring {
     if (flags & 1) return -PipeErrno.BADF;
     const record = (flags >>> 2) & RECORD_MASK;
     wide[0] = atomicsLoad(this.consumed, 0);
-    const free = this.capacity - ((position - halves[LOW]!) >>> 0),
-      requested = length(chunks);
+    const free = this.capacity - ((position - halves[LOW]!) >>> 0);
     const usedRecords = (record - (halves[HIGH]! >>> 2)) & RECORD_MASK;
+    const requested = length(chunks);
     const whole = atomic && requested <= Math.min(4096, this.capacity);
     if (usedRecords >= this.recordCapacity || (whole && free < requested)) return -PipeErrno.AGAIN;
     if (!usedRecords && free === this.capacity && this.writer) {
@@ -962,13 +973,14 @@ class Ring {
     const slot = this.recordSlot(record);
     atomicsStore(this.space.tickets, slot * 2, ticket);
     this.space.ends[slot * 4 + 2] = (position + count) >>> 0;
-    if (!valid()) return -PipeErrno.BADF;
     // Payload AND record metadata become visible in one canonical CAS. Revocation captures
     // precisely this committed prefix; unused tickets never block readers behind a zombie.
     const next = pack((position + count) >>> 0, (flags & 3) | (((record + 1) & RECORD_MASK) << 2));
-    return atomicsCompareExchange(publication, 0, published, next) === published
-      ? count
-      : -PipeErrno.BADF;
+    if (valid() && atomicsCompareExchange(publication, 0, published, next) === published)
+      return count;
+    // Nothing was published, so the pages just mapped lie outside the unread window.
+    this.sweep(true);
+    return -PipeErrno.BADF;
   }
   /** Map the record slot and at least `minimum` payload bytes. Returns the bytes mapped. */
   private reserve(position: number, record: number, count: number, minimum: number): number {
@@ -976,10 +988,22 @@ class Ring {
     if (this.records.ensure(record, 1)) {
       const mapped = this.bytes.ensure(position, count);
       if (mapped >= minimum) return mapped;
-      this.bytes.rollback();
     }
-    this.records.rollback();
+    this.sweep(true);
     return 0;
+  }
+  /** Return every page outside this ring's unread window. `fenced` asserts that no producer
+   * can write the ring now: its own producer calling, the relay on a delivery ring it is
+   * recovering, or a slot reclaim that advanced the incarnation. Returns whether it freed. */
+  sweep(fenced: boolean): boolean {
+    wide[0] = atomicsLoad(this.consumed, 0);
+    const position = halves[LOW]!,
+      record = (halves[HIGH]! >>> 2) & RECORD_MASK;
+    wide[0] = atomicsLoad(this.published, 0);
+    const end = halves[LOW]!,
+      last = (halves[HIGH]! >>> 2) & RECORD_MASK;
+    const bytes = this.bytes.sweep(position, end, fenced);
+    return this.records.sweep(record, last, fenced) || bytes;
   }
   private copyIn(chunks: readonly Uint8Array[], position: number, count: number): void {
     const unit = this.space.layout.pageBytes;
@@ -1045,7 +1069,8 @@ class Ring {
     this.bytes.release(position, count);
     if (complete) this.records.release(record, 1);
     let at = 0;
-    for (const chunk of chunks) {
+    for (let index = 0; index < chunks.length; index++) {
+      const chunk = chunks[index]!;
       const take = Math.min(typedArrayLength(chunk), count - at);
       typedArrayCopy(chunk, 0, copy, at, at + take);
       at += take;
@@ -1129,6 +1154,21 @@ class PipeState {
       (_, slot) =>
         new Ring(space, HEADER + (this.maxWriters + slot) * ringBytes, -1, this.registry),
     );
+    space.bytePool.scavenge = space.recordPool.scavenge = () => this.scavenge();
+  }
+  /** An exhausted pool takes back pages earlier laps left behind, for example by a reader
+   * stopped between its consuming CAS and its release, and wakes anyone waiting for one. */
+  private scavenge(): boolean {
+    let freed = false;
+    for (let index = 0; index < this.writers.length + this.readers.length; index++) {
+      const ring =
+        index < this.writers.length
+          ? this.writers[index]!
+          : this.readers[index - this.writers.length]!;
+      if (ring.sweep(false)) freed = true;
+    }
+    if (freed) this.signal();
+    return freed;
   }
   get relay(): boolean {
     return atomicsLoad(this.control, 0) !== 0;
@@ -1424,6 +1464,9 @@ class PipeState {
       return undefined;
     }
     try {
+      // The advanced incarnation fences every earlier producer and the new one is not
+      // admitted yet, so pages a stopped writer or reader left behind can all go now.
+      ring.sweep(true);
       atomicsStore(ring.refs, 0, 0);
       atomicsStore(ring.demand, 0, 0);
       ring.reopen(pid, "published");
@@ -1812,13 +1855,14 @@ export class PipeController {
       ring.leave();
     }
   }
+  /** A delivery ring is done: the relay, its only producer, returns every page it holds. */
+  private retire(ring: Ring): boolean {
+    this.delivery = undefined;
+    if (ring.sweep(true)) this.state.signal();
+    return true;
+  }
   private recoverEntered(ring: Ring): boolean {
-    if (!ring.available) {
-      // The relay is this ring's only producer: return its drained page to the shared pool.
-      ring.releaseIdle();
-      this.delivery = undefined;
-      return true;
-    }
+    if (!ring.available) return this.retire(ring);
     const alive = this.state.readerAlive(ring);
     const otherDemand = ringSome(
       this.state.readers,
@@ -1833,10 +1877,7 @@ export class PipeController {
       ring.freezeReader();
     }
     const head = ring.head();
-    if (!head) {
-      this.delivery = undefined;
-      return true;
-    }
+    if (!head) return this.retire(ring);
     const copy = new Uint8ArrayConstructor(Math.min(head.remaining, 65536));
     const count = ring.read([copy], true);
     if (count <= 0) return true;
@@ -1850,10 +1891,7 @@ export class PipeController {
     this.pendingAt = 0;
     this.pendingTicket = head.ticket;
     atomicsStore(this.state.control, 4, typedArrayLength(recovered));
-    if (!ring.available) {
-      ring.releaseIdle();
-      this.delivery = undefined;
-    }
+    if (!ring.available) this.retire(ring);
     this.state.signal();
     return true;
   }
