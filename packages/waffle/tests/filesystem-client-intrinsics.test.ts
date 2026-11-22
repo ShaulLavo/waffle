@@ -6,6 +6,7 @@ import * as protocol from "../fs/protocol.ts";
 import * as native from "../proc/intrinsics.ts";
 import { localPublication } from "../fs/publication-internal.ts";
 import { mutationIntent } from "../fs/publication.ts";
+import { takeResolveObservation } from "../fs/resolve-observation.ts";
 import { poisonProcessIntrinsics, type IntrinsicsReport } from "./fixtures/process-intrinsics.ts";
 
 const clientSource = new Bun.Transpiler({ loader: "ts" }).transformSync(
@@ -84,6 +85,7 @@ function fixture(overrides: Partial<typeof native> = {}) {
     allocateSharedControl: (length: number) => new captures.SharedArrayBufferConstructor(length),
     localPublication,
     mutationIntent,
+    takeResolveObservation,
     ...protocol,
     ...requests,
     ...captures,
