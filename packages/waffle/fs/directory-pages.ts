@@ -4,7 +4,7 @@ export const MAX_DIRECTORY_PAGE_BYTES = 0xffffffff;
 const MAX_COOKIE = (1n << 64n) - 1n;
 const encoder = new TextEncoder();
 
-type Entry = DirectoryEntry & { cookie: bigint; bytes: Uint8Array };
+type Entry = DirectoryEntry & { cookie: bigint; bytes?: Uint8Array };
 interface Branch {
   entry: Entry;
   left: Branch | undefined;
@@ -66,6 +66,17 @@ function remove(branch: Branch | undefined, cookie: bigint): Branch | undefined 
   return balance(branch);
 }
 
+function buildTree(entries: Entry[], start: number, end: number): Branch | undefined {
+  if (start >= end) return;
+  const middle = start + Math.floor((end - start) / 2);
+  return update({
+    entry: entries[middle]!,
+    left: buildTree(entries, start, middle),
+    right: buildTree(entries, middle + 1, end),
+    height: 1,
+  });
+}
+
 export function checkDirectoryPage(cookie: unknown, byteLength: unknown): void {
   if (typeof cookie !== "bigint" || cookie < 0n || cookie > MAX_COOKIE)
     throw new FilesystemError(28, "invalid directory cookie");
@@ -78,28 +89,38 @@ export function checkDirectoryPage(cookie: unknown, byteLength: unknown): void {
     throw new FilesystemError(28, "invalid directory page size");
 }
 
-function encodeEntry(output: Uint8Array, offset: number, entry: Entry): number {
-  const header = new Uint8Array(24);
-  const view = new DataView(header.buffer);
-  view.setBigUint64(0, entry.cookie, true);
-  view.setBigUint64(8, BigInt(entry.ino), true);
-  view.setUint32(16, entry.bytes.length, true);
-  view.setUint8(
-    20,
+function entryBytes(entry: Entry): Uint8Array {
+  return (entry.bytes ??= encoder.encode(entry.name));
+}
+
+function encodeEntry(output: Uint8Array, view: DataView, offset: number, entry: Entry): number {
+  const bytes = entryBytes(entry);
+  const remaining = output.length - offset;
+  const header = remaining < 24 ? new Uint8Array(24) : output;
+  const headerView = remaining < 24 ? new DataView(header.buffer) : view;
+  const start = remaining < 24 ? 0 : offset;
+  headerView.setBigUint64(start, entry.cookie, true);
+  headerView.setBigUint64(start + 8, BigInt(entry.ino), true);
+  headerView.setUint32(start + 16, bytes.length, true);
+  headerView.setUint8(
+    start + 20,
     entry.kind === "directory" ? 3 : entry.kind === "symlink" ? 7 : entry.kind === "socket" ? 6 : 4,
   );
-  const headerLength = Math.min(header.length, output.length - offset);
-  output.set(header.subarray(0, headerLength), offset);
-  offset += headerLength;
-  const nameLength = Math.min(entry.bytes.length, output.length - offset);
-  output.set(entry.bytes.subarray(0, nameLength), offset);
+  if (remaining < 24) {
+    output.set(header.subarray(0, remaining), offset);
+    return output.length;
+  }
+  offset += 24;
+  const nameLength = Math.min(bytes.length, output.length - offset);
+  output.set(nameLength === bytes.length ? bytes : bytes.subarray(0, nameLength), offset);
   return offset + nameLength;
 }
 
 /** Live edges only. Cookie successor search never replays a directory prefix. */
 export class DirectoryPages {
   private root: Branch | undefined;
-  private names = new Map<string, bigint>();
+  private names = new Map<string, Entry>();
+  private indexed = false;
   private next = 3n;
 
   reserve(count: number): void {
@@ -110,13 +131,14 @@ export class DirectoryPages {
     this.reserve(1);
     this.delete(entry.name);
     const cookie = this.next++;
-    this.root = insert(this.root, { ...entry, cookie, bytes: encoder.encode(entry.name) });
-    this.names.set(entry.name, cookie);
+    const indexedEntry = { ...entry, cookie };
+    if (this.indexed) this.root = insert(this.root, indexedEntry);
+    this.names.set(entry.name, indexedEntry);
   }
   delete(name: string): void {
-    const cookie = this.names.get(name);
-    if (cookie === undefined) return;
-    this.root = remove(this.root, cookie);
+    const entry = this.names.get(name);
+    if (!entry) return;
+    if (this.indexed) this.root = remove(this.root, entry.cookie);
     this.names.delete(name);
   }
   clear(): void {
@@ -124,6 +146,11 @@ export class DirectoryPages {
     this.names.clear();
   }
   *entriesAfter(cookie: bigint): Generator<Entry> {
+    if (!this.indexed) {
+      const entries = Array.from(this.names.values());
+      this.root = buildTree(entries, 0, entries.length);
+      this.indexed = true;
+    }
     const pending: Branch[] = [];
     let branch = this.root;
     while (branch || pending.length) {
@@ -145,7 +172,7 @@ export class DirectoryPages {
   ): number {
     for (const entry of this.entriesAfter(cookie)) {
       entries.push(entry);
-      size += 24 + entry.bytes.length;
+      size += 24 + entryBytes(entry).length;
       if (size >= byteLength) break;
     }
     return size;
@@ -156,7 +183,7 @@ export class DirectoryPages {
     let size = 0;
     const append = (entry: Entry) => {
       entries.push(entry);
-      size += 24 + entry.bytes.length;
+      size += 24 + entryBytes(entry).length;
     };
     if (cookie < 1n)
       append({ name: ".", ino, kind: "directory", cookie: 1n, bytes: new Uint8Array([46]) });
@@ -170,8 +197,9 @@ export class DirectoryPages {
       });
     if (size < byteLength) size = this.appendEntries(entries, cookie, byteLength, size);
     const output = new Uint8Array(Math.min(byteLength, size));
+    const view = new DataView(output.buffer);
     let used = 0;
-    for (const entry of entries) used = encodeEntry(output, used, entry);
+    for (const entry of entries) used = encodeEntry(output, view, used, entry);
     return output;
   }
 }

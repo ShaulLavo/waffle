@@ -29,7 +29,9 @@ onto another name of the same inode remains a no-op. Exhausted cookie space rais
 errno 61 before namespace edits, rather than wrapping or reusing cookies.
 
 Each directory owns a balanced index of live entries and their encoded names.
-Successor lookup takes O(log N + returned entries) work. Removed entries leave no
+The index is built on the first page read of that directory, in one O(N) pass;
+directories nobody pages never build one. After that, successor lookup takes
+O(log N + returned entries) work. Removed entries leave no
 tombstones. No descriptor owns an iterator or a directory snapshot. Reconstruction
 rebuilds the index without changing the persistence format. Cookies are not durable
 positions across reloads.
