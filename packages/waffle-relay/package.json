@@ -17,7 +17,8 @@
     "docs",
     "README.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "tsconfig.json"
   ],
   "type": "module",
   "exports": {

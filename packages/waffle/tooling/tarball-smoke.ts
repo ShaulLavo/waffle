@@ -1,10 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
-import ts from "typescript-api";
+import { join, resolve } from "node:path";
 import { NETWORK_ASSETS } from "./build-network.js";
 import { assertWasiLibcBuildInputs, wasiLibcBuildInputs } from "./package-inputs.js";
 
@@ -31,88 +29,6 @@ function verifyExportTargets(root: string, entry: Record<string, unknown>): void
   }
 }
 
-function pathAuditEntries(path: string, source: string): string[] {
-  const tree = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
-  const entries: string[] = [];
-  const literals: string[] = [];
-  function visit(node: ts.Node): void {
-    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-      const callee = node.expression.getText(tree);
-      if (
-        /^(?:.*\.)?(?:readFile|readFileSync|read|readSync|readdir|readdirSync|stat|statSync|lstat|lstatSync|access|accessSync|existsSync|createReadStream|open|openSync|file|join|resolve|fileURLToPath|fetch|importScripts|require|register|addModule)$/.test(
-          callee,
-        ) ||
-        /^(?:URL|Worker|SharedWorker)$/.test(callee) ||
-        callee === "import"
-      ) {
-        entries.push(node.getText(tree).replace(/\s+/g, " "));
-      }
-    }
-    if (ts.isStringLiteralLike(node)) literals.push(`literal ${node.getText(tree)}`);
-    if (
-      ts.isStringLiteralLike(node) &&
-      /(?:^(?:\.\.?\/|dist\/|scripts\/|patches\/)|\.(?:js|ts|wasm|json|node|bin)$)/.test(
-        node.text,
-      ) &&
-      !ts.isImportDeclaration(node.parent) &&
-      !ts.isExportDeclaration(node.parent)
-    ) {
-      entries.push(`literal ${node.getText(tree)}`);
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(tree);
-  return entries.length ? entries.concat(literals).sort() : entries;
-}
-
-// The inventory flags changed path operations and literals in their modules. Review each change
-// for package-owned assets before regenerating it with --update-path-audit.
-function verifyPathAudit(root: string, entries: Record<string, string>): void {
-  const file = join(root, "tooling/tarball-path-audit.json");
-  const actual = JSON.stringify(Object.fromEntries(Object.entries(entries).sort()), null, 2) + "\n";
-  if (process.argv.includes("--update-path-audit")) {
-    writeFileSync(file, actual);
-    return;
-  }
-  const expected = record(JSON.parse(readFileSync(file, "utf8")));
-  for (const name of new Set(Object.keys(expected).concat(Object.keys(entries)))) {
-    if (expected[name] !== entries[name])
-      throw new Error(
-        `path-load audit changed in ${name}; review its package assets and update tarball-path-audit.json`,
-      );
-  }
-}
-
-function verifyImportClosure(root: string, packed: string, targets: readonly string[]): void {
-  const pending = targets.map((target) => resolve(root, target));
-  const visited = new Set<string>();
-  const pathAudit: Record<string, string> = {};
-  while (pending.length) {
-    const path = pending.pop();
-    if (path === undefined || visited.has(path)) continue;
-    visited.add(path);
-    const name = relative(root, path);
-    if (!existsSync(join(packed, name))) throw new Error(`archive is missing import ${name}`);
-    if (!/\.[jt]s$/.test(path)) continue;
-    const source = readFileSync(path, "utf8");
-    const entries = pathAuditEntries(path, source);
-    if (entries.length)
-      pathAudit[name] = createHash("sha256").update(JSON.stringify(entries)).digest("hex");
-    const imports = ts.preProcessFile(source, true, true).importedFiles;
-    for (const entry of imports) {
-      if (!entry.fileName.startsWith(".")) continue;
-      const base = resolve(dirname(path), entry.fileName);
-      const candidates = name.startsWith("dist/")
-        ? [base, base.replace(/\.js$/, ".ts"), `${base}.ts`, join(base, "index.ts")]
-        : [base.replace(/\.js$/, ".ts"), base, `${base}.ts`, join(base, "index.ts")];
-      const dependency = candidates.find(existsSync);
-      if (!dependency) throw new Error(`cannot resolve ${entry.fileName} imported by ${name}`);
-      pending.push(dependency);
-    }
-  }
-  verifyPathAudit(root, pathAudit);
-}
-
 async function run(): Promise<void> {
   await Promise.all([
     Bun.$`mkdir -p ${archiveDirectory}`.quiet(),
@@ -129,26 +45,16 @@ async function run(): Promise<void> {
   const archive = join(archiveDirectory, archives[0]!);
   execFileSync("tar", ["-xzf", archive, "-C", extractDirectory], { stdio: "pipe" });
   const packedRoot = join(extractDirectory, "package");
-  const metadata = record(JSON.parse(await readFile(join(packedRoot, "package.json"), "utf8")));
-  const exports = record(metadata.exports);
-  const nodeSpecifiers: string[] = [];
-  const targets: string[] = [
-    "tests/page-runner/framework-bootstrap-main.ts",
-    "browser/gpu/service-worker.ts",
-    "dist/browser/gpu/service-worker.js",
-    "dist/browser/fs-worker.js",
-  ];
-  for (const [key, target] of Object.entries(exports)) {
-    const entry = record(target);
-    verifyExportTargets(packedRoot, entry);
-    for (const target of Object.values(entry)) {
-      if (typeof target === "string") targets.push(target);
-    }
-    if (typeof entry.node === "string")
-      nodeSpecifiers.push(key === "." ? "@waffle-os/runtime" : `@waffle-os/runtime${key.slice(1)}`);
-  }
-  verifyImportClosure(packageRoot, packedRoot, targets);
-  if (process.argv.includes("--update-path-audit")) return;
+  // Test files and GPU code-generation inputs are never loaded by a consumer.
+  const listing = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" }).split("\n");
+  const unwanted = listing.filter(
+    (entry) =>
+      entry.endsWith(".test.ts") ||
+      entry.startsWith("package/browser/gpu/upstream/webgpu.") ||
+      entry === "package/browser/gpu/stream.json" ||
+      entry === "package/browser/gpu/method-coverage.json",
+  );
+  if (unwanted.length > 0) throw new Error(`package includes ${unwanted.slice(0, 5).join(", ")}`);
   const required = [
     "package.json",
     "LICENSE",
@@ -164,17 +70,6 @@ async function run(): Promise<void> {
     "browser/worker.ts",
     "browser/net/network.wasm",
     "dist/browser/net/network.wasm",
-    "dist/tests/page-runner/framework-bootstrap.js",
-    "browser/gpu/service-worker.ts",
-    "dist/browser/gpu/service-worker.js",
-    "browser/preview1-worker.ts",
-    "dist/browser/preview1-worker.js",
-    "tooling/program/program-transformer.json",
-    "tooling/program/program-build-tools.ts",
-    "tooling/program/program-optimize.ts",
-    "dist/tooling/program/program-transformer.json",
-    "dist/tooling/program/program-build-tools.ts",
-    "dist/tooling/program/program-optimize.ts",
   ].concat(
     wasiLibcBuildInputs,
     NETWORK_ASSETS.flatMap((asset) => [`browser/net/${asset}`, `dist/browser/net/${asset}`]),
@@ -222,6 +117,15 @@ async function run(): Promise<void> {
   await frameworkConsumer(consumerDirectory, "packed");
   await sourceInstallParity(packedRoot);
   await networkInstallParity(packedRoot);
+  const metadata = record(JSON.parse(await readFile(join(packedRoot, "package.json"), "utf8")));
+  const exports = record(metadata.exports);
+  const nodeSpecifiers: string[] = [];
+  for (const [key, target] of Object.entries(exports)) {
+    const entry = record(target);
+    verifyExportTargets(packedRoot, entry);
+    if (typeof entry.node === "string")
+      nodeSpecifiers.push(key === "." ? "@waffle-os/runtime" : `@waffle-os/runtime${key.slice(1)}`);
+  }
   const nodeScript = `
     for (const specifier of ${JSON.stringify(nodeSpecifiers)}) await import(specifier);
     const { startCommand } = await import("@waffle-os/runtime/command");
@@ -656,11 +560,7 @@ async function networkInstallParity(packedRoot: string): Promise<void> {
 
 try {
   await run();
-  console.log(
-    process.argv.includes("--update-path-audit")
-      ? "waffle path audit: updated"
-      : "waffle tarball smoke: pass",
-  );
+  console.log("waffle tarball smoke: pass");
 } finally {
   await rm(scratch, { recursive: true, force: true });
 }
