@@ -1,10 +1,9 @@
 // Producer-only raw installation proof. Consumer jobs must only verify prepared artifacts.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import manifest from "../package.json" with { type: "json" };
 import { NETWORK_ASSETS } from "./build-network.js";
 import { packageProgramTools } from "./program-tools-package.js";
 
@@ -17,15 +16,15 @@ async function rawNetworkInstall(root = join(import.meta.dir, "..")): Promise<vo
   try {
     assertNoAncestorDependencies(rawScratch);
     packageProgramTools(root);
-    const raw = join(rawScratch, "source");
-    await mkdir(raw);
-    for (const file of manifest.files.filter((file) => file !== "dist")) {
-      await cp(join(root, file), join(raw, file), {
-        recursive: true,
-        filter: (path) =>
-          !NETWORK_ASSETS.some((asset) => path === join(root, "browser/net", asset)),
-      });
-    }
+    const archive = join(rawScratch, "source.tgz");
+    execFileSync(process.execPath, ["pm", "pack", "--ignore-scripts", "--filename", archive], {
+      cwd: root,
+      stdio: "pipe",
+    });
+    execFileSync("tar", ["-xzf", archive, "-C", rawScratch], { stdio: "pipe" });
+    const raw = join(rawScratch, "package");
+    await rm(join(raw, "dist"), { recursive: true, force: true });
+    for (const asset of NETWORK_ASSETS) await rm(join(raw, "browser/net", asset), { force: true });
     for (const asset of NETWORK_ASSETS)
       if (existsSync(join(raw, "browser/net", asset)))
         throw Error("raw source retained generated network assets");

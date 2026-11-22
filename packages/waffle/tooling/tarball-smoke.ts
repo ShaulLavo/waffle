@@ -85,6 +85,12 @@ async function run(): Promise<void> {
     "browser/worker.ts",
     "browser/net/network.wasm",
     "dist/browser/net/network.wasm",
+    "tooling/program/program-transformer.json",
+    "tooling/program/program-build-tools.ts",
+    "tooling/program/program-optimize.ts",
+    "dist/tooling/program/program-transformer.json",
+    "dist/tooling/program/program-build-tools.ts",
+    "dist/tooling/program/program-optimize.ts",
   ].concat(
     wasiLibcBuildInputs,
     NETWORK_ASSETS.flatMap((asset) => [`browser/net/${asset}`, `dist/browser/net/${asset}`]),
