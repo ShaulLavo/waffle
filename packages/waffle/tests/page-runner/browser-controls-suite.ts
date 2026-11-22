@@ -352,17 +352,18 @@ async function runControlPool(
     }
   };
 
-  const worker = async () => {
+  const nextTask = async (): Promise<ControlTask | undefined> => {
     while (!fatal) {
       results.run.throwIfInterrupted();
       const next = claimTask();
-      if (next === undefined) return;
-      if (next === "wait") {
-        await notify.promise;
-        continue;
-      }
-      await runClaimed(next);
+      if (next !== "wait") return next;
+      await notify.promise;
     }
+    return undefined;
+  };
+
+  const worker = async () => {
+    for (let next = await nextTask(); next; next = await nextTask()) await runClaimed(next);
   };
 
   const settled = await Promise.allSettled(Array.from({ length: limit }, () => worker()));

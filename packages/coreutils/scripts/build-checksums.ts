@@ -93,12 +93,15 @@ async function stageOne(
     active.add(child);
     const cleanup = () => active.delete(child);
     child.once("error", (error) => {
+      signalChildGroup(child, "SIGTERM");
       cleanup();
       rejectPromise(error);
     });
     child.once("exit", (code, exitSignal) => {
+      const ok = code === 0 && !signal.aborted;
+      if (!ok) signalChildGroup(child, "SIGTERM");
       cleanup();
-      if (code === 0 && !signal.aborted) resolvePromise();
+      if (ok) resolvePromise();
       else rejectPromise(new Error(`Staging ${name} failed (${exitSignal ?? code})`));
     });
   });

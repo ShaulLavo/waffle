@@ -18,7 +18,7 @@ const workflow = record(
 );
 const jobs = record(workflow.jobs);
 const gate = record(jobs.gate);
-const packageTestsCommand = "bun run test --parallel=4 && bun run test:ci";
+const packageTestsCommand = "bun run test --parallel=2 && bun run test:ci";
 if (!Array.isArray(gate.steps)) throw new Error("expected gate steps");
 const gateSteps = gate.steps.map(record);
 const paths = gateSteps.find((step) => step.id === "paths");
