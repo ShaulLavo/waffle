@@ -32,6 +32,7 @@ import {
   RIGHT_SOCK_ACCEPT,
 } from "./rights.js";
 import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.js";
+import { normalize } from "./path.js";
 import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import { withFileOffset } from "./open-file.js";
@@ -248,6 +249,10 @@ export class Wasi {
   private hostWrite?: FdWrite;
   private args: Uint8Array[];
   private env: Uint8Array[];
+  /** The guest's `/` is the filesystem root, so path lookups follow Linux in that namespace:
+   * absolute link targets restart at `/` and `..` climbs to it. Other preopen layouts keep
+   * each lookup beneath its directory. */
+  private readonly rooted: boolean;
 
   private readStdin(iovecs: readonly Uint8Array[]): number {
     if (!this.opts.stdin) return 0;
@@ -285,6 +290,7 @@ export class Wasi {
     }
     this.args = opts.args.map((a) => encoder.encode(`${a}\0`));
     this.env = Object.entries(opts.env).map(([k, v]) => encoder.encode(`${k}=${v}\0`));
+    this.rooted = Object.hasOwn(opts.preopens, "/") && normalize(opts.preopens["/"]!) === "/";
     for (const which of [0, 1, 2] as const) {
       if (opts.stdio?.[which] === null) continue;
       this.descriptors.openAt(
@@ -611,7 +617,7 @@ export class Wasi {
     if (!dir) return EBADF;
     if (dir.resource.kind !== "directory") return ENOTDIR;
     if ((dir.rightsBase & right) !== right) return ENOTCAPABLE;
-    return this.opts.fs.resolve(dir.resource.handle, this.str(ptr, len), followFinal);
+    return this.opts.fs.resolve(dir.resource.handle, this.str(ptr, len), followFinal, this.rooted);
   }
 
   /** Readiness of this process's guest watches, when its filesystem can watch. */
@@ -695,7 +701,7 @@ export class Wasi {
     if (!entry) return EBADF;
     if (entry.resource.kind !== "directory") return ENOTDIR;
     if (!(entry.rightsBase & RIGHT_PATH_FILESTAT_GET)) return ENOTCAPABLE;
-    const resolved = this.opts.fs.resolve(entry.resource.handle, path);
+    const resolved = this.opts.fs.resolve(entry.resource.handle, path, false, this.rooted);
     if (typeof resolved === "number") return resolved;
     if (resolved.node === undefined) return ENOENT;
     const result = this.opts.fs.permissions?.(resolved.node);
@@ -1147,6 +1153,7 @@ export class Wasi {
             : dirflags & 1
               ? "follow"
               : "nofollow",
+          this.rooted,
         );
         if (typeof alias === "number") return alias;
         if (alias !== undefined && !("resolved" in alias)) {
@@ -1164,6 +1171,7 @@ export class Wasi {
             dir.resource.handle,
             name,
             (dirflags & 1) !== 0 && !(oflags & O_CREAT && oflags & O_EXCL),
+            this.rooted,
           );
         if (typeof path === "number") return path;
         let node = path.node;

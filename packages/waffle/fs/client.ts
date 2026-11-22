@@ -1667,14 +1667,19 @@ export class FilesystemClient implements FileSystem {
     }
   }
 
-  resolve(directory: FileHandle, path: string, followFinal = false): ResolvedPath | number {
+  resolve(
+    directory: FileHandle,
+    path: string,
+    followFinal = false,
+    rooted = false,
+  ): ResolvedPath | number {
     try {
       const epoch = this.version();
-      const key = `${directory}\0${Number(followFinal)}\0${path}`;
+      const key = `${directory}\0${Number(followFinal) | (Number(rooted) << 1)}\0${path}`;
       const cached = this.paths.get(key);
       if (!this.resident && !this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
         return typeof cached.path === "number" ? cached.path : { ...cached.path };
-      return this.#resolveCold(key, [directory, path, followFinal]);
+      return this.#resolveCold(key, [directory, path, followFinal, rooted]);
     } catch (error) {
       return errno(error);
     }

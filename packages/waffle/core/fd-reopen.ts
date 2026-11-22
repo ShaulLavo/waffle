@@ -140,6 +140,7 @@ function resolveOrdinaryPath(
   handle: number,
   path: string,
   finalLink: FinalLinkPolicy,
+  rooted: boolean,
 ): { resolved: ResolvedPath } | number | undefined {
   let candidate = false;
   if (path.includes("dev") || path.includes("proc")) {
@@ -147,7 +148,7 @@ function resolveOrdinaryPath(
     candidate = descriptorPath(normalized) !== undefined || devicePath(normalized) !== undefined;
   }
   if (!candidate) {
-    const resolved = fs.resolve(handle, path, finalLink === "follow");
+    const resolved = fs.resolve(handle, path, finalLink === "follow", rooted);
     if (typeof resolved === "number" && resolved !== 44) return resolved;
     if (typeof resolved !== "number" && !nullDeviceParent(fs, handle, resolved))
       return { resolved };
@@ -155,22 +156,45 @@ function resolveOrdinaryPath(
   return undefined;
 }
 
-/** Ordinary root paths return their one resolved result; virtual aliases use the component walker. */
+/** The target of a link the alias walker meets with `rest` still to walk, or the errno that stops it. */
+function followedTarget(
+  fs: FileSystem,
+  link: number,
+  rest: readonly string[],
+  finalLink: FinalLinkPolicy,
+  expansions: number,
+  rooted: boolean,
+): string | number {
+  const final = !rest.some(Boolean);
+  if (final && finalLink !== "follow" && rest[rest.length - 1] === "") return 54;
+  if (final && finalLink === "exclusive-create") return 20;
+  if (final && finalLink === "nofollow") return 32;
+  if (expansions > 40) return 32;
+  const target = fs.readlink(link);
+  if (!target) return 44;
+  return target.startsWith("/") && !rooted ? 63 : target;
+}
+
+/** Ordinary root paths return their one resolved result; virtual aliases use the component walker.
+ * `rooted` resolves in the guest's root namespace (see FileSystem.resolve): an absolute target
+ * restarts at the root and `..` stays there. */
 export function resolveDescriptorPath(
   table: DescriptorTable,
   fs: FileSystem,
   directory: Descriptor,
   path: string,
   finalLink: FinalLinkPolicy,
+  rooted = false,
 ): DescriptorPath | number | undefined {
   if (directory.resource.kind !== "directory") return undefined;
   const handle = directory.resource.handle;
   if (directory.preopen !== "/" && fs.stat(handle).ino !== fs.stat(fs.preopen("/")).ino)
     return undefined;
-  const ordinary = resolveOrdinaryPath(fs, handle, path, finalLink);
+  const ordinary = resolveOrdinaryPath(fs, handle, path, finalLink, rooted);
   if (ordinary !== undefined) return ordinary;
   // Resolve candidates and unresolved aliases against original components, not normalized text.
-  let current: PathEntry = { prefix: "", kind: "directory", handle };
+  const root: PathEntry = { prefix: "", kind: "directory", handle };
+  let current: PathEntry = root;
   const parents: PathEntry[] = [];
   let pending = path.split("/"),
     offset = 0,
@@ -183,22 +207,21 @@ export function resolveDescriptorPath(
     if (part === ".") continue;
     if (part === "..") {
       const parent = parents.pop();
-      if (!parent) return 63;
-      current = parent;
+      if (!parent && !rooted) return 63;
+      current = parent ?? root;
       continue;
     }
     const next = lookupEntry(table, fs, current, part);
     if (typeof next === "number") return next;
     if (next.kind === "symlink") {
-      const final = !pending.slice(offset).some(Boolean);
-      if (final && finalLink !== "follow" && pending[pending.length - 1] === "") return 54;
-      if (final && finalLink === "exclusive-create") return 20;
-      if (final && finalLink === "nofollow") return 32;
-      if (++expansions > 40) return 32;
-      const target = fs.readlink(next.handle);
-      if (!target) return 44;
-      if (target.startsWith("/")) return 63;
-      pending = target.split("/").concat(pending.slice(offset));
+      const rest = pending.slice(offset);
+      const target = followedTarget(fs, next.handle, rest, finalLink, ++expansions, rooted);
+      if (typeof target === "number") return target;
+      if (target.startsWith("/")) {
+        current = root;
+        parents.length = 0;
+      }
+      pending = target.split("/").concat(rest);
       offset = 0;
       continue;
     }

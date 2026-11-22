@@ -20,6 +20,7 @@ import { idleWorkspaceCases } from "./idle-workspace-browser.js";
 import { checkpointFailureCases } from "./checkpoint-failure-browser.js";
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { permissionStorageCase } from "./fixtures/permissions-storage.js";
+import { rootedSymlinkStorageCase } from "./fixtures/rooted-symlinks-storage.js";
 import { fileTimesStorageCase } from "./fixtures/file-times-storage.js";
 import { withVfsImplementation, type VfsImplementation } from "../fs/vfs-internal.js";
 /** Real browser storage tests. Shared contract cases run unchanged against both backends. */
@@ -267,6 +268,9 @@ export function storageContractCases(): StorageContractCase[] {
   };
   test("inode permissions persist across replacement and reopen", async (_name, open) => {
     await permissionStorageCase(open);
+  });
+  test("absolute symlink targets resolve in the root namespace after reopen", async (_name, open) => {
+    await rootedSymlinkStorageCase(open);
   });
   test("nanosecond file times persist across reopen", async (_name, open) => {
     await fileTimesStorageCase(open);

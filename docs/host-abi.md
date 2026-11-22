@@ -182,8 +182,8 @@ and `/dev/stderr`, plus normalized relative equivalents, only through the `/` pr
 or a directory binding for the filesystem root. Other directory bindings use ordinary
 filesystem resolution. Root and any existing real ancestor directories still require
 search permission; absent ancestors belong to the virtual namespace. Traversal checks
-components before processing `.` or `..`; escaping the capability root returns `EPERM`
-(63), just as ordinary filesystem resolution does. A trailing slash or `/.`
+components before processing `.` or `..`; absolute link targets and `..` follow the
+[symbolic link rules](#symbolic-links) of ordinary filesystem resolution. A trailing slash or `/.`
 requires a directory source (`ENOTDIR`, 54, otherwise), before any truncation. They resolve
 against the **calling process's current descriptor table**, including inherited/remapped
 stdio and fd 3 when the root preopen has moved. They use the same reopen operation,
@@ -196,6 +196,22 @@ For example, redirecting `echo x >/dev/stderr` with `TRUNC` leaves exactly `x\n`
 stderr's original description had `APPEND`. Reopening with `APPEND` (`>>`) preserves old
 bytes and appends `x\n`. Neither operation advances the source description's offset or
 changes its flags. Pipes and terminals keep shared-stream behaviour.
+
+### Symbolic links
+
+When a process's `/` preopen is the filesystem root (the browser worker's layout), every
+WASI path call resolves the way Linux does inside that namespace. An absolute link target
+names a path from `/`, so resolution restarts at the filesystem root. `..` climbs above the
+directory a call starts from, up to `/`, where it stays; from a removed directory it returns
+`ENOENT` (44). A lookup that follows more than 40 links returns `ELOOP` (32). `path_readlink`
+returns the target exactly as written, and calls that do not follow the last component
+(`path_filestat_get` without the follow flag, `path_unlink_file`, `path_rename`, `path_open`
+without the follow flag, which returns `ELOOP` for a link) leave a final link alone. The
+same rules hold on every filesystem backend, since they all resolve through one tree.
+
+Any other preopen layout, such as `/` mapped to a subdirectory or only non-root preopens,
+keeps each lookup beneath the directory it starts from: an absolute target or a `..` that
+would leave it returns `EPERM` (63).
 
 ## Executable access queries
 
