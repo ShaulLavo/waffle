@@ -161,7 +161,7 @@ function scratchFor(count: number): Uint8Array {
   return scratch;
 }
 
-interface PoolLayout {
+export interface PoolLayout {
   /** Int32 offset of the used-page count, followed by the allocation bitmap. */
   control: number;
   /** Pages any ring may borrow. Ids at and above this are writer-reserved pages. */
@@ -169,7 +169,7 @@ interface PoolLayout {
   ids: number;
   base: number;
 }
-interface PipeLayout {
+export interface PipeLayout {
   pageBytes: number;
   pages: number;
   recordPage: number;
@@ -219,6 +219,12 @@ export function pipeRingOffset(
   );
 }
 
+/** Test-only: the buffer layout, for audits that decode page tables directly. */
+export function pipeLayoutOf(
+  handle: Pick<PipeEndpointHandle, "capacity" | "maxWriters" | "maxReaders">,
+): PipeLayout {
+  return pipeLayout(handle.capacity, handle.maxWriters, handle.maxReaders);
+}
 /** Test-only: shared (not writer-reserved) pages in use, for payload bytes and for records. */
 export function pipeSharedPagesInUse(
   handle: Pick<PipeEndpointHandle, "buffer" | "capacity" | "maxWriters" | "maxReaders">,
@@ -290,6 +296,7 @@ class PagePool {
       word = previous;
     }
     atomicsAdd(this.used, 0, -1);
+    pipePause("pool.given");
   }
 }
 
