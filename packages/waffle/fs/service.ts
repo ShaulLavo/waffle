@@ -117,6 +117,8 @@ interface SessionStage {
   /** Refunds the owner's private copy to the connection's retained-bytes budget. */
   readonly release: () => void;
 }
+/** Largest request, in encoded bytes, whose decoded form stays with it while it is queued. */
+const RETAINED_DECODE_BYTES = 512;
 interface Session {
   watchTransactions: Map<number, WatchTransaction>;
   watchResponses: Map<number, () => void>;
@@ -511,12 +513,15 @@ export class FilesystemService {
     // Barriers capture their checkpoint in queue order without holding the mutation lock
     // while storage commits. Cold preparation likewise rejoins the queue only when ready.
     let barrier = false;
-    // The request runs on this decode: the bytes are decoded once, not again when it is its turn.
+    // A small request runs on this decode, so an ordinary queue turn decodes it once. A queued
+    // request can wait behind a blocked backend, so the decoded form is kept only when it is
+    // small; a larger one is decoded again at its turn instead of staying in memory meanwhile.
     let input: { operation: string; args: unknown[]; publication?: unknown } | undefined;
     try {
-      const cells = requestCells(buffer);
-      input = unpack(requestInput(session, id, requestBytes(buffer)).subarray(0, cells[1]!));
-      barrier = input?.operation === "flush" || input?.operation === "sync";
+      const length = requestCells(buffer)[1]!;
+      const decoded = unpack(requestInput(session, id, requestBytes(buffer)).subarray(0, length));
+      barrier = decoded?.operation === "flush" || decoded?.operation === "sync";
+      if (length <= RETAINED_DECODE_BYTES) input = decoded;
     } catch {
       /* request() reports malformed input through its completion */
     }

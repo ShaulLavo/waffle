@@ -12,6 +12,9 @@ import {
   BigIntConstructor,
   bigintToString,
   Int32ArrayConstructor,
+  objectHasOwn,
+  objectKeys,
+  stringIncludes,
   SharedArrayBufferConstructor,
   Uint8ArrayConstructor,
   objectDefineProperty,
@@ -495,9 +498,9 @@ export function unpack(bytes: Uint8Array): any {
   // TextDecoder rejects views over shared or resizable backing, so only those are copied.
   const text = decoder.decode(decodable(bytes.buffer) ? bytes : new Uint8Array(bytes));
   const value: unknown = JSON.parse(text);
-  // A tag is an object key beginning with "$", which JSON writes as `"$` or `"$`. Without
-  // either, no object is tagged and the parsed tree is already the answer.
-  if (!text.includes('"$') && !text.includes("\\u0024")) return value;
+  // A tag is an own object key beginning with "$", which JSON writes as `"$` or as the escape
+  // for U+0024. Without either, no object is tagged and the parsed tree is already the answer.
+  if (!stringIncludes(text, '"$') && !stringIncludes(text, "\\u0024")) return value;
   return transportValue(value);
 }
 function transportRecord(value: unknown): Record<string, unknown> {
@@ -525,7 +528,10 @@ function transportArray(value: unknown[]): unknown[] {
   return value;
 }
 function transportPlain(item: Record<string, unknown>): Record<string, unknown> {
-  for (const key in item) {
+  // Own keys only, like the tag checks: an inherited property is never ours to rewrite.
+  const keys = objectKeys(item);
+  for (let index = 0; index < keys.length; index++) {
+    const key = keys[index]!;
     const child = item[key];
     if (!child || typeof child !== "object") continue;
     const decoded = transportValue(child);
@@ -548,20 +554,23 @@ function transportMap(value: unknown): Map<unknown, unknown> {
 function transportValue(item: unknown): unknown {
   if (!item || typeof item !== "object") return item;
   if (Array.isArray(item)) return transportArray(item);
-  if ("$record" in item) return transportRecord(item.$record);
-  if ("$undefined" in item) {
-    if (item.$undefined !== true)
+  // Tags are own keys, so a property inherited from a polluted prototype cannot forge one.
+  const record = item as Record<string, unknown>;
+  if (objectHasOwn(item, "$record")) return transportRecord(record.$record);
+  if (objectHasOwn(item, "$undefined")) {
+    if (record.$undefined !== true)
       throw new FilesystemError(28, "invalid undefined transport value");
     return undefined;
   }
-  if ("$map" in item) return transportMap(item.$map);
-  if ("$bigint" in item) {
-    if (typeof item.$bigint !== "string" || !/^(0|-?[1-9][0-9]*)$/.test(item.$bigint))
+  if (objectHasOwn(item, "$map")) return transportMap(record.$map);
+  if (objectHasOwn(item, "$bigint")) {
+    const digits = record.$bigint;
+    if (typeof digits !== "string" || !/^(0|-?[1-9][0-9]*)$/.test(digits))
       throw new FilesystemError(28, "invalid bigint transport value");
-    return BigIntConstructor(item.$bigint);
+    return BigIntConstructor(digits);
   }
-  if ("$bytes" in item) return transportBytes(item.$bytes);
-  return transportPlain(item as Record<string, unknown>);
+  if (objectHasOwn(item, "$bytes")) return transportBytes(record.$bytes);
+  return transportPlain(record);
 }
 function transportBytes(value: unknown): Uint8Array {
   if (!Array.isArray(value)) throw new FilesystemError(28, "invalid byte transport value");

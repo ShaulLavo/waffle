@@ -54,6 +54,77 @@ test("views over shared and resizable backing decode like plain ones", () => {
   }
 });
 
+test("fixing up tags leaves inherited enumerable properties alone", () => {
+  const owned = Object.assign(Object.create(null), { counter: { $bigint: "42" } });
+  Object.defineProperty(Object.prototype, "ownedByCaller", {
+    value: owned,
+    enumerable: true,
+    configurable: true,
+  });
+  try {
+    expect(unpack(pack({ id: 7n, name: "x" }))).toEqual({ id: 7n, name: "x" });
+    expect(owned.counter).toEqual({ $bigint: "42" });
+  } finally {
+    delete (Object.prototype as Record<string, unknown>).ownedByCaller;
+  }
+});
+
+test("a later replacement of String.prototype.includes cannot hide a tag", () => {
+  const includes = String.prototype.includes;
+  String.prototype.includes = () => false;
+  try {
+    expect(unpack(bytes('{"sent":{"$bigint":"7"}}'))).toEqual({ sent: 7n });
+  } finally {
+    String.prototype.includes = includes;
+  }
+});
+
+class GatedBackend extends MemoryBackend {
+  gate: Promise<void> = Promise.resolve();
+  override execute(operation: string, args: any[], data: Uint8Array): unknown {
+    return this.gate.then(() => super.execute(operation, args, data));
+  }
+}
+
+test("a blocked queue does not keep large decoded requests alive", async () => {
+  const backend = new GatedBackend();
+  const service = new FilesystemService(backend);
+  const pair = createFilesystemConnection();
+  service.connect(pair.server);
+  const client = new FilesystemClient(pair.client);
+  const decoded: WeakRef<object>[] = [];
+  const nativeParse = JSON.parse;
+  let open!: () => void;
+  const pending: Promise<unknown>[] = [];
+  try {
+    const root = await client.asyncCall("preopen", ["/"]);
+    backend.gate = new Promise<void>((resolve) => (open = resolve));
+    const parse = spyOn(JSON, "parse").mockImplementation((text: string) => {
+      const value = nativeParse(text);
+      if (text.length > 100_000) decoded.push(new WeakRef(value));
+      return value;
+    });
+    try {
+      const big = Array.from({ length: 250_000 }, (_, index) => index);
+      for (let index = 0; index < 8; index++)
+        pending.push(client.asyncCall("stat", [root, big]).catch(() => {}));
+      await Bun.sleep(50);
+    } finally {
+      parse.mockRestore();
+    }
+    Bun.gc(true);
+    await Bun.sleep(20);
+    Bun.gc(true);
+    // Only a request that has reached the backend may hold its decoded form.
+    expect(decoded.filter((ref) => ref.deref()).length).toBeLessThanOrEqual(1);
+  } finally {
+    open();
+    await Promise.all(pending);
+    client.dispose();
+    await service.dispose();
+  }
+});
+
 test("a request is decoded once by the service and once by the client", async () => {
   const service = new FilesystemService(new MemoryBackend());
   const pair = createFilesystemConnection();

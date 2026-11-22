@@ -34,6 +34,10 @@ export const reflectSet = Reflect.set;
 export const ProxyConstructor = Proxy;
 export const StringConstructor = String;
 const stringSliceMethod = String.prototype.slice;
+const stringIncludesMethod = String.prototype.includes;
+export function stringIncludes(value: string, search: string): boolean {
+  return apply(stringIncludesMethod, value, [search]);
+}
 const utf8Encoder = new TextEncoder();
 const utf8EncodeInto = TextEncoder.prototype.encodeInto;
 const utf8Decoder = new TextDecoder();
