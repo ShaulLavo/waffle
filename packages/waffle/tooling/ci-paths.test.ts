@@ -305,10 +305,14 @@ test("release workflow publishes to npm with Changesets and OIDC provenance", ()
   );
   const trigger = record(record(release.on).push);
   expect(trigger.branches).toEqual(["main"]);
+  expect(record(release.permissions).contents).toBe("write");
+  expect(record(release.permissions)["pull-requests"]).toBe("write");
   expect(record(release.permissions)["id-token"]).toBe("write");
   const releaseJob = record(record(release.jobs).release);
   if (!Array.isArray(releaseJob.steps)) throw new Error("expected release steps");
   const releaseSteps = releaseJob.steps.map(record);
+  const authStep = releaseSteps.find((entry) => entry.name === "Configure npm authentication");
+  expect(String(authStep?.run)).toContain('if [ -n "${NPM_TOKEN:-}" ]');
   const publishStep = releaseSteps.find(
     (entry) => entry.name === "Create Release Pull Request or Publish to npm",
   );
