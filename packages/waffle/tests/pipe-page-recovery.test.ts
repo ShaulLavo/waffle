@@ -1,6 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import type { PipeController as ProductionPipeController } from "../proc/pipes.js";
-import { pipeRingOffset, pipeSharedPagesInUse } from "../proc/pipes.js";
+import {
+  pipeRingOffset,
+  pipeSharedPagesInUse,
+  type PipeController as ProductionPipeController,
+} from "../proc/pipes.js";
 import { isolatedPipes } from "./fixtures/pipes-intrinsics.ts";
 
 // Every page outside a ring's unread window must return to the pipe's shared pool, whichever
