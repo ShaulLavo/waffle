@@ -80,8 +80,8 @@ test("a default pipe reserves about a tenth of its former 2.5 MiB, whatever its 
   expect(bytes).toBe(pipeReservationBytes());
   expect(bytes).toBeLessThan(300 * 1024);
   // Payload pages no longer scale with slots: each extra writer slot adds 10 KiB of
-  // reserved pages, and a reader slot only its 184-byte header and page tables.
-  expect(pipeReservationBytes({ maxReaders: 32 }) - bytes).toBeLessThan(16 * 256);
+  // reserved pages, and a reader slot only its 312-byte header and page tables.
+  expect(pipeReservationBytes({ maxReaders: 32 }) - bytes).toBe(16 * 312);
   expect(pipeReservationBytes({ maxWriters: 32 }) - bytes).toBeLessThan(16 * 11 * 1024);
 });
 

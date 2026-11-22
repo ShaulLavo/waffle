@@ -185,7 +185,8 @@ function pipeLayout(capacity: number, maxWriters: number, maxReaders: number): P
     pages = capacity / pageBytes;
   const recordPage = Math.min(RECORD_PAGE_LIMIT, records(capacity)),
     recordPages = records(capacity) / recordPage;
-  const ringBytes = align8(RING_HEADER + 4 * (pages + recordPages + 2 * RESERVED_PAGES));
+  // Header, then 64-bit page entries (8-aligned, since the header is), then reserved-page hints.
+  const ringBytes = align8(RING_HEADER + 8 * (pages + recordPages) + 4 * 2 * RESERVED_PAGES);
   let at = HEADER + (maxWriters + maxReaders) * ringBytes;
   const pool = (shared: number): PoolLayout => {
     const control = at;
@@ -292,19 +293,27 @@ class PagePool {
   }
 }
 
-/** One ring's virtual pages of one kind: payload bytes, or 16-byte write records. Entries are
- * (lap << 16) | (physical id + 1). Only the ring's single producer maps an entry or retags it
- * for its next lap, before copying into it. A consumer clears an entry, by CAS on the exact
- * entry it read, only after its committed cursor passed that page's end for that lap. So a
- * page that still holds unread data, or that a paused producer may still write, is never
- * freed; a retag and a free of the same entry cannot both succeed.
+/** PageMap.judge verdicts. */
+const KEEP = 0,
+  FREE = 1,
+  RETAG = 2;
+/** One ring's virtual pages of one kind: payload bytes, or 16-byte write records. Each entry is
+ * one 64-bit word: physical id + 1 in the low half (0 = unmapped) and the lap in the high half,
+ * as wide as the cursor allows, so a reused entry never repeats a value inside the 4 GiB wrap
+ * the cursors already assume. Only the ring's single producer maps an entry or retags it for
+ * its next lap, before copying into it. A consumer clears an entry, by CAS on the exact entry
+ * it read, only after its committed cursor passed that page's end for that lap. So a page that
+ * still holds unread data, or that a paused producer may still write, is never freed; a retag
+ * and a free of the same entry cannot both succeed.
  */
 class PageMap {
   private readonly pageMask: number;
   private readonly lapMask: number;
   private readonly wrapMask: number;
   constructor(
-    private readonly table: Int32Array,
+    private readonly entries: BigInt64Array,
+    /** The same entries as 32-bit halves, for the hot paths' allocation-free reads. */
+    private readonly words: Int32Array,
     private readonly hints: Int32Array,
     private readonly pool: PagePool,
     /** First writer-reserved physical id, or -1 for a delivery ring. */
@@ -314,9 +323,12 @@ class PageMap {
     private readonly spanShift: number,
     counterBits: number,
   ) {
-    this.pageMask = typedArrayLength(table) - 1;
-    this.lapMask = (1 << Math.min(16, counterBits - spanShift)) - 1;
+    this.pageMask = typedArrayLength(entries) - 1;
+    this.lapMask = 2 ** (counterBits - spanShift) - 1;
     this.wrapMask = counterBits === 32 ? -1 : (1 << counterBits) - 1;
+  }
+  private id(page: number): number {
+    return atomicsLoad(this.words, page * 2 + LOW);
   }
   private page(position: number): number {
     return (position >>> this.unitShift) & this.pageMask;
@@ -330,12 +342,15 @@ class PageMap {
   /** The physical page holding a committed unit, or -1 when this view is stale. The producer
    * may already have retagged that page for the next lap; its earlier-lap bytes stay put. */
   find(position: number): number {
-    const entry = atomicsLoad(this.table, this.page(position));
-    if (!entry) return -1;
+    // Two 32-bit loads can tear across a remap. The producer only reads its own stable
+    // entries, and a reader that copies from a torn view loses its consuming CAS.
+    const page = this.page(position),
+      id = this.id(page);
+    if (!id) return -1;
     const lap = this.lap(position),
-      tag = entry >>> 16;
+      tag = atomicsLoad(this.words, page * 2 + HIGH);
     if (tag !== lap && tag !== ((lap + 1) & this.lapMask)) return -1;
-    return (entry & 0xffff) - 1;
+    return id - 1;
   }
   /** Producer: map pages for [position, position + count). Returns the units now mapped. */
   ensure(position: number, count: number): number {
@@ -353,13 +368,14 @@ class PageMap {
     const page = this.page(position),
       lap = this.lap(position);
     for (;;) {
-      const entry = atomicsLoad(this.table, page);
+      const entry = atomicsLoad(this.entries, page);
+      const id = low(entry),
+        tag = halves[HIGH]!;
       pipePause("map.loaded");
-      if (entry && entry >>> 16 === lap) return true;
-      if (!entry) return this.allocate(page, lap, last);
+      if (id && tag === lap) return true;
+      if (!id) return this.allocate(page, lap, last);
       // The previous lap still owns it: keep the page unless its consumer frees it first.
-      if (atomicsCompareExchange(this.table, page, entry, (lap << 16) | (entry & 0xffff)) === entry)
-        return true;
+      if (atomicsCompareExchange(this.entries, page, entry, pack(id, lap)) === entry) return true;
     }
   }
   /** The page a write ends in prefers a reserved page, so an idle writer holds no shared page. */
@@ -368,7 +384,7 @@ class PageMap {
     if (id < 0) id = this.pool.take(this.floor);
     if (id < 0 && !last) id = this.takeReserved(page);
     if (id < 0) return false;
-    atomicsStore(this.table, page, (lap << 16) | (id + 1));
+    atomicsStore(this.entries, page, pack(id + 1, lap));
     return true;
   }
   private takeReserved(page: number): number {
@@ -382,36 +398,61 @@ class PageMap {
   }
   private reservedBusy(slot: number): boolean {
     const hint = atomicsLoad(this.hints, slot);
-    return hint !== 0 && (atomicsLoad(this.table, hint - 1) & 0xffff) === this.reserved + slot + 1;
+    return hint !== 0 && this.id(hint - 1) === this.reserved + slot + 1;
   }
   /** Restore the invariant that every page outside the unread window [consumed, published) is
    * free, whatever path left one mapped: a failed write, a reader stopped between its CAS and
    * release(), or a slot reused before anyone looked. Returns whether it freed a page.
    *
-   * Each virtual page is judged by its next occurrence at or after the page holding
-   * `consumed`. An entry tagged for an earlier lap holds only consumed data and goes in every
-   * mode: a producer retagging it races this CAS on the same entry. Entries for the current lap
-   * (or the next, when the producer has wrapped into the page being read) stay unless `fenced`
-   * says no producer can be writing; then only pages touching unread data stay. A stale
-   * `consumed` only keeps more. */
-  sweep(consumed: number, published: number, fenced: boolean): boolean {
-    const unit = 1 << this.unitShift;
-    const base = this.wrap(consumed - (consumed & (unit - 1)));
-    const window = consumed === published ? 0 : this.wrap(published - base);
-    const first = this.page(base),
-      half = this.lapMask >>> 1;
+   * Each virtual page is judged by its next occurrence at or after the page holding the
+   * consumer's cursor. An entry tagged for an earlier lap holds only consumed data and goes in
+   * every mode: a producer retagging it races this CAS on the same entry. Entries for the
+   * current lap (or the next, when the producer has wrapped into the page being read) stay
+   * unless `fenced` says no producer can be writing; then only pages touching unread data stay.
+   *
+   * Unfenced, each entry is judged against a cursor read after the entry, so the cursor is never
+   * older than the mapping it judges. If the entry changes before the CAS, the CAS fails; if it
+   * doesn't, the consumer has only moved further past it. Fenced, nothing new is mapped, and a
+   * cursor read once up front can only be behind, which keeps more. */
+  sweep(consumedAt: () => number, published: number, fenced: boolean): boolean {
+    let consumed = consumedAt();
     let freed = false;
-    for (let page = 0; page < typedArrayLength(this.table); page++) {
-      const entry = atomicsLoad(this.table, page);
-      if (!entry) continue;
+    for (let page = 0; page < typedArrayLength(this.entries); page++) {
+      const entry = atomicsLoad(this.entries, page);
+      const id = low(entry),
+        tag = halves[HIGH]!;
+      if (!id) continue;
+      if (!fenced) consumed = consumedAt();
       pipePause("sweep.entry");
-      const offset = ((page - first) & this.pageMask) << this.unitShift;
-      const age = ((entry >>> 16) - this.lap(this.wrap(base + offset))) & this.lapMask;
-      // age 0 is the current lap, small ages are later laps, and the upper half is behind.
-      if (age <= half && (!fenced || offset < window)) continue;
+      const verdict = this.judge(page, tag, consumed, published, fenced);
+      if (verdict === KEEP) continue;
+      if (verdict === RETAG) {
+        atomicsCompareExchange(this.entries, page, entry, pack(id, (tag - 1) & this.lapMask));
+        continue;
+      }
       if (this.clear(page, entry)) freed = true;
     }
     return freed;
+  }
+  private judge(
+    page: number,
+    tag: number,
+    consumed: number,
+    published: number,
+    fenced: boolean,
+  ): number {
+    const base = this.wrap(consumed - (consumed & ((1 << this.unitShift) - 1)));
+    const offset = ((page - this.page(base)) & this.pageMask) << this.unitShift;
+    const age = (tag - this.lap(this.wrap(base + offset))) & this.lapMask;
+    // Age 0 is the current lap, small ages are later laps, and the upper half is behind.
+    if (age > this.lapMask >>> 1) return FREE;
+    if (!fenced) return KEEP;
+    const window = consumed === published ? 0 : this.wrap(published - base);
+    if (offset >= window) return FREE;
+    // A write that never published retagged this page for its next lap. Tag it back, so the
+    // reader's release() frees it once the earlier lap's bytes are read.
+    if (age === 1 && offset + 2 ** this.spanShift >= window) return RETAG;
+    return KEEP;
   }
   /** Consumer: after committing [from, from + count), free each page whose end it passed. */
   release(from: number, count: number): void {
@@ -420,29 +461,36 @@ class PageMap {
     for (let start = from - (from & (unit - 1)); start + unit <= end; start += unit) {
       const position = this.wrap(start);
       const page = this.page(position),
-        entry = atomicsLoad(this.table, page);
+        entry = atomicsLoad(this.entries, page);
+      const id = low(entry),
+        tag = halves[HIGH]!;
       pipePause("release.page");
-      if (entry && entry >>> 16 === this.lap(position)) this.clear(page, entry);
+      if (id && tag === this.lap(position)) this.clear(page, entry);
     }
   }
-  /** The ring's producer, on an empty ring: free the partly used page at its position. */
-  releaseIdle(position: number, sharedOnly: boolean): void {
-    if (!(position & ((1 << this.unitShift) - 1))) return;
+  /** The ring's producer, on an empty ring: free the partly used page at its position.
+   * Returns whether it freed one. */
+  releaseIdle(position: number, sharedOnly: boolean): boolean {
+    if (!(position & ((1 << this.unitShift) - 1))) return false;
     const page = this.page(position),
-      entry = atomicsLoad(this.table, page);
-    if (!entry || entry >>> 16 !== this.lap(position)) return;
-    if (sharedOnly && (entry & 0xffff) - 1 >= this.pool.shared) return;
-    this.clear(page, entry);
+      entry = atomicsLoad(this.entries, page);
+    const id = low(entry),
+      tag = halves[HIGH]!;
+    if (!id || tag !== this.lap(position)) return false;
+    if (sharedOnly && id - 1 >= this.pool.shared) return false;
+    return this.clear(page, entry);
   }
-  /** Whether the producer could place one more unit at this position now. */
+  /** Whether the producer could place one more unit at this position now. An exhausted pool
+   * first takes back pages earlier laps left behind, as a write would. */
   canMap(position: number): boolean {
-    if (atomicsLoad(this.table, this.page(position))) return true;
+    if (this.id(this.page(position))) return true;
     if (this.pool.available > this.floor) return true;
-    return this.reserved >= 0 && (!this.reservedBusy(0) || !this.reservedBusy(1));
+    if (this.reserved >= 0 && (!this.reservedBusy(0) || !this.reservedBusy(1))) return true;
+    return (this.pool.scavenge?.() ?? false) && this.pool.available > this.floor;
   }
-  private clear(page: number, entry: number): boolean {
-    if (!entry || atomicsCompareExchange(this.table, page, entry, 0) !== entry) return false;
-    const id = (entry & 0xffff) - 1;
+  private clear(page: number, entry: bigint): boolean {
+    if (atomicsCompareExchange(this.entries, page, entry, 0n) !== entry) return false;
+    const id = low(entry) - 1;
     if (id < this.pool.shared) this.pool.give(id);
     return true;
   }
@@ -760,6 +808,8 @@ class Ring {
     offset: number,
     /** Writer slot whose reserved pages this ring owns, or -1 for a delivery ring. */
     writerSlot: number,
+    /** Wake waiting endpoints; called whenever this ring returns a page outside a read. */
+    private readonly wake: () => void,
     private readonly registry?: PipePublicationRegistry,
   ) {
     const buffer = space.buffer,
@@ -775,20 +825,27 @@ class Ring {
     this.recordCapacity = records(space.capacity);
     this.writer = writerSlot >= 0;
     let at = offset + RING_HEADER;
-    const words = (count: number): Int32Array => {
-      const view = new Int32ArrayConstructor(buffer, at, count);
-      at += count * 4;
+    const table = (count: number): { entries: BigInt64Array; words: Int32Array } => {
+      const entries = new BigInt64ArrayConstructor(buffer, at, count),
+        words = new Int32ArrayConstructor(buffer, at, count * 2);
+      at += count * 8;
+      return { entries, words };
+    };
+    const hints = (): Int32Array => {
+      const view = new Int32ArrayConstructor(buffer, at, RESERVED_PAGES);
+      at += RESERVED_PAGES * 4;
       return view;
     };
-    const byteTable = words(layout.pages),
-      recordTable = words(layout.recordPages);
-    const byteHints = words(RESERVED_PAGES),
-      recordHints = words(RESERVED_PAGES);
+    const byteTable = table(layout.pages),
+      recordTable = table(layout.recordPages);
+    const byteHints = hints(),
+      recordHints = hints();
     const floor = this.writer ? DELIVERY_RESERVE : 0;
     const reserved = (pool: PoolLayout) =>
       this.writer ? pool.shared + writerSlot * RESERVED_PAGES : -1;
     this.bytes = new PageMap(
-      byteTable,
+      byteTable.entries,
+      byteTable.words,
       byteHints,
       space.bytePool,
       reserved(layout.bytePool),
@@ -798,7 +855,8 @@ class Ring {
       32,
     );
     this.records = new PageMap(
-      recordTable,
+      recordTable.entries,
+      recordTable.words,
       recordHints,
       space.recordPool,
       reserved(layout.recordPool),
@@ -969,12 +1027,16 @@ class Ring {
     const whole = atomic && requested <= Math.min(4096, this.capacity);
     if (usedRecords >= this.recordCapacity || (whole && free < requested)) return -PipeErrno.AGAIN;
     pipePause("write.loaded");
+    let idle = false;
     if (!usedRecords && free === this.capacity && this.writer) {
-      this.bytes.releaseIdle(position, true);
-      this.records.releaseIdle(record, true);
+      idle = this.bytes.releaseIdle(position, true);
+      idle = this.records.releaseIdle(record, true) || idle;
     }
     const count = this.reserve(position, record, Math.min(requested, free), whole ? requested : 1);
-    if (!count) return -PipeErrno.AGAIN;
+    if (!count) {
+      if (idle) this.wake();
+      return -PipeErrno.AGAIN;
+    }
     pipePause("write.reserved");
     this.copyIn(chunks, position, count);
     const slot = this.recordSlot(record);
@@ -988,7 +1050,7 @@ class Ring {
       return count;
     pipePause("write.failed");
     // Nothing was published, so the pages just mapped lie outside the unread window.
-    this.sweep(true);
+    if (this.sweep(true) || idle) this.wake();
     return -PipeErrno.BADF;
   }
   /** Map the record slot and at least `minimum` payload bytes. Returns the bytes mapped. */
@@ -999,22 +1061,26 @@ class Ring {
       const mapped = this.bytes.ensure(position, count);
       if (mapped >= minimum) return mapped;
     }
-    this.sweep(true);
+    if (this.sweep(true)) this.wake();
     return 0;
   }
   /** Return every page outside this ring's unread window. `fenced` asserts that no producer
    * can write the ring now: its own producer calling, the relay on a delivery ring it is
-   * recovering, or a slot reclaim that advanced the incarnation. Returns whether it freed. */
+   * recovering, or a slot reclaim that advanced the incarnation. Returns whether it freed;
+   * the caller wakes waiters. */
   sweep(fenced: boolean): boolean {
-    wide[0] = atomicsLoad(this.consumed, 0);
-    const position = halves[LOW]!,
-      record = (halves[HIGH]! >>> 2) & RECORD_MASK;
-    wide[0] = atomicsLoad(this.published, 0);
-    const end = halves[LOW]!,
-      last = (halves[HIGH]! >>> 2) & RECORD_MASK;
+    // Published first: a consumer cursor read after it never passes it.
+    const published = atomicsLoad(this.published, 0);
+    const end = low(published),
+      last = recordCounter(published);
     pipePause("sweep.cursors");
-    const bytes = this.bytes.sweep(position, end, fenced);
-    return this.records.sweep(record, last, fenced) || bytes;
+    const bytes = this.bytes.sweep(() => low(atomicsLoad(this.consumed, 0)), end, fenced);
+    const records = this.records.sweep(
+      () => recordCounter(atomicsLoad(this.consumed, 0)),
+      last,
+      fenced,
+    );
+    return bytes || records;
   }
   private copyIn(chunks: readonly Uint8Array[], position: number, count: number): void {
     const unit = this.space.layout.pageBytes;
@@ -1159,14 +1225,15 @@ class PipeState {
     const ringBytes = space.layout.ringBytes;
     const writerSlots = { __proto__: null, length: this.maxWriters };
     const readerSlots = { __proto__: null, length: this.maxReaders };
+    const wake = () => this.signal();
     this.writers = arrayFrom(
       writerSlots,
-      (_, slot) => new Ring(space, HEADER + slot * ringBytes, slot, this.registry),
+      (_, slot) => new Ring(space, HEADER + slot * ringBytes, slot, wake, this.registry),
     );
     this.readers = arrayFrom(
       readerSlots,
       (_, slot) =>
-        new Ring(space, HEADER + (this.maxWriters + slot) * ringBytes, -1, this.registry),
+        new Ring(space, HEADER + (this.maxWriters + slot) * ringBytes, -1, wake, this.registry),
     );
     space.bytePool.scavenge = space.recordPool.scavenge = () => this.scavenge();
   }
@@ -1898,7 +1965,9 @@ export class PipeController {
     pipePause("relay.head");
     const copy = new Uint8ArrayConstructor(Math.min(head.remaining, 65536));
     const count = ring.read([copy], true);
-    if (count <= 0) return true;
+    // The owner won the race to this record. Retire a drained ring; otherwise keep it as the
+    // outstanding delivery, so no later delivery overtakes the bytes it still holds.
+    if (count <= 0) return ring.available ? false : this.retire(ring);
     const tail = this.pending
       ? typedArraySubarray(this.pending, this.pendingAt)
       : new Uint8ArrayConstructor();
