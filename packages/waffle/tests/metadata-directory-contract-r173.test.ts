@@ -292,6 +292,8 @@ test("#118 live index remains balanced and releases removed edges without tombst
   const pages = new DirectoryPages();
   for (let index = 0; index < 10000; index++)
     pages.set({ name: String(index), ino: index + 1, kind: "file" });
+  expect(pages["root"]).toBeUndefined();
+  Array.from(pages.entriesAfter(0n));
   expect(pages["root"]!.height).toBeLessThan(20);
   for (let index = 0; index < 10000; index += 2) pages.delete(String(index));
   const remaining = Array.from(pages.entriesAfter(0n));
@@ -304,4 +306,57 @@ test("#118 live index remains balanced and releases removed edges without tombst
   expect(pages["names"].size).toBe(0);
   pages.set({ name: "again", ino: 1, kind: "file" });
   expect(Array.from(pages.entriesAfter(10002n))[0]?.cookie).toBe(10003n);
+});
+
+test("directory pages preserve byte prefixes and cookies across lazy indexing and mutations", () => {
+  const pages = new DirectoryPages();
+  const live = new Map<
+    string,
+    { name: string; ino: number; kind: "file" | "directory"; cookie: bigint }
+  >();
+  let next = 3n;
+  function add(name: string, ino: number, kind: "file" | "directory") {
+    pages.set({ name, ino, kind });
+    live.delete(name);
+    live.set(name, { name, ino, kind, cookie: next++ });
+  }
+  function remove(name: string) {
+    pages.delete(name);
+    live.delete(name);
+  }
+  function expected(cookie: bigint) {
+    const dots: Array<{ name: string; ino: number; kind: "file" | "directory"; cookie: bigint }> = [
+      { name: ".", ino: 11, kind: "directory", cookie: 1n },
+      { name: "..", ino: 12, kind: "directory", cookie: 2n },
+    ];
+    const entries = dots.concat(Array.from(live.values())).filter((entry) => entry.cookie > cookie);
+    const parts = entries.map((entry) => {
+      const name = new TextEncoder().encode(entry.name);
+      const bytes = new Uint8Array(24 + name.length);
+      const view = new DataView(bytes.buffer);
+      view.setBigUint64(0, entry.cookie, true);
+      view.setBigUint64(8, BigInt(entry.ino), true);
+      view.setUint32(16, name.length, true);
+      view.setUint8(20, entry.kind === "directory" ? 3 : 4);
+      bytes.set(name, 24);
+      return bytes;
+    });
+    return Uint8Array.from(parts.flatMap((part) => Array.from(part)));
+  }
+  function compare() {
+    for (const cookie of [0n, 1n, 2n, 3n, 4n, 5n, 6n, 99n]) {
+      const full = expected(cookie);
+      for (let size = 0; size <= full.length + 1; size++)
+        expect(pages.page(cookie, size, 11, 12)).toEqual(full.slice(0, size));
+    }
+  }
+  add("gone", 20, "file");
+  add("é雪🙂", 21, "file");
+  remove("gone");
+  add("dir", 22, "directory");
+  compare();
+  remove("é雪🙂");
+  add("new", 23, "file");
+  add("dir", 24, "file");
+  compare();
 });
