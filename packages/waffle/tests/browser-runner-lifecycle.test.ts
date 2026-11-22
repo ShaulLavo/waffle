@@ -198,3 +198,30 @@ test("embedded browser launch disables Playwright's own process signal handlers"
     launch.mockRestore();
   }
 });
+
+test("concurrent embedded lifecycles keep a short caller TMPDIR alive without clobbering it", async () => {
+  const root = await mkdtemp(resolve("/tmp", "w-tmp-"));
+  const previousTmp = process.env.TMPDIR;
+  const previousScratch = process.env.SCRATCH;
+  process.env.TMPDIR = root;
+  delete process.env.SCRATCH;
+  const first = new BrowserRunnerLifecycle(600_000, 5000, undefined, "caller");
+  const second = new BrowserRunnerLifecycle(600_000, 5000, undefined, "caller");
+  try {
+    await Promise.all([first.init(root), second.init(root)]);
+    expect(process.env.TMPDIR).toBe(root);
+    await first.close();
+    expect(process.env.TMPDIR).toBe(root);
+    expect((await stat(root)).isDirectory()).toBe(true);
+    await second.close();
+    expect(process.env.TMPDIR).toBe(root);
+    expect((await stat(root)).isDirectory()).toBe(true);
+  } finally {
+    await Promise.allSettled([first.close(), second.close()]);
+    if (previousTmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previousTmp;
+    if (previousScratch === undefined) delete process.env.SCRATCH;
+    else process.env.SCRATCH = previousScratch;
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -9,6 +9,7 @@ type SuiteBatch = { concurrency: number; tasks: readonly SuiteTask[] };
 
 const gpuRunner = "tests/gpu-browser-runner.ts";
 const asyncGpuRunner = "tests/gpu-async-browser-runner.ts";
+const crossTabRunner = "tests/publication-cross-tab-browser-runner.ts";
 const reporterControls = "tests/page-runner/browser-controls-runner.ts";
 const storageRunner = "tests/storage-browser-runner.ts";
 const runners = [
@@ -51,6 +52,7 @@ const parallel: SuiteBatch[] = [
   },
 ];
 const webkitTasks: SuiteTask[] = runners
+  .filter((runner) => runner !== crossTabRunner)
   .map((runner) => ({ runner, engines: ["webkit"] }))
   .concat(
     [{ runner: "tests/bootstrap-arrival-browser-runner.ts", engines: ["webkit"] }],
@@ -80,6 +82,7 @@ const isolatedTasks: SuiteTask[] = [
 ];
 const serialRuntime: SuiteBatch[] = [
   { concurrency: 3, tasks: webkitTasks },
+  { concurrency: 1, tasks: [{ runner: crossTabRunner, engines: ["webkit"] }] },
   { concurrency: 4, tasks: isolatedTasks },
 ];
 const reporter: SuiteBatch[] = [

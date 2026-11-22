@@ -20,7 +20,7 @@ import {
   storagePageLabelControl,
 } from "./command-controls.js";
 import { tmpdir } from "node:os";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { join, resolve, isAbsolute } from "node:path";
 import { Collector } from "./collector.js";
 import { PlaywrightDriver } from "./playwright-driver.js";
@@ -299,7 +299,7 @@ const slowControlPriority = new Map<string, number>(
 function controlConcurrency(engine: string): number {
   const configured = Number(process.env.PAGE_RUNNER_CONTROL_CONCURRENCY);
   if (Number.isInteger(configured) && configured > 0) return configured;
-  return engine === "webkit" ? 4 : 6;
+  return engine === "webkit" ? 2 : 4;
 }
 
 function scheduleControls(tasks: readonly ControlTask[]): ControlTask[] {
@@ -447,6 +447,27 @@ async function runEngine(engine: string, root: string, results: ControlResults):
     restore?.();
   }
 }
+async function isShortExistingDir(path: string | undefined): Promise<boolean> {
+  if (!path) return false;
+  try {
+    return Buffer.byteLength(await realpath(path), "utf8") <= 48;
+  } catch {
+    return false;
+  }
+}
+
+async function pinControlTmp(parent: string): Promise<() => Promise<void>> {
+  const previousTmp = process.env.TMPDIR;
+  if (await isShortExistingDir(previousTmp)) return async () => {};
+  const owned = await mkdtemp(join(parent, "wt-"));
+  process.env.TMPDIR = owned;
+  return async () => {
+    if (previousTmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previousTmp;
+    await rm(owned, { recursive: true, force: true });
+  };
+}
+
 async function main(controls: ControlRun): Promise<void> {
   controls.throwIfInterrupted();
   const args = process.argv.slice(2),
@@ -465,6 +486,7 @@ async function main(controls: ControlRun): Promise<void> {
   const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
   const results: ControlResults = { path: resultPath, run: controls };
   let root: string | undefined;
+  let releaseTmp: (() => Promise<void>) | undefined;
   await withStorageCleanup(
     async () => {
       if (
@@ -472,12 +494,15 @@ async function main(controls: ControlRun): Promise<void> {
         (!selected || frameworkControlModes.some((mode) => `framework-${mode}`.includes(selected)))
       )
         await buildFrameworkBootstrap();
-      root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "pr-results-"));
+      const scratchParent = process.env.STORAGE_SCRATCH_ROOT ?? tmpdir();
+      releaseTmp = await pinControlTmp(scratchParent);
+      root = await mkdtemp(join(scratchParent, "pr-results-"));
       await mkdir(root, { recursive: true });
       for (const engine of requested) await runEngine(engine, root, results);
     },
     async () => {
       if (root) await rm(root, { recursive: true, force: true });
+      await releaseTmp?.();
     },
   );
   if (!controls.results.length || controls.results.some((result) => result.status === "fail"))
