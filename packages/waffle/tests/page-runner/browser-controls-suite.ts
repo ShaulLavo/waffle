@@ -319,46 +319,53 @@ async function runControlPool(
   results: ControlResults,
 ): Promise<void> {
   if (!tasks.length) return;
-  const serial = new Map<string, ControlTask[]>();
-  const parallel: ControlTask[] = [];
-  for (const task of scheduleControls(tasks)) {
-    if (!task.serialGroup) {
-      parallel.push(task);
-      continue;
-    }
-    const group = serial.get(task.serialGroup) ?? [];
-    group.push(task);
-    serial.set(task.serialGroup, group);
-  }
-  const limit = Math.min(controlConcurrency(engine), Math.max(1, parallel.length));
-  let nextIndex = 0;
+  const pending = scheduleControls(tasks);
+  const activeGroups = new Set<string>();
+  const limit = Math.min(controlConcurrency(engine), pending.length);
   let fatal: { error: unknown } | undefined;
-  const runTask = async (task: ControlTask) => {
+  let notify = Promise.withResolvers<void>();
+
+  const claimTask = (): ControlTask | "wait" | undefined => {
+    if (!pending.length) return undefined;
+    const index = pending.findIndex(
+      (task) => !task.serialGroup || !activeGroups.has(task.serialGroup),
+    );
+    if (index < 0) return "wait";
+    const task = pending.splice(index, 1)[0]!;
+    if (task.serialGroup) activeGroups.add(task.serialGroup);
+    return task;
+  };
+
+  const wakeWaiters = (group: string | undefined) => {
+    if (group) activeGroups.delete(group);
+    notify.resolve();
+    notify = Promise.withResolvers<void>();
+  };
+
+  const runClaimed = async (task: ControlTask) => {
     try {
       await checkControl(engine, task.control, task.run, results);
     } catch (error) {
       fatal ??= { error };
+    } finally {
+      wakeWaiters(task.serialGroup);
     }
   };
-  const parallelWorker = async () => {
+
+  const worker = async () => {
     while (!fatal) {
       results.run.throwIfInterrupted();
-      const task = parallel[nextIndex++];
-      if (!task) return;
-      await runTask(task);
+      const next = claimTask();
+      if (next === undefined) return;
+      if (next === "wait") {
+        await notify.promise;
+        continue;
+      }
+      await runClaimed(next);
     }
   };
-  const serialWorker = async (group: readonly ControlTask[]) => {
-    for (const task of group) {
-      if (fatal) return;
-      results.run.throwIfInterrupted();
-      await runTask(task);
-    }
-  };
-  const workers = Array.from({ length: limit }, () => parallelWorker()).concat(
-    Array.from(serial.values(), (group) => serialWorker(group)),
-  );
-  const settled = await Promise.allSettled(workers);
+
+  const settled = await Promise.allSettled(Array.from({ length: limit }, () => worker()));
   if (fatal) throw fatal.error;
   const rejected = settled.find((entry) => entry.status === "rejected");
   if (rejected?.status === "rejected") throw rejected.reason;

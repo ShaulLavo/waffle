@@ -109,7 +109,11 @@ test("network and singular libc caches are shared exactly and native compilation
   const network = gateSteps.find((step) => step.id === "network-artifact");
   const libc = steps(producer).find((step) => step.id === "libc");
   const gateLibc = gateSteps.find((step) => step.id === "wasi-libc-cache");
-  assert.deepEqual(gateLibc?.with, libc?.with);
+  assert.equal(record(gateLibc?.with).path, record(libc?.with).path);
+  assert.equal(
+    record(gateLibc?.with).key,
+    String(record(libc?.with).key).replace("wasi-libc-34.0-v1-", "wasi-libc-34.0-runner-temp-v1-"),
+  );
   for (const job of [producer, consumer]) {
     const restored = steps(job).find((step) => step.id === "network");
     assert.equal(record(restored?.with).key, record(network?.with).key);

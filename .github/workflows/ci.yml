@@ -679,7 +679,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build/wasi-libc
-          key: wasi-libc-34.0-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}
+          key: wasi-libc-34.0-runner-temp-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}
 
       # Libc, memory-group, GPU and Rust threads fixtures (used directly by browser steps below).
       - uses: actions/cache@v4
@@ -1074,6 +1074,9 @@ jobs:
           bun packages/findutils/scripts/xargs-artifact.ts .build/xargs-process-input
       - name: Run findutils xargs WASI suite
         if: steps.select.outputs.findutils == 'true'
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
         run: bun run --cwd packages/findutils test:xargs:wasi
       - name: Build and qualify coreutils echo with the same-run xargs artifact
         if: steps.select.outputs.coreutils == 'true'

@@ -361,7 +361,13 @@ test("native GPU failure remains blocking in its single supervised Chromium invo
 async function discoverCommands(
   group: string | undefined,
   failingRunner?: string,
-): Promise<{ commands: string[]; storageObservers: string[]; failures: unknown; failed: boolean }> {
+): Promise<{
+  commands: string[];
+  storageObservers: string[];
+  failures: unknown;
+  failed: boolean;
+  peakConcurrency: number;
+}> {
   const root = await mkdtemp(join(tmpdir(), "waffle-native-discovery-"));
   let cleanupError: CommandCleanupError | undefined;
   try {
@@ -374,11 +380,20 @@ async function discoverCommands(
     await writeFile(
       join(root, "scripts/browser-command.ts"),
       `
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
+let active = 0;
+let peak = 0;
 export async function runBrowserSuite(command, options) {
+  active++;
+  if (active > peak) {
+    peak = active;
+    writeFileSync("peak-concurrency.txt", String(peak));
+  }
   appendFileSync("commands.jsonl", JSON.stringify(command.slice(1)) + "\\n");
   if (command[1] === "tests/storage-browser-runner.ts")
     appendFileSync("storage-observers.txt", command.slice(2).join(",") + "=" + (options.env.STORAGE_LIFECYCLE_OBSERVER ?? "") + "\\n");
+  await Bun.sleep(5);
+  active--;
   const failed = process.env.MATRIX_FAIL === "gpu-async-controls" ? "tests/page-runner/gpu-async-controls-runner.ts" : "tests/" + process.env.MATRIX_FAIL + "-browser-runner.ts";
   if (command[1] === failed) throw Error("GPU control failed");
 }
@@ -401,8 +416,16 @@ export async function runBrowserSuite(command, options) {
     const storageObservers = (await observerLog.exists())
       ? (await observerLog.text()).trimEnd().split("\n")
       : [];
+    const peakFile = Bun.file(join(root, "peak-concurrency.txt"));
+    const peakConcurrency = (await peakFile.exists()) ? Number(await peakFile.text()) : 0;
     const failures: unknown = JSON.parse(await readFile(join(root, "failures.json"), "utf8"));
-    return { commands, storageObservers, failures, failed: failure instanceof Error };
+    return {
+      commands,
+      storageObservers,
+      failures,
+      failed: failure instanceof Error,
+      peakConcurrency,
+    };
   } finally {
     if (cleanupError) console.error(`Retained native discovery scratch: ${root}`, cleanupError);
     else await rm(root, { recursive: true, force: true });
@@ -454,17 +477,26 @@ async function nativeDiscovery(
   expect(result.failures).toEqual(failingRunner ? [`${failed} failed`] : []);
 }
 
-test("CI shards dispatch each command in the full browser matrix exactly once", async () => {
-  const [full, runtime, reporter] = await Promise.all([
+test("CI shards dispatch each command in the full browser matrix exactly once within pool limits", async () => {
+  const [full, runtime, reporter, parallel, serial] = await Promise.all([
     discoverCommands(undefined),
     discoverCommands("runtime"),
     discoverCommands("reporter"),
+    discoverCommands("parallel"),
+    discoverCommands("serial"),
   ]);
-  for (const run of [full, runtime, reporter]) {
+  for (const run of [full, runtime, reporter, parallel, serial]) {
     expect(run.failed).toBe(false);
     expect(run.commands.length).toBeGreaterThan(0);
+    expect(new Set(run.commands).size).toBe(run.commands.length);
   }
-  expect(runtime.commands.concat(reporter.commands).sort()).toEqual(full.commands.sort());
+  expect(full.commands).toHaveLength(53);
+  expect(runtime.commands.concat(reporter.commands).toSorted()).toEqual(full.commands.toSorted());
+  expect(parallel.peakConcurrency).toBeGreaterThan(1);
+  expect(parallel.peakConcurrency).toBeLessThanOrEqual(6);
+  expect(serial.peakConcurrency).toBeGreaterThan(1);
+  expect(serial.peakConcurrency).toBeLessThanOrEqual(4);
+  expect(reporter.peakConcurrency).toBe(2);
 });
 
 test("the runtime shard preserves batch order and storage observer scope after an early failure", async () => {

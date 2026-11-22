@@ -116,6 +116,18 @@ function invocationEnv(runner: string, engines: readonly string[]) {
   return { ...process.env, STORAGE_LIFECYCLE_OBSERVER: engines.includes("webkit") ? "0" : "1" };
 }
 
+async function runSuiteTask(task: SuiteTask, failures: Error[]): Promise<void> {
+  try {
+    await runBrowserSuite([process.execPath, task.runner].concat(task.engines), {
+      cwd: import.meta.dir + "/..",
+      env: invocationEnv(task.runner, task.engines),
+      signal: stopped.signal,
+    });
+  } catch (reason) {
+    failures.push(new Error(`${task.runner} failed`, { cause: reason }));
+  }
+}
+
 async function runBatch(batch: SuiteBatch): Promise<Error[]> {
   const failures: Error[] = [];
   const limit = Math.min(batch.concurrency, batch.tasks.length);
@@ -124,15 +136,7 @@ async function runBatch(batch: SuiteBatch): Promise<Error[]> {
     while (nextIndex < batch.tasks.length) {
       const task = batch.tasks[nextIndex++];
       if (!task) return;
-      try {
-        await runBrowserSuite([process.execPath, task.runner].concat(task.engines), {
-          cwd: import.meta.dir + "/..",
-          env: invocationEnv(task.runner, task.engines),
-          signal: stopped.signal,
-        });
-      } catch (reason) {
-        failures.push(new Error(`${task.runner} failed`, { cause: reason }));
-      }
+      await runSuiteTask(task, failures);
     }
   };
   await Promise.all(Array.from({ length: limit }, () => worker()));

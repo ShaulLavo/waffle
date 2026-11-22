@@ -683,6 +683,15 @@ test("programs, program leaves and oracles preserve path selection and ordering"
   expect(procpsLint?.["working-directory"]).toBe("packages/procps");
   expect(procpsFmt?.["working-directory"]).toBe("packages/procps");
 
+  const xargsSuite = gateSteps.find((step) => step.name === "Run findutils xargs WASI suite");
+  expect(record(xargsSuite?.env).WASI_SDK_PATH).toBe(
+    "${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux",
+  );
+  expect(record(xargsSuite?.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+
+  const libcCache = gateSteps.find((step) => step.id === "wasi-libc-cache");
+  expect(String(record(libcCache?.with).key)).toContain("wasi-libc-34.0-runner-temp-v1-");
+
   const checksumOracle = gateSteps.findIndex(
     (step) =>
       step.run === "node packages/coreutils/scripts/build-native-checksum-oracle.ts --verify-only",
