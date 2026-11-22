@@ -27,7 +27,7 @@ const producer = record(
 const consumer = record(record(parse(".github/workflows/coreutils-echo.yml").jobs)["echo-process"]);
 
 test("echo-only changes select a same-run xargs producer without repeating its unchanged suite", () => {
-  const gateSteps = steps(jobs.gate);
+  const gateSteps = steps(jobs.core);
   const paths = gateSteps.find((step) => step.id === "paths");
   const filters = record(YAML.parse(String(record(paths?.with).filters)));
   const patterns = filters.coreutils;
@@ -118,7 +118,7 @@ test("consumer verifies the exact same-run artifact and never builds xargs or ne
 });
 
 test("network and singular libc caches are shared exactly and native compilation stays one lane", () => {
-  const gateSteps = steps(jobs.gate);
+  const gateSteps = steps(jobs.core);
   const network = gateSteps.find((step) => step.id === "network-artifact");
   const libc = steps(producer).find((step) => step.id === "libc");
   const gateLibc = gateSteps.find((step) => step.id === "wasi-libc-cache");

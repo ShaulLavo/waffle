@@ -23,7 +23,7 @@ function record(value: unknown): Record<string, unknown> {
 
 function browserSteps() {
   const parsed = record(YAML.parse(workflow));
-  const browser = record(record(parsed.jobs).gate);
+  const browser = record(record(parsed.jobs).browser);
   if (!Array.isArray(browser.steps)) throw new Error("expected browser steps");
   return browser.steps.map(record);
 }
@@ -143,7 +143,7 @@ const cacheKeyName = "Resolve the Playwright browser cache key";
 const repositoryRoot = new URL("../../../", import.meta.url).pathname;
 
 function browserJob() {
-  return record(record(record(YAML.parse(workflow)).jobs).gate);
+  return record(record(record(YAML.parse(workflow)).jobs).browser);
 }
 
 function cacheKeyCommand(): string {
