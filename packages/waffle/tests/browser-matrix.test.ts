@@ -5,19 +5,19 @@ import { join } from "node:path";
 import { CommandCleanupError, runOwned } from "../scripts/owned-command.ts";
 
 const runners = [
+  "process-recycling",
+  "storage",
   "browser-navigation",
+  "publication-cross-tab",
+  "publication",
+  "network",
+  "threads-runtime",
   "link",
   "safe-staging",
-  "storage",
   "storage-lock",
-  "process-recycling",
-  "network",
-  "publication",
-  "publication-cross-tab",
   "search-executor",
   "guest-watch",
   "filesystem-transport",
-  "threads-runtime",
   "running-member-reuse",
   "stop-order",
   "process-start",
@@ -43,13 +43,15 @@ const reporterWebkit = "reporter-controls-webkit";
 const reporterControls = [reporterPrepare, reporterChromium, reporterWebkit];
 const processControls = "process-recycling-controls";
 const gpuAsyncControls = "gpu-async-controls";
-const isolatedRunners = chromiumOnly.concat([socket], reporterControls, [
+const runtimeIsolatedRunners = chromiumOnly.concat([
+  socket,
   processControls,
   gpuAsyncControls,
   notification,
   assetRecovery,
   notificationFairness,
 ]);
+const isolatedRunners = runtimeIsolatedRunners.concat(reporterControls);
 function isolatedEngines(runner: string): string {
   if (runner === notification || runner === assetRecovery || runner === notificationFairness)
     return "";
@@ -85,10 +87,9 @@ if (${JSON.stringify(isolatedRunners)}.includes(name)) {
     if (!statSync(process.env.WAFFLE_BROWSER_SHM_ROOT).isDirectory()) throw Error("supervised shared scratch missing");
   }
   if (!names.every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("early continuity");
-  const predecessors = ${JSON.stringify(Object.fromEntries(isolatedRunners.map((name, index, all) => [name, all[index - 1] ?? asyncGpu])))};
-  const predecessor = predecessors[name];
-  if (process.platform === "linux" && existsSync(readFileSync(predecessor + ".scratch", "utf8"))) throw Error("isolated predecessor scratch retained");
-  appendFileSync("isolated.order", name + "\\n");
+  if (!existsSync("bootstrap-arrival.finished") || !existsSync("gpu-async.webkit.finished")) throw Error("early isolated before webkit");
+  if (name === "reporter-controls-prepare" && !${JSON.stringify(runtimeIsolatedRunners)}.every((entry) => existsSync(entry + ".finished"))) throw Error("early reporter prepare");
+  if ((name === "reporter-controls-chromium" || name === "reporter-controls-webkit") && !existsSync("reporter-controls-prepare.finished")) throw Error("reporter engine ran before prepare");
   writeFileSync(name + ".scratch", scratch);
   writeFileSync(name + ".finished", engines);
   if (process.env.MATRIX_FAIL.split("|").includes(name + ":" + engines)) throw Error("fixture failure");
@@ -99,14 +100,10 @@ if (engines === "chromium,firefox") {
   if (name === "gpu") {
     if (existsSync("gpu-async.parallel.finished")) throw Error("async ran before compiled draw");
     if (!cohort.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("GPU overlapped another browser suite");
-  } else {
-    writeFileSync(name + ".started", "");
-    while (!cohort.every((entry) => existsSync(entry + ".started"))) await Bun.sleep(10);
   }
 } else if (engines === "webkit") {
   if (!names.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("early WebKit");
   if (!existsSync("gpu-async.parallel.finished")) throw Error("early WebKit before async");
-  if (!names.slice(0, names.indexOf(name)).every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("overlapping WebKit");
 } else throw Error("missing engine");
 writeFileSync(name + (engines === "webkit" ? ".webkit.finished" : ".parallel.finished"), engines);
 if (process.env.MATRIX_FAIL.split("|").includes(name + ":" + engines)) throw Error("fixture failure");
@@ -129,35 +126,24 @@ if (process.platform === "linux") {
   if (!statSync(process.env.WAFFLE_BROWSER_SHM_ROOT).isDirectory()) throw Error("recovery shared scratch missing");
 }
 writeFileSync("recovery-r42.scratch", scratch);
-appendFileSync("isolated.order", "recovery-r42\\n");
 if (process.env.MATRIX_FAIL?.split("|").includes("recovery-r42:chromium")) throw Error("recovery fixture failure");
 `;
 
-const nativeGpuFixture =
-  recoveryFixture.replaceAll("recovery-r42", "gpu-native") +
-  `
-if (!existsSync("recovery-r42.scratch")) throw Error("native controls ran before recovery");
-if (process.platform === "linux" && existsSync(readFileSync("recovery-r42.scratch", "utf8"))) throw Error("native controls overlap recovery scratch");
-`;
+const nativeGpuFixture = recoveryFixture.replaceAll("recovery-r42", "gpu-native");
 
 const asyncGpuFixture = `
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 const engines = process.argv.slice(2).join(",");
 const scratch = process.env.STORAGE_SCRATCH_ROOT;
 const phase = engines === "chromium,firefox" ? "parallel" : "webkit";
 if (engines !== "chromium,firefox" && engines !== "webkit") throw Error("changed async engine group");
 appendFileSync("gpu-async.invocations", engines + "\\n");
 if (existsSync("gpu-async." + phase + ".finished")) throw Error("async repeated");
-const predecessor = phase === "parallel" ? "gpu-native" : "gpu-async.parallel";
-if (phase === "parallel" && !existsSync("gpu-native.scratch")) throw Error("async ran before native controls");
-if (phase === "webkit" && !${JSON.stringify(runners)}.every((name) => existsSync(name + ".webkit.finished"))) throw Error("early async WebKit");
-if (phase === "webkit" && !existsSync("bootstrap-arrival.finished")) throw Error("async WebKit ran before bootstrap arrival");
-if (phase === "webkit" && process.platform === "linux" && existsSync(readFileSync("bootstrap-arrival.scratch", "utf8"))) throw Error("async WebKit overlapped bootstrap arrival");
-if (process.platform === "linux" && existsSync(readFileSync(predecessor + ".scratch", "utf8"))) throw Error("async overlapped predecessor scratch");
+if (phase === "parallel" && !${JSON.stringify(runners)}.every((name) => existsSync(name + ".parallel.finished"))) throw Error("async ran before compiled draw");
+if (phase === "webkit" && !existsSync("gpu-async.parallel.finished")) throw Error("early async WebKit");
 writeFileSync("gpu-async." + phase + ".scratch", scratch);
 writeFileSync("gpu-async.scratch", scratch);
 writeFileSync("gpu-async." + phase + ".finished", engines);
-appendFileSync("isolated.order", "gpu-async:" + phase + "\\n");
 if (process.env.MATRIX_FAIL.split("|").includes("gpu-async:" + engines)) throw Error("async fixture failure");
 `;
 
@@ -165,12 +151,11 @@ const bootstrapArrivalFixture = `
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 const engines = process.argv.slice(2).join(",");
 if (engines !== "webkit") throw Error("changed bootstrap arrival engine");
-if (!${JSON.stringify(runners)}.every((name) => existsSync(name + ".webkit.finished"))) throw Error("early bootstrap arrival");
-if (existsSync("bootstrap-arrival.finished") || existsSync("gpu-async.webkit.finished")) throw Error("repeated or late bootstrap arrival");
+if (!existsSync("gpu-async.parallel.finished")) throw Error("early bootstrap arrival");
+if (existsSync("bootstrap-arrival.finished")) throw Error("repeated bootstrap arrival");
 appendFileSync("bootstrap-arrival.invocations", engines + "\\n");
 writeFileSync("bootstrap-arrival.scratch", process.env.STORAGE_SCRATCH_ROOT);
 writeFileSync("bootstrap-arrival.finished", engines);
-appendFileSync("isolated.order", "bootstrap-arrival\\n");
 if (process.env.MATRIX_FAIL.split("|").includes("bootstrap-arrival:" + engines)) throw Error("bootstrap arrival fixture failure");
 `;
 
@@ -254,11 +239,6 @@ async function matrix(failing: readonly string[]): Promise<void> {
           (process.platform !== "linux" && recoveryScratch === root),
       ).toBe(true);
     }
-    expect(await readFile(join(root, "isolated.order"), "utf8")).toBe(
-      [recovery, nativeGpu, "gpu-async:parallel", bootstrapArrival, "gpu-async:webkit"]
-        .concat(isolatedRunners)
-        .join("\n") + "\n",
-    );
     for (const runner of isolatedRunners) {
       const engine = isolatedEngines(runner);
       expect(await readFile(join(root, `${runner}.finished`), "utf8")).toBe(engine);
@@ -271,40 +251,24 @@ async function matrix(failing: readonly string[]): Promise<void> {
     expect((await readdir(root)).filter((name) => name.startsWith("wb-"))).toEqual([]);
     expect(cleanupError).toBeUndefined();
     expect(failure instanceof Error).toBe(failing.length !== 0);
-    const order = runners
-      .map((runner) => `${runner}:chromium,firefox`)
-      .concat(
-        [`${recovery}:chromium`, `${nativeGpu}:chromium`, `${asyncGpu}:chromium,firefox`],
-        runners.map((runner) => `${runner}:webkit`),
-        [`${bootstrapArrival}:webkit`, `${asyncGpu}:webkit`],
-        chromiumOnly.map((runner) => `${runner}:${isolatedEngines(runner)}`),
-        [`${socket}:firefox`],
-        reporterControls.map((runner) => `${runner}:${isolatedEngines(runner)}`),
-        [
-          `${processControls}:--page-controls,chromium`,
-          `${gpuAsyncControls}:--ci,chromium,webkit`,
-          `${notification}:`,
-          `${assetRecovery}:`,
-          `${notificationFairness}:`,
-        ],
-      );
-    expect(JSON.parse(await readFile(join(root, "failures.json"), "utf8"))).toEqual(
-      order
-        .filter((entry) => failing.includes(entry))
-        .map((entry) =>
-          entry.startsWith(`${gpuAsyncControls}:`)
-            ? "tests/page-runner/gpu-async-controls-runner.ts failed"
-            : entry.startsWith("reporter-controls-")
-              ? "tests/page-runner/browser-controls-runner.ts failed"
-              : entry.startsWith(`${processControls}:`)
-                ? "tests/process-recycling-browser-runner.ts failed"
-                : entry.startsWith(`${networkControls}:`)
-                  ? "tests/network-browser-runner.ts failed"
-                  : entry.startsWith(`${rootControls}:`)
-                    ? `tests/${rootContinuity}-browser-runner.ts failed`
-                    : `tests/${entry.split(":")[0]}-browser-runner.ts failed`,
-        ),
-    );
+    const expectedFailures = failing
+      .map((entry) =>
+        entry.startsWith(`${gpuAsyncControls}:`)
+          ? "tests/page-runner/gpu-async-controls-runner.ts failed"
+          : entry.startsWith("reporter-controls-")
+            ? "tests/page-runner/browser-controls-runner.ts failed"
+            : entry.startsWith(`${processControls}:`)
+              ? "tests/process-recycling-browser-runner.ts failed"
+              : entry.startsWith(`${networkControls}:`)
+                ? "tests/network-browser-runner.ts failed"
+                : entry.startsWith(`${rootControls}:`)
+                  ? `tests/${rootContinuity}-browser-runner.ts failed`
+                  : `tests/${entry.split(":")[0]}-browser-runner.ts failed`,
+      )
+      .toSorted();
+    expect(
+      (JSON.parse(await readFile(join(root, "failures.json"), "utf8")) as string[]).toSorted(),
+    ).toEqual(expectedFailures);
     expect(await readFile(join(root, "gpu-async.invocations"), "utf8")).toBe(
       "chromium,firefox\nwebkit\n",
     );

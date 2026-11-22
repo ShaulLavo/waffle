@@ -20,33 +20,17 @@ env:
   BUN_VERSION: "1.4.4"
 
 jobs:
-  changes:
-    name: Changes and network artifact
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    runs-on: ubuntu-latest
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/packages/waffle/target
-      WAFFLE_TOOL_CACHE: ${{ github.workspace }}/.network-tools
-    outputs:
-      paths-result: ${{ steps.paths.outcome }}
-      libc: ${{ steps.paths.outputs.libc }}
-      browser: ${{ steps.paths.outcome != 'success' || steps.paths.outputs.browser != 'false' }}
-      coreutils: ${{ steps.paths.outputs.coreutils }}
-      checksums: ${{ steps.paths.outputs.checksums }}
-      sed: ${{ steps.paths.outputs.sed }}
-      findutils: ${{ steps.paths.outputs.findutils }}
-      grep: ${{ steps.paths.outputs.grep }}
-      ripgrep: ${{ steps.paths.outputs.ripgrep }}
-      base: ${{ steps.paths.outputs.base }}
-      programs: ${{ steps.paths.outputs.programs }}
-      diffutils: ${{ steps.paths.outputs.diffutils }}
-      gh: ${{ steps.paths.outputs.gh }}
-      jq: ${{ steps.paths.outputs.jq }}
-      curl: ${{ steps.paths.outputs.curl }}
-      awk: ${{ steps.paths.outputs.awk }}
-      tar: ${{ steps.paths.outputs.tar }}
-      procps: ${{ steps.paths.outputs.procps }}
+  gate:
+    name: Complete CI gate
+    # Playwright 1.64.1 browsers are proven on Ubuntu 24.04; move the pin deliberately with a green run.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
+      - name: Require a ready PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+        run: |
+          echo '::error::Mark this PR ready for review to run the required checks.'
+          exit 1
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: paths
@@ -410,663 +394,109 @@ jobs:
               - "packages/waffle/tooling/workspace-safari-runner.ts"
               - "packages/waffle/tests/**"
             libc:
-              - '.github/actions/setup-wasmtime/**'
-              - '.github/workflows/ci.yml'
+              - ".github/actions/setup-wasmtime/**"
+              - ".github/workflows/ci.yml"
               - ".github/actions/release-downloads/**"
               - ".github/actions/save-release-downloads/**"
               - ".github/actions/setup-tools/**"
               - "tools/ci-*.ts"
-              - 'packages/waffle/patches/**'
-              - 'packages/waffle/scripts/build-wasi-libc.sh'
-              - 'packages/waffle/scripts/test-wasi-libc.ts'
-              - 'packages/waffle/scripts/owned-command.ts'
-              - 'packages/waffle/core/**'
-              - 'packages/waffle/fs/**'
-              - 'packages/waffle/proc/**'
-              - 'packages/waffle/interrupt/**'
-              - 'packages/waffle/browser/**'
-              - 'packages/waffle/runtime.ts'
-              - 'packages/waffle/index.ts'
-              - 'package.json'
-              - 'packages/waffle/package.json'
-              - 'bun.lock'
-              - 'packages/waffle/tests/wasi-libc.test.ts'
-              - 'packages/waffle/tests/preview1-socket-libc.test.ts'
-              - 'packages/waffle/tests/preview1-socket-support.ts'
-              - 'packages/waffle/tests/fixtures/**'
-              - 'packages/waffle/scripts/build-memory-group-fixture.ts'
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - uses: actions/cache@v4
-        id: network-artifact
-        with:
-          path: |
-            packages/waffle/browser/net/network.wasm
-            packages/waffle/browser/net/network.input-hash
-            packages/waffle/browser/net/network.sha256
-            packages/waffle/browser/net/network.buffer.js
-            packages/waffle/browser/net/network.buffer.sha256
-            packages/waffle/browser/net/network.growth.json
-          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-      - name: Cache pinned network translator
-        if: steps.network-artifact.outputs.cache-hit != 'true'
-        uses: actions/cache@v4
-        id: translator-cache
-        with:
-          path: .network-tools
-          key: network-translator-v1-${{ hashFiles('packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**') }}
-      - name: Cache Rust toolchain and Cargo build inputs
-        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.paths.outputs.network == 'true' || steps.paths.outcome != 'success' || github.event_name == 'workflow_dispatch'
-        uses: actions/cache@v4
-        id: rust-cache
-        with:
-          path: |
-            ~/.rustup/toolchains
-            ~/.cargo/registry
-            ~/.cargo/git
-            packages/waffle/target
-          key: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-${{ hashFiles('packages/waffle/network/**/*.rs') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-
-      - uses: dtolnay/rust-toolchain@stable
-        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.paths.outputs.network == 'true' || steps.paths.outcome != 'success' || github.event_name == 'workflow_dispatch'
-        with:
-          toolchain: 1.98.1
-          targets: wasm32-unknown-unknown
-          components: clippy,rustfmt
-      - name: Build exact-input network artifact once
-        if: steps.network-artifact.outputs.cache-hit != 'true'
-        run: bun run --cwd packages/waffle build:network
-      - name: Rust native, state and actual WASM tests
-        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.paths.outputs.network == 'true' || steps.paths.outcome != 'success' || github.event_name == 'workflow_dispatch'
-        run: |
-          bun tooling/check-network-rust.ts
-          cargo fmt --all -- --check
-          cargo clippy --release --all-targets --features module-tests --locked -- -D warnings
-          cargo test --release -p waffle-tcp --features module-tests --locked -- --nocapture
-        working-directory: packages/waffle
+              - "packages/waffle/patches/**"
+              - "packages/waffle/scripts/build-wasi-libc.sh"
+              - "packages/waffle/scripts/test-wasi-libc.ts"
+              - "packages/waffle/scripts/owned-command.ts"
+              - "packages/waffle/core/**"
+              - "packages/waffle/fs/**"
+              - "packages/waffle/proc/**"
+              - "packages/waffle/interrupt/**"
+              - "packages/waffle/browser/**"
+              - "packages/waffle/runtime.ts"
+              - "packages/waffle/index.ts"
+              - "package.json"
+              - "packages/waffle/package.json"
+              - "bun.lock"
+              - "packages/waffle/tests/wasi-libc.test.ts"
+              - "packages/waffle/tests/preview1-socket-libc.test.ts"
+              - "packages/waffle/tests/preview1-socket-support.ts"
+              - "packages/waffle/tests/fixtures/**"
+              - "packages/waffle/scripts/build-memory-group-fixture.ts"
+      - name: Resolve selected CI checks
+        id: select
         env:
-          WAFFLE_TCP_MODULE: ${{ github.workspace }}/packages/waffle/browser/net/network.wasm
-      - name: Verify network compiler lifecycle and raw source installation
-        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.paths.outputs.network == 'true' || steps.paths.outcome != 'success' || github.event_name == 'workflow_dispatch'
-        working-directory: packages/waffle
+          EVENT_NAME: ${{ github.event_name }}
+          PATHS_OUTCOME: ${{ steps.paths.outcome }}
+          P_NETWORK: ${{ steps.paths.outputs.network }}
+          P_BROWSER: ${{ steps.paths.outputs.browser }}
+          P_LIBC: ${{ steps.paths.outputs.libc }}
+          P_PROGRAMS: ${{ steps.paths.outputs.programs }}
+          P_COREUTILS: ${{ steps.paths.outputs.coreutils }}
+          P_CHECKSUMS: ${{ steps.paths.outputs.checksums }}
+          P_FINDUTILS: ${{ steps.paths.outputs.findutils }}
+          P_DIFFUTILS: ${{ steps.paths.outputs.diffutils }}
+          P_GH: ${{ steps.paths.outputs.gh }}
+          P_JQ: ${{ steps.paths.outputs.jq }}
+          P_CURL: ${{ steps.paths.outputs.curl }}
+          P_AWK: ${{ steps.paths.outputs.awk }}
+          P_TAR: ${{ steps.paths.outputs.tar }}
+          P_PROCPS: ${{ steps.paths.outputs.procps }}
         run: |
-          bun test tooling/network-translator.test.ts
-          bun tooling/network-source-smoke.ts
-      - name: Report exact artifact and Rust cache hits
-        run: |
-          echo "network artifact cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
-          echo "Rust cache-hit=${{ steps.rust-cache.outputs.cache-hit }}"
-          echo "Translator cache-hit=${{ steps.translator-cache.outputs.cache-hit }}"
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-
-  awk:
-    env:
-      WAFFLE_NETWORK_PREBUILT: "1"
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.awk == 'true')) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-          node-version: "24"
-      - uses: actions/cache/restore@v4
-        id: network-artifact
-        with:
-          path: |
-            packages/waffle/browser/net/network.wasm
-            packages/waffle/browser/net/network.input-hash
-            packages/waffle/browser/net/network.sha256
-            packages/waffle/browser/net/network.buffer.js
-            packages/waffle/browser/net/network.buffer.sha256
-            packages/waffle/browser/net/network.growth.json
-          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-          fail-on-cache-miss: true
-      - name: Verify exact-input network artifact before installation
-        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
-      - uses: actions/cache/restore@v4
-        id: bun-cache
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - uses: actions/cache@v4
-        id: sdk
-        with:
-          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
-      - name: Install pinned wasi-sdk 34
-        if: steps.sdk.outputs.cache-hit != 'true'
-        run: |
-          cd "$RUNNER_TEMP"
-          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz wasi-sdk.tar.gz 120000
-          echo 'b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz' | sha256sum -c -
-          tar -xzf wasi-sdk.tar.gz
-          rm wasi-sdk.tar.gz
-      - uses: actions/cache@v4
-        id: libc-cache
-        with:
-          path: .build/wasi-libc
-          key: ${{ runner.os }}-${{ runner.arch }}-awk-libc-${{ hashFiles('tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**') }}
-      - uses: actions/cache@v4
-        id: wasmtime
-        with:
-          path: ~/downloader/bin/wasmtime
-          key: ${{ runner.os }}-wasmtime-49.0.3
-      - uses: ./.github/actions/setup-wasmtime
-        if: steps.wasmtime.outputs.cache-hit != 'true'
-      - run: echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
-      - uses: ./.github/actions/ubuntu-main-archive
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bison ninja-build
-      - uses: ./.github/actions/program-optimizer
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun run prepare:package
-      - name: Build and qualify only awk
-        run: bun run programs:awk
-        env:
-          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
-          AWK_SCRATCH_ROOT: ${{ runner.temp }}
-      - name: Report awk dependency cache hits
-        if: always()
-        run: |
-          echo "network cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
-          echo "Bun cache-hit=${{ steps.bun-cache.outputs.cache-hit }}"
-          echo "SDK cache-hit=${{ steps.sdk.outputs.cache-hit }}"
-          echo "libc cache-hit=${{ steps.libc-cache.outputs.cache-hit }}"
-          echo "Wasmtime cache-hit=${{ steps.wasmtime.outputs.cache-hit }}"
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  procps:
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.procps == 'true')) }}
-    runs-on: ubuntu-latest
-    env:
-      WAFFLE_NETWORK_PREBUILT: "1"
-    steps:
-      - uses: actions/checkout@v4
+          set -euo pipefail
+          fallback=false
+          if [[ "$EVENT_NAME" == workflow_dispatch || "$PATHS_OUTCOME" != success ]]; then
+            fallback=true
+          fi
+          pick() { [[ "$fallback" == true || "$1" == true ]] && echo true || echo false; }
+          network=$(pick "$P_NETWORK")
+          browser=$([[ "$fallback" == true || "$P_BROWSER" != false ]] && echo true || echo false)
+          libc=$(pick "$P_LIBC")
+          programs=$(pick "$P_PROGRAMS")
+          coreutils=$(pick "$P_COREUTILS")
+          checksums=$(pick "$P_CHECKSUMS")
+          findutils=$(pick "$P_FINDUTILS")
+          diffutils=$(pick "$P_DIFFUTILS")
+          gh=$(pick "$P_GH")
+          jq=$(pick "$P_JQ")
+          curl=$(pick "$P_CURL")
+          awk=$(pick "$P_AWK")
+          tar=$(pick "$P_TAR")
+          procps=$(pick "$P_PROCPS")
+          any() { for v in "$@"; do [[ "$v" == true ]] && { echo true; return; }; done; echo false; }
+          libc_or_browser=$(any "$libc" "$browser")
+          xargs_or_echo=$(any "$findutils" "$coreutils")
+          need_wasi_sdk=$(any "$libc_or_browser" "$awk" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          need_wasmtime=$(any "$libc_or_browser" "$awk" "$diffutils" "$jq" "$tar")
+          need_optimizer=$(any "$programs" "$awk" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          need_rust_wasip1=$(any "$programs" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          need_wasi_libc=$(any "$awk" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          {
+            echo "network=$network"
+            echo "browser=$browser"
+            echo "libc=$libc"
+            echo "libc_or_browser=$libc_or_browser"
+            echo "programs=$programs"
+            echo "coreutils=$coreutils"
+            echo "checksums=$checksums"
+            echo "findutils=$findutils"
+            echo "xargs_or_echo=$xargs_or_echo"
+            echo "diffutils=$diffutils"
+            echo "gh=$gh"
+            echo "jq=$jq"
+            echo "curl=$curl"
+            echo "awk=$awk"
+            echo "tar=$tar"
+            echo "procps=$procps"
+            echo "need_wasi_sdk=$need_wasi_sdk"
+            echo "need_wasmtime=$need_wasmtime"
+            echo "need_optimizer=$need_optimizer"
+            echo "need_rust_wasip1=$need_rust_wasip1"
+            echo "need_wasi_libc=$need_wasi_libc"
+          } | tee -a "$GITHUB_OUTPUT"
       - uses: ./.github/actions/release-downloads
       - uses: ./.github/actions/setup-tools
         with:
           bun-version: ${{ env.BUN_VERSION }}
           node-version: "26.12.1"
-      - uses: actions/cache/restore@v4
-        id: network-artifact
-        with:
-          path: |
-            packages/waffle/browser/net/network.wasm
-            packages/waffle/browser/net/network.input-hash
-            packages/waffle/browser/net/network.sha256
-            packages/waffle/browser/net/network.buffer.js
-            packages/waffle/browser/net/network.buffer.sha256
-            packages/waffle/browser/net/network.growth.json
-          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-          fail-on-cache-miss: true
-      - name: Verify exact-input network artifact before installation
-        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
-      - uses: actions/cache/restore@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - run: ln -s "$GITHUB_WORKSPACE/packages/waffle/node_modules/@types" packages/procps/node_modules/@types
-      - run: echo "$GITHUB_WORKSPACE/packages/waffle/node_modules/.bin" >> "$GITHUB_PATH"
-      - run: bun run prepare:package
-      - run: bun run programs:procps
-      - name: Lint procps
-        working-directory: packages/procps
-        run: ../waffle/node_modules/.bin/oxlint --config ../waffle/.oxlintrc.json --deny-warnings --report-unused-disable-directives src tests scripts
-      - name: Check procps formatting
-        working-directory: packages/procps
-        run: ../waffle/node_modules/.bin/oxfmt --check --config ../waffle/.oxfmtrc.json src tests scripts docs provenance package.json tsconfig.json
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  diffutils:
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.diffutils == 'true')) }}
-    runs-on: ubuntu-latest
-    env:
-      WAFFLE_NETWORK_PREBUILT: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-          node-version: "24"
-      - uses: actions/cache/restore@v4
-        id: network-artifact
-        with:
-          path: |
-            packages/waffle/browser/net/network.wasm
-            packages/waffle/browser/net/network.input-hash
-            packages/waffle/browser/net/network.sha256
-            packages/waffle/browser/net/network.buffer.js
-            packages/waffle/browser/net/network.buffer.sha256
-            packages/waffle/browser/net/network.growth.json
-          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-          fail-on-cache-miss: true
-      - name: Verify exact-input network artifact before installation
-        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
-      - uses: actions/cache/restore@v4
-        id: bun-cache
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - name: Record native compiler identity
-        id: native-compiler
-        run: |
-          set -eu
-          identity=$(
-            {
-              cc -dumpmachine
-              cc --version | sed -n '1p'
-            } | sha256sum | cut -d' ' -f1
-          )
-          printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
-          printf 'native compiler identity: %s\n' "$identity"
-      - uses: actions/cache@v4
-        id: native-oracle
-        with:
-          path: .build/diffutils-native-oracle
-          key: ${{ runner.os }}-${{ runner.arch }}-program-diffutils-native-oracle-v1-gnu-3.12-${{ hashFiles('packages/diffutils/sources.lock.json', 'packages/diffutils/scripts/build-native-oracle.ts') }}-${{ steps.native-compiler.outputs.identity }}
-      - name: Build or verify native GNU diffutils oracle
-        run: bun run --cwd packages/diffutils native-oracle
-        env:
-          NATIVE_ORACLE_COMPILER_IDENTITY: ${{ steps.native-compiler.outputs.identity }}
-      - uses: actions/cache@v4
-        id: diffutils-cache
-        with:
-          path: |
-            .build/wasi-libc
-            packages/diffutils/.build
-            packages/diffutils/.sources
-          key: ${{ runner.os }}-${{ runner.arch }}-program-diffutils-${{ hashFiles('packages/diffutils/sources.lock.json', 'packages/diffutils/patches/**', 'packages/diffutils/scripts/**', 'packages/diffutils/src/**', 'packages/diffutils/tests/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**', 'tools/program-build-tools.ts', 'tools/program-package.ts') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-program-diffutils-
-      - uses: actions/cache@v4
-        id: sdk
-        with:
-          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
-      - name: Install pinned wasi-sdk 34
-        if: steps.sdk.outputs.cache-hit != 'true'
-        run: |
-          cd "$RUNNER_TEMP"
-          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz wasi-sdk.tar.gz
-          echo 'b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz' | sha256sum -c -
-          tar -xzf wasi-sdk.tar.gz
-          rm wasi-sdk.tar.gz
-      - uses: actions/cache@v4
-        id: wasmtime
-        with:
-          path: ~/downloader/bin/wasmtime
-          key: ${{ runner.os }}-wasmtime-49.0.3
-      - uses: ./.github/actions/setup-wasmtime
-        if: steps.wasmtime.outputs.cache-hit != 'true'
-      - name: Add cached Wasmtime to PATH
-        run: |
-          echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
-          "$HOME/downloader/bin/wasmtime" --version
-      - uses: ./.github/actions/program-optimizer
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun run prepare:package
-      - run: bun run programs:check
-      - name: Build and test diffutils
-        run: |
-          cmake --version
-          ninja --version
-          bun run programs:diffutils
-        env:
-          GNU_DIFF: ${{ github.workspace }}/.build/diffutils-native-oracle/diff
-          GNU_CMP: ${{ github.workspace }}/.build/diffutils-native-oracle/cmp
-          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  gh:
-    env:
-      WAFFLE_NETWORK_PREBUILT: "1"
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.gh == 'true')) }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-          node-version: "26.12.1"
-      - uses: actions/cache/restore@v4
-        id: network-artifact
-        with:
-          path: |
-            packages/waffle/browser/net/network.wasm
-            packages/waffle/browser/net/network.input-hash
-            packages/waffle/browser/net/network.sha256
-            packages/waffle/browser/net/network.buffer.js
-            packages/waffle/browser/net/network.buffer.sha256
-            packages/waffle/browser/net/network.growth.json
-          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-          fail-on-cache-miss: true
-      - name: Verify exact-input network artifact before installation
-        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
-      - name: Restore Bun package downloads
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun run prepare:package
-      - run: bun run programs:gh
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  jq:
-    env:
-      WAFFLE_NETWORK_PREBUILT: "1"
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.jq == 'true')) }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-          node-version: "24"
-      - uses: actions/cache/restore@v4
-        id: network-artifact
-        with:
-          path: |
-            packages/waffle/browser/net/network.wasm
-            packages/waffle/browser/net/network.input-hash
-            packages/waffle/browser/net/network.sha256
-            packages/waffle/browser/net/network.buffer.js
-            packages/waffle/browser/net/network.buffer.sha256
-            packages/waffle/browser/net/network.growth.json
-          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-          fail-on-cache-miss: true
-      - name: Verify exact-input network artifact before installation
-        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
-      - uses: actions/cache/restore@v4
-        id: bun-cache
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - uses: actions/cache@v4
-        id: jq-cache
-        with:
-          path: |
-            ~/.rustup/toolchains
-            ~/.cargo/registry
-            ~/.cargo/git
-            .build/jq
-            .build/wasi-libc
-            packages/jq/.build
-            packages/jq/.sources
-          key: ${{ runner.os }}-${{ runner.arch }}-program-jq-${{ hashFiles('bun.lock', 'rust-toolchain.toml', 'packages/jq/sources.lock.json', 'packages/jq/patches/**', 'packages/jq/scripts/**', 'packages/jq/src/**', 'packages/jq/tests/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**', 'tools/program-build-tools.ts', 'tools/program-package.ts') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-program-jq-
-      - uses: actions/cache@v4
-        id: sdk
-        with:
-          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
-      - uses: actions/cache@v4
-        id: jq-native
-        with:
-          path: ${{ runner.temp }}/jq-native
-          key: ${{ runner.os }}-${{ runner.arch }}-jq-native-1.8.2-x86_64-b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f
-      - name: Download pinned jq native oracle
-        if: steps.jq-native.outputs.cache-hit != 'true'
-        env:
-          JQ_NATIVE_DIR: ${{ runner.temp }}/jq-native
-          JQ_NATIVE_URL: https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64
-        run: |
-          mkdir -p "$JQ_NATIVE_DIR"
-          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" "$JQ_NATIVE_URL" "$JQ_NATIVE_DIR/jq"
-      - name: Verify and expose pinned jq native oracle
-        env:
-          JQ_NATIVE_DIR: ${{ runner.temp }}/jq-native
-          JQ_NATIVE_SHA256: b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f
-        run: |
-          test -f "$JQ_NATIVE_DIR/jq"
-          echo "$JQ_NATIVE_SHA256  $JQ_NATIVE_DIR/jq" | sha256sum -c -
-          chmod 700 "$JQ_NATIVE_DIR/jq"
-          echo "$JQ_NATIVE_DIR" >> "$GITHUB_PATH"
-      - name: Install pinned wasi-sdk 34
-        if: steps.sdk.outputs.cache-hit != 'true'
-        run: |
-          cd "$RUNNER_TEMP"
-          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz wasi-sdk.tar.gz
-          echo 'b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz' | sha256sum -c -
-          tar -xzf wasi-sdk.tar.gz
-          rm wasi-sdk.tar.gz
-      - name: Check patched libc build tools
-        run: |
-          cmake --version
-          ninja --version
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.98.1
-          targets: wasm32-wasip1
-      - uses: actions/cache@v4
-        id: wasmtime
-        with:
-          path: ~/downloader/bin/wasmtime
-          key: ${{ runner.os }}-wasmtime-49.0.3
-      - uses: ./.github/actions/setup-wasmtime
-        if: steps.wasmtime.outputs.cache-hit != 'true'
-      - name: Add cached Wasmtime to PATH
-        run: |
-          echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
-          "$HOME/downloader/bin/wasmtime" --version
-      - uses: ./.github/actions/program-optimizer
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun run prepare:package
-      - run: bun run programs:check
-      - name: Assert pinned jq native oracle
-        env:
-          JQ_NATIVE_DIR: ${{ runner.temp }}/jq-native
-        run: |
-          test "$(command -v jq)" = "$JQ_NATIVE_DIR/jq"
-          test "$(jq --version)" = "jq-1.8.2"
-      - run: bun run programs:jq
-        env:
-          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
-
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  curl:
-    env:
-      WAFFLE_NETWORK_PREBUILT: "1"
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.curl == 'true')) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - uses: actions/cache/restore@v4
-        id: network-artifact
-        with:
-          path: |
-            packages/waffle/browser/net/network.wasm
-            packages/waffle/browser/net/network.input-hash
-            packages/waffle/browser/net/network.sha256
-            packages/waffle/browser/net/network.buffer.js
-            packages/waffle/browser/net/network.buffer.sha256
-            packages/waffle/browser/net/network.growth.json
-          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-          fail-on-cache-miss: true
-      - name: Verify exact-input network artifact before installation
-        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
-      - uses: actions/cache/restore@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - name: Select runner-local oracle cache and scratch
-        run: |
-          printf 'NATIVE_CURL_CACHE=%s/curl-native-cache\nCURL_NATIVE_SCRATCH_ROOT=%s/curl-native-scratch\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - name: Record the actual hosted runner image for native cache isolation
-        id: curl-image
-        run: |
-          test -n "$ImageOS"
-          test -n "$ImageVersion"
-          printf 'identity=%s-%s\n' "$ImageOS" "$ImageVersion" >> "$GITHUB_OUTPUT"
-      - name: Compute native oracle source, recipe and compiler identity
-        id: curl-native-key
-        run: bun packages/curl/scripts/native-oracle.ts key
-      - uses: actions/cache/restore@v4
-        id: curl-native
-        with:
-          path: ${{ steps.curl-native-key.outputs.directory }}
-          key: ${{ steps.curl-native-key.outputs.key }}-${{ steps.curl-image.outputs.identity }}
-      - name: Provision or validate the pinned HTTP-only native oracle
-        run: bun packages/curl/scripts/native-oracle.ts provision
-      - name: Run curl library, native fixture and cache rejection gates
-        run: bun run programs:curl
-      - name: Save only a validated oracle after the curl gate passes
-        if: steps.curl-native.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ steps.curl-native-key.outputs.directory }}
-          key: ${{ steps.curl-native-key.outputs.key }}-${{ steps.curl-image.outputs.identity }}
-      - name: Remove native build scratch
-        if: always()
-        env:
-          CURL_NATIVE_SCRATCH_ROOT: ${{ runner.temp }}/curl-native-scratch
-        run: |
-          bun -e 'import { rmSync } from "node:fs"; const p=process.env.CURL_NATIVE_SCRATCH_ROOT; if (!p || p !== `${process.env.RUNNER_TEMP}/curl-native-scratch`) throw Error("Unexpected scratch path"); rmSync(p, { recursive: true, force: true });'
-
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  tar:
-    env:
-      WAFFLE_NETWORK_PREBUILT: "1"
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.tar == 'true')) }}
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set run-owned tar scratch root
-        run: printf 'TAR_SCRATCH_ROOT=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-          node-version: "24"
-      - uses: actions/cache/restore@v4
-        id: network-artifact
-        with:
-          path: |
-            packages/waffle/browser/net/network.wasm
-            packages/waffle/browser/net/network.input-hash
-            packages/waffle/browser/net/network.sha256
-            packages/waffle/browser/net/network.buffer.js
-            packages/waffle/browser/net/network.buffer.sha256
-            packages/waffle/browser/net/network.growth.json
-          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-          fail-on-cache-miss: true
-      - name: Verify exact-input network artifact before installation
-        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
-      - uses: actions/cache/restore@v4
-        id: bun-cache
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - uses: actions/cache@v4
-        id: tar-cache
-        with:
-          path: |
-            ~/.rustup/toolchains
-            ~/.cargo/registry
-            ~/.cargo/git
-            .build/wasi-libc
-            packages/tar/.build
-            packages/tar/.sources
-          key: ${{ runner.os }}-${{ runner.arch }}-program-tar-${{ hashFiles('bun.lock', 'rust-toolchain.toml', 'packages/tar/sources.lock.json', 'packages/tar/producer/**', 'packages/tar/patches/**', 'packages/tar/scripts/**', 'packages/tar/src/**', 'packages/tar/tests/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**', 'tools/program-build-tools.ts', 'tools/program-package.ts') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-program-tar-
-      - uses: actions/cache@v4
-        id: sdk
-        with:
-          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
-      - name: Install pinned wasi-sdk 34
-        if: steps.sdk.outputs.cache-hit != 'true'
-        run: |
-          cd "$RUNNER_TEMP"
-          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz wasi-sdk.tar.gz
-          echo 'b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz' | sha256sum -c -
-          tar -xzf wasi-sdk.tar.gz
-          rm wasi-sdk.tar.gz
-      - name: Check patched libc build tools
-        run: |
-          cmake --version
-          ninja --version
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.98.1
-          targets: wasm32-wasip1
-      - uses: actions/cache@v4
-        id: wasmtime
-        with:
-          path: ~/downloader/bin/wasmtime
-          key: ${{ runner.os }}-wasmtime-49.0.3
-      - uses: ./.github/actions/setup-wasmtime
-        if: steps.wasmtime.outputs.cache-hit != 'true'
-      - name: Add cached Wasmtime to PATH
-        run: |
-          echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
-          "$HOME/downloader/bin/wasmtime" --version
-      - uses: ./.github/actions/program-optimizer
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun run prepare:package
-      - name: Prepare pinned tar source and locked dependencies
-        run: |
-          node packages/tar/scripts/build-tar.ts --prepare
-          cargo fetch --locked --manifest-path packages/tar/producer/Cargo.toml
-      - name: Build matching native and WASI tar
-        env:
-          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
-        run: |
-          node packages/tar/scripts/build-tar.ts --native
-          node packages/tar/scripts/build-tar.ts
-      - name: Verify native tar and source receipts
-        run: |
-          node packages/tar/scripts/test-native.ts
-          TAR_CHECK_ARTIFACTS=1 node --test packages/tar/tests/source.test.ts
-          bun run --cwd packages/tar typecheck
-      - name: Admit the package and run actual guest archive readback
-        run: |
-          node tools/program-package.ts pack packages/tar
-          TAR_PACKAGE_ARCHIVE="$PWD/packages/tar/.build/waffle-os-tar-0.0.0.tgz" bun test packages/tar/tests/tar-wasi.test.ts
-
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  package:
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    needs: changes
-    outputs:
-      site-build: ${{ steps.site-build.outcome }}
-      site-typecheck: ${{ steps.site-typecheck.outcome }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
       - name: Cache Bun package downloads
+        id: bun-cache
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
@@ -1088,16 +518,7 @@ jobs:
         continue-on-error: true
         working-directory: site
         run: bun run typecheck
-      - name: Require the network producer for runtime checks
-        env:
-          NETWORK_RESULT: ${{ needs.changes.result }}
-        run: |
-          if [[ "$NETWORK_RESULT" != success ]]; then
-            echo '::error::Runtime package checks require a successful network producer.'
-            exit 1
-          fi
-          echo 'WAFFLE_NETWORK_PREBUILT=1' >> "$GITHUB_ENV"
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache@v4
         id: network-artifact
         with:
           path: |
@@ -1108,9 +529,62 @@ jobs:
             packages/waffle/browser/net/network.buffer.sha256
             packages/waffle/browser/net/network.growth.json
           key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-          fail-on-cache-miss: true
+      - name: Cache pinned network translator
+        if: steps.network-artifact.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        id: translator-cache
+        with:
+          path: .network-tools
+          key: network-translator-v1-${{ hashFiles('packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**') }}
+      - name: Cache Rust toolchain and Cargo build inputs
+        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.select.outputs.network == 'true'
+        uses: actions/cache@v4
+        id: rust-cache
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/waffle/target
+          key: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-${{ hashFiles('packages/waffle/network/**/*.rs') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.select.outputs.network == 'true'
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+          components: clippy,rustfmt
+      - name: Build exact-input network artifact once
+        if: steps.network-artifact.outputs.cache-hit != 'true'
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/packages/waffle/target
+          WAFFLE_TOOL_CACHE: ${{ github.workspace }}/.network-tools
+        run: bun run --cwd packages/waffle build:network
+      - name: Rust native, state and actual WASM tests
+        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.select.outputs.network == 'true'
+        working-directory: packages/waffle
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/packages/waffle/target
+          WAFFLE_TOOL_CACHE: ${{ github.workspace }}/.network-tools
+          WAFFLE_TCP_MODULE: ${{ github.workspace }}/packages/waffle/browser/net/network.wasm
+        run: |
+          bun tooling/check-network-rust.ts
+          cargo fmt --all -- --check
+          cargo clippy --release --all-targets --features module-tests --locked -- -D warnings
+          cargo test --release -p waffle-tcp --features module-tests --locked -- --nocapture
+      - name: Verify network compiler lifecycle and raw source installation
+        if: steps.network-artifact.outputs.cache-hit != 'true' || steps.select.outputs.network == 'true'
+        working-directory: packages/waffle
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/packages/waffle/target
+          WAFFLE_TOOL_CACHE: ${{ github.workspace }}/.network-tools
+        run: |
+          bun test tooling/network-translator.test.ts
+          bun tooling/network-source-smoke.ts
       - name: Verify exact-input network artifact before installation
-        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
+        run: |
+          bun run --cwd packages/waffle tooling/build-network.ts --verify
+          echo 'WAFFLE_NETWORK_PREBUILT=1' >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile --ignore-scripts
       - name: Cache standard native relay prebuild downloads
         uses: actions/cache@v4
@@ -1127,14 +601,10 @@ jobs:
           packages/waffle/node_modules/.bin/oxlint --config packages/waffle/.oxlintrc.json --deny-warnings packages/waffle-relay/scripts/prepare-native.ts packages/waffle-relay/tests/prepare-native.test.ts
           packages/waffle/node_modules/.bin/oxfmt --check --config packages/waffle/.oxfmtrc.json packages/waffle-relay/scripts/prepare-native.ts packages/waffle-relay/tests/prepare-native.test.ts
       - run: bun run --cwd packages/waffle quality
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: "1.4.4"
-          node-version: "26.12.1"
       - run: bun run relay:check
       - name: Prepare pinned ledger-free allocation reference
         run: bun packages/waffle/tooling/prepare-allocation-reference.ts
-      - run: bun run test --parallel=2 && bun run test:ci
+      - run: bun run test --parallel=4 && bun run test:ci
       - run: bun run size && bun run size:network && bun run size:gpu
       - run: bun run pack
       - uses: actions/upload-artifact@v4
@@ -1147,91 +617,96 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
       - run: test -z "$(git ls-files packages/waffle/dist)"
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  libc:
-    needs: changes
-    outputs:
-      memory-group-artifact-id: ${{ steps.memory-group-artifact.outputs.artifact-id }}
-      gpu-artifact-id: ${{ steps.gpu-artifact.outputs.artifact-id }}
-    # Also the single producer of the memory group fixture that the browser gate consumes.
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser != 'false')) }}
-    runs-on: ubuntu-latest
-    env:
-      WAFFLE_NETWORK_PREBUILT: "1"
-      RUN_LIBC: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.libc == 'true' }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
+
+      # Shared native toolchains, restored at most once per run.
+      - uses: actions/cache@v4
+        id: sdk
+        if: steps.select.outputs.need_wasi_sdk == 'true'
         with:
-          bun-version: ${{ env.BUN_VERSION }}
-          node-version: "24"
-      - uses: actions/cache/restore@v4
-        id: network-artifact
-        with:
-          path: |
-            packages/waffle/browser/net/network.wasm
-            packages/waffle/browser/net/network.input-hash
-            packages/waffle/browser/net/network.sha256
-            packages/waffle/browser/net/network.buffer.js
-            packages/waffle/browser/net/network.buffer.sha256
-            packages/waffle/browser/net/network.growth.json
-          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-          fail-on-cache-miss: true
-      - name: Verify exact-input network artifact before installation
-        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
-      - name: Cache Bun package downloads
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - run: bun install --frozen-lockfile --ignore-scripts
+          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
+      - name: Install pinned wasi-sdk 34
+        if: steps.select.outputs.need_wasi_sdk == 'true' && steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz wasi-sdk.tar.gz 300000
+          printf '%s  %s\n' b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4 wasi-sdk.tar.gz | sha256sum --check --status
+          tar -xzf wasi-sdk.tar.gz
+          rm wasi-sdk.tar.gz
       - uses: actions/cache@v4
         id: wasmtime
+        if: steps.select.outputs.need_wasmtime == 'true'
         with:
           path: ~/downloader/bin/wasmtime
           key: ${{ runner.os }}-wasmtime-49.0.3
       - uses: ./.github/actions/setup-wasmtime
-        if: steps.wasmtime.outputs.cache-hit != 'true'
+        if: steps.select.outputs.need_wasmtime == 'true' && steps.wasmtime.outputs.cache-hit != 'true'
       - name: Add cached Wasmtime to PATH
+        if: steps.select.outputs.need_wasmtime == 'true'
         run: |
           echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
           "$HOME/downloader/bin/wasmtime" --version
+      - uses: ./.github/actions/program-optimizer
+        if: steps.select.outputs.need_optimizer == 'true'
+      - name: Cache shared Rust toolchain and Cargo downloads
+        id: shared-rust-cache
+        if: steps.select.outputs.need_rust_wasip1 == 'true' || steps.select.outputs.browser == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-v1-${{ hashFiles('Cargo.lock', 'packages/coreutils/crates/checksums/Cargo.lock', 'packages/tar/producer/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-shared-rust-1.98.1-v1-
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.select.outputs.need_rust_wasip1 == 'true'
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-wasip1
+          components: rustfmt
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.select.outputs.browser == 'true'
+        with:
+          toolchain: "1.98.1"
+          targets: wasm32-wasip1-threads
+          components: rustfmt
+      - name: Cache singular patched libc for guest programs
+        id: wasi-libc-cache
+        if: steps.select.outputs.need_wasi_libc == 'true'
+        uses: actions/cache@v4
+        with:
+          path: .build/wasi-libc
+          key: wasi-libc-34.0-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}
+
+      # Libc, memory-group, GPU and Rust threads fixtures (used directly by browser steps below).
       - uses: actions/cache@v4
         id: group-fixture
+        if: steps.select.outputs.libc_or_browser == 'true'
         with:
           path: ${{ runner.temp }}/memory-group-fixture
           key: ${{ runner.os }}-memory-group-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/memory-group-member.c', 'packages/waffle/scripts/build-memory-group-fixture.ts') }}
       - uses: actions/cache@v4
         id: gpu-fixture
+        if: steps.select.outputs.libc_or_browser == 'true'
         with:
           path: ${{ runner.temp }}/gpu-fixture
           key: ${{ runner.os }}-gpu-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/gpu/triangle.c', 'packages/waffle/tests/fixtures/gpu/scene.c', 'packages/waffle/tests/fixtures/gpu/async.c', 'packages/waffle/tests/fixtures/gpu/async_encode.h', 'packages/waffle/tests/fixtures/gpu/async-expected.json', 'packages/waffle/tests/fixtures/gpu/scene_encode.h', 'packages/waffle/tests/fixtures/gpu/gpu_fixture.h', 'packages/waffle/tests/fixtures/gpu/gpu_encode.h', 'packages/waffle/tests/fixtures/gpu/waffle_gpu_stream.h', 'packages/waffle/tests/fixtures/gpu/expected.json', 'packages/waffle/tests/fixtures/gpu/enums.json', 'packages/waffle/browser/gpu/upstream/LICENSE', 'packages/waffle/browser/gpu/upstream/webgpu.yml', 'packages/waffle/browser/gpu/upstream/webgpu.h', 'packages/waffle/browser/gpu/stream.json', 'packages/waffle/browser/gpu/generated/tables.ts', 'packages/waffle/tooling/gpu-stream*.ts', 'packages/waffle/scripts/build-gpu-fixture.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/browser/gpu/metadata.ts', 'packages/waffle/browser/gpu/codec.ts', 'packages/waffle/tests/fixtures/gpu/scene-expected.json', 'packages/waffle/tests/fixtures/gpu/compute-expected.json', 'packages/waffle/tests/fixtures/gpu/bundle-query-expected.json', 'packages/waffle/tests/fixtures/gpu/copy-draw-expected.json', 'packages/waffle/tests/fixtures/gpu/label-expected.json', 'packages/waffle/browser/display/generated/graphics-layout.ts') }}
       - uses: actions/cache@v4
         id: fixtures
+        if: steps.select.outputs.libc == 'true'
         with:
           path: ${{ runner.temp }}/libc-fixtures
           key: ${{ runner.os }}-libc-sdk34-bun${{ env.BUN_VERSION }}-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/scripts/test-wasi-libc.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/patches/wasi-libc/**', 'packages/waffle/tests/fixtures/preopen-guest.c', 'packages/waffle/tests/fixtures/preview1-socket.c', 'packages/waffle/tests/fixtures/wasm-start-section.ts') }}
       - uses: actions/cache@v4
-        if: steps.fixtures.outputs.cache-hit != 'true'
+        if: steps.select.outputs.libc == 'true' && steps.fixtures.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/libc-sysroot
           key: ${{ runner.os }}-libc-sysroot-sdk34-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**') }}
-      - uses: actions/cache@v4
-        id: sdk
-        with:
-          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
-      - name: Install pinned wasi-sdk 34
-        if: steps.sdk.outputs.cache-hit != 'true'
-        run: |
-          cd "$RUNNER_TEMP"
-          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz wasi-sdk.tar.gz
-          echo 'b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz' | sha256sum -c -
-          tar -xzf wasi-sdk.tar.gz
-          rm wasi-sdk.tar.gz
       - name: Test the wasm32 source sentinel with the pinned SDK
+        if: steps.select.outputs.libc_or_browser == 'true'
         env:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
         run: |
@@ -1246,25 +721,23 @@ jobs:
           print("Verified the pinned wasm32 source sentinel without skips")
           PYTHON
       - name: Build the memory group fixture once
-        if: steps.group-fixture.outputs.cache-hit != 'true'
+        if: steps.select.outputs.libc_or_browser == 'true' && steps.group-fixture.outputs.cache-hit != 'true'
         run: bun packages/waffle/scripts/build-memory-group-fixture.ts "$RUNNER_TEMP/memory-group-fixture"
         env:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-      - run: bun packages/waffle/scripts/build-memory-group-fixture.ts --verify "$RUNNER_TEMP/memory-group-fixture"
-      - uses: actions/upload-artifact@v4
-        id: memory-group-artifact
-        with:
-          name: memory-group-fixture-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/memory-group-fixture
-          if-no-files-found: error
-          retention-days: 7
+      - name: Verify the memory group fixture
+        if: steps.select.outputs.libc_or_browser == 'true'
+        run: bun packages/waffle/scripts/build-memory-group-fixture.ts --verify "$RUNNER_TEMP/memory-group-fixture"
       - name: Build the compiled GPU guest once
-        if: steps.gpu-fixture.outputs.cache-hit != 'true'
+        if: steps.select.outputs.libc_or_browser == 'true' && steps.gpu-fixture.outputs.cache-hit != 'true'
         run: bun packages/waffle/scripts/build-gpu-fixture.ts "$RUNNER_TEMP/gpu-fixture"
         env:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-      - run: bun packages/waffle/scripts/build-gpu-fixture.ts --verify "$RUNNER_TEMP/gpu-fixture"
+      - name: Verify the compiled GPU guest
+        if: steps.select.outputs.libc_or_browser == 'true'
+        run: bun packages/waffle/scripts/build-gpu-fixture.ts --verify "$RUNNER_TEMP/gpu-fixture"
       - name: Test the compiled GPU fixture without rebuilding it
+        if: steps.select.outputs.libc_or_browser == 'true'
         env:
           GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture
         run: |
@@ -1289,375 +762,66 @@ jobs:
           assert all(case.find(tag) is None for case in cases for tag in ("skipped", "failure", "error")), "Compiled GPU fixture tests skipped or failed"
           print(f"Verified {len(cases)} compiled GPU fixture tests without skips")
           PYTHON
-      - uses: actions/upload-artifact@v4
-        id: gpu-artifact
-        with:
-          name: gpu-fixture-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/gpu-fixture
-          if-no-files-found: error
-          retention-days: 7
-      - name: Report GPU compiler and fixture cache hits
-        if: always()
-        run: |
-          echo "GPU fixture cache-hit=${{ steps.gpu-fixture.outputs.cache-hit }}"
-          echo "SDK cache-hit=${{ steps.sdk.outputs.cache-hit }}"
       - run: bun run test:libc
-        if: env.RUN_LIBC == 'true'
+        if: steps.select.outputs.libc == 'true'
         env:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
           WASMTIME: wasmtime
           WASI_LIBC_FIXTURE_CACHE: ${{ runner.temp }}/libc-fixtures
           WASI_LIBC_SYSROOT_CACHE: ${{ runner.temp }}/libc-sysroot
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  threads-fixture:
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.browser != 'false')) }}
-    uses: ./.github/workflows/threads-fixture.yml
-  browser:
-    env:
-      WAFFLE_NETWORK_PREBUILT: "1"
-    needs: [changes, libc, threads-fixture]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.browser != 'false')) }}
-    # A matrix result can report success when a shard never acquired a runner.
-    outputs:
-      runtime: ${{ steps.browser-result.outputs.runtime }}
-      reporter: ${{ steps.browser-result.outputs.reporter }}
-    # Playwright 1.64.1 browsers are proven on Ubuntu 24.04; move the pin deliberately with a green run.
-    runs-on: ubuntu-24.04
-    # Reporter controls share one prepared bundle and run independently of the other suites.
-    strategy:
-      fail-fast: false
-      matrix:
-        group: [runtime, reporter]
-    name: browser (${{ matrix.group }})
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - uses: actions/cache/restore@v4
-        id: network-artifact
-        with:
-          path: |
-            packages/waffle/browser/net/network.wasm
-            packages/waffle/browser/net/network.input-hash
-            packages/waffle/browser/net/network.sha256
-            packages/waffle/browser/net/network.buffer.js
-            packages/waffle/browser/net/network.buffer.sha256
-            packages/waffle/browser/net/network.growth.json
-          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-          fail-on-cache-miss: true
-      - name: Verify exact-input network artifact before installation
-        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
-      - name: Restore Bun package downloads
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - name: Cache standard native relay prebuild downloads
-        if: matrix.group == 'runtime'
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm/_prebuilds
-          key: ${{ runner.os }}-${{ runner.arch }}-relay-prebuild-v1-${{ hashFiles('bun.lock', 'packages/waffle-relay/package.json', 'packages/waffle-relay/scripts/prepare-native.ts', 'packages/waffle-relay/src/webtransport-integrity.ts') }}
-      - name: Prepare and verify the required native relay prebuild
-        if: matrix.group == 'runtime'
-        run: bun packages/waffle-relay/scripts/prepare-native.ts
-      # Browser directories are named by revision only, so the key carries the OS release too.
-      - name: Resolve the Playwright browser cache key
-        id: playwright-cache
+      - name: Build the real Rust threads fixture twice and verify receipts and tamper failures
+        if: steps.select.outputs.browser == 'true'
         run: |
-          browsers=$(bun --no-install -e 'const { createRequire } = require("node:module"); const { dirname, join } = require("node:path"); const local = createRequire(require.resolve("playwright/package.json")); console.log(join(dirname(local.resolve("playwright-core/package.json")), "browsers.json"))')
-          test -s "$browsers"
-          . /etc/os-release
-          echo "key=${RUNNER_OS:?}-${RUNNER_ARCH:?}-${ID:?}${VERSION_ID:?}-playwright-v1-$(sha256sum "$browsers" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ steps.playwright-cache.outputs.key }}
-      - uses: ./.github/actions/ubuntu-main-archive
-      - run: bunx playwright install --with-deps chromium firefox webkit
-      - name: Require the producer's fixture artifact ID
-        if: matrix.group == 'runtime'
-        run: test -n "$MEMORY_GROUP_ARTIFACT_ID"
+          bun test ./packages/waffle/scripts/threads-fixture-producer.test.ts --timeout 120000
+          rustfmt +1.98.1 --check packages/waffle/tests/fixtures/threads.rs
         env:
-          MEMORY_GROUP_ARTIFACT_ID: ${{ needs.libc.outputs.memory-group-artifact-id }}
-      - uses: actions/download-artifact@v8
-        if: matrix.group == 'runtime'
-        with:
-          digest-mismatch: error
-          artifact-ids: ${{ needs.libc.outputs.memory-group-artifact-id }}
-          merge-multiple: true
-          path: ${{ runner.temp }}/memory-group-fixture
-      - name: Require the compiled GPU guest artifact
-        if: matrix.group == 'runtime'
-        run: test -n "$GPU_ARTIFACT_ID"
-        env:
-          GPU_ARTIFACT_ID: ${{ needs.libc.outputs.gpu-artifact-id }}
-      - uses: actions/download-artifact@v8
-        if: matrix.group == 'runtime'
-        with:
-          digest-mismatch: error
-          artifact-ids: ${{ needs.libc.outputs.gpu-artifact-id }}
-          merge-multiple: true
-          path: ${{ runner.temp }}/gpu-fixture
-      - run: bun packages/waffle/scripts/build-gpu-fixture.ts --verify "$RUNNER_TEMP/gpu-fixture"
-        if: matrix.group == 'runtime'
-      - name: Require the Rust threads fixture artifact ID
-        if: matrix.group == 'runtime'
-        run: test -n "$THREAD_ARTIFACT_ID"
-        env:
-          THREAD_ARTIFACT_ID: ${{ needs.threads-fixture.outputs.artifact-id }}
-      - uses: actions/download-artifact@v8
-        if: matrix.group == 'runtime'
-        with:
-          digest-mismatch: error
-          artifact-ids: ${{ needs.threads-fixture.outputs.artifact-id }}
-          merge-multiple: true
-          path: ${{ runner.temp }}/threads-fixture
+          THREAD_FIXTURE_TEST_ROOT: ${{ runner.temp }}
+          THREAD_FIXTURE_EXPORT_DIR: ${{ runner.temp }}/threads-fixture
       - name: Verify the Rust threads fixture without a compiler
-        if: matrix.group == 'runtime'
+        if: steps.select.outputs.browser == 'true'
         run: bun packages/waffle/scripts/build-thread-fixture.ts --verify
         env:
           THREAD_FIXTURE_DIR: ${{ runner.temp }}/threads-fixture
-      - run: bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"
-        id: browser-tests
-        shell: bash
-        env:
-          GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture
-          MEMORY_GROUP_FIXTURE_DIR: ${{ runner.temp }}/memory-group-fixture
-          THREAD_FIXTURE_DIR: ${{ runner.temp }}/threads-fixture
-          RECOVERY_R42_REPORT: ${{ runner.temp }}/recovery-r42-report.json
-          BROWSER_CONTROLS_RESULT: ${{ runner.temp }}/browser-controls-results.json
-          STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
-          PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
-          WAFFLE_BROWSER_GROUP: ${{ matrix.group }}
-      - run: bun packages/waffle/tests/publication-browser-runner.ts --workspace chromium
-        if: ${{ !cancelled() && matrix.group == 'runtime' && (steps.browser-tests.outcome == 'success' || steps.browser-tests.outcome == 'failure') }}
-        env:
-          STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
-      - name: Retain recovery failure report
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: browser-recovery-report-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/recovery-r42-report.json
-          if-no-files-found: ignore
-          retention-days: 7
-      - name: Retain browser controls result and process outcome
-        if: always() && matrix.group == 'reporter'
-        uses: actions/upload-artifact@v4
-        with:
-          name: browser-controls-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/browser-controls-results.json*
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Retain browser failure protocol
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: browser-protocol-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/waffle-browser-protocol.log
-          retention-days: 7
-      - name: Record successful browser shard
-        id: browser-result
-        env:
-          BROWSER_SHARD: ${{ matrix.group }}
-        run: printf '%s=passed\n' "$BROWSER_SHARD" >> "$GITHUB_OUTPUT"
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  findutils-xargs:
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.findutils == 'true' || needs.changes.outputs.coreutils == 'true')) }}
-    uses: ./.github/workflows/findutils-xargs.yml
-    with:
-      test-process: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.findutils == 'true' }}
-  coreutils-echo:
-    needs: [changes, findutils-xargs]
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.coreutils == 'true')) }}
-    uses: ./.github/workflows/coreutils-echo.yml
-  coreutils-checksums:
-    env:
-      WAFFLE_NETWORK_PREBUILT: "1"
-      WASI_LIBC_JOBS: "2"
-      GNU_CHECKSUM_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-checksum-native-oracle
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.checksums == 'true')) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-          node-version: "24"
-      - uses: actions/cache/restore@v4
-        id: network-artifact
-        with:
-          path: |
-            packages/waffle/browser/net/network.wasm
-            packages/waffle/browser/net/network.input-hash
-            packages/waffle/browser/net/network.sha256
-            packages/waffle/browser/net/network.buffer.js
-            packages/waffle/browser/net/network.buffer.sha256
-            packages/waffle/browser/net/network.growth.json
-          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
-          fail-on-cache-miss: true
-      - name: Verify exact-input network artifact before installation
-        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
-      - uses: actions/cache@v4
-        id: bun-cache
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - uses: actions/cache@v4
-        id: sdk
-        with:
-          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
-      - name: Install pinned wasi-sdk 34
-        if: steps.sdk.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP"
-          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" \
-            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz wasi-sdk.tar.gz 300000
-          printf '%s  %s\n' b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4 wasi-sdk.tar.gz | sha256sum --check --status
-          tar -xzf wasi-sdk.tar.gz
-          rm wasi-sdk.tar.gz
-      - uses: actions/cache@v4
-        id: checksum-cache
-        with:
-          path: |
-            ~/.rustup/toolchains
-            ~/.cargo/registry
-            ~/.cargo/git
-            .build/coreutils-checksums
-            .build/program-locales
-            .build/wasi-libc
-            packages/coreutils/.sources
-          key: ${{ runner.os }}-${{ runner.arch }}-program-coreutils-checksums-v1-${{ hashFiles('bun.lock', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'packages/coreutils/crates/checksums/Cargo.toml', 'packages/coreutils/crates/checksums/Cargo.lock', 'packages/coreutils/crates/checksums/**/*.rs', 'packages/coreutils/crates/checksums/patches/**', 'packages/coreutils/scripts/build-checksums.ts', 'packages/coreutils/scripts/build-config.ts', 'packages/coreutils/scripts/build-family.ts', 'packages/coreutils/scripts/checksum-artifact.ts', 'packages/coreutils/scripts/prepare-checksum-source.ts', 'packages/coreutils/scripts/programs.ts', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-program-coreutils-checksums-v1-
-      - name: Discard a generated source restored from a different checksum recipe
-        if: steps.checksum-cache.outputs.cache-hit != 'true'
-        run: rm -rf packages/coreutils/.sources/checksums
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.98.1
-          targets: wasm32-wasip1
-      - name: Fetch locked Cargo sources before checksum source preparation
+
+      # Programs checks (each gated by its exact path filter).
+      - name: Fetch locked Cargo sources for selected program checks
+        if: steps.select.outputs.programs == 'true' || steps.select.outputs.checksums == 'true'
         run: cargo fetch --locked
-      - uses: ./.github/actions/program-optimizer
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun run prepare:package
-      - name: Identify the pinned GNU checksum source and native toolchain
-        id: checksum-oracle-identity
-        run: |
-          set -euo pipefail
-          test -n "${ImageOS:-}"
-          test -n "${ImageVersion:-}"
-          echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
-          echo "key=$(node packages/coreutils/scripts/build-native-checksum-oracle.ts --identity)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        id: checksum-native-oracle
+      - name: Cache programs Cargo target
+        if: steps.select.outputs.programs == 'true'
+        uses: actions/cache@v4
         with:
-          path: .build/gnu-checksum-native-oracle
-          key: ${{ runner.os }}-${{ runner.arch }}-gnu-checksum-native-v1-${{ steps.checksum-oracle-identity.outputs.image }}-${{ steps.checksum-oracle-identity.outputs.key }}
-      - name: Build the nine native GNU oracle programs on cache miss
-        if: steps.checksum-native-oracle.outputs.cache-hit != 'true'
-        run: node packages/coreutils/scripts/build-native-checksum-oracle.ts
-        env:
-          GNU_CHECKSUM_ORACLE_SCRATCH_ROOT: ${{ runner.temp }}
-      - name: Verify the pinned GNU 9.12 checksum oracle
-        run: node packages/coreutils/scripts/build-native-checksum-oracle.ts --verify-only
-      - name: Build the nine checksum guests once through the existing leaf route
-        run: bun run --cwd packages/coreutils build:checksums
-        env:
-          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
-      - name: Read back the exact admitted checksum guests
-        run: node packages/coreutils/scripts/checksum-artifact.ts "$GITHUB_WORKSPACE/.build/checksum-artifact"
-        env:
-          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-      - name: Run checksum runtime acceptance against the admitted bytes
-        run: bun run --cwd packages/coreutils test:checksums:wasi
-        env:
-          CHECKSUM_ARTIFACTS: ${{ github.workspace }}/.build/checksum-artifact
-      - name: Retain the exact checksum-only producer closure
-        uses: actions/upload-artifact@v4
-        with:
-          name: checksum-producer-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            .build/checksum-artifact
-            .build/gnu-checksum-native-oracle/metadata.json
-          if-no-files-found: error
-          retention-days: 7
-      - name: Report checksum dependency cache hits
-        if: always()
-        run: |
-          echo "network=${{ steps.network-artifact.outputs.cache-hit }}"
-          echo "Bun=${{ steps.bun-cache.outputs.cache-hit }}"
-          echo "SDK=${{ steps.sdk.outputs.cache-hit }}"
-          echo "Cargo/sysroot/locale=${{ steps.checksum-cache.outputs.cache-hit }}"
-          echo "GNU oracle=${{ steps.checksum-native-oracle.outputs.cache-hit }}"
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  programs:
-    needs: changes
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.programs == 'true')) }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-          node-version: "26.12.1"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.98.1
-          targets: wasm32-wasip1
-          components: rustfmt
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.bun/install/cache
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-
+          path: target
+          key: ${{ runner.os }}-${{ runner.arch }}-programs-target-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-programs-target-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-
       - uses: ./.github/actions/rust-build-cache
-      - run: cargo fetch --locked
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun run programs:check
-      - run: bun run --cwd packages/git test:unit
-      - run: bun run --cwd packages/waffle tsc -p ../../scripts/tsconfig.json
-      - uses: ./.github/actions/program-optimizer
-      - run: bun run programs:tools
-      - run: bun test scripts/program-release.test.ts scripts/program-rebind.test.ts scripts/host-interface.test.ts
-      - run: bun run programs:routes
-      - run: bun run programs:source
+        if: steps.select.outputs.programs == 'true'
+      - name: Run shared program checks
+        if: steps.select.outputs.programs == 'true'
+        run: |
+          bun run programs:check
+          bun run --cwd packages/git test:unit
+          bun run --cwd packages/waffle tsc -p ../../scripts/tsconfig.json
+          bun run programs:tools
+          bun test scripts/program-release.test.ts scripts/program-rebind.test.ts scripts/host-interface.test.ts
+          bun run programs:routes
+          bun run programs:source
       - name: Record exact GNU date source and native compiler identity
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        if: steps.select.outputs.programs == 'true' && steps.select.outputs.coreutils == 'true'
         id: gnu-date-identity
         run: |
           set -euo pipefail
           identity=$(node packages/coreutils/scripts/build-native-date-oracle.ts --identity)
           printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        if: steps.select.outputs.programs == 'true' && steps.select.outputs.coreutils == 'true'
         id: gnu-date-native
         with:
           path: .build/gnu-date-native-oracle
           key: ${{ runner.os }}-${{ runner.arch }}-gnu-date-9.12-v1-${{ steps.gnu-date-identity.outputs.identity }}
       - name: Build or verify only the pinned GNU date native oracle
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        if: steps.select.outputs.programs == 'true' && steps.select.outputs.coreutils == 'true'
         env:
           GNU_DATE_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-date-native-oracle
           GNU_DATE_ORACLE_SCRATCH_ROOT: ${{ runner.temp }}
@@ -1669,78 +833,405 @@ jobs:
           printf 'GNU_DATE=%s/date\n' "$GNU_DATE_ORACLE_ROOT" >> "$GITHUB_ENV"
           printf 'GNU_DATE_ORACLE_ROOT=%s\n' "$GNU_DATE_ORACLE_ROOT" >> "$GITHUB_ENV"
       - name: Verify date source against the pinned native GNU oracle
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        if: steps.select.outputs.programs == 'true' && steps.select.outputs.coreutils == 'true'
         run: node --disable-warning=ExperimentalWarning --test packages/coreutils/scripts/date-source.test.ts
-      - run: bun run --cwd packages/python test:composition
-      - run: bun run --cwd packages/python test:build
-      - run: bun run --cwd packages/python test:unit
-      - run: cargo fmt --all -- --check
-      - run: bash scripts/with-build-cache.sh cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date
+      - name: Run python and Rust program unit checks
+        if: steps.select.outputs.programs == 'true'
+        run: |
+          bun run --cwd packages/python test:composition
+          bun run --cwd packages/python test:build
+          bun run --cwd packages/python test:unit
+          cargo fmt --all -- --check
+      - name: Run native Rust program tests
+        if: steps.select.outputs.programs == 'true'
+        run: bash scripts/with-build-cache.sh cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date
       - name: Verify the cached WASI root preopen
+        if: steps.select.outputs.programs == 'true'
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: node ../../scripts/program-support-wasi-runner.ts
           RUSTFLAGS: -C link-arg=--max-memory=268435456 -C link-arg=--demangle
         run: bash scripts/with-build-cache.sh cargo test --locked --release -p waffle-program-support --features cooperative-wasi --target wasm32-wasip1 --test wasi_root_preopen
 
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  gate:
-    name: Complete CI gate
-    if: always()
-    needs:
-      [
-        changes,
-        awk,
-        procps,
-        diffutils,
-        gh,
-        jq,
-        curl,
-        tar,
-        package,
-        libc,
-        threads-fixture,
-        browser,
-        findutils-xargs,
-        coreutils-echo,
-        coreutils-checksums,
-        programs,
-      ]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require a ready PR
-        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+      # procps
+      - name: Run procps checks
+        if: steps.select.outputs.procps == 'true'
         run: |
-          echo '::error::Mark this PR ready for review to run the required checks.'
-          exit 1
-      - name: Require successful change detection
-        env:
-          PATHS_RESULT: ${{ needs.changes.outputs.paths-result }}
-        run: test "$PATHS_RESULT" = success
-      - name: Require successful network preparation
-        env:
-          NETWORK_RESULT: ${{ needs.changes.result }}
-        run: test "$NETWORK_RESULT" = success
-      - name: Reject failed or cancelled CI jobs
-        env:
-          RESULTS: ${{ toJSON(needs) }}
-          BROWSER_REQUIRED: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.browser != 'false' }}
+          ln -sfn "$GITHUB_WORKSPACE/packages/waffle/node_modules/@types" packages/procps/node_modules/@types
+          PATH="$GITHUB_WORKSPACE/packages/waffle/node_modules/.bin:$PATH" bun run programs:procps
+      - name: Lint procps
+        if: steps.select.outputs.procps == 'true'
+        working-directory: packages/procps
+        run: ../waffle/node_modules/.bin/oxlint --config ../waffle/.oxlintrc.json --deny-warnings --report-unused-disable-directives src tests scripts
+      - name: Check procps formatting
+        if: steps.select.outputs.procps == 'true'
+        working-directory: packages/procps
+        run: ../waffle/node_modules/.bin/oxfmt --check --config ../waffle/.oxfmtrc.json src tests scripts docs provenance package.json tsconfig.json
+
+      # gh
+      - name: Run gh checks
+        if: steps.select.outputs.gh == 'true'
+        run: bun run programs:gh
+
+      # curl
+      - name: Record the actual hosted runner image for native curl cache isolation
+        if: steps.select.outputs.curl == 'true'
+        id: curl-image
         run: |
-          jq -e --arg browser_required "$BROWSER_REQUIRED" '
-            type == "object" and has("browser") and
-            all(.[]; .result == "success" or .result == "skipped") and
-            ($browser_required == "false" or (
-              .browser.result == "success" and
-              (.browser.outputs | [.runtime, .reporter] | all(.[]; . == "passed"))
-            ))
-          ' <<< "$RESULTS"
-      - name: Require successful package and site checks
-        env:
-          PACKAGE_RESULT: ${{ needs.package.result }}
-          SITE_BUILD: ${{ needs.package.outputs.site-build }}
-          SITE_TYPECHECK: ${{ needs.package.outputs.site-typecheck }}
+          test -n "$ImageOS"
+          test -n "$ImageVersion"
+          printf 'identity=%s-%s\n' "$ImageOS" "$ImageVersion" >> "$GITHUB_OUTPUT"
+          printf 'NATIVE_CURL_CACHE=%s/curl-native-cache\nCURL_NATIVE_SCRATCH_ROOT=%s/curl-native-scratch\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Compute native curl oracle source, recipe and compiler identity
+        if: steps.select.outputs.curl == 'true'
+        id: curl-native-key
+        run: bun packages/curl/scripts/native-oracle.ts key
+      - uses: actions/cache/restore@v4
+        if: steps.select.outputs.curl == 'true'
+        id: curl-native
+        with:
+          path: ${{ steps.curl-native-key.outputs.directory }}
+          key: ${{ steps.curl-native-key.outputs.key }}-${{ steps.curl-image.outputs.identity }}
+      - name: Provision and run curl gate
+        if: steps.select.outputs.curl == 'true'
         run: |
-          if [[ "$PACKAGE_RESULT" != success || "$SITE_BUILD" != success || "$SITE_TYPECHECK" != success ]]; then
-            echo '::error::Complete CI requires successful runtime package checks, a site build, and a site typecheck.'
+          bun packages/curl/scripts/native-oracle.ts provision
+          bun run programs:curl
+      - name: Save only a validated curl oracle after the curl gate passes
+        if: steps.select.outputs.curl == 'true' && steps.curl-native.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.curl-native-key.outputs.directory }}
+          key: ${{ steps.curl-native-key.outputs.key }}-${{ steps.curl-image.outputs.identity }}
+      - name: Remove native curl build scratch
+        if: always() && steps.select.outputs.curl == 'true'
+        env:
+          CURL_NATIVE_SCRATCH_ROOT: ${{ runner.temp }}/curl-native-scratch
+        run: |
+          bun -e 'import { rmSync } from "node:fs"; const p=process.env.CURL_NATIVE_SCRATCH_ROOT; if (!p || p !== `${process.env.RUNNER_TEMP}/curl-native-scratch`) throw Error("Unexpected scratch path"); rmSync(p, { recursive: true, force: true });'
+
+      # awk
+      - uses: ./.github/actions/ubuntu-main-archive
+        if: steps.select.outputs.awk == 'true'
+      - name: Install awk build dependencies
+        if: steps.select.outputs.awk == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bison ninja-build
+      - name: Build and qualify only awk
+        if: steps.select.outputs.awk == 'true'
+        run: bun run programs:awk
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+          AWK_SCRATCH_ROOT: ${{ runner.temp }}
+
+      # diffutils
+      - name: Record native compiler identity
+        if: steps.select.outputs.diffutils == 'true'
+        id: native-compiler
+        run: |
+          set -eu
+          identity=$(
+            {
+              cc -dumpmachine
+              cc --version | sed -n '1p'
+            } | sha256sum | cut -d' ' -f1
+          )
+          printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
+          printf 'native compiler identity: %s\n' "$identity"
+      - uses: actions/cache@v4
+        if: steps.select.outputs.diffutils == 'true'
+        id: native-oracle
+        with:
+          path: .build/diffutils-native-oracle
+          key: ${{ runner.os }}-${{ runner.arch }}-program-diffutils-native-oracle-v1-gnu-3.12-${{ hashFiles('packages/diffutils/sources.lock.json', 'packages/diffutils/scripts/build-native-oracle.ts') }}-${{ steps.native-compiler.outputs.identity }}
+      - name: Build or verify native GNU diffutils oracle
+        if: steps.select.outputs.diffutils == 'true'
+        run: bun run --cwd packages/diffutils native-oracle
+        env:
+          NATIVE_ORACLE_COMPILER_IDENTITY: ${{ steps.native-compiler.outputs.identity }}
+      - uses: actions/cache@v4
+        if: steps.select.outputs.diffutils == 'true'
+        id: diffutils-cache
+        with:
+          path: |
+            packages/diffutils/.build
+            packages/diffutils/.sources
+          key: ${{ runner.os }}-${{ runner.arch }}-program-diffutils-v2-${{ hashFiles('packages/diffutils/sources.lock.json', 'packages/diffutils/patches/**', 'packages/diffutils/scripts/**', 'packages/diffutils/src/**', 'packages/diffutils/tests/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**', 'tools/program-build-tools.ts', 'tools/program-package.ts') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-program-diffutils-v2-
+      - name: Check program types before diffutils when programs did not run
+        if: steps.select.outputs.diffutils == 'true' && steps.select.outputs.programs != 'true'
+        run: bun run programs:check
+      - name: Build and test diffutils
+        if: steps.select.outputs.diffutils == 'true'
+        run: |
+          cmake --version
+          ninja --version
+          bun run programs:diffutils
+        env:
+          GNU_DIFF: ${{ github.workspace }}/.build/diffutils-native-oracle/diff
+          GNU_CMP: ${{ github.workspace }}/.build/diffutils-native-oracle/cmp
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+
+      # jq
+      - uses: actions/cache@v4
+        if: steps.select.outputs.jq == 'true'
+        id: jq-cache
+        with:
+          path: |
+            .build/jq
+            packages/jq/.build
+            packages/jq/.sources
+          key: ${{ runner.os }}-${{ runner.arch }}-program-jq-v2-${{ hashFiles('bun.lock', 'rust-toolchain.toml', 'packages/jq/sources.lock.json', 'packages/jq/patches/**', 'packages/jq/scripts/**', 'packages/jq/src/**', 'packages/jq/tests/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**', 'tools/program-build-tools.ts', 'tools/program-package.ts') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-program-jq-v2-
+      - uses: actions/cache@v4
+        if: steps.select.outputs.jq == 'true'
+        id: jq-native
+        with:
+          path: ${{ runner.temp }}/jq-native
+          key: ${{ runner.os }}-${{ runner.arch }}-jq-native-1.8.2-x86_64-b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f
+      - name: Download pinned jq native oracle
+        if: steps.select.outputs.jq == 'true' && steps.jq-native.outputs.cache-hit != 'true'
+        env:
+          JQ_NATIVE_DIR: ${{ runner.temp }}/jq-native
+          JQ_NATIVE_URL: https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64
+        run: |
+          mkdir -p "$JQ_NATIVE_DIR"
+          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" "$JQ_NATIVE_URL" "$JQ_NATIVE_DIR/jq"
+      - name: Check program types before jq when not already checked
+        if: steps.select.outputs.jq == 'true' && steps.select.outputs.programs != 'true' && steps.select.outputs.diffutils != 'true'
+        run: bun run programs:check
+      - name: Verify pinned jq native oracle and run jq checks
+        if: steps.select.outputs.jq == 'true'
+        env:
+          JQ_NATIVE_DIR: ${{ runner.temp }}/jq-native
+          JQ_NATIVE_SHA256: b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          test -f "$JQ_NATIVE_DIR/jq"
+          echo "$JQ_NATIVE_SHA256  $JQ_NATIVE_DIR/jq" | sha256sum -c -
+          chmod 700 "$JQ_NATIVE_DIR/jq"
+          export PATH="$JQ_NATIVE_DIR:$PATH"
+          test "$(command -v jq)" = "$JQ_NATIVE_DIR/jq"
+          test "$(jq --version)" = "jq-1.8.2"
+          cmake --version
+          ninja --version
+          bun run programs:jq
+
+      # tar
+      - name: Set run-owned tar scratch root
+        if: steps.select.outputs.tar == 'true'
+        run: printf 'TAR_SCRATCH_ROOT=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        if: steps.select.outputs.tar == 'true'
+        id: tar-cache
+        with:
+          path: |
+            packages/tar/.build
+            packages/tar/.sources
+          key: ${{ runner.os }}-${{ runner.arch }}-program-tar-v2-${{ hashFiles('bun.lock', 'rust-toolchain.toml', 'packages/tar/sources.lock.json', 'packages/tar/producer/**', 'packages/tar/patches/**', 'packages/tar/scripts/**', 'packages/tar/src/**', 'packages/tar/tests/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**', 'tools/program-build-tools.ts', 'tools/program-package.ts') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-program-tar-v2-
+      - name: Build and verify tar
+        if: steps.select.outputs.tar == 'true'
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+        run: |
+          cmake --version
+          ninja --version
+          node packages/tar/scripts/build-tar.ts --prepare
+          cargo fetch --locked --manifest-path packages/tar/producer/Cargo.toml
+          node packages/tar/scripts/build-tar.ts --native
+          node packages/tar/scripts/build-tar.ts
+          node packages/tar/scripts/test-native.ts
+          TAR_CHECK_ARTIFACTS=1 node --test packages/tar/tests/source.test.ts
+          bun run --cwd packages/tar typecheck
+          node tools/program-package.ts pack packages/tar
+          TAR_PACKAGE_ARCHIVE="$PWD/packages/tar/.build/waffle-os-tar-0.0.0.tgz" bun test packages/tar/tests/tar-wasi.test.ts
+
+      # findutils-xargs and coreutils-echo (direct same-runner handoff without artifact round-trip)
+      - name: Cache xargs and echo build outputs
+        if: steps.select.outputs.xargs_or_echo == 'true'
+        id: xargs-echo-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build/findutils
+            .build/coreutils
+            .build/program-locales
+          key: ${{ runner.os }}-${{ runner.arch }}-xargs-echo-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}-${{ hashFiles('packages/findutils/**/*.rs', 'packages/findutils/**/Cargo.toml', 'packages/coreutils/crates/echo/**', 'packages/process-consumer/**', 'packages/program-support/src/**/*.rs', 'packages/program-support/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-xargs-echo-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}-
+      - name: Build and qualify findutils xargs
+        if: steps.select.outputs.xargs_or_echo == 'true'
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+          WASI_LIBC_JOBS: "4"
+        run: |
+          bun run --cwd packages/findutils test:types
+          bun run --cwd packages/findutils build:xargs
+          bun packages/findutils/scripts/xargs-artifact.ts .build/xargs-process-input
+      - name: Run findutils xargs WASI suite
+        if: steps.select.outputs.findutils == 'true'
+        run: bun run --cwd packages/findutils test:xargs:wasi
+      - name: Build and qualify coreutils echo with the same-run xargs artifact
+        if: steps.select.outputs.coreutils == 'true'
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+          WASI_LIBC_JOBS: "4"
+          ECHO_XARGS_ARTIFACT: ${{ github.workspace }}/.build/xargs-process-input
+        run: |
+          bun run --cwd packages/coreutils test:echo:types
+          bun run --cwd packages/coreutils build:echo
+          bun run --cwd packages/coreutils test:echo:wasi
+          bun packages/coreutils/scripts/echo-artifact.ts
+
+      # coreutils-checksums
+      - uses: actions/cache@v4
+        if: steps.select.outputs.checksums == 'true'
+        id: checksum-cache
+        with:
+          path: |
+            .build/coreutils-checksums
+            .build/program-locales
+            packages/coreutils/.sources
+          key: ${{ runner.os }}-${{ runner.arch }}-program-coreutils-checksums-v2-${{ hashFiles('bun.lock', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'packages/coreutils/crates/checksums/Cargo.toml', 'packages/coreutils/crates/checksums/Cargo.lock', 'packages/coreutils/crates/checksums/**/*.rs', 'packages/coreutils/crates/checksums/patches/**', 'packages/coreutils/scripts/build-checksums.ts', 'packages/coreutils/scripts/build-config.ts', 'packages/coreutils/scripts/build-family.ts', 'packages/coreutils/scripts/checksum-artifact.ts', 'packages/coreutils/scripts/prepare-checksum-source.ts', 'packages/coreutils/scripts/programs.ts', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-program-coreutils-checksums-v2-
+      - name: Discard a generated source restored from a different checksum recipe
+        if: steps.select.outputs.checksums == 'true' && steps.checksum-cache.outputs.cache-hit != 'true'
+        run: rm -rf packages/coreutils/.sources/checksums
+      - name: Identify the pinned GNU checksum source and native toolchain
+        if: steps.select.outputs.checksums == 'true'
+        id: checksum-oracle-identity
+        run: |
+          set -euo pipefail
+          test -n "${ImageOS:-}"
+          test -n "${ImageVersion:-}"
+          echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "key=$(node packages/coreutils/scripts/build-native-checksum-oracle.ts --identity)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        if: steps.select.outputs.checksums == 'true'
+        id: checksum-native-oracle
+        with:
+          path: .build/gnu-checksum-native-oracle
+          key: ${{ runner.os }}-${{ runner.arch }}-gnu-checksum-native-v1-${{ steps.checksum-oracle-identity.outputs.image }}-${{ steps.checksum-oracle-identity.outputs.key }}
+      - name: Build the nine native GNU oracle programs on cache miss
+        if: steps.select.outputs.checksums == 'true' && steps.checksum-native-oracle.outputs.cache-hit != 'true'
+        run: node packages/coreutils/scripts/build-native-checksum-oracle.ts
+        env:
+          GNU_CHECKSUM_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-checksum-native-oracle
+          GNU_CHECKSUM_ORACLE_SCRATCH_ROOT: ${{ runner.temp }}
+      - name: Verify the pinned GNU 9.12 checksum oracle
+        if: steps.select.outputs.checksums == 'true'
+        env:
+          GNU_CHECKSUM_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-checksum-native-oracle
+        run: node packages/coreutils/scripts/build-native-checksum-oracle.ts --verify-only
+      - name: Build the nine checksum guests once through the existing leaf route
+        if: steps.select.outputs.checksums == 'true'
+        run: bun run --cwd packages/coreutils build:checksums
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+          WASI_LIBC_JOBS: "4"
+      - name: Read back the exact admitted checksum guests
+        if: steps.select.outputs.checksums == 'true'
+        run: node packages/coreutils/scripts/checksum-artifact.ts "$GITHUB_WORKSPACE/.build/checksum-artifact"
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+      - name: Run checksum runtime acceptance against the admitted bytes
+        if: steps.select.outputs.checksums == 'true'
+        run: bun run --cwd packages/coreutils test:checksums:wasi
+        env:
+          GNU_CHECKSUM_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-checksum-native-oracle
+          CHECKSUM_ARTIFACTS: ${{ github.workspace }}/.build/checksum-artifact
+      - name: Retain the exact checksum-only producer closure
+        if: steps.select.outputs.checksums == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksum-producer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .build/checksum-artifact
+            .build/gnu-checksum-native-oracle/metadata.json
+          if-no-files-found: error
+          retention-days: 7
+
+      # Browser matrix (all runtime + reporter checks on this same runner).
+      - name: Resolve the Playwright browser cache key
+        if: steps.select.outputs.browser == 'true'
+        id: playwright-cache
+        run: |
+          browsers=$(bun --no-install -e 'const { createRequire } = require("node:module"); const { dirname, join } = require("node:path"); const local = createRequire(require.resolve("playwright/package.json")); console.log(join(dirname(local.resolve("playwright-core/package.json")), "browsers.json"))')
+          test -s "$browsers"
+          . /etc/os-release
+          echo "key=${RUNNER_OS:?}-${RUNNER_ARCH:?}-${ID:?}${VERSION_ID:?}-playwright-v1-$(sha256sum "$browsers" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        if: steps.select.outputs.browser == 'true'
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright-cache.outputs.key }}
+      - uses: ./.github/actions/ubuntu-main-archive
+        if: steps.select.outputs.browser == 'true'
+      - name: Install Playwright browsers and system dependencies
+        if: steps.select.outputs.browser == 'true'
+        run: bunx playwright install --with-deps chromium firefox webkit
+      - name: Run complete browser matrix
+        id: browser-tests
+        if: steps.select.outputs.browser == 'true'
+        shell: bash
+        run: bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"
+        env:
+          GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture
+          MEMORY_GROUP_FIXTURE_DIR: ${{ runner.temp }}/memory-group-fixture
+          THREAD_FIXTURE_DIR: ${{ runner.temp }}/threads-fixture
+          RECOVERY_R42_REPORT: ${{ runner.temp }}/recovery-r42-report.json
+          BROWSER_CONTROLS_RESULT: ${{ runner.temp }}/browser-controls-results.json
+          STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
+          PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
+      - name: Run Chromium publication workspace check
+        if: ${{ !cancelled() && steps.select.outputs.browser == 'true' && (steps.browser-tests.outcome == 'success' || steps.browser-tests.outcome == 'failure') }}
+        run: bun packages/waffle/tests/publication-browser-runner.ts --workspace chromium
+        env:
+          STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
+      - name: Retain recovery failure report
+        if: failure() && steps.select.outputs.browser == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-recovery-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/recovery-r42-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Retain browser controls result and process outcome
+        if: always() && steps.select.outputs.browser == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-controls-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/browser-controls-results.json*
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Retain browser failure protocol
+        if: failure() && steps.select.outputs.browser == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-protocol-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/waffle-browser-protocol.log
+          retention-days: 7
+
+      - name: Require successful change detection and site checks
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+        env:
+          PATHS_RESULT: ${{ steps.paths.outcome }}
+          SITE_BUILD: ${{ steps.site-build.outcome }}
+          SITE_TYPECHECK: ${{ steps.site-typecheck.outcome }}
+        run: |
+          if [[ "$PATHS_RESULT" != success ]]; then
+            echo '::error::Complete CI requires successful change detection.'
             exit 1
           fi
+          if [[ "$SITE_BUILD" != success || "$SITE_TYPECHECK" != success ]]; then
+            echo '::error::Complete CI requires a successful site build and site typecheck.'
+            exit 1
+          fi
+      - uses: ./.github/actions/save-release-downloads
+        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

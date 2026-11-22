@@ -1,4 +1,5 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -26,10 +27,15 @@ const manifest = resolve(packageRoot, "crates/checksums/Cargo.toml");
 // The isolated workspace has its own lockfile, so it keeps its own Cargo target.
 const cargoTarget = ".build/coreutils-checksums";
 
+function cargoJobs(): string {
+  return String(Math.max(1, Math.min(4, availableParallelism())));
+}
+
 /** Builds each checksum guest with only its English catalogs into the family release directory. */
 export function buildChecksums() {
   const ownedSource = prepareChecksumSource();
   const env = { ...wasiBuildEnvironment(familyRecipe, cargoTarget), ...programReleaseEnvironment };
+  const jobs = `-j${cargoJobs()}`;
   for (const name of checksumNames) {
     const buildEnv = prepareProgramLocales({
       root: workspaceRoot,
@@ -52,7 +58,7 @@ export function buildChecksums() {
         manifest,
         "--bin",
         name,
-        "-j2",
+        jobs,
       ],
     );
     execFileSync(command, args, { cwd: workspaceRoot, env: buildEnv, stdio: "inherit" });
@@ -60,7 +66,53 @@ export function buildChecksums() {
   }
 }
 
+async function stageOne(name: string): Promise<void> {
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const child = spawn(process.execPath, [import.meta.filename, "--stage-one", name], {
+      cwd: workspaceRoot,
+      env: process.env,
+      stdio: "inherit",
+    });
+    child.once("error", rejectPromise);
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolvePromise();
+      else rejectPromise(new Error(`Staging ${name} failed (${signal ?? code})`));
+    });
+  });
+}
+
+async function stageChecksumsInParallel(names: readonly string[]): Promise<void> {
+  const limit = Math.max(1, Math.min(4, availableParallelism(), names.length));
+  let nextIndex = 0;
+  let failure: unknown;
+  const worker = async () => {
+    while (failure === undefined) {
+      const name = names[nextIndex++];
+      if (!name) return;
+      try {
+        await stageOne(name);
+      } catch (error) {
+        failure ??= error;
+        return;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: limit }, () => worker()));
+  if (failure !== undefined) throw failure;
+}
+
+function isChecksumName(value: string | undefined): value is (typeof checksumNames)[number] {
+  return value !== undefined && (checksumNames as readonly string[]).includes(value);
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  buildChecksums();
-  stageFamilyPrograms(checksumNames);
+  const stageFlag = process.argv.indexOf("--stage-one");
+  if (stageFlag >= 0) {
+    const name = process.argv[stageFlag + 1];
+    if (!isChecksumName(name)) throw new Error(`Unknown checksum program: ${name ?? ""}`);
+    stageFamilyPrograms([name]);
+  } else {
+    buildChecksums();
+    await stageChecksumsInParallel(checksumNames);
+  }
 }
