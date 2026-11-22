@@ -38,6 +38,7 @@
   "core/wasi.ts": "55b1448e74a6ff324216f59328383d7d445159341525dccbac12b336f3d07bd4",
   "dist/browser/display/owner.js": "8ea41232b3de5ef1046f4eea774b138863bb6a78a10ab546be66bcd9f01f34a5",
   "dist/browser/display/service-readers.js": "b8fcadbc5a5aa36d7c04d8d14e2332cf57b3d4f410b846b2219d7877aa50cb88",
+  "dist/browser/filesystem-backend.js": "bc92a43056b7f90d1a7add9062c4eae443d39898bff944664f3a9b015795b2bf",
   "dist/browser/gpu/buffers.js": "43c4f695d4165ed89e168f246c9b2bf1514134ec70deb95e354230fe4f2ca1e8",
   "dist/browser/gpu/generated/tables.js": "ab48c52aef8860716d675f05586b9779cd370d8599cfb70f7db975066b9226de",
   "dist/browser/gpu/guest.js": "5d5d084da1ae8b7b1190ecc3ee9e0c1dbfbef90c1bffb0a2091a8403d88db336",

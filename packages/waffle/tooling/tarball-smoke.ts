@@ -136,6 +136,7 @@ async function run(): Promise<void> {
     "tests/page-runner/framework-bootstrap-main.ts",
     "browser/gpu/service-worker.ts",
     "dist/browser/gpu/service-worker.js",
+    "dist/browser/fs-worker.js",
   ];
   for (const [key, target] of Object.entries(exports)) {
     const entry = record(target);
