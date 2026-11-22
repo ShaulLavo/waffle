@@ -1054,10 +1054,11 @@ jobs:
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   package:
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    env:
-      WAFFLE_NETWORK_PREBUILT: "1"
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     needs: changes
+    outputs:
+      site-build: ${{ steps.site-build.outcome }}
+      site-typecheck: ${{ steps.site-typecheck.outcome }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -1065,6 +1066,37 @@ jobs:
       - uses: ./.github/actions/setup-tools
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - name: Cache Bun package downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - name: Install site dependencies
+        id: site-install
+        continue-on-error: true
+        working-directory: site
+        run: bun install --frozen-lockfile
+      - name: Build the site
+        id: site-build
+        if: steps.site-install.outcome == 'success'
+        continue-on-error: true
+        working-directory: site
+        run: bun run build
+      - name: Type-check the site
+        id: site-typecheck
+        if: steps.site-install.outcome == 'success'
+        continue-on-error: true
+        working-directory: site
+        run: bun run typecheck
+      - name: Require the network producer for runtime checks
+        env:
+          NETWORK_RESULT: ${{ needs.changes.result }}
+        run: |
+          if [[ "$NETWORK_RESULT" != success ]]; then
+            echo '::error::Runtime package checks require a successful network producer.'
+            exit 1
+          fi
+          echo 'WAFFLE_NETWORK_PREBUILT=1' >> "$GITHUB_ENV"
       - uses: actions/cache/restore@v4
         id: network-artifact
         with:
@@ -1079,11 +1111,6 @@ jobs:
           fail-on-cache-miss: true
       - name: Verify exact-input network artifact before installation
         run: bun run --cwd packages/waffle tooling/build-network.ts --verify
-      - name: Cache Bun package downloads
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile --ignore-scripts
       - name: Cache standard native relay prebuild downloads
         uses: actions/cache@v4
@@ -1095,12 +1122,11 @@ jobs:
       - run: bun run prepare:package
       - name: Prepare the trusted Bun adapter without rerunning native install scripts
         run: bun run --cwd packages/git/node_modules/bun-wasm prepare
-      - run: bun install --cwd site --frozen-lockfile
       - name: Check native preparation tooling
         run: |
           packages/waffle/node_modules/.bin/oxlint --config packages/waffle/.oxlintrc.json --deny-warnings packages/waffle-relay/scripts/prepare-native.ts packages/waffle-relay/tests/prepare-native.test.ts
           packages/waffle/node_modules/.bin/oxfmt --check --config packages/waffle/.oxfmtrc.json packages/waffle-relay/scripts/prepare-native.ts packages/waffle-relay/tests/prepare-native.test.ts
-      - run: bun run quality
+      - run: bun run --cwd packages/waffle quality
       - uses: ./.github/actions/setup-tools
         with:
           bun-version: "1.4.4"
@@ -1427,27 +1453,6 @@ jobs:
           retention-days: 7
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
-  site:
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: site
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/release-downloads
-      - uses: ./.github/actions/setup-tools
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - name: Restore Bun package downloads
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - run: bun install --frozen-lockfile
-      - run: bun run build
-      - uses: ./.github/actions/save-release-downloads
-        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   findutils-xargs:
     needs: changes
     if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.paths-result != 'success' || needs.changes.outputs.findutils == 'true' || needs.changes.outputs.coreutils == 'true')) }}
@@ -1679,7 +1684,6 @@ jobs:
         libc,
         threads-fixture,
         browser,
-        site,
         findutils-xargs,
         coreutils-echo,
         coreutils-checksums,
@@ -1696,8 +1700,22 @@ jobs:
         env:
           PATHS_RESULT: ${{ needs.changes.outputs.paths-result }}
         run: test "$PATHS_RESULT" = success
+      - name: Require successful network preparation
+        env:
+          NETWORK_RESULT: ${{ needs.changes.result }}
+        run: test "$NETWORK_RESULT" = success
       - name: Reject failed or cancelled CI jobs
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'
+      - name: Require successful package and site checks
+        env:
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          SITE_BUILD: ${{ needs.package.outputs.site-build }}
+          SITE_TYPECHECK: ${{ needs.package.outputs.site-typecheck }}
+        run: |
+          if [[ "$PACKAGE_RESULT" != success || "$SITE_BUILD" != success || "$SITE_TYPECHECK" != success ]]; then
+            echo '::error::Complete CI requires successful runtime package checks, a site build, and a site typecheck.'
+            exit 1
+          fi

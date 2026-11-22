@@ -1,6 +1,8 @@
 import { Glob, YAML } from "bun";
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -397,10 +399,9 @@ test("package installs share one Bun package-manager cache contract", () => {
   const expectedCacheUses = {
     package: "actions/cache@v4",
     browser: "actions/cache/restore@v4",
-    site: "actions/cache/restore@v4",
   };
   let sharedKey: string | undefined;
-  for (const name of ["package", "browser", "site"] as const) {
+  for (const name of ["package", "browser"] as const) {
     const steps = stepsFor(name);
     const cacheSteps = steps.filter((step) => {
       if (step.uses !== expectedCacheUses[name]) return false;
@@ -439,13 +440,94 @@ test("package installs share one Bun package-manager cache contract", () => {
   }
 });
 
-test("package and site gates run for every ready PR", () => {
-  for (const name of ["package", "site"]) {
-    const job = record(jobs[name]);
-    expect(job.if).toBe(
-      "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}",
-    );
-    expect(job.needs).toBe(name === "package" ? "changes" : undefined);
+test("the site runs once for ready events before runtime prerequisites", () => {
+  const job = record(jobs.package);
+  expect(jobs.site).toBeUndefined();
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}",
+  );
+  expect(job.needs).toBe("changes");
+  expect(job.env).toBeUndefined();
+
+  const steps = stepsFor("package");
+  const site = steps.filter((step) => step["working-directory"] === "site");
+  expect(site.map((step) => step.run)).toEqual([
+    "bun install --frozen-lockfile",
+    "bun run build",
+    "bun run typecheck",
+  ]);
+  const [install, build, typecheck] = site;
+  expect(install?.if).toBeUndefined();
+  expect(build?.if).toBe("steps.site-install.outcome == 'success'");
+  expect(typecheck?.if).toBe("steps.site-install.outcome == 'success'");
+  const requireNetwork = steps.findIndex(
+    (step) => step.name === "Require the network producer for runtime checks",
+  );
+  for (const step of site) {
+    expect(step["continue-on-error"]).toBe(true);
+    expect(step.env).toBeUndefined();
+    expect(steps.indexOf(step)).toBeLessThan(requireNetwork);
+  }
+  expect(record(job.outputs)).toEqual({
+    "site-build": "${{ steps.site-build.outcome }}",
+    "site-typecheck": "${{ steps.site-typecheck.outcome }}",
+  });
+  expect(steps.some((step) => String(step.run).startsWith("bun install --cwd site"))).toBe(false);
+});
+
+test("package runtime setup requires a successful producer after both site checks", () => {
+  const steps = stepsFor("package");
+  const requireNetwork = steps.find(
+    (step) => step.name === "Require the network producer for runtime checks",
+  );
+  expect(record(requireNetwork?.env).NETWORK_RESULT).toBe("${{ needs.changes.result }}");
+  expect(requireNetwork?.if).toBeUndefined();
+  expect(requireNetwork?.["continue-on-error"]).toBeUndefined();
+  expect(steps.indexOf(record(requireNetwork))).toBeLessThan(
+    steps.findIndex((step) => step.id === "network-artifact"),
+  );
+  const scratch = mkdtempSync(join(tmpdir(), "waffle-ci-network-"));
+  const output = join(scratch, "github-env");
+  try {
+    for (const result of ["failure", "skipped", "cancelled", "", "success"]) {
+      const run = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(requireNetwork?.run)], {
+        env: { ...process.env, NETWORK_RESULT: result, GITHUB_ENV: output },
+      });
+      expect(run.exitCode, result).toBe(result === "success" ? 0 : 1);
+      expect(existsSync(output), result).toBe(result === "success");
+    }
+    expect(readFileSync(output, "utf8")).toBe("WAFFLE_NETWORK_PREBUILT=1\n");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("Complete CI requires explicit success from the runtime package and both site checks", () => {
+  const gate = record(jobs.gate);
+  expect(gate.name).toBe("Complete CI gate");
+  expect(gate.needs).toContain("package");
+  expect(gate.needs).not.toContain("site");
+  const check = stepsFor("gate").find(
+    (step) => step.name === "Require successful package and site checks",
+  );
+  const results = {
+    PACKAGE_RESULT: "${{ needs.package.result }}",
+    SITE_BUILD: "${{ needs.package.outputs.site-build }}",
+    SITE_TYPECHECK: "${{ needs.package.outputs.site-typecheck }}",
+  };
+  expect(record(check?.env)).toEqual(results);
+  const env = {
+    ...process.env,
+    PACKAGE_RESULT: "success",
+    SITE_BUILD: "success",
+    SITE_TYPECHECK: "success",
+  };
+  const command = ["bash", "-eo", "pipefail", "-c", String(check?.run)];
+  expect(Bun.spawnSync(command, { env }).exitCode).toBe(0);
+  for (const field of Object.keys(results)) {
+    for (const failure of ["failure", "skipped", "cancelled", ""]) {
+      expect(Bun.spawnSync(command, { env: { ...env, [field]: failure } }).exitCode).toBe(1);
+    }
   }
 });
 
@@ -517,11 +599,19 @@ test("network consumers verify restored bytes before install and forbid Cargo", 
       (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
     );
     const installed = steps.findIndex(
-      (step) => typeof step.run === "string" && step.run.startsWith("bun install"),
+      (step) =>
+        typeof step.run === "string" &&
+        step.run.startsWith("bun install") &&
+        step["working-directory"] !== "site",
     );
     expect(verified).toBeGreaterThan(restored);
     expect(verified).toBeLessThan(installed);
-    expect(record(record(jobs[name]).env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+    for (const index of [restored, verified, installed]) {
+      expect(steps[index]?.if).toBeUndefined();
+      expect(steps[index]?.["continue-on-error"]).toBeUndefined();
+    }
+    if (name === "browser")
+      expect(record(record(jobs[name]).env).WAFFLE_NETWORK_PREBUILT).toBe("1");
     expect(steps.some((step) => typeof step.run === "string" && /cargo\s/.test(step.run))).toBe(
       false,
     );
@@ -1550,7 +1640,7 @@ test("package setup explicitly prepares Waffle after the script-free install", (
     (step) => step.run === "bun packages/waffle-relay/scripts/prepare-native.ts",
   );
   const prepare = steps.findIndex((step) => step.run === "bun run prepare:package");
-  const quality = steps.findIndex((step) => step.run === "bun run quality");
+  const quality = steps.findIndex((step) => step.run === "bun run --cwd packages/waffle quality");
   expect(prepare).toBeGreaterThan(native);
   expect(prepare).toBeLessThan(quality);
   const adapter = steps.findIndex(
@@ -1663,6 +1753,21 @@ test("change detection shares the network producer's runner and remains blocking
   for (const result of ["success", "failure", "cancelled", "skipped", ""]) {
     const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(check?.run)], {
       env: { ...process.env, PATHS_RESULT: result },
+    });
+    expect(command.exitCode, result).toBe(result === "success" ? 0 : 1);
+  }
+});
+
+test("Complete CI requires actual success from the network producer", () => {
+  const check = stepsFor("gate").find(
+    (step) => step.name === "Require successful network preparation",
+  );
+  expect(record(check?.env).NETWORK_RESULT).toBe("${{ needs.changes.result }}");
+  expect(check?.if).toBeUndefined();
+  expect(check?.["continue-on-error"]).toBeUndefined();
+  for (const result of ["success", "failure", "cancelled", "skipped", ""]) {
+    const command = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", String(check?.run)], {
+      env: { ...process.env, NETWORK_RESULT: result },
     });
     expect(command.exitCode, result).toBe(result === "success" ? 0 : 1);
   }
