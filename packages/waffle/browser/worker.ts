@@ -44,13 +44,9 @@ import {
 // Process bootstrap shared by preview1 commands and injected guest executors.
 import { checkedSignal, ProcessError, type ProcessExit } from "../proc/types.js";
 import { defaultSignalTerminates, signalPending } from "../proc/signals.js";
-import {
-  FilesystemClient,
-  revokeFilesystem,
-  reapFilesystem,
-  sharedRevoked,
-  type FilesystemConnection,
-} from "../fs/index.js";
+import { FilesystemClient } from "../fs/client.js";
+import { revokeFilesystem, reapFilesystem, type FilesystemConnection } from "../fs/protocol.js";
+import { sharedRevoked } from "../fs/shared.js";
 import { registerResolveObservation } from "../fs/resolve-observation.js";
 import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";

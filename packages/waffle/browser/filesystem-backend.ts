@@ -1,6 +1,7 @@
-import type { MemoryBackendSharedRoot } from "../fs/backend.js";
+import { MemoryBackend, type MemoryBackendSharedRoot } from "../fs/backend.js";
 import type { MemoryBudget } from "../fs/memory-budget.js";
-import { MemoryBackend, PersistentBackend, IndexedDBStorage, OpfsStorage } from "../fs/index.js";
+import { PersistentBackend } from "../fs/persistent.js";
+import { IndexedDBStorage } from "../fs/indexeddb.js";
 import type { StorageBackend } from "../fs/storage.js";
 import type { RuntimeStartupObserver } from "../fs/startup.js";
 import { resolveVfs, requireVfsCapabilities } from "../fs/vfs.js";
@@ -34,7 +35,10 @@ export async function openFilesystemBackend(
   let ownershipLost = false;
   const storage =
     descriptor.implementation === "opfs-memory"
-      ? await OpfsStorage.open(options.name ?? "waffle-workspace", lifecycle)
+      ? // OPFS is an internal conformance override, so only that path loads it.
+        await (
+          await import("../fs/opfs.js")
+        ).OpfsStorage.open(options.name ?? "waffle-workspace", lifecycle)
       : await IndexedDBStorage.open(options.name ?? "waffle-workspace", {
           ...lifecycle,
           whenBusy,
