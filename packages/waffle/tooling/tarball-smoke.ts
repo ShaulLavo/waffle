@@ -655,7 +655,11 @@ async function networkInstallParity(packedRoot: string): Promise<void> {
 
 try {
   await run();
-  console.log("waffle tarball smoke: pass");
+  console.log(
+    process.argv.includes("--update-path-audit")
+      ? "waffle path audit: updated"
+      : "waffle tarball smoke: pass",
+  );
 } finally {
   await rm(scratch, { recursive: true, force: true });
 }
