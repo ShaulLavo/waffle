@@ -48,8 +48,10 @@ for (const failure of ["", "--prepare", "chromium", "webkit"])
   test(`reporter controls prepare once and keep engine failures blocking: ${failure || "pass"}`, async () => {
     const result = await discover(failure);
     expect(result.code).toBe(failure ? 1 : 0);
-    expect(result.commands).toEqual([
-      [controls, "--prepare"],
+    expect(result.commands[0]).toEqual([controls, "--prepare"]);
+    expect(
+      result.commands.slice(1).toSorted((a, b) => a.join(" ").localeCompare(b.join(" "))),
+    ).toEqual([
       [controls, "chromium", "--prepared"],
       [controls, "webkit", "--prepared"],
     ]);

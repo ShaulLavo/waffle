@@ -23,7 +23,7 @@ function record(value: unknown): Record<string, unknown> {
 
 function browserSteps() {
   const parsed = record(YAML.parse(workflow));
-  const browser = record(record(parsed.jobs).browser);
+  const browser = record(record(parsed.jobs).gate);
   if (!Array.isArray(browser.steps)) throw new Error("expected browser steps");
   return browser.steps.map(record);
 }
@@ -118,8 +118,9 @@ test("the main-archive action immediately precedes the unchanged complete Playwr
   const steps = browserSteps();
   const install = steps.findIndex((step) => step.run === installCommand);
   expect(install).toBeGreaterThan(0);
-  expect(steps[install - 1]).toEqual({ uses: archiveAction });
-  expect(steps[install]).toEqual({ run: installCommand });
+  expect(steps[install - 1]?.uses).toBe(archiveAction);
+  expect(steps[install - 1]?.if).toBe(steps[install]?.if);
+  expect(steps[install]?.run).toBe(installCommand);
   expect(steps.filter((step) => step.run === installCommand)).toHaveLength(1);
 });
 
@@ -131,7 +132,8 @@ test("every workflow apt-get install runs right after the main-archive action", 
     steps.forEach((step, index) => {
       if (typeof step.run !== "string" || !step.run.includes("apt-get install")) return;
       installs++;
-      expect(steps[index - 1]).toEqual({ uses: archiveAction });
+      expect(steps[index - 1]?.uses).toBe(archiveAction);
+      expect(steps[index - 1]?.if).toBe(step.if);
     });
   }
   expect(installs).toBeGreaterThan(0);
@@ -141,7 +143,7 @@ const cacheKeyName = "Resolve the Playwright browser cache key";
 const repositoryRoot = new URL("../../../", import.meta.url).pathname;
 
 function browserJob() {
-  return record(record(record(YAML.parse(workflow)).jobs).browser);
+  return record(record(record(YAML.parse(workflow)).jobs).gate);
 }
 
 function cacheKeyCommand(): string {

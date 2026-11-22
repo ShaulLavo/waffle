@@ -6,21 +6,19 @@ const workflow = readFileSync(
   new URL("../../../.github/workflows/ci.yml", import.meta.url),
   "utf8",
 );
-const producer = workflow.slice(
-  workflow.indexOf("\n  libc:\n"),
-  workflow.indexOf("\n  browser:\n"),
-);
-const consumer = workflow.slice(workflow.indexOf("\n  browser:\n"));
+const browserIndex = workflow.indexOf("Resolve the Playwright browser cache key");
+const producer = workflow.slice(0, browserIndex);
+const consumer = workflow.slice(browserIndex);
 test("the producer restores the pinned SDK even when every compiled fixture cache hits", () => {
   const steps = producer.split(/(?=      - )/);
   const sdk = steps.find((step) => step.includes("id: sdk"));
   const install = steps.find((step) => step.includes("name: Install pinned wasi-sdk 34"));
   expect(sdk).toBeDefined();
-  expect(sdk).not.toContain("if:");
+  expect(sdk).toContain("need_wasi_sdk == 'true'");
   expect(sdk).toContain(
     "wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4",
   );
-  expect(install).toContain("if: steps.sdk.outputs.cache-hit != 'true'");
+  expect(install).toContain("steps.sdk.outputs.cache-hit != 'true'");
   expect(install).not.toContain("steps.fixtures");
   expect(install).not.toContain("steps.gpu-fixture");
 });
@@ -53,12 +51,11 @@ test("GPU source freshness covers schema, generated C layouts and the handwritte
       ) ?? []
     ).length,
   ).toBe(1);
-  expect(producer).toContain("gpu-artifact");
+  expect(producer).toContain('build-gpu-fixture.ts --verify "$RUNNER_TEMP/gpu-fixture"');
 });
-test("browser jobs consume and verify the one producer artifact without recompiling", () => {
-  expect(consumer).toContain("artifact-ids: ${{ needs.libc.outputs.gpu-artifact-id }}");
-  expect(consumer).toContain('build-gpu-fixture.ts --verify "$RUNNER_TEMP/gpu-fixture"');
+test("browser steps consume the verified producer fixture without recompiling", () => {
   expect(consumer).toContain("GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture");
+  expect(consumer).not.toContain("build-gpu-fixture.ts");
   expect(workflow).toContain("bun run size && bun run size:network && bun run size:gpu");
   const suites = readFileSync(new URL("../scripts/test-browser.ts", import.meta.url), "utf8");
   expect(suites).toContain('"tests/gpu-browser-runner.ts"');
@@ -205,7 +202,8 @@ test("the SDK source sentinel executes once in the producer regardless of fixtur
     .split(/(?=      - )/)
     .find((entry) => entry.includes("gpu-async-stream.test.ts"));
   expect(step).toBeDefined();
-  expect(step).not.toContain("if:");
+  expect(step).toContain("libc_or_browser == 'true'");
+  expect(step).not.toContain("cache-hit");
   expect(step).toContain("WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
   expect(step).toContain(`--test-name-pattern '^${sourceName}$'`);
   expect(step).toContain("--reporter=junit");

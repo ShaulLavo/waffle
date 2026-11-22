@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
@@ -70,6 +70,7 @@ export class BrowserRunnerLifecycle {
   private controllerInterruption = false;
   private server?: ReturnType<typeof Bun.serve>;
   private previousTmp = process.env.TMPDIR;
+  private ownedTmp = false;
   private interrupted = () => {
     this.controllerInterruption = true;
     void this.close()
@@ -109,22 +110,37 @@ export class BrowserRunnerLifecycle {
     this.assertLive();
     return path;
   }
+  private async hasShortTmpDir(): Promise<boolean> {
+    if (!process.env.TMPDIR) return false;
+    try {
+      const resolved = await realpath(process.env.TMPDIR);
+      return Buffer.byteLength(resolved, "utf8") <= 48 && (await stat(resolved)).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+  private restoreTmp(): void {
+    if (!this.ownedTmp) return;
+    if (this.previousTmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = this.previousTmp;
+    this.ownedTmp = false;
+  }
   async init(
     root = process.env.STORAGE_SCRATCH_ROOT ??
       process.env.TMPDIR ??
       (process.platform === "darwin" ? resolve(homedir(), "tmp") : "/work/tmp"),
   ): Promise<void> {
     this.scratch = await this.directory(root, "w-");
-    // The remote dispatcher already owns a physically short TMPDIR. Do not add
-    // another profile component to it and exceed Chromium's Unix socket limit.
-    if (
-      process.env.TMPDIR &&
-      process.env.TMPDIR === process.env.SCRATCH &&
-      (await realpath(process.env.TMPDIR)).length <= 48
-    )
-      return;
-    if ((await realpath(this.scratch)).length > 48)
+    // The remote dispatcher or an embedding caller already owns a physically short
+    // TMPDIR. Do not add another profile component or mutate process-global TMPDIR.
+    const keepExistingTmp =
+      this.interruption === "caller" ||
+      (Boolean(process.env.TMPDIR) && process.env.TMPDIR === process.env.SCRATCH);
+    if (keepExistingTmp && (await this.hasShortTmpDir())) return;
+    if (Buffer.byteLength(await realpath(this.scratch), "utf8") > 48)
       throw new Error("Use a data-drive scratch root short enough for a <=48-byte browser TMPDIR");
+    this.previousTmp = process.env.TMPDIR;
+    this.ownedTmp = true;
     process.env.TMPDIR = this.scratch;
   }
   async removeDirectory(path: string): Promise<void> {
@@ -309,8 +325,7 @@ export class BrowserRunnerLifecycle {
       if (failures.length)
         throw new SerializableAggregateError(failures, "Browser runner cleanup failed");
     } finally {
-      if (this.previousTmp === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = this.previousTmp;
+      this.restoreTmp();
       clearTimeout(hardStop);
       clearTimeout(this.deadline);
       process.removeListener("SIGINT", this.interrupted);

@@ -27,7 +27,8 @@ const producer = record(
 const consumer = record(record(parse(".github/workflows/coreutils-echo.yml").jobs)["echo-process"]);
 
 test("echo-only changes select a same-run xargs producer without repeating its unchanged suite", () => {
-  const paths = steps(jobs.changes).find((step) => step.id === "paths");
+  const gateSteps = steps(jobs.gate);
+  const paths = gateSteps.find((step) => step.id === "paths");
   const filters = record(YAML.parse(String(record(paths?.with).filters)));
   const patterns = filters.coreutils;
   assert.ok(Array.isArray(patterns));
@@ -50,15 +51,34 @@ test("echo-only changes select a same-run xargs producer without repeating its u
       patterns.some((pattern) => new Glob(String(pattern)).match(path)),
       path,
     );
-  assert.deepEqual(record(jobs["coreutils-echo"]).needs, ["changes", "findutils-xargs"]);
-  assert.ok(
-    String(record(jobs["findutils-xargs"]).if).includes(
-      "needs.changes.outputs.coreutils == 'true'",
-    ),
+  const xargsBuild = gateSteps.find((step) => String(step.run ?? "").includes("build:xargs"));
+  const xargsSuite = gateSteps.find(
+    (step) => step.run === "bun run --cwd packages/findutils test:xargs:wasi",
   );
-  const selected = String(record(record(jobs["findutils-xargs"]).with)["test-process"]);
-  assert.ok(selected.includes("needs.changes.outputs.findutils == 'true'"));
-  assert.ok(!selected.includes("outputs.coreutils"));
+  const echoStep = gateSteps.find((step) => String(step.run ?? "").includes("build:echo"));
+  assert.ok(xargsBuild && xargsSuite && echoStep);
+  assert.equal(xargsBuild.if, "steps.select.outputs.xargs_or_echo == 'true'");
+  assert.equal(xargsSuite.if, "steps.select.outputs.findutils == 'true'");
+  assert.equal(echoStep.if, "steps.select.outputs.coreutils == 'true'");
+  assert.ok(gateSteps.indexOf(xargsBuild) < gateSteps.indexOf(echoStep));
+  assert.equal(
+    record(echoStep.env).ECHO_XARGS_ARTIFACT,
+    "${{ github.workspace }}/.build/xargs-process-input",
+  );
+  assert.ok(String(xargsBuild.run).includes("xargs-artifact.ts .build/xargs-process-input"));
+  const echoUpload = gateSteps.find(
+    (step) =>
+      step.uses === "actions/upload-artifact@v4" &&
+      record(step.with).path === ".build/echo-artifact",
+  );
+  assert.ok(echoUpload);
+  assert.equal(echoUpload.if, "steps.select.outputs.coreutils == 'true'");
+  assert.equal(
+    record(echoUpload.with).name,
+    "echo-process-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+  );
+  assert.equal(record(echoUpload.with)["if-no-files-found"], "error");
+  assert.ok(gateSteps.indexOf(echoStep) < gateSteps.indexOf(echoUpload));
   const suite = steps(producer).find(
     (step) => step.run === "bun run --cwd packages/findutils test:xargs:wasi",
   );
@@ -98,8 +118,15 @@ test("consumer verifies the exact same-run artifact and never builds xargs or ne
 });
 
 test("network and singular libc caches are shared exactly and native compilation stays one lane", () => {
-  const network = steps(jobs.changes).find((step) => step.id === "network-artifact");
+  const gateSteps = steps(jobs.gate);
+  const network = gateSteps.find((step) => step.id === "network-artifact");
   const libc = steps(producer).find((step) => step.id === "libc");
+  const gateLibc = gateSteps.find((step) => step.id === "wasi-libc-cache");
+  assert.equal(record(gateLibc?.with).path, record(libc?.with).path);
+  assert.equal(
+    record(gateLibc?.with).key,
+    String(record(libc?.with).key).replace("wasi-libc-34.0-v1-", "wasi-libc-34.0-runner-temp-v1-"),
+  );
   for (const job of [producer, consumer]) {
     const restored = steps(job).find((step) => step.id === "network");
     assert.equal(record(restored?.with).key, record(network?.with).key);
@@ -107,7 +134,7 @@ test("network and singular libc caches are shared exactly and native compilation
     assert.equal(record(restored?.with)["fail-on-cache-miss"], true);
     assert.deepEqual(steps(job).find((step) => step.id === "libc")?.with, libc?.with);
   }
-  const native = steps(jobs.programs).filter((step) => {
+  const native = gateSteps.filter((step) => {
     const command = String(step.run).replace(/^bash scripts\/with-build-cache\.sh /, "");
     return command.startsWith("cargo test ") && !/--target(?:=|\s+)wasm(?:32|64)-/.test(command);
   });

@@ -20,7 +20,7 @@ import {
   storagePageLabelControl,
 } from "./command-controls.js";
 import { tmpdir } from "node:os";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { join, resolve, isAbsolute } from "node:path";
 import { Collector } from "./collector.js";
 import { PlaywrightDriver } from "./playwright-driver.js";
@@ -272,6 +272,106 @@ async function waitFor(done: () => boolean, collector: Collector): Promise<void>
   }
 }
 type ControlResults = { path: string; run: ControlRun };
+type ControlTask = { control: string; serialGroup?: string; run: () => Promise<void> };
+
+const writeQueues = new WeakMap<ControlResults, Promise<void>>();
+const slowControlPriority = new Map<string, number>(
+  [
+    "worker-timeout",
+    "peer-storage",
+    "retained-worker-no-handler",
+    "retained-worker-terminated",
+    "retained-worker-replay",
+    "peer-inactive-heartbeat",
+    "worker-capability-verification-slow-native-close",
+    "host-storage-exhausted",
+    "host-final-ack",
+    "peer-ack-lost",
+    "page-unresponsive",
+    "fixture-capability-socket-idle",
+    "missing-completion",
+    "worker-capability-verification-navigation-held",
+    "framework-final-ack-loss",
+    "consumer-slow-seed",
+  ].map((name, index) => [name, index]),
+);
+
+function controlConcurrency(engine: string): number {
+  const configured = Number(process.env.PAGE_RUNNER_CONTROL_CONCURRENCY);
+  if (Number.isInteger(configured) && configured > 0) return configured;
+  return engine === "webkit" ? 2 : 4;
+}
+
+function scheduleControls(tasks: readonly ControlTask[]): ControlTask[] {
+  return tasks
+    .map((task, index) => ({
+      task,
+      index,
+      priority: slowControlPriority.get(task.control) ?? slowControlPriority.size,
+    }))
+    .sort((left, right) => left.priority - right.priority || left.index - right.index)
+    .map((entry) => entry.task);
+}
+
+async function runControlPool(
+  engine: string,
+  tasks: readonly ControlTask[],
+  results: ControlResults,
+): Promise<void> {
+  if (!tasks.length) return;
+  const pending = scheduleControls(tasks);
+  const activeGroups = new Set<string>();
+  const limit = Math.min(controlConcurrency(engine), pending.length);
+  let fatal: { error: unknown } | undefined;
+  let notify = Promise.withResolvers<void>();
+
+  const claimTask = (): ControlTask | "wait" | undefined => {
+    if (!pending.length) return undefined;
+    const index = pending.findIndex(
+      (task) => !task.serialGroup || !activeGroups.has(task.serialGroup),
+    );
+    if (index < 0) return "wait";
+    const task = pending.splice(index, 1)[0]!;
+    if (task.serialGroup) activeGroups.add(task.serialGroup);
+    return task;
+  };
+
+  const wakeWaiters = (group: string | undefined) => {
+    if (group) activeGroups.delete(group);
+    notify.resolve();
+    notify = Promise.withResolvers<void>();
+  };
+
+  const runClaimed = async (task: ControlTask) => {
+    try {
+      await checkControl(engine, task.control, task.run, results);
+    } catch (error) {
+      fatal ??= { error };
+    } finally {
+      wakeWaiters(task.serialGroup);
+    }
+  };
+
+  const nextTask = async (): Promise<ControlTask | undefined> => {
+    while (!fatal) {
+      results.run.throwIfInterrupted();
+      const next = claimTask();
+      if (next !== "wait") return next;
+      await notify.promise;
+    }
+    return undefined;
+  };
+
+  const worker = async () => {
+    for (let next = await nextTask(); next; next = await nextTask()) await runClaimed(next);
+  };
+
+  const settled = await Promise.allSettled(Array.from({ length: limit }, () => worker()));
+  if (fatal) throw fatal.error;
+  const rejected = settled.find((entry) => entry.status === "rejected");
+  if (rejected?.status === "rejected") throw rejected.reason;
+}
+
 export async function checkControl(
   engine: string,
   control: string,
@@ -279,123 +379,109 @@ export async function checkControl(
   results: ControlResults,
 ): Promise<void> {
   await results.run.check(engine, control, run);
-  await writeResult(results.path, results.run.results);
+  const previous = writeQueues.get(results) ?? Promise.resolve();
+  const snapshot = results.run.results.slice();
+  const next = previous.catch(() => {}).then(() => writeResult(results.path, snapshot));
+  writeQueues.set(results, next);
+  await next;
 }
+
+function collectEngineControls(engine: string, root: string): ControlTask[] {
+  const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
+  if (engine === "firefox") {
+    if (selected && selected !== "key-press")
+      throw new Error("Firefox controls select key-press only");
+    return [{ control: "key-press", run: () => keyPressControl(engine, root) }];
+  }
+  if (engine !== "chromium" && engine !== "webkit")
+    throw new Error(`Unsupported control engine ${engine}`);
+  const tasks: ControlTask[] = [];
+  const add = (control: string, run: () => Promise<void>, serialGroup?: string) => {
+    if (!selected || control.includes(selected)) tasks.push({ control, serialGroup, run });
+  };
+  if (engine === "chromium") add("key-press", () => keyPressControl(engine, root));
+  for (const mode of fixtureControlModes)
+    add(`fixture-capability-${mode}`, () => fixtureCapabilityControl(engine, mode, root));
+  const workerModes =
+    engine === "webkit"
+      ? workerControlModes.concat(webKitWorkerVerificationModes)
+      : workerControlModes;
+  for (const mode of workerModes)
+    add(`worker-capability-${mode}`, () => workerCapabilityControl(engine, mode, root));
+  for (const mode of frameworkControlModes)
+    add(`framework-${mode}`, () => frameworkDOMControl(engine, mode, root), "framework");
+  for (const mode of modes) add(mode, () => reporterControl(engine, mode, root));
+  for (const mode of commandControlModes)
+    add(`command-${mode}`, () => commandControl(engine, mode, root));
+  for (const mode of consumerControlModes)
+    add(`consumer-${mode}`, () => consumerControl(engine, mode, root));
+  for (const mode of retainedWorkerControlModes)
+    add(mode, () => retainedWorkerControl(engine, mode, root));
+  for (const mode of peerControlModes) add(mode, () => peerControl(engine, mode, root));
+  for (const mode of hostControlModes) add(`host-${mode}`, () => hostControl(engine, mode, root));
+  for (const mode of hostStorageControlModes)
+    add(`host-storage-${mode}`, () => hostStorageControl(engine, mode, root));
+  for (const label of ["wrong", "missing"] as const)
+    add(`production-storage-${label}-label`, () => storagePageLabelControl(engine, label, root));
+  add("canonical-ownership", () => malformedAllocationControl(engine, root));
+  for (const failed of selected ? [] : [false, true])
+    tasks.push({ control: `storage-${failed}`, run: () => storageControl(engine, failed, root) });
+  return tasks;
+}
+
 async function engineControls(
   engine: string,
   root: string,
   results: ControlResults,
 ): Promise<void> {
-  const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
-  if (engine === "firefox") {
-    if (selected && selected !== "key-press")
-      throw new Error("Firefox controls select key-press only");
-    await checkControl(engine, "key-press", () => keyPressControl(engine, root), results);
-    return;
-  }
-  if (engine !== "chromium" && engine !== "webkit")
-    throw new Error(`Unsupported control engine ${engine}`);
-  if (engine === "chromium" && (!selected || "key-press".includes(selected)))
-    await checkControl(engine, "key-press", () => keyPressControl(engine, root), results);
-  for (const mode of fixtureControlModes.filter(
-    (mode) => !selected || `fixture-capability-${mode}`.includes(selected),
-  ))
-    await checkControl(
-      engine,
-      `fixture-capability-${mode}`,
-      () => fixtureCapabilityControl(engine, mode, root),
-      results,
-    );
-  const workerModes =
-    engine === "webkit"
-      ? workerControlModes.concat(webKitWorkerVerificationModes)
-      : workerControlModes;
-  for (const mode of workerModes.filter(
-    (mode) => !selected || `worker-capability-${mode}`.includes(selected),
-  ))
-    await checkControl(
-      engine,
-      `worker-capability-${mode}`,
-      () => workerCapabilityControl(engine, mode, root),
-      results,
-    );
-  for (const mode of frameworkControlModes.filter(
-    (mode) => !selected || `framework-${mode}`.includes(selected),
-  ))
-    await checkControl(
-      engine,
-      `framework-${mode}`,
-      () => frameworkDOMControl(engine, mode, root),
-      results,
-    );
-  for (const mode of modes.filter((mode) => !selected || mode.includes(selected)))
-    await checkControl(engine, mode, () => reporterControl(engine, mode, root), results);
-  for (const mode of commandControlModes.filter(
-    (mode) => !selected || `command-${mode}`.includes(selected),
-  ))
-    await checkControl(
-      engine,
-      `command-${mode}`,
-      () => commandControl(engine, mode, root),
-      results,
-    );
-  for (const mode of consumerControlModes.filter(
-    (mode) => !selected || `consumer-${mode}`.includes(selected),
-  ))
-    await checkControl(
-      engine,
-      `consumer-${mode}`,
-      () => consumerControl(engine, mode, root),
-      results,
-    );
-  for (const mode of retainedWorkerControlModes.filter(
-    (mode) => !selected || mode.includes(selected),
-  ))
-    await checkControl(engine, mode, () => retainedWorkerControl(engine, mode, root), results);
-  for (const mode of peerControlModes.filter((mode) => !selected || mode.includes(selected)))
-    await checkControl(engine, mode, () => peerControl(engine, mode, root), results);
-  for (const mode of hostControlModes.filter(
-    (mode) => !selected || `host-${mode}`.includes(selected),
-  ))
-    await checkControl(engine, `host-${mode}`, () => hostControl(engine, mode, root), results);
-  for (const mode of hostStorageControlModes.filter(
-    (mode) => !selected || `host-storage-${mode}`.includes(selected),
-  ))
-    await checkControl(
-      engine,
-      `host-storage-${mode}`,
-      () => hostStorageControl(engine, mode, root),
-      results,
-    );
-  for (const label of ["wrong", "missing"] as const) {
-    const name = `production-storage-${label}-label`;
-    if (!selected || name.includes(selected))
-      await checkControl(engine, name, () => storagePageLabelControl(engine, label, root), results);
-  }
-
-  if (!selected || "canonical-ownership".includes(selected))
-    await checkControl(
-      engine,
-      "canonical-ownership",
-      () => malformedAllocationControl(engine, root),
-      results,
-    );
-  for (const failed of selected ? [] : [false, true])
-    await checkControl(
-      engine,
-      `storage-${failed}`,
-      () => storageControl(engine, failed, root),
-      results,
-    );
+  const tasks = collectEngineControls(engine, root);
+  await runControlPool(engine, tasks, results);
 }
 async function runEngine(engine: string, root: string, results: ControlResults): Promise<void> {
+  const engineRoot = join(root, engine);
+  await mkdir(engineRoot, { recursive: true });
   const restore = engine === "webkit" ? captureWebKitDiagnostics() : undefined;
   try {
-    await engineControls(engine, root, results);
+    await engineControls(engine, engineRoot, results);
   } finally {
     restore?.();
   }
 }
+async function isShortExistingDir(path: string | undefined): Promise<boolean> {
+  if (!path) return false;
+  try {
+    const resolved = await realpath(path);
+    return Buffer.byteLength(resolved, "utf8") <= 48 && (await stat(resolved)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function pinControlTmp(parent: string): Promise<() => Promise<void>> {
+  const previousTmp = process.env.TMPDIR;
+  if (await isShortExistingDir(previousTmp)) return async () => {};
+  const owned = await mkdtemp(join(parent, "wt-"));
+  const cleanup = async () => {
+    if (previousTmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previousTmp;
+    await rm(owned, { recursive: true, force: true });
+  };
+  if (!(await isShortExistingDir(owned))) {
+    await cleanup();
+    throw new Error("Use a data-drive scratch root short enough for a <=48-byte browser TMPDIR");
+  }
+  process.env.TMPDIR = owned;
+  return cleanup;
+}
+
+async function settleCleanupSteps(steps: readonly (() => Promise<void>)[]): Promise<void> {
+  const settled = await Promise.allSettled(steps.map((step) => step()));
+  const failures = settled.flatMap((entry) => (entry.status === "rejected" ? [entry.reason] : []));
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "Browser controls scratch cleanup failed");
+}
+
 async function main(controls: ControlRun): Promise<void> {
   controls.throwIfInterrupted();
   const args = process.argv.slice(2),
@@ -414,6 +500,7 @@ async function main(controls: ControlRun): Promise<void> {
   const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
   const results: ControlResults = { path: resultPath, run: controls };
   let root: string | undefined;
+  let releaseTmp: (() => Promise<void>) | undefined;
   await withStorageCleanup(
     async () => {
       if (
@@ -421,12 +508,17 @@ async function main(controls: ControlRun): Promise<void> {
         (!selected || frameworkControlModes.some((mode) => `framework-${mode}`.includes(selected)))
       )
         await buildFrameworkBootstrap();
-      root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "pr-results-"));
+      const scratchParent = process.env.STORAGE_SCRATCH_ROOT ?? tmpdir();
+      releaseTmp = await pinControlTmp(scratchParent);
+      root = await mkdtemp(join(scratchParent, "pr-results-"));
       await mkdir(root, { recursive: true });
       for (const engine of requested) await runEngine(engine, root, results);
     },
     async () => {
-      if (root) await rm(root, { recursive: true, force: true });
+      await settleCleanupSteps([
+        () => (root ? rm(root, { recursive: true, force: true }) : Promise.resolve()),
+        () => releaseTmp?.() ?? Promise.resolve(),
+      ]);
     },
   );
   if (!controls.results.length || controls.results.some((result) => result.status === "fail"))
