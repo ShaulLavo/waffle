@@ -34,6 +34,17 @@ test("tags decode in place inside plain objects and arrays", () => {
   expect(decoded.nested.list[2]).toBeInstanceOf(Uint8Array);
 });
 
+test("an inherited tag key does not turn a plain object into a tag", () => {
+  Object.defineProperty(Object.prototype, "$bigint", { value: "5", configurable: true });
+  try {
+    // The bigint tag forces the tagged decode path, which then visits the plain objects.
+    const wire = bytes('{"big":{"$bigint":"1"},"plain":{"b":1}}');
+    expect(unpack(wire)).toEqual({ big: 1n, plain: { b: 1 } });
+  } finally {
+    Reflect.deleteProperty(Object.prototype, "$bigint");
+  }
+});
+
 test("an escaped tag key is still a tag", () => {
   expect(unpack(bytes('{"\\u0024bigint":"42"}'))).toBe(42n);
   expect(unpack(bytes('{"a":{"\\u0024undefined":true}}'))).toEqual({});
@@ -112,6 +123,8 @@ test("a blocked queue does not keep large decoded requests alive", async () => {
     } finally {
       parse.mockRestore();
     }
+    // Every queued request was decoded at least once, so the retention check below is meaningful.
+    expect(decoded.length).toBeGreaterThanOrEqual(8);
     Bun.gc(true);
     await Bun.sleep(20);
     Bun.gc(true);
