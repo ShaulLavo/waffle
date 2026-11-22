@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import ts from "typescript-api";
+import ts from "typescript";
 import { NETWORK_ASSETS } from "./build-network.js";
 import { assertWasiLibcBuildInputs, wasiLibcBuildInputs } from "./package-inputs.js";
 
