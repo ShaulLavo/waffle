@@ -286,7 +286,17 @@ and record before and after numbers in the PR.
    always follows in its workload; `pipe-page-recovery.test.ts` catches it), and an unfenced
    sweep judging against a stale cursor (unreachable in a test now that laps are full width:
    half the lap space is 2 GiB of traffic). It runs no registry-backed pipes and no real Worker
-   termination; add both when the registry or quarantine recovery changes.
+   termination; add both when the registry or quarantine recovery changes. A tag-back
+   (`sweep.retag`) needs an aborted write that wrapped onto unread bytes, which the matrix
+   workload never makes; `pipe-interleave.test.ts` pauses there directly.
+6. **Mixed-size atomics on page entries.** `PageMap.find` and `reservedBusy` read the low and
+   high halves of a 64-bit entry with 32-bit `Atomics.load`, while every write and CAS is 64-bit.
+   Tearing is harmless (a producer reads only its own stable entries, and a reader that copies
+   through a torn view loses its consuming CAS), and aligned halves are single-copy atomic on
+   x86-64 and ARM64, but ECMA-262 calls overlapping mixed-size atomics a data race. If a strict
+   memory-model checker (TSan on a JS engine, or a spec-level model) is ever run over the pipe
+   suite, switch those reads to 64-bit loads and measure the small-write cost (about one BigInt
+   per lookup).
 
 ## Non-root openat without a filesystem mutation
 

@@ -153,11 +153,18 @@ export function auditPipePages(handle: production.PipeEndpointHandle): string[] 
     }
     const used = new Int32Array(buffer, kind.pool.control, 1)[0]!;
     const bits = new Int32Array(buffer, kind.pool.control + 4, Math.ceil(kind.pool.shared / 32));
-    let set = 0;
-    for (const word of bits) for (let bit = 0; bit < 32; bit++) set += (word >>> bit) & 1;
-    const referenced = audit.sharedMapped();
-    if (used !== referenced || set !== referenced)
-      problems.push(`${kind.name} pool counts ${used} used, ${set} set, ${referenced} mapped`);
+    // Each shared page is mapped exactly when its own bit is set, and the count agrees.
+    let mapped = 0;
+    for (let id = 0; id < kind.pool.shared; id++) {
+      const set = ((bits[id >>> 5]! >>> (id & 31)) & 1) === 1;
+      const owned = audit.owns(id);
+      if (owned) mapped++;
+      if (set !== owned)
+        problems.push(
+          `${kind.name} page ${id} is ${owned ? "mapped" : "unmapped"} but its bit is ${set ? "set" : "clear"}`,
+        );
+    }
+    if (used !== mapped) problems.push(`${kind.name} pool counts ${used} used, ${mapped} mapped`);
   }
   if (delivering.size > 1)
     problems.push(`delivery rings ${Array.from(delivering).join(", ")} all hold pages`);
@@ -179,8 +186,8 @@ class KindAudit {
   private lap(position: number): number {
     return Math.floor(position / this.kind.span) % this.laps;
   }
-  sharedMapped(): number {
-    return Array.from(this.owners.keys()).filter((id) => id < this.kind.pool.shared).length;
+  owns(id: number): boolean {
+    return this.owners.has(id);
   }
   /** Audit one ring's entries; returns whether it maps any page. */
   ring(index: number, writer: boolean, consumed: number, published: number): boolean {

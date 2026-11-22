@@ -389,7 +389,8 @@ class PageMap {
   private allocate(page: number, lap: number, last: boolean): boolean {
     let id = last ? this.takeReserved(page) : -1;
     if (id < 0) id = this.pool.take(this.floor);
-    if (id < 0 && !last) id = this.takeReserved(page);
+    // A failed take may have scavenged this ring's own reserved pages; look again.
+    if (id < 0) id = this.takeReserved(page);
     if (id < 0) return false;
     atomicsStore(this.entries, page, pack(id + 1, lap));
     return true;
@@ -434,14 +435,30 @@ class PageMap {
       const verdict = this.judge(page, tag, consumed, published, fenced);
       if (verdict === KEEP) continue;
       if (verdict === RETAG) {
-        const retagged = pack(id, (tag - 1) & this.lapMask);
-        pipePause("sweep.retag");
-        atomicsCompareExchange(this.entries, page, entry, retagged);
+        if (this.tagBack(page, entry, id, tag, consumedAt, published)) freed = true;
         continue;
       }
       if (this.clear(page, entry)) freed = true;
     }
     return freed;
+  }
+  /** Tag an aborted write's page back to its own lap. A reader that passed the page before
+   * this CAS saw the later tag and skipped it in release(), so judge it again against a cursor
+   * read after the CAS and free it if the reader is already past. Returns whether it freed. */
+  private tagBack(
+    page: number,
+    entry: bigint,
+    id: number,
+    tag: number,
+    consumedAt: () => number,
+    published: number,
+  ): boolean {
+    const lap = (tag - 1) & this.lapMask;
+    const retagged = pack(id, lap);
+    pipePause("sweep.retag");
+    if (atomicsCompareExchange(this.entries, page, entry, retagged) !== entry) return false;
+    if (this.judge(page, lap, consumedAt(), published, true) !== FREE) return false;
+    return this.clear(page, retagged);
   }
   private judge(
     page: number,
@@ -495,7 +512,9 @@ class PageMap {
     if (this.id(this.page(position))) return true;
     if (this.pool.available > this.floor) return true;
     if (this.reserved >= 0 && (!this.reservedBusy(0) || !this.reservedBusy(1))) return true;
-    return (this.pool.scavenge?.() ?? false) && this.pool.available > this.floor;
+    if (!(this.pool.scavenge?.() ?? false)) return false;
+    if (this.pool.available > this.floor) return true;
+    return this.reserved >= 0 && (!this.reservedBusy(0) || !this.reservedBusy(1));
   }
   private clear(page: number, entry: bigint): boolean {
     if (atomicsCompareExchange(this.entries, page, entry, 0n) !== entry) return false;
