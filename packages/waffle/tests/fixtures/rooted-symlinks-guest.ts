@@ -63,7 +63,9 @@ export function preview1(
     /** The open description's inode handle, to tell a live descriptor from a physical file. */
     handleOf: (fd: number) => {
       const resource = wasi.descriptors.get(fd)?.resource;
-      return resource?.kind === "file" || resource?.kind === "directory" ? resource.handle : undefined;
+      return resource?.kind === "file" || resource?.kind === "directory"
+        ? resource.handle
+        : undefined;
     },
     symlink: (target: string, name: string, fd = 3) =>
       calls.path_symlink(256, put(target, 256), fd, 2048, put(name, 2048)),

@@ -46,7 +46,11 @@ test("the worker-backed client resolves the same namespace and keeps rooted and 
     worker.onerror = reject;
   });
   worker.postMessage(child.client, [child.client.port]);
-  expect(await reply).toEqual({ scenario: rootedSymlinkExpected, cache: [4, -63] });
+  expect(await reply).toEqual({
+    scenario: rootedSymlinkExpected,
+    same: true,
+    cache: [4, -63, 4, -63],
+  });
 });
 
 test("a guest whose / is not the filesystem root keeps every lookup beneath its directories", () => {

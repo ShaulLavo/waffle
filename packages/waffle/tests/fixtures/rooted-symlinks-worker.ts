@@ -6,10 +6,19 @@ self.onmessage = ({ data }: MessageEvent<FilesystemConnection>) => {
   const client = new FilesystemClient(data);
   try {
     const scenario = rootedSymlinkScenario(client);
-    // The same path through the client's path cache, rooted and then confined.
-    const rooted = preview1(client).stat("tmp/x/climb", true);
-    const confined = preview1(client, { "/tmp": "/tmp" }).stat("x/climb", true);
-    self.postMessage({ scenario, cache: [rooted, confined] });
+    // The same directory handle, path and follow flag in a rooted and a confined process, both
+    // made before either warms the client's path cache, each asked twice.
+    const rooted = preview1(client);
+    const confined = preview1(client, { "/tmp": "/tmp" });
+    try {
+      const tmp = rooted.openDirectory("tmp");
+      const same = rooted.handleOf(tmp) === confined.handleOf(3);
+      const ask = () => [rooted.stat("x/climb", true, tmp), confined.stat("x/climb", true)];
+      self.postMessage({ scenario, same, cache: ask().concat(ask()) });
+    } finally {
+      rooted.dispose();
+      confined.dispose();
+    }
   } catch (error) {
     self.postMessage({ error: String(error) });
   } finally {

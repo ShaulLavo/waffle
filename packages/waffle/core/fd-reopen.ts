@@ -339,11 +339,7 @@ export function resolveDescriptorPath(
 ): DescriptorPath | number | undefined {
   if (directory.resource.kind !== "directory") return undefined;
   const handle = directory.resource.handle;
-  if (
-    !rooted &&
-    directory.preopen !== "/" &&
-    fs.stat(handle).ino !== fs.stat(fs.preopen("/")).ino
-  )
+  if (!rooted && directory.preopen !== "/" && fs.stat(handle).ino !== fs.stat(fs.preopen("/")).ino)
     return undefined;
   let rootCache: number | undefined;
   const root = () => (rootCache ??= rooted ? rootHandle(table, fs, directory) : handle);

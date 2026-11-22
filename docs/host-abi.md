@@ -199,16 +199,32 @@ changes its flags. Pipes and terminals keep shared-stream behaviour.
 
 ### Symbolic links
 
-When a process's `/` preopen is the filesystem root (the browser worker's layout), every
-WASI path call resolves the way Linux does inside that namespace. An absolute link target
-names a path from `/`, so resolution restarts at the filesystem root. `..` climbs above the
-directory a call starts from, up to `/`, where it stays; from a removed directory it returns
-`ENOENT` (44). A lookup that follows more than 40 links returns `ELOOP` (32). `path_readlink`
-returns the target exactly as written, and calls that do not follow the last component
-(`path_filestat_get` without the follow flag, `path_unlink_file`, `path_rename`, `path_open`
-without the follow flag, which returns `ELOOP` for a link) leave a final link alone. The
-same rules hold on every filesystem backend, since they all resolve through one tree.
+A browser worker running over the whole filesystem preopens the filesystem root as `/`. When
+a process's `/` preopen opened the filesystem root (however its path is spelled), every
+Preview1 path call resolves the way Linux does inside that namespace. Path arguments are still
+relative to the directory descriptor they name. The decision is taken at guest entry, after
+exec has installed the descriptors it keeps, and holds for the life of the process image even
+if the guest later closes or renumbers the `/` preopen. File-scoped resident workers start with
+no preopen and are never rooted.
 
+- An absolute link target names a path from `/`, so resolution restarts at the filesystem root.
+- `..` climbs above the directory a call starts from, up to `/`, where it stays. A descriptor
+  for a directory that has since been removed still climbs to the parent it had, as on Linux;
+  names inside the removed directory return `ENOENT` (44).
+- A lookup that follows more than 40 links returns `ELOOP` (32); 40 is allowed.
+- `path_readlink` returns the target exactly as written.
+- Calls that do not follow the last component leave a final link alone: `path_filestat_get`
+  and `path_open` without the follow flag (`path_open` then returns `ELOOP`), unlink, rmdir
+  and rename. A trailing slash demands a directory, so stat, open and readlink follow a final
+  link when the path ends in `/` (readlink of `link/` then returns `EINVAL`, 28), while unlink,
+  rmdir and rename return `ENOTDIR` (54) for it.
+- For `path_open`, a path that reaches `/dev/null`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr`,
+  `/dev/fd/N` or `/proc/self/fd/N` through a link or `..`, from any directory, opens the same
+  virtual entry as spelling that path out; a physical file at one of those paths never stands
+  in for it. Lookups continuing below a directory descriptor's alias (`/dev/fd/N/name`) use
+  that directory and its real parent, within the same 40-link budget.
+
+The same rules hold on every filesystem backend, since they all resolve through one tree.
 Any other preopen layout, such as `/` mapped to a subdirectory or only non-root preopens,
 keeps each lookup beneath the directory it starts from: an absolute target or a `..` that
 would leave it returns `EPERM` (63).

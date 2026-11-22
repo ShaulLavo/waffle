@@ -1135,7 +1135,13 @@ export class Wasi {
         newPtr: number,
         newLen: number,
       ) => {
-        const from = this.resolve(oldFd, oldPtr, oldLen, RIGHT_PATH_LINK_SOURCE, lookupFlags(flags));
+        const from = this.resolve(
+          oldFd,
+          oldPtr,
+          oldLen,
+          RIGHT_PATH_LINK_SOURCE,
+          lookupFlags(flags),
+        );
         if (typeof from === "number") return from;
         const to = this.resolve(newFd, newPtr, newLen, RIGHT_PATH_LINK_TARGET);
         if (typeof to === "number") return to;
@@ -1189,8 +1195,7 @@ export class Wasi {
           return this.reopen(alias.source, oflags, fdflags, rightsBase, rightsInheriting, fdOut);
         }
         const path =
-          alias?.resolved ??
-          this.opts.fs.resolve(dir.resource.handle, name, follow, this.rooted);
+          alias?.resolved ?? this.opts.fs.resolve(dir.resource.handle, name, follow, this.rooted);
         if (typeof path === "number") return path;
         let node = path.node;
         let stat: FileStat | undefined;
