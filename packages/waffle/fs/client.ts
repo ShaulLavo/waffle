@@ -280,7 +280,7 @@ export class FilesystemCompletion {
     return this.#wait();
   }
   #wait(cancellation?: WaitCancellation): any {
-    const signal = new Int32ArrayConstructor(this.client.connection.signal);
+    const signal = this.client.signal;
     while (!this.ready) {
       const observed = atomicsLoad(signal, 0);
       this.check(cancellation);
@@ -498,6 +498,8 @@ export class FilesystemClient implements FileSystem {
   private capabilityEntries = new MapConstructor<number, number>();
   private capabilities: Int32Array;
   private epoch: Int32Array;
+  /** Shared wake counter, viewed once: a blocking wait reads it on every loop. */
+  readonly signal: Int32Array;
   private revoked: () => boolean;
   private readonly section: FilesystemSection;
   readonly shared: SharedFilesystemState;
@@ -517,6 +519,7 @@ export class FilesystemClient implements FileSystem {
     this.requests = new FilesystemRequestAllocator(connection.requests);
     this.capabilities = new Int32ArrayConstructor(connection.capabilities, 0, CAPABILITY_LENGTH);
     this.epoch = new Int32ArrayConstructor(connection.epoch);
+    this.signal = new Int32ArrayConstructor(connection.signal);
     const revoked = sharedRevoked(connection);
     this.revoked = () => revoked() || !!this.transportError();
     if (connection.residentPublication)
@@ -612,7 +615,7 @@ export class FilesystemClient implements FileSystem {
     void this.monitorRevocation();
   }
   private async monitorRevocation(): Promise<void> {
-    const signal = new Int32ArrayConstructor(this.connection.signal);
+    const signal = this.signal;
     try {
       while (mapSize(this.completions)) {
         const observed = atomicsLoad(signal, 0);
