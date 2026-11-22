@@ -252,7 +252,7 @@ sweep may free them; recovery runs `Ring.sweep(true)` once it has the same proof
 ## Pipe memory and small-write follow-ups
 
 Status: Approved. Owner: process-lifecycle track. The paged-ring change (perf lane "pipes",
-2026-11-22) cut a default pipe from 2,622,760 to 261,944 reserved bytes and made a 64-byte
+2026-11-22) cut a default pipe from 2,622,760 to 266,040 reserved bytes and made a 64-byte
 `tryWrite` plus `tryRead` about twice as fast. Guard each step with outcome tests like
 `packages/waffle/tests/pipe-pages.test.ts`, measure it with the perf suite's section 4.5 rows,
 and record before and after numbers in the PR.
@@ -279,6 +279,14 @@ and record before and after numbers in the PR.
    (`changed` and the service wake), allocates a 64-bit ticket and scans all 16 writer slots
    in `PipeState.source`. A count of occupied writer slots, or one notify word, would remove
    most of the rest. Keep the scan's ceiling rule.
+5. **Interleaving harness gaps.** `tests/pipe-interleave-matrix.test.ts` pauses the page or a
+   guest realm at every point in `PIPE_PAUSE_POINTS` while another realm runs one of 12
+   actions, in direct and relay mode. Injecting each round 1 and round 2 bug back into the
+   fixed code, it catches all but two: a retire that frees pages without a wake (another wake
+   always follows in its workload; `pipe-page-recovery.test.ts` catches it), and an unfenced
+   sweep judging against a stale cursor (unreachable in a test now that laps are full width:
+   half the lap space is 2 GiB of traffic). It runs no registry-backed pipes and no real Worker
+   termination; add both when the registry or quarantine recovery changes.
 
 ## Non-root openat without a filesystem mutation
 

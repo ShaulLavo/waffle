@@ -1,13 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { pipeSharedPagesInUse } from "../proc/pipes.js";
-import {
-  PIPE_PAUSE_POINTS,
-  PipeRealm,
-  plainRealm,
-  type PipePausePoint,
-} from "./fixtures/pipe-interleave.ts";
+import { PipeRealm, plainRealm } from "./fixtures/pipe-interleave.ts";
 
-type Realm = PipeRealm | typeof plainRealm;
 type Controller = InstanceType<PipeRealm["pipes"]["PipeController"]>;
 type Endpoint = ReturnType<Controller["retain"]>;
 const AGAIN = -6;
@@ -80,6 +74,41 @@ describe("review round 2 reproductions", () => {
       },
       victim.handle().slot + 1,
     );
+    trigger.tryWrite([new Uint8Array(8192)]);
+    expect(paused).toBe(true);
+    let live = 0;
+    for (let round = 0; round < 8 && live === 0; round++) {
+      const count = guestReader.tryRead([buffer]);
+      if (count > 0 && buffer[0] === 7) live = count;
+    }
+    expect(live).toBe(4096);
+  }, 30000);
+
+  test("an unfenced sweep paused on a loaded entry across half the 16-bit lap space keeps it", () => {
+    const page = new PipeRealm();
+    const pipe = new page.pipes.PipeController({ capacity: 8192, relay: "manual" });
+    const reader = pipe.retain(1, "read");
+    // Slot 0, so the scavenger reaches this ring's live entry first.
+    const victim = pipe.retain(16, "write");
+    expect(victim.handle().slot).toBe(0);
+    const fillers = [pipe.retain(3, "write"), pipe.retain(4, "write")];
+    const trigger = pipe.retain(5, "write");
+    const guestReader = plainRealm.adopt(reader),
+      guestVictim = plainRealm.adopt(victim);
+    expect(victim.tryWrite([new Uint8Array(4096).fill(9)])).toBe(4096);
+    for (const filler of fillers) expect(filler.tryWrite([new Uint8Array(8192)])).toBe(8192);
+    const buffer = new Uint8Array(8192),
+      chunk = new Uint8Array(4096);
+    let paused = false;
+    page.pause("sweep.entry", () => {
+      paused = true;
+      while (guestReader.tryRead([buffer]) > 0);
+      for (let lap = 0; lap < 0x8000 * 2; lap++) {
+        expect(guestVictim.tryWrite([chunk])).toBe(4096);
+        expect(guestReader.tryRead([buffer])).toBe(4096);
+      }
+      expect(guestVictim.tryWrite([new Uint8Array(4096).fill(7)])).toBe(4096);
+    });
     trigger.tryWrite([new Uint8Array(8192)]);
     expect(paused).toBe(true);
     let live = 0;

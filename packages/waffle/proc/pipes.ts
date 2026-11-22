@@ -1835,7 +1835,7 @@ export class PipeEndpoint implements Stream {
 
 /** Supervisor control plane. Source and delivery rings are in a bounded shared directory, so
  * synchronous fd_read sees newly inherited writers without needing MessagePort dispatch.
- * Rings page their storage from one pool per pipe, so the defaults reserve about 260 KiB per
+ * Rings page their storage from one pool per pipe, so the defaults reserve about 266 KB per
  * pipe whatever the slot count; see pipeReservationBytes(). Atomic writes are <=4096 bytes (or capacity in tiny configured rings). Reuse advances a
  * finite incarnation only after all synchronous mutations of the old incarnation leave.
  */

@@ -10,7 +10,6 @@ type Controller = InstanceType<PipeRealm["pipes"]["PipeController"]>;
 type Endpoint = ReturnType<Controller["retain"]>;
 type RealmName = "page" | "a" | "b";
 type Mode = "direct" | "relay";
-const AGAIN = -6;
 
 const realms: Record<RealmName, PipeRealm> = {
   page: new PipeRealm(),
@@ -134,6 +133,14 @@ const actions: readonly Action[] = [
   },
   { name: "a reads 1", uses: ["a"], run: (w) => void w.streams.take(w.readers[1], 1) },
   { name: "a reads all", uses: ["a"], run: (w) => w.readAll(1) },
+  // One large read and no retry, so no fresh demand hides a ring the relay forgot.
+  { name: "a reads once", uses: ["a"], run: (w) => void w.streams.take(w.readers[1], 65536) },
+  {
+    name: "b reads once",
+    uses: ["b"],
+    modes: ["relay"],
+    run: (w) => void w.streams.take(w.readers[2], 65536),
+  },
   {
     name: "b reads all",
     uses: ["b"],
@@ -186,6 +193,21 @@ function workload(world: World): void {
     () => world.readAll(1),
     () => streams.write(writers[1], 1, 4097),
     () => streams.take(world.readers[1], 64),
+    () => streams.write(writers[0], 0, 300),
+    () => streams.take(world.readers[2], 300),
+    () => world.pump(),
+    () => {
+      // Read a delivery, close, and reuse the slot before the relay runs again.
+      if (world.mode !== "relay") return;
+      streams.take(world.readers[2], 65536);
+      world.readers[2]?.close();
+      world.readers[2] = undefined;
+      try {
+        world.readers[2] = realms.b.adopt(world.host!.forProcess(30));
+      } catch (error) {
+        if (!(error as Error).message.includes("process limit reached")) throw error;
+      }
+    },
     () => {
       // Replace writer 2: its slot is reclaimed after it closes.
       writers[2]?.close();
@@ -217,6 +239,54 @@ function settle(world: World): void {
   expect(streams.pending).toBe(0);
 }
 
+/** Run the workload with `action` at the `hit`-th time `paused` reaches `point`. */
+function scenario(
+  mode: Mode,
+  point: (typeof PIPE_PAUSE_POINTS)[number],
+  paused: RealmName,
+  action: Action,
+  hit: number,
+): string[] {
+  const world = new World(mode);
+  const failures: string[] = [];
+  let ran = false;
+  // A write fails to publish only when someone revokes it mid-copy: the page does that first,
+  // then the second party runs while the failed write sweeps.
+  if (point === "write.failed" && paused !== "page")
+    realms[paused].pause(
+      "write.copied",
+      () => {
+        for (const pid of paused === "a" ? [11] : [12, 13]) world.pipe.revoke(pid);
+        world.revoked++;
+      },
+      hit,
+    );
+  realms[paused].pause(
+    point,
+    () => {
+      ran = true;
+      action.run(world);
+    },
+    hit,
+  );
+  try {
+    workload(world);
+    settle(world);
+    if (world.missedWakes) failures.push("missed wake");
+    failures.push(...world.problems.slice(0, 2));
+    // A revoked writer may keep the one partly used page it last wrote.
+    const allowed = world.revoked ? 2 * world.revoked : 0;
+    if (world.shared() > allowed) failures.push(`${world.shared()} shared pages left`);
+  } catch (error) {
+    failures.push((error as Error).message);
+  } finally {
+    realms[paused].clear();
+    world.pipe.dispose();
+  }
+  if (ran) fired.set(point, (fired.get(point) ?? 0) + 1);
+  return failures;
+}
+
 const fired = new Map<string, number>();
 afterAll(() => {
   // Every point was paused at, with some other party running, in at least one scenario.
@@ -240,46 +310,9 @@ for (const mode of ["direct", "relay"] as const) {
           for (const action of actions) {
             if (action.uses.includes(paused) || (action.modes && !action.modes.includes(mode)))
               continue;
-            for (const hit of [1, 3]) {
-              const world = new World(mode);
-              let ran = false;
-              // A write fails to publish only when someone revokes it mid-copy: the page does
-              // that first, then the second party runs while the failed write sweeps.
-              if (point === "write.failed" && paused !== "page")
-                realms[paused].pause(
-                  "write.copied",
-                  () => {
-                    for (const pid of paused === "a" ? [11] : [12, 13]) world.pipe.revoke(pid);
-                    world.revoked++;
-                  },
-                  hit,
-                );
-              realms[paused].pause(
-                point,
-                () => {
-                  ran = true;
-                  action.run(world);
-                },
-                hit,
-              );
-              try {
-                workload(world);
-                settle(world);
-                if (world.missedWakes) failures.push(`${action.name} #${hit}: missed wake`);
-                for (const problem of world.problems.slice(0, 2))
-                  failures.push(`${action.name} #${hit}: ${problem}`);
-                // A revoked writer may keep the one partly used page it last wrote.
-                const allowed = world.revoked ? 2 * world.revoked : 0;
-                if (world.shared() > allowed)
-                  failures.push(`${action.name} #${hit}: ${world.shared()} shared pages left`);
-              } catch (error) {
-                failures.push(`${action.name} #${hit}: ${(error as Error).message}`);
-              } finally {
-                realms[paused].clear();
-                world.pipe.dispose();
-              }
-              if (ran) fired.set(point, (fired.get(point) ?? 0) + 1);
-            }
+            for (const hit of [1, 3])
+              for (const failure of scenario(mode, point, paused, action, hit))
+                failures.push(`${action.name} #${hit}: ${failure}`);
           }
           expect(failures).toEqual([]);
         });

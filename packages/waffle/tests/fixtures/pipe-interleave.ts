@@ -140,53 +140,97 @@ export function auditPipePages(handle: production.PipeEndpointHandle): string[] 
       position: (cursor) => (halves(cursor)[1] >>> 2) & RECORD_MASK,
     },
   ];
+  // The relay keeps at most one delivery outstanding; every other delivery ring is retired.
+  const delivering = new Set<number>();
   for (const kind of kinds) {
-    const wrap = (value: number) => (kind.bits === 32 ? value >>> 0 : value & RECORD_MASK);
-    const laps = 2 ** (kind.bits - Math.log2(kind.span));
-    const lap = (position: number) => Math.floor(position / kind.span) % laps;
-    const owners = new Map<number, number>();
+    const audit = new KindAudit(kind, problems);
     for (let index = 0; index < maxWriters + maxReaders; index++) {
+      const cursor = (at: number) => new BigInt64Array(buffer, ring(index) + at, 1)[0]!;
       const writer = index < maxWriters;
-      const published = kind.position(new BigInt64Array(buffer, ring(index) + 8, 1)[0]!);
-      const consumed = kind.position(new BigInt64Array(buffer, ring(index) + 16, 1)[0]!);
-      const base = wrap(consumed - (consumed % kind.unit));
-      const window = consumed === published ? 0 : wrap(published - base);
-      const entries = kind.entries(index);
-      const pages = entries.length;
-      for (let page = 0; page < pages; page++) {
-        const [id, tag] = halves(Atomics.load(entries, page));
-        if (!id) continue;
-        const where = `ring ${index} ${kind.name} page ${page} (id ${id - 1}, lap ${tag})`;
-        if (owners.has(id - 1)) problems.push(`${where} also mapped by ring ${owners.get(id - 1)}`);
-        owners.set(id - 1, index);
-        const reserved = id - 1 - kind.pool.shared;
-        if (reserved >= 0 && (!writer || reserved >> 1 !== index))
-          problems.push(`${where} is another slot's reserved page`);
-        const offset = ((page - Math.floor(base / kind.unit)) & (pages - 1)) * kind.unit;
-        const expected = lap(wrap(base + offset));
-        if (offset < window) {
-          const next = (expected + 1) % laps;
-          if (tag !== expected && !(tag === next && offset + kind.span < window))
-            problems.push(`${where} holds unread data under lap ${expected}`);
-          continue;
-        }
-        const idle =
-          writer &&
-          published % kind.unit !== 0 &&
-          page === Math.floor(published / kind.unit) % pages &&
-          tag === lap(published);
-        if (!idle) problems.push(`${where} lies outside the unread window`);
-      }
+      if (audit.ring(index, writer, kind.position(cursor(16)), kind.position(cursor(8))) && !writer)
+        delivering.add(index);
     }
     const used = new Int32Array(buffer, kind.pool.control, 1)[0]!;
     const bits = new Int32Array(buffer, kind.pool.control + 4, Math.ceil(kind.pool.shared / 32));
     let set = 0;
     for (const word of bits) for (let bit = 0; bit < 32; bit++) set += (word >>> bit) & 1;
-    const referenced = Array.from(owners.keys()).filter((id) => id < kind.pool.shared).length;
+    const referenced = audit.sharedMapped();
     if (used !== referenced || set !== referenced)
       problems.push(`${kind.name} pool counts ${used} used, ${set} set, ${referenced} mapped`);
   }
+  if (delivering.size > 1)
+    problems.push(`delivery rings ${Array.from(delivering).join(", ")} all hold pages`);
   return problems;
+}
+/** One page kind's audit across every ring of a pipe. */
+class KindAudit {
+  private readonly owners = new Map<number, number>();
+  private readonly laps: number;
+  constructor(
+    private readonly kind: Kind,
+    private readonly problems: string[],
+  ) {
+    this.laps = 2 ** (kind.bits - Math.log2(kind.span));
+  }
+  private wrap(value: number): number {
+    return this.kind.bits === 32 ? value >>> 0 : value & RECORD_MASK;
+  }
+  private lap(position: number): number {
+    return Math.floor(position / this.kind.span) % this.laps;
+  }
+  sharedMapped(): number {
+    return Array.from(this.owners.keys()).filter((id) => id < this.kind.pool.shared).length;
+  }
+  /** Audit one ring's entries; returns whether it maps any page. */
+  ring(index: number, writer: boolean, consumed: number, published: number): boolean {
+    const entries = this.kind.entries(index);
+    let mapped = false;
+    for (let page = 0; page < entries.length; page++) {
+      const [id, tag] = halves(Atomics.load(entries, page));
+      if (!id) continue;
+      mapped = true;
+      const where = `ring ${index} ${this.kind.name} page ${page} (id ${id - 1}, lap ${tag})`;
+      this.own(where, id - 1, index, writer);
+      const problem = this.place({ page, pages: entries.length, tag, writer, consumed, published });
+      if (problem) this.problems.push(`${where} ${problem}`);
+    }
+    return mapped;
+  }
+  private own(where: string, id: number, index: number, writer: boolean): void {
+    if (this.owners.has(id))
+      this.problems.push(`${where} also mapped by ring ${this.owners.get(id)}`);
+    this.owners.set(id, index);
+    const reserved = id - this.kind.pool.shared;
+    if (reserved >= 0 && (!writer || reserved >> 1 !== index))
+      this.problems.push(`${where} is another slot's reserved page`);
+  }
+  /** Why this entry may not be mapped where it is, or undefined if it may. */
+  private place(entry: {
+    page: number;
+    pages: number;
+    tag: number;
+    writer: boolean;
+    consumed: number;
+    published: number;
+  }): string | undefined {
+    const { page, pages, tag, writer, consumed, published } = entry;
+    const unit = this.kind.unit;
+    const base = this.wrap(consumed - (consumed % unit));
+    const window = consumed === published ? 0 : this.wrap(published - base);
+    const offset = ((page - Math.floor(base / unit)) & (pages - 1)) * unit;
+    const expected = this.lap(this.wrap(base + offset));
+    if (offset < window) {
+      const next = (expected + 1) % this.laps;
+      if (tag === expected || (tag === next && offset + this.kind.span < window)) return undefined;
+      return `holds unread data under lap ${expected}`;
+    }
+    const idle =
+      writer &&
+      published % unit !== 0 &&
+      page === Math.floor(published / unit) % pages &&
+      tag === this.lap(published);
+    return idle ? undefined : "lies outside the unread window";
+  }
 }
 
 /** A realm with no pause hooks: the production module itself. */
