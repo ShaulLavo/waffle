@@ -162,6 +162,41 @@ A terminated unwind still releases already owned resources. It cannot claim a ne
 outcome, infer signal 9, call an executor completion hook, or publish a replacement
 exit. Actual local cleanup failures remain failures.
 
+## Operation diagnostics
+
+Set `observeOperations: true` in `createRuntime()` and call
+`runtime.operationDiagnostics()` from the owning page. Reading a snapshot does
+not start the process service. The accessor reports `disabled` by default,
+`empty` before a capture exists, or `unavailable` if optional setup fails.
+
+The built-in Preview 1 launcher captures commands with one declared private
+Wasm memory. Each row has a PID, image generation, and runtime-local capture ID.
+A recording holds up to 16 owned rows and the last 16 departed rows. The runtime
+charges a single fixed 2,560-byte shared buffer. `skippedImages` counts eligible
+images that arrive while the table is full. A row can omit a summary if its
+Worker is updating it during a read.
+
+| Summary        | Active phases                                                                                                                                                             | Confirmed result                                                                                                                                                                                       |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pipeReadWait` | `waiting` starts at the first wait attempt after an unready scan. This covers an indefinite post-entry poll with one read subscription on a pipe.                         | A readiness event, including hangup, completes the operation. A pending signal or an unwind from the process wait guard cancels it. Readiness alone gives no byte count.                               |
+| `fsResolve`    | `submitted` means the client posted a cold resolve. `accepted` means the service queued that same request. The service can already have replied when the page samples it. | A decoded path result completes the operation, including a path with an absent final component. A numeric errno or transport error fails it. The completion's explicit cancellation branch cancels it. |
+
+Elapsed times cover the guest's observed interval in milliseconds. Pipe time
+runs from the first wait attempt through poll settlement, including any
+rescans. Filesystem time runs from successful submission through completion,
+including reply decoding. A submission failure has no elapsed time. The
+acceptance mark provides no separate backend duration. Measured times saturate
+at 4,294,967,295 milliseconds. An active operation that starts after its clock
+offset saturates has no readable elapsed time.
+
+Counters saturate and count confirmed results. Sampling does not change them.
+If the broker releases an image with an observed active operation and no
+confirmed result, the departed row records `retired-unconfirmed` and keeps
+the last confirmed result and counts. Its elapsed time comes from the last
+readable sample and can include time after a native stop. Snapshots are scalar copies. They can
+miss fast transitions or old images as history rotates. Startup, admission,
+worker memory, and thread observations have their own scopes.
+
 ## Start states
 
 `(await runtime.processes()).startStates()` lists every live process launch with the

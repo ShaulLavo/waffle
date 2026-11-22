@@ -90,6 +90,7 @@ export {
   weakMapGet,
   weakMapSet,
   weakMapHas,
+  weakMapDelete,
   setHas,
   setAdd,
   setDelete,

@@ -204,7 +204,8 @@ const setDeleteMethod = Set.prototype.delete,
   setForEachMethod = Set.prototype.forEach;
 const weakMapGetMethod = WeakMap.prototype.get,
   weakMapSetMethod = WeakMap.prototype.set,
-  weakMapHasMethod = WeakMap.prototype.has;
+  weakMapHasMethod = WeakMap.prototype.has,
+  weakMapDeleteMethod = WeakMap.prototype.delete;
 export function weakMapGet<K extends object, V>(map: WeakMap<K, V>, key: K): V | undefined {
   return apply(weakMapGetMethod, map, [key]);
 }
@@ -213,6 +214,9 @@ export function weakMapSet<K extends object, V>(map: WeakMap<K, V>, key: K, valu
 }
 export function weakMapHas<K extends object, V>(map: WeakMap<K, V>, key: K): boolean {
   return apply(weakMapHasMethod, map, [key]);
+}
+export function weakMapDelete<K extends object, V>(map: WeakMap<K, V>, key: K): boolean {
+  return apply(weakMapDeleteMethod, map, [key]);
 }
 export function setHas<T>(set: ReadonlySet<T>, value: T): boolean {
   return apply(setHasMethod, set, [value]);

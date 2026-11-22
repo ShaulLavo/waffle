@@ -156,6 +156,9 @@ export const payloadExceptions: readonly PayloadException[] = [
 
 const payloadReturnScopes = new Set(["proc/abi.ts:ProcessABI.span", "proc/abi.ts:ProcessABI.view"]);
 export const enforcedModules = [
+  "browser/operations/cells.ts",
+  "browser/operations/guest.ts",
+  "browser/operations/writer.ts",
   "browser/display/protocol.ts",
   "browser/display/guest.ts",
   "browser/display/surface-info.ts",
@@ -289,6 +292,10 @@ const authority = new Set([
   "FilesystemReservation",
   "FilesystemCompletion",
   "FilesystemClient",
+  "GuestOperationBinding",
+  "OperationBinding",
+  "OperationCells",
+  "OperationWriter",
   "FilesystemSection",
   "SharedFilesystemState",
   "TerminalIdentity",

@@ -187,6 +187,16 @@ controls. Their construction and byte-length reads still use captured array and 
 operations. Terminal wait timers use captured scheduling and cancellation functions because
 the callbacks retain private wait ownership. No payload exception is added for either path.
 
+## Operation diagnostics
+
+The broker gives the built-in Preview 1 Worker a private recorder binding in
+its bootstrap envelope. It gives the matching filesystem service session its
+own acceptance binding at connect. Neither binding enters an executor
+request or a filesystem identity. The Worker recorder uses captured
+intrinsics. Each mutable reusable cell pairs its capture tag and scalar value
+in one atomic word, so a retired producer cannot update a reused row. The page
+returns copied observation fields and keeps the correlation ID private.
+
 ## GPU guest boundary
 
 `browser/display/guest.ts`, `browser/display/surface-info.ts`, `browser/gpu/guest.ts`,

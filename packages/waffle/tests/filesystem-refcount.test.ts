@@ -7,6 +7,7 @@ import * as shared from "../fs/shared.ts";
 import * as native from "../proc/intrinsics.ts";
 import { localPublication } from "../fs/publication-internal.ts";
 import { mutationIntent } from "../fs/publication.ts";
+import { takeResolveObservation } from "../fs/resolve-observation.ts";
 import { CAPABILITY_HEADER, CAPABILITY_WORDS } from "../fs/protocol";
 import { afterEach, expect, test } from "bun:test";
 import {
@@ -45,6 +46,7 @@ function isolatedClient() {
   const bindings = {
     localPublication,
     mutationIntent,
+    takeResolveObservation,
     ...protocol,
     ...shared,
     ...native,

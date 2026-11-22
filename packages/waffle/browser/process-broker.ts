@@ -159,6 +159,7 @@ import type { RuntimeWorkerRequest, RuntimeWorkerMessage } from "./worker.js";
 import type { RuntimeNetworkPathScope } from "./net/runtime.js";
 import type { SignalDelegation } from "../programs/index.js";
 import { packageIdentity } from "../programs/catalog.js";
+import { preview1Launch } from "../programs/collection.js";
 import {
   CommandStdioError,
   type ProcessQuery,
@@ -167,10 +168,21 @@ import {
 } from "../proc/command.js";
 import type { CommandCapabilities } from "../proc/command-runner.js";
 import type { FileHandle } from "../core/filesystem.js";
+import type { OperationOwner } from "./operations/owner.js";
+import type {
+  GuestOperationBinding,
+  ObservedPreview1Bootstrap,
+  OperationBinding,
+} from "./operations/protocol.js";
+import type { OperationDiagnostics } from "./operations/types.js";
 
 export interface ProcessFilesystem {
   fork?(): FilesystemConnection;
-  connect(identity: FilesystemIdentity, headroom?: Headroom | null): FilesystemConnection;
+  connect(
+    identity: FilesystemIdentity,
+    headroom?: Headroom | null,
+    operations?: OperationBinding,
+  ): FilesystemConnection;
   revoke(identity: FilesystemIdentity): void;
   reap(identity: FilesystemIdentity): void;
   quiesce(identity: FilesystemIdentity): Promise<void>;
@@ -209,6 +221,7 @@ export interface BrowserProcessBrokerOptions {
   onError?(error: unknown): void;
   /** Opt-in metadata only; observers must not reenter process control. Exceptions are ignored. */
   onProcessAdmission?: ProcessAdmissionObserver;
+  observeOperations?: boolean;
   /** Memory group policy (W1-W3). Groups are created only by a launch that asks for one. */
   memoryGroups?: MemoryGroupPolicyOptions;
 }
@@ -272,6 +285,7 @@ export interface RuntimeRootOptions {
 export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   /** Module entry stays inert until its first request. A fresh worker is created on demand. */
   workerUrl: string;
+  readonly [preview1Launch]?: true;
   notificationWorkerUrl?: string;
   /** Explicit internal proof profile. Source admission is still mandatory. */
   threaded?: ThreadLaunchOptions;
@@ -341,6 +355,7 @@ interface RuntimeLaunch {
 }
 interface RuntimeChild {
   readonly generation: number;
+  operationCapture?: number;
   readonly transport: WorkerProcessTransport;
   readonly launch: RuntimeLaunch;
   /** Shared with the pending launch that created this child. */
@@ -494,6 +509,8 @@ export class BrowserProcessBroker {
   private readonly terminalOutputs = new Map<number, TerminalOutputBudget>();
   private readonly registries = new Map<number, PipePublicationRegistry>();
   private readonly children = new Map<number, RuntimeChild>();
+  #operations?: OperationOwner;
+  #operationsUnavailable = false;
   private readonly launchStates = new WeakMap<object, RuntimeLaunch>();
   private readonly fences = new Map<number, Promise<void>>();
   private readonly startupDiagnostics = new Set<Promise<void>>();
@@ -2190,6 +2207,61 @@ export class BrowserProcessBroker {
       return { ...child.identity, bytes: bytes < 0n ? null : Number(bytes) };
     });
   }
+  async prepareOperationDiagnostics(): Promise<void> {
+    try {
+      const { OperationOwner } = await import("./operations/owner.js");
+      this.#operations = new OperationOwner(
+        (length) =>
+          this.options.reservations.buffer("control", {
+            kind: "fixed-buffer",
+            length: bytes(length),
+          }),
+        ({ pid, generation, captureId }) => {
+          const child = this.children.get(pid);
+          return child?.generation === generation && child.operationCapture === captureId;
+        },
+      );
+    } catch {
+      this.#operationsUnavailable = true;
+    }
+  }
+  operationDiagnostics(): OperationDiagnostics {
+    if (!this.options.observeOperations) return { status: "disabled" };
+    try {
+      return (
+        this.#operations?.snapshot() ?? {
+          status: this.#operationsUnavailable ? "unavailable" : "empty",
+        }
+      );
+    } catch {
+      return { status: "unavailable" };
+    }
+  }
+  private captureOperations(
+    child: RuntimeChild,
+    options: WorkerLaunchOptions,
+    enabled: boolean,
+  ): GuestOperationBinding | undefined {
+    if (!enabled || !this.#operations || options.memoryGroup || options.memories?.length) return;
+    const memories = moduleMemoryDeclarations(options.request.module);
+    if (memories?.length !== 1 || memories[0]?.kind !== "private") return;
+    try {
+      const binding = this.#operations.enroll(child.identity.pid, child.generation);
+      if (binding) child.operationCapture = binding.captureId;
+      return binding;
+    } catch {
+      return;
+    }
+  }
+  private connectWorkerFilesystem(
+    filesystem: FilesystemIdentity,
+    arena: Headroom | null,
+    binding: GuestOperationBinding | undefined,
+  ): FilesystemConnection {
+    if (!binding) return this.options.filesystem.connect(filesystem, arena);
+    const { buffer, slot, captureId } = binding;
+    return this.options.filesystem.connect(filesystem, arena, { buffer, slot, captureId });
+  }
   /**
    * The start step each live launch reached, with page timestamps: a hung start names its
    * stuck step. Fresh authority-free snapshots; see docs/process-observation.md, "Start states".
@@ -2298,7 +2370,11 @@ export class BrowserProcessBroker {
         )
       )
         throw new Error("Threaded Preview 1 requires validated source bytes");
-      return this.launchOwnedWorker(context, { ...options, network, graphics });
+      return this.launchOwnedWorker(
+        context,
+        { ...options, network, graphics },
+        !!this.#operations && options[preview1Launch] === true,
+      );
     } catch (error) {
       if (
         !this.children.has(context.pid) &&
@@ -2404,6 +2480,7 @@ export class BrowserProcessBroker {
   private launchOwnedWorker<T extends RuntimeWorkerRequest>(
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,
+    observeOperations: boolean,
   ): ProcessHandle {
     if (this.suspended) {
       options.network?.dispose();
@@ -2433,7 +2510,7 @@ export class BrowserProcessBroker {
         throw error;
       }
     }
-    let memory: BigInt64Array;
+    let memory: BigInt64Array<SharedArrayBuffer>;
     try {
       memory = new BigInt64Array(allocateSharedControl(8));
       Atomics.store(memory, 0, -1n);
@@ -2471,6 +2548,7 @@ export class BrowserProcessBroker {
     };
     this.captureImageState(child);
     this.children.set(context.pid, child);
+    const operations = this.captureOperations(child, options, observeOperations);
     context.registerRevocation(() => this.disposeNetwork(child));
     let connection: FilesystemConnection | undefined;
     let worker: Worker;
@@ -2502,7 +2580,7 @@ export class BrowserProcessBroker {
           options.memoryGroup,
           ticket.group,
         );
-      connection = this.options.filesystem.connect(filesystem, ticket.arena);
+      connection = this.connectWorkerFilesystem(filesystem, ticket.arena, operations);
       if (readOutcome(context.outcome))
         throw new ProcessError(ProcessErrno.SRCH, "process exited before worker construction");
       worker = child.worker = this.workers.take(options.workerUrl);
@@ -2560,7 +2638,10 @@ export class BrowserProcessBroker {
       if (request.notifications) ports.push(request.notifications.port);
       if (request.network) ports.push(request.network.port);
       if (request.graphics) ports.push(request.graphics.port);
-      worker.postMessage(request, group ? ports.concat(group.transfer) : ports);
+      const bootstrap: RuntimeWorkerRequest | ObservedPreview1Bootstrap = operations
+        ? [request, operations]
+        : request;
+      worker.postMessage(bootstrap, group ? ports.concat(group.transfer) : ports);
       markStart(child.start, "start-posted");
     } catch (error) {
       child.failed = true;

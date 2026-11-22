@@ -5,6 +5,7 @@ import {
   type PublicationConfiguration,
 } from "../fs/publication-internal.js";
 import { MemoryBudget } from "../fs/memory-budget.js";
+import type { OperationBinding } from "./operations/protocol.js";
 import { bytes, type Headroom, type RuntimeReservations } from "../memory/reservations.js";
 import {
   isRevoked,
@@ -508,6 +509,21 @@ export class SharedFilesystem {
     return this.client.fork();
   }
   connect(identity: FilesystemIdentity, headroom: Headroom | null = null): FilesystemConnection {
+    return this.#connect(identity, headroom);
+  }
+  /** Trusted broker path. The binding goes only to the dedicated service Worker. */
+  connectObserved(
+    identity: FilesystemIdentity,
+    headroom: Headroom | null | undefined,
+    operations: OperationBinding,
+  ): FilesystemConnection {
+    return this.#connect(identity, headroom ?? null, operations);
+  }
+  #connect(
+    identity: FilesystemIdentity,
+    headroom: Headroom | null,
+    operations?: OperationBinding,
+  ): FilesystemConnection {
     this.assertLive();
     // An identity can be older than the tree: a blocked guest creates its child's identity from
     // its own directory. This page attaches every announced segment, so a child starts with all
@@ -518,9 +534,10 @@ export class SharedFilesystem {
     };
     const connection = connectFilesystemIdentity(current, this.requestPool, undefined, headroom);
     try {
-      this.postServiceConnection(connection.server, { connect: connection.server }, [
-        connection.server.port,
-      ]);
+      const message = operations
+        ? { connect: connection.server, operations }
+        : { connect: connection.server };
+      this.postServiceConnection(connection.server, message, [connection.server.port]);
     } catch (error) {
       cleanupAfterFailure([
         () => connection.client.port.close(),

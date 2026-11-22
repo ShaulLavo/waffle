@@ -51,6 +51,7 @@ import {
   sharedRevoked,
   type FilesystemConnection,
 } from "../fs/index.js";
+import { registerResolveObservation } from "../fs/resolve-observation.js";
 import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
 import {
@@ -97,7 +98,9 @@ import {
   wasmMemoryBuffer,
   listenAbort,
   unlistenAbort,
+  isInstance,
 } from "../proc/intrinsics.ts";
+import type { GuestOperationBinding, ObservedPreview1Bootstrap } from "./operations/protocol.js";
 
 import type { MemoryGroupMemberRequest } from "../group/protocol.js";
 import type { GroupMember } from "../group/member.js";
@@ -578,10 +581,29 @@ function requestProcessObserver<R extends RuntimeWorkerRequest>(
 }
 
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
-export async function bootstrap<R extends RuntimeWorkerRequest>(
+export function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
   executor: WorkerExecutor<R> | HostProgramExecutor<R>,
   host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
+): Promise<void> {
+  return bootstrapWorker(req, executor, host);
+}
+
+/** Internal entry point for the broker envelope. Executor requests never contain the binding. */
+export function bootstrapObservedPreview1(envelope: ObservedPreview1Bootstrap): Promise<void> {
+  return bootstrapWorker(
+    envelope[0],
+    preview1Executor,
+    globalThis as unknown as RuntimeWorkerHost,
+    envelope[1],
+  );
+}
+
+async function bootstrapWorker<R extends RuntimeWorkerRequest>(
+  req: R,
+  executor: WorkerExecutor<R> | HostProgramExecutor<R>,
+  host: RuntimeWorkerHost,
+  operations?: GuestOperationBinding,
 ): Promise<void> {
   const hooks = captureWorkerHost(host);
   if (!req.controlGrant) throw new TypeError("Worker bootstrap requires a shared control grant");
@@ -590,7 +612,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   );
   const restoreAllocator = installSharedControlAllocator(allocateShared);
   try {
-    await bootstrapAllocated(req, executor, host, hooks, allocateShared);
+    await bootstrapAllocated(req, executor, host, hooks, allocateShared, operations);
   } finally {
     restoreAllocator();
   }
@@ -601,8 +623,13 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   host: RuntimeWorkerHost,
   { postToHost, addListener, removeListener }: ReturnType<typeof captureWorkerHost>,
   allocateShared: (length: number) => SharedArrayBuffer,
+  operations?: GuestOperationBinding,
 ): Promise<void> {
   postToHost({ type: "phase", name: "worker-start", duration: 0 });
+  let started = false;
+  const recording = operations
+    ? await captureOperations(operations, req.filesystem, () => started)
+    : undefined;
   const fs = new FilesystemClient(req.filesystem);
   const { cancellation, notifications, startupCancelled, cancelStartup } = startupControl(
     req.notifications,
@@ -715,7 +742,6 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   let groupMember: GroupAttachment = noGroup;
   let releaseStartupStderr: (() => void) | undefined;
   let done = false;
-  let started = false;
   let socketNetwork:
     | ReturnType<(typeof import("./preview1-socket.js"))["attachPreview1Sockets"]>
     | undefined;
@@ -1308,6 +1334,12 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       startStep(memorySampler, "installing-bindings");
       runtimeProcess.installBindings();
       startStep(memorySampler, "bindings-installed");
+      const { observedPoll, wait } = processPollWait(recording, {
+        entered: () => started,
+        memory: () => boundMemory,
+        descriptors,
+        checkActive,
+      });
       process = new ProcessABI({
         memory: () => {
           checkActive();
@@ -1323,23 +1355,9 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         wake: runtimeProcess.wake,
         futexReady: groupMember.watchReady,
         createPipe: () => runtimeProcess!.createPipe(),
-        wait: (ms, word, expected) => {
-          checkActive();
-          assertTerminalWaitAllowed();
-          controlWait(word, 0, expected, ms);
-          checkActive();
-        },
+        wait,
       });
-      const entries = objectEntries(process.imports);
-      for (let index = 0; index < entries.length; index++) {
-        const entry = entries[index]!,
-          name = entry[0],
-          call = entry[1];
-        processImports[name] = (...args) => {
-          checkActive();
-          return call(...args);
-        };
-      }
+      installProcessImports(processImports, process.imports, checkActive, observedPoll);
     } else {
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
@@ -1430,6 +1448,75 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       if (removeListener) reflectApply(removeListener, host, ["error", onError]);
       if (removeListener) reflectApply(removeListener, host, ["unhandledrejection", onRejection]);
     }
+  }
+}
+
+async function captureOperations(
+  binding: GuestOperationBinding,
+  filesystem: FilesystemConnection,
+  entered: () => boolean,
+) {
+  try {
+    const { createOperationWriters, observePipePoll } = await import("./operations/guest.js");
+    const { pipe, resolve } = createOperationWriters(binding);
+    registerResolveObservation(filesystem, { entered, writer: resolve });
+    return { observePipePoll, writer: pipe };
+  } catch {
+    return undefined;
+  }
+}
+
+type PipeObserver = typeof import("./operations/guest.js").observePipePoll;
+function processPollWait(
+  recording: Awaited<ReturnType<typeof captureOperations>>,
+  options: Omit<Parameters<PipeObserver>[0], "writer" | "stopped">,
+) {
+  const observedPoll = recording && setupPipeObservation(recording, options);
+  const { checkActive } = options;
+  return {
+    observedPoll,
+    wait:
+      observedPoll?.wait ??
+      ((ms: number, word: Int32Array, expected: number) => {
+        checkActive();
+        assertTerminalWaitAllowed();
+        controlWait(word, 0, expected, ms);
+        checkActive();
+      }),
+  };
+}
+
+function setupPipeObservation(
+  recording: NonNullable<Awaited<ReturnType<typeof captureOperations>>>,
+  options: Omit<Parameters<PipeObserver>[0], "writer" | "stopped">,
+): ReturnType<PipeObserver> | undefined {
+  const { observePipePoll, writer } = recording;
+  try {
+    return observePipePoll({
+      ...options,
+      writer,
+      stopped: (error) => isInstance(error, WasiExit) || isInstance(error, RuntimeWorkerSignal),
+    });
+  } catch {
+    return;
+  }
+}
+
+function installProcessImports(
+  target: Record<string, (...args: number[]) => number | void>,
+  imports: ProcessABI["imports"],
+  checkActive: () => void,
+  observedPoll: ReturnType<PipeObserver> | undefined,
+): void {
+  const entries = objectEntries(imports);
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index]!;
+    const name = entry[0];
+    const call = name === "poll" && observedPoll ? observedPoll.wrap(entry[1]) : entry[1];
+    target[name] = (...args) => {
+      checkActive();
+      return call(...args);
+    };
   }
 }
 
