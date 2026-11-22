@@ -9,6 +9,7 @@
     "**/bun.lock",
     "LICENSE*",
     "AGENTS.md",
+    "CHANGELOG.md",
     "README.md",
     "site/README.md",
     "patches/**",

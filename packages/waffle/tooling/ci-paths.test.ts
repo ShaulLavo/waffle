@@ -189,10 +189,23 @@ test("release workflow publishes to npm with Changesets and OIDC provenance", ()
   const publishStep = releaseSteps.find(
     (entry) => entry.name === "Create Release Pull Request or Publish to npm",
   );
-  expect(publishStep?.uses).toBe("changesets/action@v1");
+  expect(publishStep?.uses).toBe("changesets/action@v2");
   const inputs = record(publishStep?.with);
-  expect(inputs.publish).toBe("bun run release:publish");
-  expect(inputs.createGithubReleases).toBe(true);
+  expect(inputs["version-script"]).toBe("bun run release:version");
+  expect(inputs["publish-script"]).toBe("bun run release:publish");
+  expect(inputs["create-github-releases"]).toBe(true);
+  expect(inputs.version).toBeUndefined();
+  expect(inputs.publish).toBeUndefined();
+  expect(inputs.createGithubReleases).toBeUndefined();
+  for (const command of [String(inputs["version-script"]), String(inputs["publish-script"])]) {
+    expect(command).not.toMatch(/&&|\|\||[;|]/);
+  }
+  const rootManifest = record(
+    JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")),
+  );
+  const rootScripts = record(rootManifest.scripts);
+  expect(rootScripts["release:version"]).toBe("bun scripts/version-runtime.ts");
+  expect(rootScripts["release:publish"]).toBe("bun scripts/publish-runtime.ts");
   expect(record(publishStep?.env).NPM_CONFIG_PROVENANCE).toBe("true");
 });
 
