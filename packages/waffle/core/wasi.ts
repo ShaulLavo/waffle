@@ -1211,7 +1211,12 @@ export class Wasi {
         fdOut >>>= 0;
         if (fdOut + 4 > this.bytes().length) return EFAULT;
         if (node === undefined) {
-          const result = this.opts.fs.create(path, "file", (oflags & O_EXCL) !== 0);
+          // Create exclusively first: success proves this open made the file, and POSIX
+          // truncates only a file that already existed. On any failure (a competing creator
+          // won, or a service refused the probe), create as before, truncate included.
+          let result = this.opts.fs.create(path, "file", true);
+          if (typeof result === "number") oflags &= ~O_TRUNC;
+          else if (!(oflags & O_EXCL)) result = this.opts.fs.create(path, "file", false);
           if (typeof result !== "number") return result.error;
           node = result;
           stat = this.opts.fs.stat(node);
