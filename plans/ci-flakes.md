@@ -144,8 +144,6 @@ control each time, all different:
   (`page-runner/host-drive-controls.ts:146`): run 43072689064.
 - command-notification-complete: `collector-failure` with `heartbeat-lost` and `Process browser
   resource closure did not settle during teardown`: run 45093449673 (PR 607).
-- host-separate-hook, on Chromium (`browser-controls-runner.ts chromium --prepared`):
-  `host-body-failure`, `Host setup/body timed out`: run 45095766650 (PR 608). Passed on rerun.
 
 The link runner hit `evaluate: Target page, context or browser has been closed` in
 run 44729859695, attempt 1. Navigation returned before evaluation began. The runner had
@@ -175,32 +173,8 @@ provisional target commit.
 
 Each passed on rerun with no code change, and none touches the code those PRs changed.
 
-- `tests/process-root-navigation-diagnostic.test.ts:296` threw `Synthetic collector readiness
-  timeout` once in a local full `bun run test` at load average 54; the file then passed 56 of 56
-  twice at the same load. The readiness wait is a fixed 5 s limit inside the test. Make it a
-  generous hang cap or wait on the fixture's readiness signal instead of elapsed time.
 - `tests/threads-runtime-browser-runner.ts webkit` failed `sibling descriptor reuse`
   (`tests/threads-runtime-fd-browser.ts:188`, a 15 s `until` cap) on PR 598, run 45003846225
   attempt 1; attempt 2 passed.
 - `tests/page-runner/gpu-async-controls-runner.ts --ci chromium webkit` failed with
   `host-body-failure` on main ecf82eee, run 45003278103 attempt 1; attempt 2 passed.
-
-## Failures seen during the 2026-11-23 loose-ends lane
-
-Each passed on rerun or alone, and none touches the code those PRs changed. Browser-controls
-failures from this lane are listed with that family above.
-
-- `tests/page-runner/framework-verdict.test.ts:203`, "framework verdict with fail, failed,
-  started=true", got `Error: No navigated owned framework window` under `bun run test
-  --parallel=2` on PR 608 (run 45093095342). The file passed 27 of 27 three times alone.
-- `tests/page-runner/host-drive.test.ts:162`, "interruption after-acceptance" and "interruption
-  before-dispatch ... prevents allocation return and constructors": a `SIGINT` listener present
-  before the fixture was gone after it, under `--parallel=2` on PR 607's merge commit (run
-  45100991155). Every `SIGINT` removal in the tree removes its own handler, so another file's
-  cleanup finishing during the test is the likely cause; which files share a worker depends on
-  the file list. The file passed 477 of 477 three times alone, and two full `--parallel=2` runs
-  of that tree passed. The rerun passed.
-- `tests/default-allocation-parity.test.ts`, "P7 PRE-IMPORT ..." (desktop and iOS user-agent
-  variants), hit its 5 s per-test timeout under full-suite load on the PC twice (PR 607 and PR
-  608 branches). The file passes 3 of 3 alone. Like the readiness wait above, make it a generous
-  hang cap or wait on a signal rather than elapsed time.

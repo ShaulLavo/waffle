@@ -93,7 +93,9 @@ class HostDriver extends FakeDriver {
         verdict: (value: HostVerdict) => {
           this.verdicts.push(value);
           this.phase = "teardown";
-          void this.terminal(value);
+          // Like the real host page, the fake reports in the background. An interrupted run
+          // may close its collector first, so a rejected report must not escape the test.
+          void this.terminal(value).catch(() => {});
         },
         allocateDatabase: (operation: string, name: string) => {
           this.allocations.push(name);

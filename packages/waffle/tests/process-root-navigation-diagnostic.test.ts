@@ -288,12 +288,12 @@ async function waitForReady(
   child: Bun.Subprocess,
   errors: Promise<string>,
 ): Promise<void> {
-  const start = performance.now();
+  // Readiness is the fixture's file or its exit. A child that hangs is caught by the test's
+  // hang cap; an elapsed limit here failed healthy runs under full-suite load.
   while (!(await Bun.file(path).exists())) {
     if (child.exitCode !== null && !(await Bun.file(path).exists())) {
       throw new Error(`Collector fixture exited before admission: ${await errors}`);
     }
-    if (performance.now() - start > 5000) throw new Error("Synthetic collector readiness timeout");
     await Bun.sleep(10);
   }
 }
@@ -383,17 +383,17 @@ async function collectorControl(interrupt: boolean, breakSink = false): Promise<
 test(
   "collector retains exact bytes, primary failure and cleanup across normal completion",
   () => collectorControl(false),
-  15000,
+  60_000,
 );
 test(
   "collector drains owned child cleanup after interruption and retains primary failure",
   () => collectorControl(true),
-  15000,
+  60_000,
 );
 test(
   "collector rejects an unwritable durable sink before spawning its fixture",
   () => collectorControl(false, true),
-  15000,
+  60_000,
 );
 
 test("collector forwards capture environment set immediately before spawn", async () => {

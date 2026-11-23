@@ -157,12 +157,15 @@ async function verdict(root: string, scenario: VerdictCase): Promise<void> {
         detach: () => host.detach(),
         frames: { isTestFrame: () => false, main: async () => {}, tester: async () => {} },
       });
-      for (const kind of ["orchestrator", "tester"] as const) {
-        const state = document(kind, `${origin}/${kind}`);
-        documents.set(kind, state);
-        await send(kind, { kind: "hello", role: kind, url: state.url });
-      }
-      await host.openPage(`${origin}/orchestrator`, async () => {});
+      // Documents exist only after navigation, so they report from inside it. Reporting
+      // before openPage let the 25 ms monitor tick admit them with no navigated window.
+      await host.openPage(`${origin}/orchestrator`, async () => {
+        for (const kind of ["orchestrator", "tester"] as const) {
+          const state = document(kind, `${origin}/${kind}`);
+          documents.set(kind, state);
+          await send(kind, { kind: "hello", role: kind, url: state.url });
+        }
+      });
       await host.initialViewport(await bounded(permit.promise, 2000, "Control admission"));
       await event("tester", {
         kind: "collected",
