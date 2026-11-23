@@ -208,3 +208,13 @@ Each passed on rerun with no code change, and none touches the code those PRs ch
   after the command passed: the 5 s close cap in the same family as canonical-ownership above.
   If the mismatch recurs, print the guest's `GPU_ASYNC_FAIL` line in the error.
 
+## Known cleanup limit
+
+`tests/process-root-navigation-diagnostic.test.ts` collector tests: after the 40 s readiness
+cap, cleanup sends the collector SIGTERM (its handler stops the child it spawned), waits 10 s,
+then kills the collector's group and the child named by the test or by `collector-owner.json`.
+If the collector itself hangs after spawning the detached child but before writing that record,
+the child survives. `collectChild` spawns and writes the record in one synchronous step, so this
+needs a hang inside that step; on main any readiness timeout leaked the child. A complete fix
+would have the collector pass the child's PID to the test before it can be lost, for example
+by writing the record from a spawn wrapper that runs first.
