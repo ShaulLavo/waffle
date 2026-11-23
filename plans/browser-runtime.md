@@ -386,3 +386,61 @@ across the service boundary (no handle returned, no mutation lock, and publicati
 handle, activation and resident-grant checks kept) with capability discovery for custom backends.
 That is the `isRoot` direction PR 600 tried. The PR 606 branch `lane/loose-ends-openat` and its
 worker test (`tests/wasi-root-identity.test.ts`) are kept for reuse.
+
+## Publication code in every eager graph (owner decision)
+
+The publication domain (`fs/publication.ts`, `publication-attachment.ts`, `publication-grant.ts`,
+`publication-memory-budget.ts`) is in the eager graph of the page, the filesystem worker and every
+process worker, though only `workspace: true` runtimes and resident publication use the domain.
+Measured on main 14a85d8a with `bun build --minify --splitting --metafile`: about 43 KB of the
+262 KB raw eager JavaScript of a minimal app that only calls `createRuntime`, and about 45 KB of the
+255 KB raw eager graph of `browser/worker.ts`, which every process start parses. The workspace
+projection (`fs/workspace.ts`, `workspace-protocol.ts`, `namespace-projection-*`) adds about 31 KB
+more to the page for the same reason.
+
+The blockers are synchronous: `createRuntime` builds publication buffers in `SharedFilesystem`'s
+constructor when `workspace` is set, `SharedFilesystemState`'s constructor builds a
+`PublicationDomain`, `fs/protocol.ts` builds one to fork and retire sessions, and `FilesystemClient`
+and `MemoryBackend.execute` call `mutationIntent` on every request. A split would move the
+request-shape helpers (`mutationIntent`, `mutationValue`, buffer plans) into a small module and load
+the domain at the existing asynchronous points (filesystem worker start, process bootstrap) only
+when the connection carries publication buffers. This is a size rewrite, so it waits for the owner.
+
+## Saved workspaces evict their whole clean cache past 1,024 entries
+
+`PersistentBackend.prepareOperation` calls `evictClean(handle)` once more than 1,024 shared slots
+are registered. Apart from the requesting handle and handles still loading, `evictClean` evicts
+every eligible clean entry (and unloads clean payloads it cannot evict). An install touches
+thousands of files, so reads right after it go to storage through `prepareDescriptorRead`
+without loading the file: each filesystem request fetches at most `PAGE` (64 KiB), limited by the
+requested length and the bytes left in the file. In the benchmark (2 KiB files, two reads per file)
+each request cost 220 to 300 µs in Chromium. Reading a freshly
+installed 1,000-file tree took 0.9 to 2.6 s in a saved workspace across the three engines. In
+memory mode the same read took 223 ms in Chromium, 669 ms in Firefox and 573 ms in WebKit, in a
+separate run.
+
+PR 617 tried least-recently-used eviction down to 6,144 past 8,192 entries (read tree 67 to 80
+percent faster in all three engines) and was closed: the 1,024 limit also keeps two metadata
+budgets safe, and its review reproduced both breaking.
+
+1. Dirty admission: registering a slot charges 2,048 units (1,024 reserved at baseline), compared
+   with the default 8 MiB capture ceiling (`shared.ts` register, `dirty-admission.ts`). About
+   4,096 registrations reach it, the registration fails, and the retry through
+   `waitForDirtyCapacity` runs the same sweep without a requesting handle: it still skips loading
+   handles, evicts every other eligible clean entry, and only unloads the payloads of entries it
+   cannot evict.
+2. Checkpoint capture: `pinMetadataBytes()` counts every registered file with a committed payload
+   key and also detached payload keys, and a queued write commit adds a fresh pin estimate when it
+   starts. With 5,000 cached files and `dirtyLimits: false`, `flush()` after a one-byte overwrite
+   failed with "filesystem checkpoint pressure limit reached".
+
+A fix needs both limits. Checkpoint pressure could be resolved by charging only the files the
+retention list owns, but the eviction threshold and target must still leave dirty-admission
+headroom. Evict least recently used first: re-inserting into `registeredNodes` in `sync` orders
+entries by service-side touches, and walking that map avoids the 32,768-slot
+`registeredHandles()` scan. Resident `FilesystemClient` reads go straight through shared memory and
+never reach `sync`, so the design must state which accesses count as use (service requests only, or
+also a cheap shared-memory touch marker). Test the default path through `FilesystemClient`.
+Evicting only down to a target with the 1,024 limit kept made no consistent difference, because a
+sequential read of a tree larger than the cache misses under least-recently-used order too. Cold
+reads of small files could also load the whole file instead of one range per request.
