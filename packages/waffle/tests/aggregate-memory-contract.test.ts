@@ -61,6 +61,9 @@ class HeldStorage implements StorageBackend {
   retainPayload(): PayloadRetention {
     throw new Error("unexpected cold payload retention");
   }
+  checkPayload(): void {
+    throw new Error("unexpected cold payload check");
+  }
   async persist(batch: PersistenceBatch) {
     const copied = snapshotBatch(batch);
     for (const bytes of batch.data.values()) this.retained.push(bytes.buffer);

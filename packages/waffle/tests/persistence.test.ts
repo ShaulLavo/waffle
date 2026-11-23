@@ -39,6 +39,7 @@ class Store {
     return fixturePayloadHooks(this.payloads).readRange(key, range);
   };
   retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
+  checkPayload = fixturePayloadHooks(this.payloads).checkPayload;
   reads = 0;
   batches: any[] = [];
   fail = false;

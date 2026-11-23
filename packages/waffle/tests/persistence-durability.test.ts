@@ -17,6 +17,7 @@ class Store implements StorageBackend {
   payloads = new Map<string, Uint8Array>();
   readRange = fixturePayloadHooks(this.payloads).readRange;
   retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
+  checkPayload = fixturePayloadHooks(this.payloads).checkPayload;
   syncs: (readonly string[] | undefined)[] = [];
   async load() {
     return this.index;

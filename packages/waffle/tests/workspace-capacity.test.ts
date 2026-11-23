@@ -444,6 +444,9 @@ async function coldFixture(index: PersistedIndex) {
       retainPayload() {
         throw new Error("namespace retained a cold payload");
       },
+      checkPayload() {
+        throw new Error("namespace checked a cold payload");
+      },
       async persist(batch) {
         persists++;
         expect(closing).toBe(true);

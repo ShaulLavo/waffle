@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { PAGE } from "../fs/protocol";
+import type { ColdReadCache } from "../fs/cold-read-cache";
 import { coldByte, coldDescriptorFixture, coldSize } from "./fixtures/cold-descriptor";
 import { SLOT_WORDS } from "../fs/shared";
 
@@ -240,6 +241,94 @@ test("backend close waits until its bounded retained range is released", async (
     expect(closed).toBe(true);
   } finally {
     gate.release();
+    await fixture.close();
+  }
+});
+
+const pageBytes = (index: number, length = PAGE) =>
+  Uint8Array.from({ length }, (_, at) => coldByte(index * PAGE + at));
+
+test("rereading an unmodified cold file serves its verified pages without storage", async () => {
+  const fixture = await coldDescriptorFixture();
+  try {
+    const before = fixture.backend.shared.resources().usedBytes;
+    for (let pass = 0; pass < 3; pass++)
+      for (let index = 0; index < 4; index++)
+        expect(
+          await fixture.client.asyncCall("read", [fixture.handle, PAGE, index * PAGE]),
+        ).toEqual(pageBytes(index));
+    // A range inside or across cached pages is copied from them too.
+    expect(await fixture.client.asyncCall("read", [fixture.handle, 5, PAGE - 2])).toEqual(
+      Uint8Array.from({ length: 5 }, (_, at) => coldByte(PAGE - 2 + at)),
+    );
+    expect(fixture.counters.ranges).toEqual(
+      [0, 1, 2, 3].map((index) => ({ offset: index * PAGE, length: PAGE })),
+    );
+    expect(fixture.counters.wholeBytes).toBe(0);
+    expect(fixture.counters.retained).toBe(0);
+    // Every hit (two later passes of four pages, then the cross-page range) asked storage.
+    expect(fixture.counters.checks).toBe(9);
+    expect(fixture.backend.shared.resources().usedBytes).toBe(before);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a cached page is refused once its storage can no longer serve the payload", async () => {
+  const fixture = await coldDescriptorFixture();
+  try {
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0])).toEqual(pageBytes(0));
+    // As IndexedDB storage reports after another tab took the workspace over.
+    fixture.storage.checkPayload = () => {
+      throw new Error("This workspace was opened in another tab. Reload to continue here.");
+    };
+    const outcome = await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0]).then(
+      () => "served",
+      () => "refused",
+    );
+    expect(outcome).toBe("refused");
+    expect(fixture.counters.ranges).toHaveLength(1);
+    expect(fixture.counters.retained).toBe(0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a failed close still frees the cached pages", async () => {
+  const fixture = await coldDescriptorFixture();
+  const cache = (fixture.backend as unknown as { coldReads: ColdReadCache }).coldReads;
+  try {
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0])).toEqual(pageBytes(0));
+    expect(cache.read("cold", 0, PAGE)).toEqual(pageBytes(0));
+    // The final checkpoint has a namespace change to persist, and persisting it fails.
+    await fixture.client.asyncCall("mkdirp", ["/dirty"]);
+    fixture.storage.persist = async () => {
+      throw new Error("final checkpoint failed");
+    };
+    const closed = await fixture.backend.close().then(
+      () => "closed",
+      (error) => String(error),
+    );
+    expect(closed).toContain("final checkpoint failed");
+    expect(cache.read("cold", 0, 1)).toBeUndefined();
+  } finally {
+    await fixture.close().catch(() => {});
+    fixture.client.connection.port.close();
+  }
+});
+
+test("a rewritten cold file never serves pages cached for its stored payload", async () => {
+  const fixture = await coldDescriptorFixture();
+  try {
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0])).toEqual(pageBytes(0));
+    // The 32 MiB payload cannot hydrate into this 16 MiB pool, so replace it instead.
+    await fixture.client.asyncCall("resize", [fixture.handle, 0, true]);
+    await fixture.client.asyncCall("write", [fixture.handle, 0], new Uint8Array(PAGE).fill(91));
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0])).toEqual(
+      new Uint8Array(PAGE).fill(91),
+    );
+    expect(fixture.counters.ranges).toHaveLength(1);
+  } finally {
     await fixture.close();
   }
 });

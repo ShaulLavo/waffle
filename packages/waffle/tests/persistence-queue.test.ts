@@ -36,6 +36,7 @@ class BlockedStore implements StorageBackend {
     return this.rangeHooks.readRange(key, range);
   }
   retainPayload = this.rangeHooks.retainPayload;
+  checkPayload = this.rangeHooks.checkPayload;
   private identityReservation?: StoredReservation;
   async reserveIdentity(workspace?: string) {
     const value = nextReservation(this.identityReservation, workspace);

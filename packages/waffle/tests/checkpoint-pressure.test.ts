@@ -25,6 +25,7 @@ class HeldStorage implements StorageBackend {
   readonly payloads = new Map<string, Uint8Array>();
   readRange = fixturePayloadHooks(this.payloads).readRange;
   retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
+  checkPayload = fixturePayloadHooks(this.payloads).checkPayload;
   readonly batches: PersistenceBatch[] = [];
   readonly syncs: (readonly string[] | undefined)[] = [];
   readonly persistEntered = Promise.withResolvers<void>();

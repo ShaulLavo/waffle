@@ -929,6 +929,12 @@ export class IndexedDBStorage implements StorageBackend {
       throw new Error("Retained filesystem payload size mismatch");
     return this.readers.retain(key, expectedSize, metadata);
   }
+  /** The size was verified when the caller's bytes were read; finding it again scans the index. */
+  checkPayload(key: string): void {
+    this.assertOwner();
+    if (this.closed || !this.state?.payloadKeys.has(key) || this.deletingPayloads.has(key))
+      throw new Error("Missing retained filesystem payload");
+  }
   private payloadSize(key: string): number | undefined {
     const retained = this.readers.size(key);
     if (retained !== undefined) return retained;

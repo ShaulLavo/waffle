@@ -431,6 +431,11 @@ export class OpfsStorage implements StorageBackend {
     this.assertHandleOwnership();
     return this.readers.retain(key, expectedSize, metadata);
   }
+  checkPayload(key: string, expectedSize: number): void {
+    if (this.closed || this.known.get(key) !== expectedSize)
+      throw new Error("Missing retained filesystem payload");
+    this.assertHandleOwnership();
+  }
   private retainedRange(key: string, options: OpfsRangeOptions): Promise<Uint8Array> {
     if (this.closed) return Promise.reject(new Error("Filesystem storage is closed"));
     const work = this.readImmutableRange(key, options);

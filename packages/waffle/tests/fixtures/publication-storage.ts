@@ -26,5 +26,8 @@ export function fixturePayloadHooks(payloads: ReadonlyMap<string, Uint8Array>) {
       if (payloads.get(key)?.byteLength !== size) throw new Error("missing fixture payload");
       return { release() {} };
     },
+    checkPayload(key: string, size: number) {
+      if (payloads.get(key)?.byteLength !== size) throw new Error("missing fixture payload");
+    },
   };
 }

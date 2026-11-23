@@ -22,6 +22,7 @@ export async function coldDescriptorFixture() {
     rangeBytes: 0,
     ranges: [] as { offset: number; length: number }[],
     retained: 0,
+    checks: 0,
   };
   const storage: StorageBackend = {
     async reserveIdentity() {
@@ -57,6 +58,9 @@ export async function coldDescriptorFixture() {
           counters.retained--;
         },
       };
+    },
+    checkPayload() {
+      counters.checks++;
     },
     async persist() {},
     async flush() {},

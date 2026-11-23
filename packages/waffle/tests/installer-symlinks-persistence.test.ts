@@ -18,6 +18,7 @@ class SnapshotStore implements StorageBackend {
   readonly payloads = new Map<string, Uint8Array>();
   readonly readRange = fixturePayloadHooks(this.payloads).readRange;
   readonly retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
+  readonly checkPayload = fixturePayloadHooks(this.payloads).checkPayload;
   async reserveIdentity(workspace?: string) {
     const next = nextReservation(this.reservation, workspace);
     this.reservation = storeReservation(next);

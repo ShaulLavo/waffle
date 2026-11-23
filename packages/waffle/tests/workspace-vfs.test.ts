@@ -412,6 +412,9 @@ test("cold persistent scan reads zero payload and creates no per-node shared han
       retainPayload() {
         throw new Error("metadata scan retained payload");
       },
+      checkPayload() {
+        throw new Error("metadata scan checked payload");
+      },
       async persist() {},
       async flush() {},
       async close() {},
