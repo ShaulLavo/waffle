@@ -1215,6 +1215,9 @@ export class Wasi {
           if (typeof result !== "number") return result.error;
           node = result;
           stat = this.opts.fs.stat(node);
+          // POSIX truncates only a file that already existed. A competing creator's file can
+          // win the create, so skip the truncate only while the file is still empty.
+          if (stat.kind === "file" && stat.size === 0) oflags &= ~O_TRUNC;
         }
         return this.writeResult(
           openInode(
