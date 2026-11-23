@@ -410,22 +410,41 @@ function trackedLauncher(
   };
 }
 
+/** Paths are unique within an install (see programEntries), so each phase issues all of its
+ * filesystem requests together: one round trip per phase instead of two per program. */
 async function provision(runtime: Runtime, entries: readonly Entry[], created: Entry[]) {
-  const directories = new Set<string>();
-  for (const entry of entries) {
-    const existing = await runtime.filesystem.lookup(entry.path);
-    if (existing) {
-      // A matching marker survives from an earlier page on persistent storage. Reuse it,
-      // but it never becomes this installation's to remove.
-      if (existing.kind === "file" && (await isMarker(runtime, entry))) continue;
-      throw new ProgramConflictError(entry.path, "another entry already exists");
+  const filesystem = runtime.filesystem;
+  const existing = await Promise.all(entries.map((entry) => filesystem.lookup(entry.path)));
+  const missing: Entry[] = [];
+  const reused: Promise<boolean>[] = [];
+  const reusedEntries: Entry[] = [];
+  entries.forEach((entry, index) => {
+    const found = existing[index];
+    if (!found) {
+      missing.push(entry);
+      return;
     }
-    const directory = parentDirectory(entry.path);
-    if (!directories.has(directory)) await runtime.filesystem.mkdirp(directory);
-    directories.add(directory);
-    await runtime.filesystem.writeFile(entry.path, entry.marker, { exclusive: true });
-    created.push(entry);
-  }
+    if (found.kind !== "file")
+      throw new ProgramConflictError(entry.path, "another entry already exists");
+    // A matching marker survives from an earlier page on persistent storage. Reuse it,
+    // but it never becomes this installation's to remove.
+    reusedEntries.push(entry);
+    reused.push(isMarker(runtime, entry));
+  });
+  const markers = await Promise.all(reused);
+  const conflict = reusedEntries.find((_entry, index) => !markers[index]);
+  if (conflict) throw new ProgramConflictError(conflict.path, "another entry already exists");
+  const directories = new Set(missing.map((entry) => parentDirectory(entry.path)));
+  await Promise.all(Array.from(directories, (directory) => filesystem.mkdirp(directory)));
+  const writes = await Promise.allSettled(
+    missing.map((entry) => filesystem.writeFile(entry.path, entry.marker, { exclusive: true })),
+  );
+  let failure: PromiseRejectedResult | undefined;
+  writes.forEach((result, index) => {
+    if (result.status === "fulfilled") created.push(missing[index]!);
+    else failure ??= result;
+  });
+  if (failure) throw failure.reason;
 }
 
 async function isMarker(runtime: Runtime, entry: Entry): Promise<boolean> {
