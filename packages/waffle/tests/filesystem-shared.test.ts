@@ -159,6 +159,62 @@ test("unlink retains open pages then zeroes and reuses them on last close", () =
   expect(state.resources().usedBytes).toBe(PAGE);
 });
 
+test("the registered file count follows registration, release and eviction", () => {
+  const state = new SharedFilesystemState();
+  // Dirty admission shares the header and signals page releases; it must not move the count.
+  state.mutate(undefined, undefined, () =>
+    state.dirtyAdmission.configure(
+      {},
+      { maxBytes: 64 * PAGE, maxMetadataBytes: 1 << 20, maxOperations: 1024 },
+      0,
+    ),
+  );
+  expect(state.dirtyAdmission.enabled).toBe(true);
+  const scanned = () => {
+    let count = 0;
+    for (let at = SLOT_WORDS; at < state.slots.length; at += SLOT_WORDS)
+      if (Atomics.load(state.slots, at)) count++;
+    return count;
+  };
+  const expectCount = (files: number) => {
+    expect(scanned()).toBe(files);
+    expect(state.resources().files).toBe(files);
+    // Another thread's view of the same tree reads the same count.
+    expect(new SharedFilesystemState(state.buffer).resources().files).toBe(files);
+  };
+  expectCount(0);
+  const file = (ino: number) => ({
+    kind: "file" as const,
+    ino,
+    nlink: 1,
+    size: 3,
+    ...statTimes(1),
+  });
+  state.register(0, file(1), new Uint8Array(3));
+  state.register(1, file(2), new Uint8Array(3));
+  state.register(2, { kind: "directory", ino: 3, nlink: 2, size: 0, ...statTimes(1) });
+  state.register(3, file(4), new Uint8Array(3));
+  expectCount(4);
+  state.register(0, file(1), new Uint8Array(3));
+  expectCount(4);
+  state.retain(1);
+  state.unlink(1);
+  expectCount(4);
+  state.release(1);
+  expectCount(3);
+  const change = state.dirtyAdmission.change;
+  expect(state.evict(3, state.revision(3)!)).toBe(true);
+  expect(state.dirtyAdmission.change).not.toBe(change);
+  expectCount(2);
+  state.register(5, file(6), new Uint8Array(3));
+  expectCount(3);
+  for (let round = 0; round < 50; round++) {
+    state.register(10, file(10), new Uint8Array(3));
+    expect(state.evict(10, state.revision(10)!)).toBe(true);
+  }
+  expectCount(3);
+});
+
 test("resource snapshots include all allocated SAB bytes and the storage cap", () => {
   const state = new SharedFilesystemState();
   state.register(0, {
