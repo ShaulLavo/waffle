@@ -400,8 +400,6 @@ test("sidecar digest verification, schema validation, and binding reject every m
     { importedFunctions: -1 },
     { names: [42] },
     { names: ["_start", "", "inner_trap"] },
-    { names: ["_start", "bad\nline", "inner_trap"] },
-    { names: ["_start", "bad\0null", "inner_trap"] },
     { extra: true },
   ]) {
     const bad = await encodeSidecar(source, 2, ["_start", "outer", "inner_trap"], overrides);
@@ -507,35 +505,7 @@ test("bounded sidecar fetch rejects HTTP errors, network errors, timeouts, overs
     ),
   ).toBeUndefined();
 
-  // Content-Length exceeds maxBytes (cancels before reading from stream)
-  let pulled = false;
-  let declaredCancelled = false;
-  const declaredTooLarge = new Response(
-    new ReadableStream(
-      {
-        pull(controller) {
-          pulled = true;
-          controller.enqueue(new Uint8Array(64));
-          controller.close();
-        },
-        cancel() {
-          declaredCancelled = true;
-        },
-      },
-      { highWaterMark: 0 },
-    ),
-    { headers: { "content-length": "100" } },
-  );
-  expect(
-    await fetchSymbolSidecar(
-      { url: "https://example.test/big.json", sha256: validSha },
-      { maxBytes: 32, fetch: mockFetchOf(() => declaredTooLarge) },
-    ),
-  ).toBeUndefined();
-  expect(pulled).toBe(false);
-  expect(declaredCancelled).toBe(true);
-
-  // Streaming body exceeds maxBytes without Content-Length
+  // Streaming body exceeds maxBytes (cancels mid-stream before pulling remaining chunks)
   let streamCancelled = false;
   let chunkCount = 0;
   const streamedTooLarge = new Response(
@@ -571,7 +541,7 @@ test("bounded sidecar fetch rejects HTTP errors, network errors, timeouts, overs
       { fetch: mockFetchOf(() => new Response(sampleBytes)) },
     ),
   ).toEqual(sampleBytes);
-  // Wrong exact bytes rejected on streamed body
+  // Wrong exact bytes rejected on decoded streamed body (both shorter and longer)
   expect(
     await fetchSymbolSidecar(
       {
@@ -582,31 +552,16 @@ test("bounded sidecar fetch rejects HTTP errors, network errors, timeouts, overs
       { fetch: mockFetchOf(() => new Response(sampleBytes)) },
     ),
   ).toBeUndefined();
-  // Wrong Content-Length vs source.bytes rejected before reading
-  let mismatchPulled = false;
   expect(
     await fetchSymbolSidecar(
-      { url: "https://example.test/mismatch.json", bytes: 16, sha256: sampleSha },
       {
-        fetch: mockFetchOf(
-          () =>
-            new Response(
-              new ReadableStream(
-                {
-                  pull(controller) {
-                    mismatchPulled = true;
-                    controller.close();
-                  },
-                },
-                { highWaterMark: 0 },
-              ),
-              { headers: { "content-length": "15" } },
-            ),
-        ),
+        url: "https://example.test/long.json",
+        bytes: sampleBytes.byteLength - 1,
+        sha256: sampleSha,
       },
+      { fetch: mockFetchOf(() => new Response(sampleBytes)) },
     ),
   ).toBeUndefined();
-  expect(mismatchPulled).toBe(false);
   // source.bytes exceeding maxBytes or invalid fails closed before calling fetch
   let precheckFetches = 0;
   for (const badBytes of [64, -1, 1.5]) {
@@ -832,4 +787,214 @@ test("describeWorkerError strips only the leading error header and preserves fra
       "    w_0123456789abcdef01234567.@:wasm-function[3]:0xeb",
     ].join("\n"),
   );
+});
+
+test("gzip-encoded HTTP response with compressed Content-Length succeeds and enforces decoded size bounds", async () => {
+  const source = ordinaryGuestFixture(31);
+  const mod = await new InterruptModuleCache(16, null, {}, { symbolDiagnostics: true }).compile(
+    source,
+  );
+  const sidecar = await encodeSidecar(source, 2, ["_start", "outer", "inner_trap"]);
+  const gzipped = Bun.gzipSync(sidecar.bytes);
+  expect(gzipped.byteLength).not.toBe(sidecar.bytes.byteLength);
+
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/gzip.json") {
+        return new Response(gzipped, {
+          headers: {
+            "content-type": "application/json",
+            "content-encoding": "gzip",
+            "content-length": String(gzipped.byteLength),
+          },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  try {
+    const url = `http://127.0.0.1:${server.port}/gzip.json`;
+    const table = await loadSymbolTable(mod, {
+      url,
+      bytes: sidecar.bytes.byteLength,
+      sha256: sidecar.sha256,
+    });
+    expect(table).toBeDefined();
+    expect(table!.lookup(5)).toBe("inner_trap");
+
+    // Decoded bytes exceeding maxBytes are rejected even when compressed Content-Length < maxBytes
+    const tooSmallBudget = Math.min(gzipped.byteLength + 1, sidecar.bytes.byteLength - 1);
+    expect(
+      await fetchSymbolSidecar({ url, sha256: sidecar.sha256 }, { maxBytes: tooSmallBudget }),
+    ).toBeUndefined();
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("timeout and caller abort cover reading the whole body and reject late or stalled streams", async () => {
+  const sampleBytes = new Uint8Array(textEncoder.encode('{"ok":1}'));
+  const sampleSha = await sha256Hex(sampleBytes);
+
+  // Late body delivered only when the timeout signal fires must be rejected
+  const lateAfterTimeout = await fetchSymbolSidecar(
+    { url: "https://example.test/late.json", bytes: sampleBytes.byteLength, sha256: sampleSha },
+    {
+      timeoutMs: 25,
+      fetch: mockFetchOf((_url, init) => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener("abort", () => {
+              try {
+                controller.enqueue(sampleBytes);
+                controller.close();
+              } catch {}
+            });
+          },
+        });
+        return new Response(body);
+      }),
+    },
+  );
+  expect(lateAfterTimeout).toBeUndefined();
+
+  // Stream that stalls forever must settle on timeout and cancel its reader
+  let stalledCancelled = false;
+  const stalledBody = await fetchSymbolSidecar(
+    { url: "https://example.test/stalled.json", sha256: sampleSha },
+    {
+      timeoutMs: 25,
+      fetch: mockFetchOf(
+        () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(sampleBytes.subarray(0, 2));
+              },
+              cancel() {
+                stalledCancelled = true;
+              },
+            }),
+          ),
+      ),
+    },
+  );
+  expect(stalledBody).toBeUndefined();
+  expect(stalledCancelled).toBe(true);
+
+  // Caller AbortSignal cancelling a stalled stream settles promptly and cancels reader
+  let abortCancelled = false;
+  const caller = new AbortController();
+  setTimeout(() => caller.abort(), 20);
+  const callerAborted = await fetchSymbolSidecar(
+    { url: "https://example.test/abort.json", sha256: sampleSha },
+    {
+      timeoutMs: 5_000,
+      signal: caller.signal,
+      fetch: mockFetchOf(
+        () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              cancel() {
+                abortCancelled = true;
+              },
+            }),
+          ),
+      ),
+    },
+  );
+  expect(callerAborted).toBeUndefined();
+  expect(abortCancelled).toBe(true);
+});
+
+test("sidecar names containing LF, CR, or NUL match PR 608 acceptance and render safely on one line", async () => {
+  const source = ordinaryGuestFixture(32);
+  const mod = await new InterruptModuleCache(16, null, {}, { symbolDiagnostics: true }).compile(
+    source,
+  );
+  const facts = admittedModuleDiagnostics(mod)!;
+  const sidecar = await encodeSidecar(source, 2, ["_start", "weird\nline\r\0name", "inner_trap"]);
+  const parsed = await parseSymbolSidecar(sidecar.bytes, sidecar.sha256, sidecar.bytes.byteLength);
+  expect(parsed).toBeDefined();
+  const table = bindSymbolSidecar(facts, parsed!)!;
+  expect(table).toBeDefined();
+  expect(table.lookup(3)).toBe("_start");
+  expect(table.lookup(4)).toBe("weird\nline\r\0name");
+  expect(table.lookup(5)).toBe("inner_trap");
+
+  const tok = facts.nonce;
+  const rawStack = [
+    "RuntimeError: unreachable",
+    `    at ${tok} (wasm://wasm/${tok}-deadbeef:wasm-function[5]:0x128)`,
+    `    at ${tok} (wasm://wasm/${tok}-deadbeef:wasm-function[4]:0x10b)`,
+    `    at ${tok} (wasm://wasm/${tok}-deadbeef:wasm-function[3]:0xeb)`,
+  ].join("\n");
+  const annotated = annotateStack(rawStack, [table]);
+  expect(annotated.annotatedFrames).toBe(3);
+  expect(annotated.stack.split("\n")).toHaveLength(4);
+  expect(annotated.stack).toContain(`${tok}.inner_trap`);
+  expect(annotated.stack).toContain(`${tok}.weird\\nline\\r\\0name`);
+  expect(annotated.stack).toContain(`${tok}._start`);
+  // Idempotent on second pass
+  expect(annotateStack(annotated.stack, [table]).annotatedFrames).toBe(0);
+});
+
+test("Firefox owned-frame grammar accepts @ in compile-site URLs while rejecting already-named and truncated frames", async () => {
+  const source = ordinaryGuestFixture(33);
+  const mod = await new InterruptModuleCache(16, null, {}, { symbolDiagnostics: true }).compile(
+    source,
+  );
+  const facts = admittedModuleDiagnostics(mod)!;
+  const sidecar = await encodeSidecar(source, 2, ["_start", "outer", "inner_trap"]);
+  const table = bindSymbolSidecar(facts, sidecar.payload)!;
+  const tok = facts.nonce;
+
+  const ffAtStack = [
+    `${tok}.@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
+    `${tok}.@/@tests.js line 1904 > WebAssembly.compile:wasm-function[4]:0x10b`,
+    `${tok}.@https://user@example.test/@scope/page.js line 12 > WebAssembly.compile:wasm-function[3]:0xeb`,
+    `${tok}.already_named@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
+    `${tok}.@spoof_fn@http://127.0.0.1:41234/page.js line 10 > WebAssembly.compile:wasm-function[5]:0x128`,
+    `${tok}.@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x1... [truncated]`,
+  ].join("\n");
+
+  const annotated = annotateStack(ffAtStack, [table], { engine: "firefox" });
+  expect(annotated.annotatedFrames).toBe(3);
+  expect(annotated.stack).toBe(
+    [
+      `${tok}.inner_trap@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
+      `${tok}.outer@/@tests.js line 1904 > WebAssembly.compile:wasm-function[4]:0x10b`,
+      `${tok}._start@https://user@example.test/@scope/page.js line 12 > WebAssembly.compile:wasm-function[3]:0xeb`,
+      `${tok}.already_named@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
+      `${tok}.@spoof_fn@http://127.0.0.1:41234/page.js line 10 > WebAssembly.compile:wasm-function[5]:0x128`,
+      `${tok}.@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x1... [truncated]`,
+    ].join("\n"),
+  );
+  expect(annotateStack(annotated.stack, [table], { engine: "firefox" }).annotatedFrames).toBe(0);
+});
+
+test("parseSymbolSidecar snapshots caller-owned bytes before hashing so mid-verification mutation cannot spoof decoded names", async () => {
+  const source = ordinaryGuestFixture(34);
+  const sidecar = await encodeSidecar(source, 2, ["_start", "outer", "inner_trap"]);
+  const mutable = new Uint8Array(sidecar.bytes);
+  const target = textEncoder.encode("inner_trap");
+  const spoof = textEncoder.encode("spoofed_fn");
+  let pos = -1;
+  for (let i = 0; i <= mutable.length - target.length; i++) {
+    if (target.every((byte, idx) => mutable[i + idx] === byte)) {
+      pos = i;
+      break;
+    }
+  }
+  expect(pos).toBeGreaterThan(-1);
+
+  const pending = parseSymbolSidecar(mutable, sidecar.sha256, sidecar.bytes.byteLength);
+  // Mutate the caller's buffer synchronously before crypto.subtle.digest resolves!
+  mutable.set(spoof, pos);
+  const parsed = await pending;
+  expect(parsed).toBeDefined();
+  expect(parsed!.names[2]).toBe("inner_trap");
 });

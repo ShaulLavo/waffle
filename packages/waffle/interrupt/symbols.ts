@@ -39,13 +39,13 @@ export type SymbolSidecarFetch = (
 ) => Promise<Response>;
 
 export interface LoadSymbolSidecarOptions {
-  /** Maximum allowed sidecar byte size (default 4 MiB). */
+  /** Maximum allowed decoded sidecar byte size (default 4 MiB). */
   readonly maxBytes?: number;
-  /** Maximum fetch duration in milliseconds (default 5000). */
+  /** Maximum fetch + body read duration in milliseconds (default 5000). */
   readonly timeoutMs?: number;
   /** Custom fetch implementation for tests or embedded hosts. */
   readonly fetch?: SymbolSidecarFetch;
-  /** Optional AbortSignal to cancel the fetch. */
+  /** Optional AbortSignal to cancel the fetch and body read. */
   readonly signal?: AbortSignal;
 }
 
@@ -86,17 +86,17 @@ export interface AnnotatedErrorResult<E = unknown> {
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 const SAFE_NONCE = /^[A-Za-z0-9_]+$/;
-const CONTROL_CHAR = /[\r\n\0]/;
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 // Engine-specific grammars for unnamed Wasm frames carrying only subsection-0 module name:
 //   Chromium (V8):  `    at <nonce> (wasm://wasm/<nonce>-<8hex>:wasm-function[N]:0x...)`
 //   Firefox (SM):   `<nonce>.@<url-or-empty>:wasm-function[N]:0x...`
+//                   (URL may contain `@` when scheme-prefixed or `/`-rooted, e.g. `/@tests.js`)
 //   WebKit (JSC):   `@<nonce>:wasm-function[N]`
 const V8_OWNED_FRAME =
   /^(\s*at )([A-Za-z0-9_]+)( \(wasm:\/\/wasm\/\2-[0-9a-f]{8}:wasm-function\[(0|[1-9]\d*)\]:0x[0-9a-f]+\))$/;
 const FIREFOX_OWNED_FRAME =
-  /^(\s*)([A-Za-z0-9_]+)\.@([^@]*:wasm-function\[(0|[1-9]\d*)\]:0x[0-9a-f]+)$/;
+  /^(\s*)([A-Za-z0-9_]+)\.@((?:[^@]*|(?:[A-Za-z][A-Za-z0-9+.-]*:|\/)[^\r\n]*):wasm-function\[(0|[1-9]\d*)\]:0x[0-9a-f]+)$/;
 const WEBKIT_OWNED_FRAME = /^(\s*)@([A-Za-z0-9_]+)(:wasm-function\[(0|[1-9]\d*)\])$/;
 
 interface ParsedOwnedLine {
@@ -106,57 +106,46 @@ interface ParsedOwnedLine {
   readonly format: (symbolName: string) => string;
 }
 
+interface EngineParserSpec {
+  readonly engine: FrameEngine;
+  readonly pattern: RegExp;
+  readonly format: (lead: string, nonce: string, symbol: string, tail: string) => string;
+}
+
+const ENGINE_PARSERS: readonly EngineParserSpec[] = [
+  {
+    engine: "chromium",
+    pattern: V8_OWNED_FRAME,
+    format: (lead, nonce, symbol, tail) => `${lead}${nonce}.${symbol}${tail}`,
+  },
+  {
+    engine: "firefox",
+    pattern: FIREFOX_OWNED_FRAME,
+    format: (lead, nonce, symbol, tail) => `${lead}${nonce}.${symbol}@${tail}`,
+  },
+  {
+    engine: "webkit",
+    pattern: WEBKIT_OWNED_FRAME,
+    format: (lead, nonce, symbol, tail) => `${lead}${symbol}@${nonce}${tail}`,
+  },
+];
+
 function parseOwnedLine(line: string, engine?: FrameEngine): ParsedOwnedLine | null {
-  if (!engine || engine === "chromium") {
-    const match = V8_OWNED_FRAME.exec(line);
-    if (match) {
-      const index = Number(match[4]);
-      if (Number.isSafeInteger(index)) {
-        const prefix = match[1]!;
-        const nonce = match[2]!;
-        const suffix = match[3]!;
-        return {
-          engine: "chromium",
-          nonce,
-          functionIndex: index,
-          format: (symbol) => `${prefix}${nonce}.${symbol}${suffix}`,
-        };
-      }
-    }
-  }
-  if (!engine || engine === "firefox") {
-    const match = FIREFOX_OWNED_FRAME.exec(line);
-    if (match) {
-      const index = Number(match[4]);
-      if (Number.isSafeInteger(index)) {
-        const indent = match[1]!;
-        const nonce = match[2]!;
-        const rest = match[3]!;
-        return {
-          engine: "firefox",
-          nonce,
-          functionIndex: index,
-          format: (symbol) => `${indent}${nonce}.${symbol}@${rest}`,
-        };
-      }
-    }
-  }
-  if (!engine || engine === "webkit") {
-    const match = WEBKIT_OWNED_FRAME.exec(line);
-    if (match) {
-      const index = Number(match[4]);
-      if (Number.isSafeInteger(index)) {
-        const indent = match[1]!;
-        const nonce = match[2]!;
-        const rest = match[3]!;
-        return {
-          engine: "webkit",
-          nonce,
-          functionIndex: index,
-          format: (symbol) => `${indent}${symbol}@${nonce}${rest}`,
-        };
-      }
-    }
+  for (const spec of ENGINE_PARSERS) {
+    if (engine && spec.engine !== engine) continue;
+    const match = spec.pattern.exec(line);
+    if (!match) continue;
+    const index = Number(match[4]);
+    if (!Number.isSafeInteger(index)) continue;
+    const lead = match[1]!;
+    const nonce = match[2]!;
+    const tail = match[3]!;
+    return {
+      engine: spec.engine,
+      nonce,
+      functionIndex: index,
+      format: (symbol) => spec.format(lead, nonce, symbol, tail),
+    };
   }
   return null;
 }
@@ -202,8 +191,7 @@ function validateNamesArray(value: unknown): readonly (string | null)[] | undefi
   for (let i = 0; i < value.length; i++) {
     const entry: unknown = value[i];
     if (entry === null) continue;
-    if (typeof entry !== "string" || entry.length === 0 || CONTROL_CHAR.test(entry))
-      return undefined;
+    if (typeof entry !== "string" || entry.length === 0) return undefined;
   }
   return value as readonly (string | null)[];
 }
@@ -229,17 +217,6 @@ function validateSidecarObject(value: unknown, rawText: string): WasmSymbolSidec
   return canonical;
 }
 
-function ownedArrayBufferBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
-  if (
-    bytes.buffer instanceof ArrayBuffer &&
-    bytes.byteOffset === 0 &&
-    bytes.byteLength === bytes.buffer.byteLength
-  ) {
-    return bytes as Uint8Array<ArrayBuffer>;
-  }
-  return new Uint8Array(bytes);
-}
-
 /** Verify sidecar bytes against a caller-supplied trusted SHA-256 (and optional exact byte size) and parse the schema. */
 export async function parseSymbolSidecar(
   bytes: Uint8Array,
@@ -251,10 +228,11 @@ export async function parseSymbolSidecar(
     if (!isNonNegativeInt(expectedBytes) || bytes.byteLength !== expectedBytes) return undefined;
   }
   try {
-    const owned = ownedArrayBufferBytes(bytes);
-    const actualSha256 = await sha256Hex(owned);
+    // Snapshot caller-owned bytes before yielding so mid-verification mutation cannot spoof decoding.
+    const snapshot = new Uint8Array(bytes);
+    const actualSha256 = await sha256Hex(snapshot);
     if (actualSha256 !== trustedSha256) return undefined;
-    const rawText = utf8Decoder.decode(owned);
+    const rawText = utf8Decoder.decode(snapshot);
     const parsed: unknown = JSON.parse(rawText);
     return validateSidecarObject(parsed, rawText);
   } catch {
@@ -289,41 +267,48 @@ export function bindSymbolSidecar(
   });
 }
 
-function rejectsDeclaredLength(
-  response: Response,
-  maxBytes: number,
-  expectedBytes: number | undefined,
-): boolean {
-  const header = response.headers.get("content-length");
-  if (!header) return false;
-  const declared = Number(header.trim());
-  if (!Number.isFinite(declared)) return false;
-  if (declared > maxBytes) return true;
-  return expectedBytes !== undefined && declared !== expectedBytes;
+function concatChunks(chunks: readonly Uint8Array[], total: number): Uint8Array<ArrayBuffer> {
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined;
 }
 
 async function readBoundedResponse(
   response: Response,
   maxBytes: number,
   expectedBytes: number | undefined,
+  signal: AbortSignal,
+  aborted: Promise<never>,
 ): Promise<Uint8Array<ArrayBuffer> | undefined> {
-  if (rejectsDeclaredLength(response, maxBytes, expectedBytes)) {
-    await response.body?.cancel?.().catch(() => {});
-    return undefined;
-  }
   const limit = expectedBytes !== undefined ? Math.min(maxBytes, expectedBytes) : maxBytes;
   const reader = response.body?.getReader();
   if (!reader) {
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > limit) return undefined;
+    const buffer = await Promise.race([response.arrayBuffer(), aborted]);
+    if (signal.aborted || buffer.byteLength > limit) return undefined;
     if (expectedBytes !== undefined && buffer.byteLength !== expectedBytes) return undefined;
     return new Uint8Array(buffer);
   }
+  const cancelReader = () => {
+    void reader.cancel().catch(() => {});
+  };
+  signal.addEventListener("abort", cancelReader, { once: true });
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     for (;;) {
-      const step = await reader.read();
+      if (signal.aborted) {
+        cancelReader();
+        return undefined;
+      }
+      const step = await Promise.race([reader.read(), aborted]);
+      if (signal.aborted) {
+        cancelReader();
+        return undefined;
+      }
       if (step.done) break;
       const chunk = step.value;
       total += chunk.byteLength;
@@ -334,19 +319,18 @@ async function readBoundedResponse(
       chunks.push(chunk);
     }
   } finally {
-    reader.releaseLock();
+    signal.removeEventListener("abort", cancelReader);
+    try {
+      reader.releaseLock();
+    } catch {
+      // Lock may already be released if cancel settled concurrently.
+    }
   }
-  if (expectedBytes !== undefined && total !== expectedBytes) return undefined;
-  const combined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return combined;
+  if (signal.aborted || (expectedBytes !== undefined && total !== expectedBytes)) return undefined;
+  return concatChunks(chunks, total);
 }
 
-/** Fetch sidecar bytes with strict byte-size and timeout bounds. Never throws; returns undefined on failure. */
+/** Fetch sidecar bytes with strict decoded byte-size and end-to-end timeout bounds. Never throws. */
 export async function fetchSymbolSidecar(
   source: SymbolSidecarSource,
   options: LoadSymbolSidecarOptions = {},
@@ -361,22 +345,46 @@ export async function fetchSymbolSidecar(
   const fetchFn = options.fetch ?? globalThis.fetch;
   if (typeof fetchFn !== "function") return undefined;
   if (options.signal?.aborted) return undefined;
+
   const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  options.signal?.addEventListener("abort", onAbort, { once: true });
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let triggerAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    triggerAbort = () => reject(new Error("sidecar fetch aborted"));
+  });
+  aborted.catch(() => {});
+  const abortAll = () => {
+    controller.abort();
+    triggerAbort();
+  };
+  options.signal?.addEventListener("abort", abortAll, { once: true });
+  const timer = setTimeout(abortAll, timeoutMs);
+  let settledResponse: Response | undefined;
   try {
-    const response = await fetchFn(source.url, { signal: controller.signal });
-    if (!response.ok) {
+    const fetchPromise = Promise.resolve().then(() =>
+      fetchFn(source.url, { signal: controller.signal }),
+    );
+    // Avoid leaking an unconsumed response or unhandled rejection if the fetch settles after abort.
+    fetchPromise.then(
+      (response) => {
+        if (controller.signal.aborted && response !== settledResponse) {
+          void response.body?.cancel?.().catch(() => {});
+        }
+      },
+      () => {},
+    );
+    const response = await Promise.race([fetchPromise, aborted]);
+    settledResponse = response;
+    if (controller.signal.aborted || !response.ok) {
       await response.body?.cancel?.().catch(() => {});
       return undefined;
     }
-    return await readBoundedResponse(response, maxBytes, expectedBytes);
+    return await readBoundedResponse(response, maxBytes, expectedBytes, controller.signal, aborted);
   } catch {
+    if (settledResponse) await settledResponse.body?.cancel?.().catch(() => {});
     return undefined;
   } finally {
     clearTimeout(timer);
-    options.signal?.removeEventListener("abort", onAbort);
+    options.signal?.removeEventListener("abort", abortAll);
   }
 }
 
@@ -406,6 +414,10 @@ export async function loadSymbolTable(
   return bindSymbolSidecar(diagnostics, sidecar);
 }
 
+function escapeFrameSymbol(symbol: string): string {
+  return symbol.replaceAll("\r", "\\r").replaceAll("\n", "\\n").replaceAll("\0", "\\0");
+}
+
 /**
  * Annotate owned unnamed Wasm frames in `stack` using verified `SymbolTable`s.
  * Unmatched lines, other modules, already-named frames, and truncated lines stay verbatim.
@@ -433,7 +445,8 @@ export function annotateStack(
     if (!table) continue;
     const symbol = table.lookup(parsed.functionIndex);
     if (!symbol) continue;
-    lines[i] = hasCR ? `${parsed.format(symbol)}\r` : parsed.format(symbol);
+    const rendered = parsed.format(escapeFrameSymbol(symbol));
+    lines[i] = hasCR ? `${rendered}\r` : rendered;
     annotatedFrames++;
   }
   return { stack: lines.join("\n"), annotatedFrames };

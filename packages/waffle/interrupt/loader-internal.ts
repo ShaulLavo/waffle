@@ -31,7 +31,7 @@ export type InterruptModuleCacheOptions = InterruptCompileOptions;
 // This module is intentionally omitted from package.json exports. Runtime code is the only
 // caller of the owned entry point; public imports go through loader.ts and copy their input.
 const compileOwned = Symbol("compile owned runtime source");
-const nameEncoder = new TextEncoder();
+let nameEncoder: TextEncoder | undefined;
 
 interface CacheLimits {
   readonly maxRetainedBytes: number;
@@ -290,6 +290,7 @@ function randomModuleNonce(): string {
 }
 
 function appendModuleNameSection(wasm: Uint8Array, moduleName: string): Uint8Array<ArrayBuffer> {
+  nameEncoder ??= new TextEncoder();
   const encoded = nameEncoder.encode(moduleName);
   const sub0Payload = encodeU32(encoded.length).concat(Array.from(encoded));
   const sub0 = [0].concat(encodeU32(sub0Payload.length), sub0Payload);

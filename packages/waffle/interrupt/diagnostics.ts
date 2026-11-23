@@ -11,12 +11,13 @@ export interface AdmittedModuleDiagnostics {
   readonly nonce: string;
 }
 
-const moduleDiagnostics = new WeakMap<WebAssembly.Module, AdmittedModuleDiagnostics>();
+let moduleDiagnostics: WeakMap<WebAssembly.Module, AdmittedModuleDiagnostics> | undefined;
 
 export function recordAdmittedModuleDiagnostics(
   module: WebAssembly.Module,
   diagnostics: AdmittedModuleDiagnostics,
 ): void {
+  moduleDiagnostics ??= new WeakMap<WebAssembly.Module, AdmittedModuleDiagnostics>();
   moduleDiagnostics.set(module, Object.freeze({ ...diagnostics }));
 }
 
@@ -24,5 +25,5 @@ export function recordAdmittedModuleDiagnostics(
 export function admittedModuleDiagnostics(
   module: WebAssembly.Module,
 ): AdmittedModuleDiagnostics | undefined {
-  return moduleDiagnostics.get(module);
+  return moduleDiagnostics?.get(module);
 }
