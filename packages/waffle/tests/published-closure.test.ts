@@ -14,9 +14,11 @@ const published = new Set(
     (match) => match[1] as string,
   ),
 );
-// `dist/` is emitted by prepare and `.build/` holds tools downloaded at run time, so neither
-// exists when this runs and references into them are not checked here. The installed-archive
-// smoke in `tooling/tarball-smoke.ts` is what exercises those paths.
+// `dist/` is emitted by prepare and `.build/` holds separately installed tools. Neither has to
+// exist in a source checkout, so references into them are not checked here. The installed-archive
+// smoke in `tooling/tarball-smoke.ts` covers the shipped `dist/` exports and bootstrap. Nothing
+// here checks the `.build/` optimizer default in `program-optimize.ts`, which expects the pinned
+// wasm-opt to be installed there unless `WASM_OPT` names it.
 const generated = /^dist\/|(?:^|\/)\.build\//;
 
 const directories = new Set<string>();
