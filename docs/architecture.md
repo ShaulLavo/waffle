@@ -593,10 +593,12 @@ background. While a checkpoint is pending, timer-driven checkpoints coalesce lat
 of queuing more payload copies. Namespace link counts track renames and removals incrementally;
 only deleting a subtree visits that subtree. A cold read leaves the service queue while waiting
 for storage, then revalidates its capability and current path before execution, so it cannot hold
-up unrelated memory reads or writes. The owner keeps up to 32 MiB of verified cold pages in
-private memory, least recently read first out. A payload key names one immutable stored version,
-so rereading an unmodified file skips storage and its checksums, and a written file is resident
-and never consults them. `fd_sync`,
+up unrelated memory reads or writes. The owner also keeps verified cold pages in private memory,
+least recently read first out, under a 32 MiB accounting budget. Each page counts its bytes plus a
+fixed estimate of its bookkeeping, so the budget also bounds many tiny files. A payload key names
+one immutable stored version, so rereading an unmodified file skips the storage read and its
+checksums. A hit still asks storage whether its current owner can serve the payload, so another
+tab's takeover refuses it. A written file is resident and never consults these pages. `fd_sync`,
 `fd_datasync`, `client.asyncCall("flush")` and the page's `fs.flush()` explicitly wait for storage.
 `fs.drain()` is only a page-side ordering barrier. Editors mark a save successful and notify HMR
 only after the durable flush resolves; errors leave the edit unsaved. Startup publishes a hidden
