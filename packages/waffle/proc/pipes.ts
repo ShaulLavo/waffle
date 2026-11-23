@@ -30,7 +30,6 @@ import {
 } from "./intrinsics.ts";
 import type { Readiness, Stream } from "../core/descriptors.js";
 import { ProcessError } from "./types.js";
-import { yieldTask } from "./yield-task.js";
 
 export const PipeErrno = objectFreeze({ AGAIN: 6, BADF: 8, INVAL: 28, NFILE: 41, PIPE: 64 });
 export type PipeMode = "read" | "write";
@@ -49,6 +48,10 @@ export interface PipeOptions {
   onClosed?(): void;
   /** Realm-local accounting hook. Never placed in cloneable endpoint handles. */
   allocateShared?: (length: number) => SharedArrayBuffer;
+  /** How an automatic relay yields one task after its own progress. Defaults to
+   * setTimeout(0), which browsers clamp to 4 ms when nested; page relays pass a
+   * message-channel yield so a pipeline is not paced at 4 ms per write. */
+  relayYield?: () => Promise<void>;
 }
 export interface PipePublicationRegistryHandle {
   buffer: SharedArrayBuffer;
@@ -2101,9 +2104,11 @@ export class PipeController {
   private pendingTicket = 0n;
   private delivery?: { ring: Ring; incarnation: number };
   private readonly onClosed?: () => void;
+  private readonly relayYield?: () => Promise<void>;
   private reportedClosed = false;
   constructor(options: PipeOptions = {}, attached?: PipeEndpointHandle) {
     this.onClosed = options.onClosed;
+    this.relayYield = options.relayYield;
     if (attached) this.state = new PipeState(attached, options.allocateShared);
     else {
       const capacity = options.capacity ?? 65536;
@@ -2355,10 +2360,7 @@ export class PipeController {
       // Registry revocation has no pipe address, so registry-backed relays use the service word.
       if (atomicsLoad(signal, 0) !== observed) {
         // A microtask-only loop starves kill/exit MessagePort tasks under continuous traffic.
-        // Yield one real task, not setTimeout(0): browsers clamp nested zero-delay timers to
-        // 4 ms, and a relay delivers one write per reader request, so every line a program
-        // wrote into a pipeline cost at least 4 ms.
-        await yieldTask();
+        await (this.relayYield?.() ?? new Promise<void>((resolve) => scheduleTimeout(resolve, 0)));
         continue;
       }
       await waitChanged(signal, observed);
@@ -2417,7 +2419,7 @@ export function attachPipeEndpoint(
 }
 export function attachPipeController(
   handle: PipeEndpointHandle,
-  options: Pick<PipeOptions, "relay" | "onClosed" | "allocateShared"> = {},
+  options: Pick<PipeOptions, "relay" | "onClosed" | "allocateShared" | "relayYield"> = {},
 ): PipeController {
   return new PipeController(options, handle);
 }

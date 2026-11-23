@@ -54,6 +54,7 @@ import {
   PromiseConstructor,
 } from "../proc/intrinsics.js";
 import { ReadyWorkerPool } from "./worker-pool.js";
+import { yieldTask } from "./yield-task.js";
 import {
   markStart,
   observeStart,
@@ -547,6 +548,9 @@ export class BrowserProcessBroker {
     this.pipes = new WorkerPipeBroker({
       allocateShared: (length) =>
         options.reservations.buffer("control", { kind: "fixed-buffer", length: bytes(length) }),
+      // Shell pipelines relay one write per reader request; a clamped timer would pace
+      // each of those writes at 4 ms.
+      relayYield: yieldTask,
     });
     void this.retirementGate.promise.catch(() => {});
     this.hostIdentity = snapshotHostIdentity(options.hostIdentity);

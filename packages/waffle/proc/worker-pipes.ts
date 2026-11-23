@@ -147,7 +147,10 @@ export class WorkerPipeHost {
   }
 }
 
-export interface WorkerPipeBrokerOptions extends Pick<PipeOptions, "allocateShared"> {
+export interface WorkerPipeBrokerOptions extends Pick<
+  PipeOptions,
+  "allocateShared" | "relayYield"
+> {
   /** Production owns an automatic relay; manual mode supports an embedding's shared pump. */
   relay?: "auto" | "manual";
 }
@@ -169,6 +172,7 @@ export class WorkerPipeBroker {
     controller = attachPipeController(handle, {
       relay: "manual",
       allocateShared: this.options.allocateShared,
+      relayYield: this.options.relayYield,
       onClosed: () => {
         if (controller) this.retire(handle.id, controller);
       },
