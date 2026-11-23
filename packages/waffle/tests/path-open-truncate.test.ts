@@ -5,6 +5,7 @@ import { MemFS } from "../fs/memory.js";
 const encoder = new TextEncoder();
 const ALL_RIGHTS = (1n << 29n) - 1n;
 const O_CREAT = 1;
+const O_EXCL = 4;
 const O_TRUNC = 8;
 
 function fixture() {
@@ -23,14 +24,17 @@ function fixture() {
   const bytes = new Uint8Array(memory.buffer);
   const view = new DataView(memory.buffer);
   const calls = wasi["functions"]();
-  const open = (name: string, flags: number) => {
+  const tryOpen = (name: string, flags: number) => {
     const path = encoder.encode(name);
     bytes.set(path, 256);
-    expect(calls.path_open(3, 1, 256, path.length, flags, ALL_RIGHTS, 0n, 0, 1024)).toBe(0);
+    return calls.path_open(3, 1, 256, path.length, flags, ALL_RIGHTS, 0n, 0, 1024);
+  };
+  const open = (name: string, flags: number) => {
+    expect(tryOpen(name, flags)).toBe(0);
     return view.getUint32(1024, true);
   };
   const size = (name: string) => fs.readFile(`/${name}`)?.length;
-  return { fs, calls, open, size };
+  return { fs, calls, open, tryOpen, size };
 }
 
 test("O_TRUNC on a file this open created skips the truncate", () => {
@@ -52,16 +56,39 @@ test("O_TRUNC still truncates a file that already existed", () => {
   expect(f.calls.fd_close(fd)).toBe(0);
 });
 
-test("O_TRUNC truncates when a competing creator's file with data wins the create", () => {
-  const f = fixture();
+/** Another creator makes the file after this open's lookup and before its create. */
+function competingCreator(f: ReturnType<typeof fixture>, content: string) {
   const create = f.fs.create.bind(f.fs);
-  spyOn(f.fs, "create").mockImplementation((path, kind, exclusive) => {
-    const created = create(path, kind, exclusive);
-    // Another writer fills the file between the create and this open's stat.
-    f.fs.writeFile("/raced.txt", "written by the other creator");
-    return created;
+  let raced = false;
+  return spyOn(f.fs, "create").mockImplementation((path, kind, exclusive) => {
+    if (!raced) {
+      raced = true;
+      f.fs.writeFile("/raced.txt", content);
+    }
+    return create(path, kind, exclusive);
   });
+}
+
+test("O_TRUNC truncates a competing creator's file with data", () => {
+  const f = fixture();
+  competingCreator(f, "written by the other creator");
   const fd = f.open("raced.txt", O_CREAT | O_TRUNC);
   expect(f.size("raced.txt")).toBe(0);
   expect(f.calls.fd_close(fd)).toBe(0);
+});
+
+test("O_TRUNC still truncates a competing creator's empty file", () => {
+  const f = fixture();
+  competingCreator(f, "");
+  // The truncate also updates the file times and checks the file's write permission.
+  const resize = spyOn(f.fs, "resize");
+  const fd = f.open("raced.txt", O_CREAT | O_TRUNC);
+  expect(resize).toHaveBeenCalledTimes(1);
+  expect(f.calls.fd_close(fd)).toBe(0);
+});
+
+test("O_EXCL still fails when a competing creator wins", () => {
+  const f = fixture();
+  competingCreator(f, "");
+  expect(f.tryOpen("raced.txt", O_CREAT | O_EXCL)).toBe(20);
 });

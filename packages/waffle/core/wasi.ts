@@ -1211,13 +1211,16 @@ export class Wasi {
         fdOut >>>= 0;
         if (fdOut + 4 > this.bytes().length) return EFAULT;
         if (node === undefined) {
-          const result = this.opts.fs.create(path, "file", (oflags & O_EXCL) !== 0);
+          // Create exclusively first: success proves this open made the file, and POSIX
+          // truncates only a file that already existed. If a competing creator won, open its
+          // file like any existing one, truncate and permission check included.
+          let result = this.opts.fs.create(path, "file", true);
+          if (typeof result === "number") oflags &= ~O_TRUNC;
+          else if (result.error === EEXIST && !(oflags & O_EXCL))
+            result = this.opts.fs.create(path, "file", false);
           if (typeof result !== "number") return result.error;
           node = result;
           stat = this.opts.fs.stat(node);
-          // POSIX truncates only a file that already existed. A competing creator's file can
-          // win the create, so skip the truncate only while the file is still empty.
-          if (stat.kind === "file" && stat.size === 0) oflags &= ~O_TRUNC;
         }
         return this.writeResult(
           openInode(
