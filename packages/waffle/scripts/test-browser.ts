@@ -30,6 +30,7 @@ const runners = [
   "tests/stop-order-browser-runner.ts",
   "tests/wait-async-browser-runner.ts",
   "tests/process-start-browser-runner.ts",
+  "tests/interrupt-symbols-browser-runner.ts",
   gpuRunner,
 ];
 const splitEngines = new Set([
