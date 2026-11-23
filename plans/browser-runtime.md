@@ -405,3 +405,31 @@ and `MemoryBackend.execute` call `mutationIntent` on every request. A split woul
 request-shape helpers (`mutationIntent`, `mutationValue`, buffer plans) into a small module and load
 the domain at the existing asynchronous points (filesystem worker start, process bootstrap) only
 when the connection carries publication buffers. This is a size rewrite, so it waits for the owner.
+
+## Saved workspaces evict their whole clean cache past 1,024 entries
+
+`PersistentBackend.prepareOperation` calls `evictClean()` once more than 1,024 shared slots are
+registered, and `evictClean` evicts every clean entry (and unloads clean payloads it cannot
+evict). An install touches thousands of files, so reads right after it go to storage through
+`prepareDescriptorRead`, one 4 KiB range per filesystem request (220 to 300 µs each in Chromium)
+without loading the file. Reading a freshly installed 1,000-file tree took 0.9 to 2.6 s in a saved
+workspace versus about 0.2 s in memory mode.
+
+PR 617 tried least-recently-used eviction down to 6,144 past 8,192 entries (read tree 67 to 80
+percent faster in all three engines) and was closed: the 1,024 limit also keeps two metadata
+budgets safe, and its review reproduced both breaking.
+
+1. Dirty admission charges 2,048 units per registered slot (1,024 reserved at baseline) against a
+   default 8 MiB metadata budget (`shared.ts` register, `dirty-admission.ts`), so about 4,096
+   registrations fill it and `waitForDirtyCapacity` evicts every clean entry anyway.
+2. `pinMetadataBytes()` charges every registered file with a committed payload key, and a pending
+   commit charges it again. With 5,000 cached files and `dirtyLimits: false`, `flush()` after a
+   one-byte overwrite failed with "filesystem checkpoint pressure limit reached".
+
+A fix derives the limit and the eviction target from both budgets' remaining headroom (or charges
+checkpoint metadata only for files the retention list owns), evicts least recently used first
+(re-inserting into `registeredNodes` in `sync` gives the order, and walking that map avoids the
+32,768-slot `registeredHandles()` scan), and tests the default path through `FilesystemClient`.
+Evicting only down to a target with the 1,024 limit kept made no consistent difference, because a
+sequential read of a tree larger than the cache misses under least-recently-used order too. Cold
+reads of small files could also load the whole file instead of one range per request.
