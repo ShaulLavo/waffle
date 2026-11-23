@@ -412,8 +412,9 @@ when the connection carries publication buffers. This is a size rewrite, so it w
 are registered. Apart from the requesting handle and handles still loading, `evictClean` evicts
 every eligible clean entry (and unloads clean payloads it cannot evict). An install touches
 thousands of files, so reads right after it go to storage through `prepareDescriptorRead`
-without loading the file: each filesystem request fetches at most 4 KiB, limited by the requested
-length and the bytes left in the file, and cost 220 to 300 µs in Chromium. Reading a freshly
+without loading the file: each filesystem request fetches at most `PAGE` (64 KiB), limited by the
+requested length and the bytes left in the file. In the benchmark (2 KiB files, two reads per file)
+each request cost 220 to 300 µs in Chromium. Reading a freshly
 installed 1,000-file tree took 0.9 to 2.6 s in a saved workspace across the three engines. In
 memory mode the same read took 223 ms in Chromium, 669 ms in Firefox and 573 ms in WebKit, in a
 separate run.
@@ -425,7 +426,9 @@ budgets safe, and its review reproduced both breaking.
 1. Dirty admission: registering a slot charges 2,048 units (1,024 reserved at baseline), compared
    with the default 8 MiB capture ceiling (`shared.ts` register, `dirty-admission.ts`). About
    4,096 registrations reach it, the registration fails, and the retry through
-   `waitForDirtyCapacity` evicts every clean entry anyway.
+   `waitForDirtyCapacity` runs the same sweep without a requesting handle: it still skips loading
+   handles, evicts every other eligible clean entry, and only unloads the payloads of entries it
+   cannot evict.
 2. Checkpoint capture: `pinMetadataBytes()` counts every registered file with a committed payload
    key and also detached payload keys, and a queued write commit adds a fresh pin estimate when it
    starts. With 5,000 cached files and `dirtyLimits: false`, `flush()` after a one-byte overwrite
