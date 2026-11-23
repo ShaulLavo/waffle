@@ -740,9 +740,10 @@ export class PipePublicationRegistry {
       const index = atomicsLoad(this.allocated, 0);
       if (index >= this.maxCells)
         throw new ProcessError(PipeErrno.NFILE, "pipe cursor registry limit reached");
-      if (atomicsCompareExchange(this.allocated, 0, index, index + 1) !== index) continue;
+      // Back the cell before counting it: revocation scans every counted cell, and an
+      // allocator that stops here must not leave a counted cell past the buffer's end.
       this.ensureCell(index);
-      return index;
+      if (atomicsCompareExchange(this.allocated, 0, index, index + 1) === index) return index;
     }
   }
   /** Return a cell whose last hold dropped. Its tag advances before anyone can reuse it. */
@@ -788,7 +789,7 @@ export class PipePublicationRegistry {
     atomicsStore(this.cells, index * 4 + 1, pid);
     atomicsStore(cell, 0, ALLOCATED);
     atomicsStore(this.cells, index * 4, (tag << CELL_TAG_SHIFT) | 1);
-    // Dekker pair with freezeOwner: the owner store above precedes this row load, and a
+    // Dekker pair with revocation: the owner store above precedes this row load, and a
     // killer's revoked-row CAS precedes its scan. Either this load sees the revocation or
     // the scan sees this cell.
     const value = atomicsLoad(this.owners, owner.slot);
@@ -849,42 +850,60 @@ export class PipePublicationRegistry {
       if (atomicsLoad(this.cells, index * 4) & CELL_HOLDS) count++;
     return count;
   }
-  private freezeOwner(pid: number): { slot: number; value: bigint } | undefined {
+  /** Mark the owner revoked. The caller then freezes its cells: the scan follows the CAS. */
+  private markRevoked(pid: number): { slot: number; value: bigint } | undefined {
     const owner = this.process(pid);
     if (!owner) return undefined;
     for (;;) {
       const value = atomicsLoad(this.owners, owner.slot);
       if (registryPid(value) !== pid) return undefined;
       const revoked = value | OWNER_REVOKED;
-      if (atomicsCompareExchange(this.owners, owner.slot, value, revoked) !== value) continue;
-      this.freezeCells(pid);
-      return { slot: owner.slot, value: revoked };
+      if (atomicsCompareExchange(this.owners, owner.slot, value, revoked) === value)
+        return { slot: owner.slot, value: revoked };
     }
   }
-  /** Freeze every held cell this PID owns. A hold pins the owner word while it is checked. */
+  /** Freeze every held cell this PID owns. A hold pins the owner word while it is checked.
+   * A cell at its hold limit cannot be held; the scan still freezes every other cell, then
+   * reports that one. */
   private freezeCells(pid: number): void {
     const limit = atomicsLoad(this.allocated, 0);
+    let failure: unknown;
     for (let index = 0; index < limit; index++) {
-      const epoch = atomicsLoad(this.cells, index * 4);
-      if (!(epoch & CELL_HOLDS) || atomicsLoad(this.cells, index * 4 + 1) !== pid) continue;
-      const ref = (epoch & ~CELL_HOLDS) | index;
-      if (!this.enter(ref)) continue;
-      if (atomicsLoad(this.cells, index * 4 + 1) === pid) atomicsOr(this.canonical(ref), 0, STOP);
-      this.leave(ref);
+      try {
+        this.freezeCell(index, pid);
+      } catch (error) {
+        failure ??= error;
+      }
     }
+    if (failure !== undefined) throw failure;
+  }
+  private freezeCell(index: number, pid: number): void {
+    const epoch = atomicsLoad(this.cells, index * 4);
+    if (!(epoch & CELL_HOLDS) || atomicsLoad(this.cells, index * 4 + 1) !== pid) return;
+    const ref = (epoch & ~CELL_HOLDS) | index;
+    if (!this.enter(ref)) return;
+    if (atomicsLoad(this.cells, index * 4 + 1) === pid) atomicsOr(this.canonical(ref), 0, STOP);
+    this.leave(ref);
   }
   revoke(pid: number): void {
-    this.freezeOwner(pid);
-    notify(this.wake);
+    try {
+      if (this.markRevoked(pid)) this.freezeCells(pid);
+    } finally {
+      notify(this.wake);
+    }
   }
   /** Host resource-fence completion: freeze even unannounced descendant-created pipes and
    * release this owner's row. Physical worker termination is not required. Cells stay with
    * the rings that map them: a reader may still drain a collected writer's committed bytes.
    */
   collectProcess(pid: number): void {
-    const owner = this.freezeOwner(pid);
-    if (owner) atomicsCompareExchange(this.owners, owner.slot, owner.value, 0n);
-    notify(this.wake);
+    const owner = this.markRevoked(pid);
+    try {
+      if (owner) this.freezeCells(pid);
+    } finally {
+      if (owner) atomicsCompareExchange(this.owners, owner.slot, owner.value, 0n);
+      notify(this.wake);
+    }
   }
 }
 export function attachPipePublicationRegistry(
@@ -1113,6 +1132,10 @@ class Ring {
     this.retireCursor(0);
     this.retireCursor(1);
   }
+  /** Whether retirement reached this ring's consumed cursor, the last one it retires. */
+  get retired(): boolean {
+    return atomicsLoad(this.mapping, 1) === RETIRED;
+  }
   private retireCursor(at: 0 | 1): void {
     const local = at ? this.localConsumed : this.localPublished;
     for (;;) {
@@ -1193,9 +1216,11 @@ class Ring {
     atomic = true,
   ): number {
     if (!this.enter(incarnation)) return -PipeErrno.BADF;
-    // Hold the published cell from its load to the publishing CAS.
-    const mapped = this.hold(0);
+    // Hold the published cell from its load to the publishing CAS. A refused hold (the cell
+    // is at its hold limit) still leaves the section.
+    let mapped = 0;
     try {
+      mapped = this.hold(0);
       return this.writeEntered(chunks, valid, ticket, atomic, this.cursor(0, mapped));
     } finally {
       this.drop(mapped);
@@ -1465,7 +1490,11 @@ class PipeState {
   get closed(): boolean {
     for (;;) {
       const generation = atomicsLoad(this.control, 5);
-      if (generation === -1) return true;
+      if (generation === -1) {
+        // The retiring realm may have stopped before releasing every cell: finish for it.
+        if (this.registry && !this.readers[this.readers.length - 1]!.retired) this.retireCells();
+        return true;
+      }
       if (!this.disposed) return this.retireIdle(generation);
       // A disposed pipe admits nobody; retire it once, so its registry cells return.
       if (atomicsCompareExchange(this.control, 5, generation, -1) !== generation) continue;
@@ -1508,6 +1537,8 @@ class PipeState {
   settle(): boolean {
     return this.registry !== undefined && this.closed;
   }
+  /** Idempotent, so any realm may finish a retirement another realm began. It goes in ring
+   * order, and the last reader's consumed cursor is the last one it retires. */
   private retireCells(): void {
     if (!this.registry) return;
     ringForEach(this.writers, (ring) => ring.retire());
