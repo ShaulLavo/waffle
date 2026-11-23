@@ -619,6 +619,9 @@ async function publicCorpus(index = coldCorpus()) {
     retainPayload() {
       throw new Error("namespace retained cold payload");
     },
+    checkPayload() {
+      throw new Error("namespace checked cold payload");
+    },
     async persist() {
       counters.persists++;
     },

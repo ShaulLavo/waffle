@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { PAGE } from "../fs/protocol";
+import type { ColdReadCache } from "../fs/cold-read-cache";
 import { coldByte, coldDescriptorFixture, coldSize } from "./fixtures/cold-descriptor";
 import { SLOT_WORDS } from "../fs/shared";
 
@@ -265,9 +266,54 @@ test("rereading an unmodified cold file serves its verified pages without storag
     );
     expect(fixture.counters.wholeBytes).toBe(0);
     expect(fixture.counters.retained).toBe(0);
+    // Every hit (two later passes of four pages, then the cross-page range) asked storage.
+    expect(fixture.counters.checks).toBe(9);
     expect(fixture.backend.shared.resources().usedBytes).toBe(before);
   } finally {
     await fixture.close();
+  }
+});
+
+test("a cached page is refused once its storage can no longer serve the payload", async () => {
+  const fixture = await coldDescriptorFixture();
+  try {
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0])).toEqual(pageBytes(0));
+    // As IndexedDB storage reports after another tab took the workspace over.
+    fixture.storage.checkPayload = () => {
+      throw new Error("This workspace was opened in another tab. Reload to continue here.");
+    };
+    const outcome = await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0]).then(
+      () => "served",
+      () => "refused",
+    );
+    expect(outcome).toBe("refused");
+    expect(fixture.counters.ranges).toHaveLength(1);
+    expect(fixture.counters.retained).toBe(0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a failed close still frees the cached pages", async () => {
+  const fixture = await coldDescriptorFixture();
+  const cache = (fixture.backend as unknown as { coldReads: ColdReadCache }).coldReads;
+  try {
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0])).toEqual(pageBytes(0));
+    expect(cache.read("cold", 0, PAGE)).toEqual(pageBytes(0));
+    // The final checkpoint has a namespace change to persist, and persisting it fails.
+    await fixture.client.asyncCall("mkdirp", ["/dirty"]);
+    fixture.storage.persist = async () => {
+      throw new Error("final checkpoint failed");
+    };
+    const closed = await fixture.backend.close().then(
+      () => "closed",
+      (error) => String(error),
+    );
+    expect(closed).toContain("final checkpoint failed");
+    expect(cache.read("cold", 0, 1)).toBeUndefined();
+  } finally {
+    await fixture.close().catch(() => {});
+    fixture.client.connection.port.close();
   }
 });
 

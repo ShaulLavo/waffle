@@ -30,6 +30,7 @@ class Storage implements StorageBackend {
   readonly bytes = new Map<string, Uint8Array>([["cold-key", new Uint8Array([1, 2, 3, 4])]]);
   readRange = fixturePayloadHooks(this.bytes).readRange;
   retainPayload = fixturePayloadHooks(this.bytes).retainPayload;
+  checkPayload = fixturePayloadHooks(this.bytes).checkPayload;
   index: PersistedIndex = {
     version: 1,
     generation: 1,

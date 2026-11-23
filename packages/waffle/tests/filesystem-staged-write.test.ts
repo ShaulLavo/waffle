@@ -827,6 +827,7 @@ class Store implements StorageBackend {
   payloads = new Map<string, Uint8Array>();
   readRange = fixturePayloadHooks(this.payloads).readRange;
   retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
+  checkPayload = fixturePayloadHooks(this.payloads).checkPayload;
   async reserveIdentity(workspace?: string) {
     const value = nextReservation(this.identityReservation, workspace);
     this.identityReservation = storeReservation(value);

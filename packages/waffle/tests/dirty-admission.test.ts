@@ -32,6 +32,7 @@ class ControlledStorage implements StorageBackend {
   readonly bytes = new Map<string, Uint8Array>();
   readRange = fixturePayloadHooks(this.bytes).readRange;
   retainPayload = fixturePayloadHooks(this.bytes).retainPayload;
+  checkPayload = fixturePayloadHooks(this.bytes).checkPayload;
   readonly batches: PersistenceBatch[] = [];
   readonly flushes: (readonly string[] | undefined)[] = [];
   gate?: {

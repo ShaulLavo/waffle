@@ -34,6 +34,7 @@ class IdentityStore implements StorageBackend {
   readonly data = new Map<string, Uint8Array>();
   readRange = fixturePayloadHooks(this.data).readRange;
   retainPayload = fixturePayloadHooks(this.data).retainPayload;
+  checkPayload = fixturePayloadHooks(this.data).checkPayload;
   reservation?: IdentityReservation;
   reserveCalls = 0;
   persistCalls = 0;

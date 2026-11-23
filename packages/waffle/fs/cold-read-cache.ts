@@ -2,6 +2,9 @@ import { PAGE } from "./shared-capacity.js";
 
 /** Default private-memory bound. It holds a 12 MB toolchain binary read several times over. */
 const COLD_READ_CACHE_BYTES = 32 * 1024 * 1024;
+/** Charged per page on top of its bytes: an estimate of its map entry, key string and typed
+ * array and buffer headers. It keeps many tiny files from exceeding the bound in real heap. */
+export const COLD_PAGE_OVERHEAD = 256;
 
 /** Verified bytes of cold payloads, kept by whole aligned page so a file read again while it
  * stays unmodified skips storage and its checksums. A payload key names one immutable stored
@@ -33,33 +36,37 @@ export class ColdReadCache {
     }
     return result;
   }
-  /** Keep the pages of a verified range that it covers completely. */
+  /** Keep the pages of a verified range that it covers completely. Each page makes room before
+   * its copy is made, so the bound holds at every step, not only once the range is done. */
   store(key: string, offset: number, bytes: Uint8Array, size: number): void {
     const end = offset + bytes.length;
     for (let index = Math.ceil(offset / PAGE); index * PAGE < end; index++) {
       const start = index * PAGE;
       const length = Math.min(PAGE, size - start);
-      if (start + length > end || length > this.limit) return;
+      const cost = length + COLD_PAGE_OVERHEAD;
+      if (start + length > end || cost > this.limit) return;
       const name = pageKey(key, index);
-      const previous = this.pages.get(name);
-      if (previous) {
-        this.bytes -= previous.length;
-        this.pages.delete(name);
-      }
+      this.remove(name);
+      this.makeRoom(cost);
       this.pages.set(name, bytes.slice(start - offset, start - offset + length));
-      this.bytes += length;
+      this.bytes += cost;
     }
-    this.evict();
   }
   clear(): void {
     this.pages.clear();
     this.bytes = 0;
   }
-  private evict(): void {
+  private remove(name: string): void {
+    const page = this.pages.get(name);
+    if (!page) return;
+    this.pages.delete(name);
+    this.bytes -= page.length + COLD_PAGE_OVERHEAD;
+  }
+  private makeRoom(cost: number): void {
     for (const [name, page] of this.pages) {
-      if (this.bytes <= this.limit) return;
+      if (this.bytes + cost <= this.limit) return;
       this.pages.delete(name);
-      this.bytes -= page.length;
+      this.bytes -= page.length + COLD_PAGE_OVERHEAD;
     }
   }
 }

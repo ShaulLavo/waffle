@@ -28,6 +28,7 @@ class ControlledStorage implements StorageBackend {
   readonly payloads = new Map<string, Uint8Array>();
   readRange = fixturePayloadHooks(this.payloads).readRange;
   retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
+  checkPayload = fixturePayloadHooks(this.payloads).checkPayload;
   readonly events: string[] = [];
   onPersist?: () => void | Promise<void>;
   onFlush?: () => void | Promise<void>;

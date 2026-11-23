@@ -33,7 +33,7 @@ import {
 } from "../fs/index.js";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
-import { FilesystemError } from "../fs/protocol.js";
+import { FilesystemError, PAGE } from "../fs/protocol.js";
 import { gatedIndexedDB } from "./gated-indexeddb.js";
 import { assertRuntimeStartupTrace } from "./runtime-startup-proof.js";
 import type { ChecksummedRecord, PersistedNode, StorageBackend } from "../fs/storage.js";
@@ -257,6 +257,48 @@ async function exclusiveFilesystemCase(open: () => Promise<StorageBackend>): Pro
     client.dispose();
     service.dispose();
     await backend.close();
+  }
+}
+
+/** A page served from the owner's verified cold cache is still fenced by storage ownership. */
+async function warmColdReadTakeoverCase(open: () => Promise<StorageBackend>): Promise<void> {
+  const page = new Uint8Array(PAGE).fill(7);
+  const seeded = await PersistentBackend.open(await open(), { intervalMs: 0 });
+  const seedService = new FilesystemService(seeded);
+  const seedConnection = createFilesystemConnection();
+  seedService.connect(seedConnection.server);
+  const seed = hostFilesystemClient(seedService, seedConnection);
+  try {
+    await seed.asyncCall("writeFile", ["/cold"], page);
+    await seeded.flush();
+  } finally {
+    seed.dispose();
+    seedService.dispose();
+    await seeded.close();
+  }
+  const backend = await PersistentBackend.open(await open(), { intervalMs: 0 });
+  const service = new FilesystemService(backend);
+  const connection = createFilesystemConnection();
+  service.connect(connection.server);
+  const client = hostFilesystemClient(service, connection);
+  try {
+    const root = await client.asyncCall("preopen", ["/"]);
+    const handle: number = (await client.asyncCall("resolve", [root, "cold"])).node;
+    for (let pass = 0; pass < 2; pass++) {
+      const read: Uint8Array = await client.asyncCall("read", [handle, PAGE, 0]);
+      assert(read.length === PAGE && read[0] === 7, "cold page reads before takeover");
+    }
+    // Opening the same workspace again takes ownership away from the first storage.
+    await open();
+    const outcome = await client.asyncCall("read", [handle, PAGE, 0]).then(
+      () => "served",
+      (error: unknown) => String(error),
+    );
+    assert(outcome !== "served", "a warm cached page is not served after takeover");
+  } finally {
+    client.dispose();
+    service.dispose();
+    await backend.close().catch(() => {});
   }
 }
 
@@ -695,6 +737,8 @@ function indexedDBCases(
   const test: Register = (label, run, compactEvery) => {
     cases.push({ label, run, compactEvery });
   };
+  test("IndexedDB takeover fences cold pages served from memory", async (_name, open) =>
+    warmColdReadTakeoverCase(open));
   test("IndexedDB persists format identity and adopts validated unmarked data", async (name, open) => {
     const storage = await open();
     await storage.persist(batch(1, "legacy data"));

@@ -100,6 +100,10 @@ export interface StorageBackend {
     expectedSize: number,
     metadata?: ReaderMetadataBudget,
   ): PayloadRetention;
+  /** Throws when this storage could not serve the payload now: it is closed, another owner took
+   * it over, or it no longer holds the key. Retains nothing, so a caller that already holds the
+   * verified bytes can check before handing them out. */
+  checkPayload(key: string, expectedSize: number): void;
   persist(batch: PersistenceBatch): Promise<void>;
   /** Make the selected immutable payloads durable; omitted means all outstanding payloads. */
   flush(keys?: readonly string[]): Promise<void>;

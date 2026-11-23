@@ -281,20 +281,28 @@ export class PersistentBackend extends MemoryBackend {
     const handle = this.fs.handleForNode(node);
     if (!length || this.shared.isResident(handle) || node.size === undefined)
       return super.selectReadBacking(node, offset, length, full);
-    const key = this.coldKey(node, handle);
-    const size = this.readMetadata(node, cancelled).size;
-    const retention = this.storage.retainPayload(key, size, metadata);
-    return { kind: "cold", key, size, storage: this.storage, retention };
+    return this.coldBacking(node, this.coldKey(node, handle, cancelled), metadata, cancelled);
   }
   /** The stored payload key of a clean cold file, which names exactly its current bytes. */
-  private coldKey(node: FileNode, handle: FileHandle): string {
+  private coldKey(node: FileNode, handle: FileHandle, cancelled?: () => boolean): string {
     const key = this.detachedKeys.get(node.ino) ?? this.committedKeys.get(node.ino);
     if (
       !key ||
-      (this.shared.hasFile(handle) && this.shared.revision(handle) !== this.revisions.get(handle))
+      (this.shared.hasFile(handle) &&
+        this.shared.revision(handle, false, cancelled) !== this.revisions.get(handle))
     )
       throw new FilesystemError(6, "cold revision is not retained");
     return key;
+  }
+  private coldBacking(
+    node: FileNode,
+    key: string,
+    metadata?: ReaderMetadataBudget,
+    cancelled?: () => boolean,
+  ): Extract<ReadBacking, { kind: "cold" }> {
+    const size = this.readMetadata(node, cancelled).size;
+    const retention = this.storage.retainPayload(key, size, metadata);
+    return { kind: "cold", key, size, storage: this.storage, retention };
   }
   prepareDescriptorRead(
     handle: FileHandle,
@@ -314,15 +322,16 @@ export class PersistentBackend extends MemoryBackend {
     const size = this.readMetadata(node, cancelled).size;
     const count = Math.min(length, PAGE, Math.max(0, size - offset));
     if (!count) return Promise.resolve(new Uint8Array());
-    // Resident files returned above; a clean cold file's key fixes its bytes, so cached
-    // pages need neither storage nor a payload retention.
-    const cached =
-      node.size === undefined
-        ? undefined
-        : this.coldReads.read(this.coldKey(node, handle), offset, count);
-    if (cached) return this.cachedDescriptorRange(cached, cancelled);
-    const backing = this.selectReadBacking(node, offset, count, false, undefined, cancelled);
-    if (backing.kind !== "cold") throw new FilesystemError(6);
+    if (node.size === undefined) throw new FilesystemError(6);
+    // Resident files returned above. A clean cold file's key fixes its bytes, so cached pages
+    // need no storage read or payload retention, only storage that could still serve them.
+    const key = this.coldKey(node, handle, cancelled);
+    const cached = this.coldReads.read(key, offset, count);
+    if (cached) {
+      this.storage.checkPayload(key, size);
+      return this.cachedDescriptorRange(cached, cancelled);
+    }
+    const backing = this.coldBacking(node, key, undefined, cancelled);
     const drained = Promise.withResolvers<void>();
     this.ownWork(drained.promise);
     return this.readDescriptorRange(backing, offset, count, cancelled).finally(() => {
@@ -924,12 +933,17 @@ export class PersistentBackend extends MemoryBackend {
     this.stopPersistence();
   }
   private async finishClose(work: readonly Promise<void>[]): Promise<void> {
-    const outcomes = await Promise.allSettled(work);
-    for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
-    await this.captureCheckpoint(true);
-    this.stopPersistence();
-    await this.storage.close();
-    this.watchAccount.close();
+    try {
+      const outcomes = await Promise.allSettled(work);
+      for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
+      await this.captureCheckpoint(true);
+      this.stopPersistence();
+      await this.storage.close();
+      this.watchAccount.close();
+    } finally {
+      // A failed close keeps `closing`, so nothing reads the cache again; free it either way.
+      this.coldReads.clear();
+    }
   }
   close(): Promise<void> {
     if (this.closing) return this.closing;

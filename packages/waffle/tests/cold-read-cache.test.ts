@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
-import { ColdReadCache } from "../fs/cold-read-cache";
+import { COLD_PAGE_OVERHEAD, ColdReadCache } from "../fs/cold-read-cache";
 import { PAGE } from "../fs/protocol";
+
+/** Room for exactly this many full pages. */
+const pages = (count: number) => count * (PAGE + COLD_PAGE_OVERHEAD);
 
 const bytes = (length: number, seed: number) =>
   Uint8Array.from({ length }, (_, at) => (at * 7 + seed) & 255);
@@ -31,7 +34,7 @@ test("results are private copies the caller may change or transfer", () => {
 });
 
 test("the least recently read pages leave first and the byte bound holds", () => {
-  const cache = new ColdReadCache(2 * PAGE);
+  const cache = new ColdReadCache(pages(2));
   cache.store("a", 0, bytes(PAGE, 1), PAGE);
   cache.store("b", 0, bytes(PAGE, 2), PAGE);
   expect(cache.read("a", 0, 1)).toBeDefined();
@@ -41,4 +44,32 @@ test("the least recently read pages leave first and the byte bound holds", () =>
   expect(cache.read("c", 0, PAGE)).toEqual(bytes(PAGE, 3));
   cache.clear();
   expect(cache.read("a", 0, 1)).toBeUndefined();
+});
+
+test("many tiny files are charged their per-page overhead, not just their bytes", () => {
+  const limit = 64 * 1024;
+  const cache = new ColdReadCache(limit);
+  const count = 10_000;
+  for (let index = 0; index < count; index++)
+    cache.store(`tiny-${index}`, 0, new Uint8Array([index & 255]), 1);
+  let kept = 0;
+  for (let index = 0; index < count; index++) if (cache.read(`tiny-${index}`, 0, 1)) kept++;
+  expect(kept).toBe(Math.floor(limit / (1 + COLD_PAGE_OVERHEAD)));
+  // The newest survive.
+  expect(cache.read(`tiny-${count - 1}`, 0, 1)).toEqual(new Uint8Array([(count - 1) & 255]));
+});
+
+test("a range ending in an incomplete page makes room page by page", () => {
+  const cache = new ColdReadCache(pages(2));
+  cache.store("old", 0, bytes(PAGE, 9), PAGE);
+  // Two complete pages and a trailing partial one of a three-page file.
+  const file = bytes(3 * PAGE, 4);
+  cache.store("big", 0, file.subarray(0, 2 * PAGE + 10), 3 * PAGE);
+  expect(cache.read("old", 0, 1)).toBeUndefined();
+  expect(cache.read("big", 0, 2 * PAGE)).toEqual(file.subarray(0, 2 * PAGE));
+  expect(cache.read("big", 2 * PAGE, 1)).toBeUndefined();
+  // The bound held: storing another page now drops exactly the oldest one.
+  cache.store("next", 0, bytes(PAGE, 2), PAGE);
+  expect(cache.read("big", 0, 1)).toBeUndefined();
+  expect(cache.read("big", PAGE, 1)).toBeDefined();
 });
