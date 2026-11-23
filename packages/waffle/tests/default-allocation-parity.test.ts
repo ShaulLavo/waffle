@@ -117,6 +117,16 @@ function withGroupMemberCells(expected: string[]) {
     .map((event) => event.replace(oldReply, '"initial":52,"maximum":52,"growable":false'))
     .sort();
 }
+/** Reused pipe registry cells: 65,536 cells replace 1,048,576 append-only ones. */
+function withReusableRegistryCells(expected: string[]) {
+  const oldRegistry = '"initial":2105360,"maximum":16785424,"growable":true';
+  expect(expected.filter((event) => event.includes(oldRegistry))).toHaveLength(2);
+  return expected
+    .map((event) =>
+      event.replace(oldRegistry, '"initial":1056784,"maximum":1056784,"growable":true'),
+    )
+    .sort();
+}
 for (const [mode, agent] of [
   ["normal", "desktop"],
   ["fallback", "desktop"],
@@ -164,11 +174,13 @@ for (const [mode, agent] of [
       expect(current.boundary).toBe("PRE-IMPORT PAGE-OWNED JavaScript");
       expect(current.fixtures).toEqual(baseline.fixtures);
       expect(withoutStorageRoot(current, 33_813_544)).toEqual(
-        withGroupMemberCells(
-          withExecutionObservation(
-            withPrivateInputArena(
-              withoutIdleWorkers(
-                withoutEagerSegments(withoutStorageRoot(baseline, 64 * 1024 * 1024)),
+        withReusableRegistryCells(
+          withGroupMemberCells(
+            withExecutionObservation(
+              withPrivateInputArena(
+                withoutIdleWorkers(
+                  withoutEagerSegments(withoutStorageRoot(baseline, 64 * 1024 * 1024)),
+                ),
               ),
             ),
           ),
