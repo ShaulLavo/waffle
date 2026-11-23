@@ -138,6 +138,53 @@ test("namespace edits refresh shared parent directory timestamps", () => {
   expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(ms(1));
 });
 
+test("a released directory's shared times still follow later edits below it", () => {
+  const backend = new MemoryBackend();
+  const call = (operation: string, args: unknown[], data = new Uint8Array()) =>
+    backend.execute(operation, args, data);
+  const root = call("preopen", ["/"]) as number;
+  const dir = call("create", [call("resolve", [root, "d"]), "directory", true]) as number;
+  call("setTimes", [dir, null, ms(1)]);
+  // The last pin goes, so MemFS forgets the handle while the shared slot stays.
+  backend.retain(dir);
+  backend.release(dir);
+  call("writeFile", ["/d/file"], new Uint8Array([1]));
+  expect(backend.shared.stat(dir)!.mtime).toBeGreaterThan(ms(1));
+});
+
+test("a directory removed while open drops its copied times at last close", () => {
+  const backend = new MemoryBackend();
+  const times = (backend as unknown as { directoryTimes: Map<number, unknown> }).directoryTimes;
+  const call = (operation: string, args: unknown[]) =>
+    backend.execute(operation, args, new Uint8Array());
+  const root = call("preopen", ["/"]) as number;
+  const dir = call("create", [call("resolve", [root, "gone"]), "directory", true]) as number;
+  backend.retain(dir);
+  call("removePath", [call("resolve", [root, "gone"]), true]);
+  expect(times.has(dir)).toBe(true);
+  backend.release(dir);
+  expect(times.has(dir)).toBe(false);
+});
+
+test("a rejected edit leaves no copied directory times behind", () => {
+  const backend = new MemoryBackend();
+  const times = (backend as unknown as { directoryTimes: Map<number, unknown> }).directoryTimes;
+  backend.execute("preopen", ["/"], new Uint8Array());
+  const before = times.size;
+  spyOn(
+    backend as unknown as { preparePublicationBacking(): unknown },
+    "preparePublicationBacking",
+  ).mockImplementation(() => {
+    throw new Error("injected backing failure");
+  });
+  for (let attempt = 0; attempt < 5; attempt++)
+    expect(() => backend.execute("writeFile", ["/rejected/file"], new Uint8Array([1, 2]))).toThrow(
+      "injected backing failure",
+    );
+  expect(backend.fs.lookup("/rejected")).toBeUndefined();
+  expect(times.size).toBe(before);
+});
+
 test("a namespace edit syncs only the directories it changed", () => {
   const backend = new MemoryBackend();
   const call = (operation: string, args: unknown[]) =>

@@ -283,17 +283,26 @@ export class MemoryBackend implements FilesystemBackend {
     this.shared.retain(handle);
   }
   release(handle: number): void {
+    const node =
+      this.directoryTimes.has(handle) && this.handleAlive(handle)
+        ? this.fs.nodeForHandle(handle)
+        : undefined;
     this.shared.release(handle);
     this.fs.release(handle);
-    this.pruneDirectoryTimes(handle);
+    if (node) this.pruneDirectoryTimes(handle, node);
   }
-  /** Drops the copied times of a directory whose handle died, as sync would fail on it. */
-  private pruneDirectoryTimes(handle: FileHandle): void {
-    if (!this.directoryTimes.has(handle)) return;
+  /** Drops the copied times of an unlinked directory once its handle is gone. A released but
+   * linked directory keeps its shared slot, and its entry keeps later edits refreshing that
+   * slot's times and identity. Reads only MemFS: release can run while publication stops. */
+  private pruneDirectoryTimes(handle: FileHandle, node: Node): void {
+    if (!this.handleAlive(handle) && !this.isLinked(node)) this.directoryTimes.delete(handle);
+  }
+  private handleAlive(handle: FileHandle): boolean {
     try {
       this.fs.nodeForHandle(handle);
+      return true;
     } catch {
-      this.directoryTimes.delete(handle);
+      return false;
     }
   }
   private check(handle: number, kind?: "file" | "directory"): void {
@@ -759,16 +768,23 @@ export class MemoryBackend implements FilesystemBackend {
         changes,
       };
     } catch (error) {
-      for (const handle of registered) this.shared.unlink(handle);
+      this.discardRegistered(registered);
       this.fs.discardNamespace(plan);
       throw error;
+    }
+  }
+  /** Nodes a discarded plan created never existed outside it: drop their slots and times. */
+  private discardRegistered(registered: readonly FileHandle[]): void {
+    for (const handle of registered) {
+      this.shared.unlink(handle);
+      this.directoryTimes.delete(handle);
     }
   }
   discardPublication(plan: Pick<MutationPlan, "action" | "backing">): void {
     plan.backing?.rollback();
     const action = plan.action.kind === "writeFile" ? plan.action.namespace : plan.action;
     if (action.kind !== "namespace") return;
-    for (const handle of action.registered) this.shared.unlink(handle);
+    this.discardRegistered(action.registered);
     this.fs.discardNamespace(action.plan);
   }
   /** One file-lock snapshot while planning holds the global lock: a page or service write lands
@@ -858,8 +874,8 @@ export class MemoryBackend implements FilesystemBackend {
     }
     for (const entry of action.removed) {
       if (this.isLinked(entry.node)) continue;
-      this.pruneDirectoryTimes(entry.handle);
       this.shared.unlink(entry.handle);
+      this.pruneDirectoryTimes(entry.handle, entry.node);
       if (this.shared.revision(entry.handle) === undefined)
         this.shared.publication?.forgetContent(entry.node.ino);
     }
