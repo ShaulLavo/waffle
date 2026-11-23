@@ -366,6 +366,53 @@ test("a packed archive carries no symbol file that admission did not bind", (con
   assert.throws(() => packProgramPackage(root), /not declared: extra\/stale-symbols\.json/);
 });
 
+test("a zero-artifact family archive still refuses a stray symbol file", (context) => {
+  const parent = resolve(import.meta.dirname, "../.build");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(resolve(parent, "symbols-zero-artifact-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(resolve(root, "src"));
+  writeFileSync(
+    resolve(root, "package.json"),
+    JSON.stringify({
+      name: "fixture",
+      version: "0.0.0",
+      waffleHostInterface: 1,
+      peerDependencies: { "@waffle-os/runtime": "*" },
+      files: ["src", "package-artifacts.json"],
+    }),
+  );
+  symbolPackage(root, []);
+  writeFileSync(resolve(root, "src/index.ts"), "export const family = [];\n");
+  assert.ok(readFileSync(packProgramPackage(root)).length > 0);
+  writeFileSync(resolve(root, "src/stale-symbols.json.gz"), gzipSync("{}"));
+  assert.throws(() => packProgramPackage(root), /not declared: src\/stale-symbols\.json\.gz/);
+});
+
+test("a payload manifest entry cannot stand in for a symbol derivation", (context) => {
+  const parent = resolve(import.meta.dirname, "../.build");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(resolve(parent, "symbols-payload-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(resolve(root, "assets/Lib"), { recursive: true });
+  const write = (url: string, bytes: Uint8Array) => {
+    writeFileSync(resolve(root, "assets", url), bytes);
+    const entry = { url, bytes: bytes.length, sha256: digest(bytes) };
+    writeFileSync(resolve(root, "assets/payload.json"), JSON.stringify({ files: [entry] }));
+  };
+  writeFileSync(
+    resolve(root, "package-artifacts.json"),
+    JSON.stringify({ files: ["assets/payload.json"], payloadManifest: "assets/payload.json" }),
+  );
+  write("Lib/module.py", Buffer.from("x = 1\n"));
+  assert.deepEqual(admitProgramPackage(root), ["assets/payload.json", "assets/Lib/module.py"]);
+  write("Lib/stale-symbols.json.gz", gzipSync("{}"));
+  assert.throws(
+    () => admitProgramPackage(root),
+    /not declared: assets\/Lib\/stale-symbols\.json\.gz/,
+  );
+});
+
 test("Coreutils echo is the one program that declares a sidecar and its subpath export", () => {
   const coreutils = resolve(import.meta.dirname, "../packages/coreutils");
   const recipe = JSON.parse(readFileSync(resolve(coreutils, "package-artifacts.json"), "utf8"));

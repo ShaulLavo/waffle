@@ -154,6 +154,22 @@ function admitProgramSymbols(
 
 /** Admission consumes prepared artifacts only; it never builds or fetches them. */
 export function admitProgramPackage(root: string): string[] {
+  return admitProgram(root).files;
+}
+
+/**
+ * Refuse any packed symbol file outside `bound`. Every family archive runs this, including
+ * one whose recipe admits no artifacts, since `files` rules pack whole directories.
+ */
+export function assertPackedSymbols(archive: string, bound: ReadonlySet<string>): void {
+  const members = execFileSync("tar", ["-tf", archive], { encoding: "utf8", stdio: "pipe" })
+    .split("\n")
+    .filter((member) => member.startsWith("package/"))
+    .map((member) => member.slice("package/".length));
+  assertSymbolsBound(members, bound);
+}
+
+function admitProgram(root: string): { files: string[]; symbols: ReadonlySet<string> } {
   const recipe = record(JSON.parse(readFileSync(resolve(root, "package-artifacts.json"), "utf8")));
   assert.ok(Array.isArray(recipe.files) && recipe.files.every((name) => typeof name === "string"));
   const files: string[] = recipe.files;
@@ -183,20 +199,20 @@ export function admitProgramPackage(root: string): string[] {
       admitProgramPackage(resolve(root, "..", name));
     }
   }
-  if (recipe.payloadManifest === undefined) return files.concat(companions);
+  const admitted = files.concat(companions);
+  if (recipe.payloadManifest === undefined) return { files: admitted, symbols: boundSymbols };
   assert.ok(typeof recipe.payloadManifest === "string");
-  return files.concat(companions, payloadFiles(root, recipe.payloadManifest));
+  // A payload hash is not a symbol derivation; only a receipt binds a sidecar.
+  const payload = payloadFiles(root, recipe.payloadManifest);
+  assertSymbolsBound(payload, boundSymbols);
+  return { files: admitted.concat(payload), symbols: boundSymbols };
 }
 
 /** Check the actual archive, including files removed by package files/ignore rules. */
 export function verifyProgramTarball(root: string, archive: string): void {
-  const files = admitProgramPackage(root);
+  const { files, symbols } = admitProgram(root);
+  assertPackedSymbols(archive, symbols);
   if (!files.length) return;
-  const members = execFileSync("tar", ["-tf", archive], { encoding: "utf8", stdio: "pipe" })
-    .split("\n")
-    .filter((member) => member.startsWith("package/"))
-    .map((member) => member.slice("package/".length));
-  assertSymbolsBound(members, new Set(files.filter((name) => symbolFiles.test(name))));
   const parent = resolve(root, ".build");
   mkdirSync(parent, { recursive: true });
   const scratch = mkdtempSync(resolve(parent, "pack-readback-"));

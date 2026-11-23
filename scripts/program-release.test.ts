@@ -388,6 +388,15 @@ describe("refusals", () => {
     await expect(release).rejects.toThrow(/grep\.wasm|ENOENT/);
   }, 60_000);
 
+  test("a zero-artifact family cannot ship an ignored symbol file", async () => {
+    const root = preparedFixture("zero-artifact-symbols");
+    writeFileSync(resolve(root, ".git/info/exclude"), "stale-symbols.json.gz\n");
+    writeFileSync(resolve(root, "packages/base/src/stale-symbols.json.gz"), "{}");
+    expect(git(root, ["status", "--porcelain"])).toBe("");
+    const release = buildRelease(await fixtureOptions(root, "zero-artifact-symbols"));
+    await expect(release).rejects.toThrow(/not declared: src\/stale-symbols\.json\.gz/);
+  }, 60_000);
+
   test("an undeclared symbol sidecar fails admission before packing", async () => {
     const root = preparedFixture("undeclared-symbols");
     const dist = resolve(root, "packages/coreutils/dist");
