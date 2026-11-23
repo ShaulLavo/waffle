@@ -204,7 +204,7 @@
         "tests/process-pipe-recycling.test.ts",
         "tests/process-recycling-browser.ts",
         "tests/startup-diagnostic-browser.ts",
-        "tests/storage-browser-runner.ts",
+        "testing/storage-browser-runner.ts",
         "tests/storage-lock-browser-runner.ts",
         "tests/worker-pipes.test.ts"
       ],

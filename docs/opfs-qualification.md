@@ -76,7 +76,7 @@ Run the source controls and the added native cases from the repository root:
 
 ```sh
 bun test packages/waffle/tests/opfs-snapshot.test.ts packages/waffle/tests/opfs-range.test.ts packages/waffle/tests/opfs-close.test.ts packages/waffle/tests/durable-identity-storage.test.ts packages/waffle/tests/storage-crash-r2.test.ts
-STORAGE_SCRATCH_ROOT=/absolute/data-drive/scratch STORAGE_TEST_FILTER="OPFS qualification" bun packages/waffle/tests/storage-browser-runner.ts chromium firefox webkit
+STORAGE_SCRATCH_ROOT=/absolute/data-drive/scratch STORAGE_TEST_FILTER="OPFS qualification" bun packages/waffle/testing/storage-browser-runner.ts chromium firefox webkit
 ```
 
 These are correctness and allocation controls, not throughput measurements or

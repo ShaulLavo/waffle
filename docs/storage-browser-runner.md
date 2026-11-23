@@ -7,7 +7,7 @@ with other test runs.
 Run the complete storage suite with the Simulator's exact UDID and an absolute result path:
 
 ```sh
-IOS_UDID=<simulator-udid> bun packages/waffle/tests/storage-browser-runner.ts ios-safari --result /absolute/storage.json
+IOS_UDID=<simulator-udid> bun packages/waffle/testing/storage-browser-runner.ts ios-safari --result /absolute/storage.json
 ```
 
 The runner checks the returned Safari, iOS, Simulator, and device capabilities before

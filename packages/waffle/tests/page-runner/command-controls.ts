@@ -9,7 +9,7 @@ import {
   type SuiteResult,
 } from "../../testing/page-runner/suite-host.js";
 import { record } from "../../testing/page-runner/protocol.js";
-import { runStorage } from "./storage-host.js";
+import { runStorage } from "../../testing/page-runner/storage-host.js";
 
 const notificationControlModes = [
   "complete",
@@ -155,7 +155,9 @@ export async function storagePageLabelControl(
     scratchRoot: process.env.STORAGE_SCRATCH_ROOT,
     filter: "IndexedDB persists format",
     assets: {
-      "/page.js": await browserBundle(join(import.meta.dir, "storage-page.ts")),
+      "/page.js": await browserBundle(
+        join(import.meta.dir, "../../testing/page-runner/storage-page.ts"),
+      ),
       "/worker.js": worker.outputs[0],
     },
   });

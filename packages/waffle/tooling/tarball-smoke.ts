@@ -431,6 +431,33 @@ async function pageRunnerConsumer(directory: string): Promise<void> {
   );
   consumerCommand(directory, "bun", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.json"]);
 }
+const bootstrapLookupScript = `
+  import { createFrameworkHost } from "@waffle-os/runtime/testing/page-runner/framework";
+  import { mkdir, readFile } from "node:fs/promises";
+  import { join } from "node:path";
+  const scratch = join(process.cwd(), "bootstrap-lookup-scratch");
+  await mkdir(scratch, { recursive: true });
+  process.env.STORAGE_SCRATCH_ROOT = scratch;
+  const host = createFrameworkHost({
+    suite: "installed-bootstrap",
+    native: { udid: "not-launched" },
+    expected: [{ file: "synthetic.ts", fullName: "case", sourceKey: "case:1", timeoutMs: 15000, retries: 0 }],
+    scope: { kind: "root-selection", command: "test:browser", files: ["synthetic.ts"] },
+    resultPath: join(scratch, "result.json"),
+  });
+  host.mount({ stack: [], use() {} });
+  const installed = import.meta.resolve("@waffle-os/runtime/testing/page-runner/framework");
+  const packageRoot = new URL(installed).pathname.replace(/\\/(?:dist\\/)?testing\\/page-runner\\/framework\\.(?:js|ts)$/, "");
+  const bootstrap = (await readFile(join(packageRoot, "dist/testing/page-runner/framework-bootstrap.js"), "utf8")).replaceAll("</script", "<\\\\/script");
+  let html = "";
+  await host.run(async (registerClose) => {
+    registerClose(async () => {});
+    html = host.instrumentDocument({ kind: "tester", url: "http://fixture/tester", html: "<head></head>" });
+    return { status: "interrupted", errors: ["bootstrap lookup smoke"] };
+  });
+  if (!html.startsWith("<head><script>window.__waffleFrameworkConfiguration=")) throw new Error("bootstrap configuration was not injected");
+  if (bootstrap.length < 1000 || !html.includes(bootstrap)) throw new Error("installed bootstrap script was not injected");
+`;
 async function frameworkConsumer(directory: string, phase: string): Promise<void> {
   consumerCommand(directory, "node", [
     "--input-type=module",
@@ -443,6 +470,10 @@ async function frameworkConsumer(directory: string, phase: string): Promise<void
     if (!entry.endsWith("/node_modules/@waffle-os/runtime/dist/testing/page-runner/framework.js")) throw new Error("Node did not resolve prepared installed JavaScript");
   `,
   ]);
+  // instrumentDocument walks up from the installed host file to the prepared bootstrap script.
+  await writeFile(join(directory, "bootstrap-lookup.mjs"), bootstrapLookupScript);
+  for (const runtime of ["node", "bun"])
+    consumerCommand(directory, runtime, ["bootstrap-lookup.mjs"]);
   await writeFile(
     join(directory, "framework-page.ts"),
     'export { getFrameworkObservation } from "@waffle-os/runtime/testing/page-runner/framework-page";',

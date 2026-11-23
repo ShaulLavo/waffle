@@ -5,7 +5,7 @@ import {
   type Group,
 } from "../../testing/page-runner/collector.js";
 import { commandAdapter, commands } from "./command-suites.js";
-import { storageAdapter } from "./storage-host.js";
+import { storageAdapter } from "../../testing/page-runner/storage-host.js";
 import { storagePolicy } from "../../testing/page-runner/storage-policy.js";
 import { resultByteLimit, type Body } from "../../testing/page-runner/protocol.js";
 

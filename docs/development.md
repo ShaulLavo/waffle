@@ -51,7 +51,7 @@ bunx playwright install chromium firefox webkit
 Run one suite in one engine, or the whole matrix:
 
 ```sh
-bun packages/waffle/tests/storage-browser-runner.ts chromium
+bun packages/waffle/testing/storage-browser-runner.ts chromium
 bun run test:browser
 ```
 

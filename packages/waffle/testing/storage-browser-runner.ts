@@ -7,16 +7,12 @@ import {
 } from "./page-runner/storage-worker.js";
 import { resolve } from "node:path";
 import type { Browser, BrowserContext } from "playwright";
-import {
-  BrowserRunnerLifecycle,
-  browserBundle,
-  engines,
-} from "../testing/browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
 import {
   formatNavigationServerEvent,
   NavigationDiagnostics,
   storageNavigate,
-} from "../testing/storage-navigation-diagnostics.js";
+} from "./storage-navigation-diagnostics.js";
 
 function storageCases(listed: TestList) {
   return (["indexeddb", "opfs"] as const).flatMap((backend) =>
@@ -24,7 +20,7 @@ function storageCases(listed: TestList) {
   );
 }
 if (process.argv[2] === "ios-safari") {
-  const { nativeMain } = await import("../testing/page-runner/native.js");
+  const { nativeMain } = await import("./page-runner/native.js");
   const { storageAdapter } = await import("./page-runner/storage-host.js");
   process.exit(
     await nativeMain(storageAdapter, process.argv.slice(3), {
@@ -174,7 +170,7 @@ try {
   origin = lifecycle.serve(
     {
       "/": "<!doctype html><title>Storage tests</title>",
-      "/tests.js": await browserBundle(resolve(import.meta.dir, "../testing/storage-browser.ts")),
+      "/tests.js": await browserBundle(resolve(import.meta.dir, "storage-browser.ts")),
       "/fs-worker.js": await browserBundle(
         resolve(
           import.meta.dir,

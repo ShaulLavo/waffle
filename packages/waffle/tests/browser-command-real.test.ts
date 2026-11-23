@@ -44,6 +44,7 @@ for (const forced of [false, true])
       const root = mkdtempSync(join(tmpdir(), "wr-"));
       mkdirSync(join(root, "scripts"));
       mkdirSync(join(root, "tests"));
+      mkdirSync(join(root, "testing"));
       for (const file of [
         "test-browser.ts",
         "browser-command.ts",
@@ -56,7 +57,7 @@ for (const forced of [false, true])
           join(root, "tests", `${runner}-browser-runner.ts`),
           'process.once("SIGTERM", () => process.exit(1)); setInterval(() => {}, 1000);',
         );
-      const suite = join(root, "tests/storage-browser-runner.ts");
+      const suite = join(root, "testing/storage-browser-runner.ts");
       const dependencies = resolve(import.meta.dir, "../node_modules/playwright/index.mjs");
       const control = resolve(
         import.meta.dir,

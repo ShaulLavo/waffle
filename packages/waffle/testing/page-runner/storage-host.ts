@@ -1,15 +1,11 @@
 import { join, resolve } from "node:path";
-import { storageTests, opfsStorageTests } from "../../testing/storage-browser.js";
-import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
+import { storageTests, opfsStorageTests } from "../storage-browser.js";
+import { browserBundle } from "../browser-runner-lifecycle.js";
 import { storageWorker, type WorkerRequest } from "./storage-worker.js";
-import { storagePolicy } from "../../testing/page-runner/storage-policy.js";
-import { storageBudgets } from "../../testing/page-runner/protocol.js";
-import type { Driver } from "../../testing/page-runner/driver.js";
-import {
-  runPageSuite,
-  type RunOptions,
-  type SuiteAdapter,
-} from "../../testing/page-runner/suite-host.js";
+import { storagePolicy } from "./storage-policy.js";
+import { storageBudgets } from "./protocol.js";
+import type { Driver } from "./driver.js";
+import { runPageSuite, type RunOptions, type SuiteAdapter } from "./suite-host.js";
 export function storageInventory(): { backend: "indexeddb" | "opfs"; label: string; id: string }[] {
   return storageTests("/fs-worker.js", "/open-fs-worker.js")
     .map<{ backend: "indexeddb" | "opfs"; label: string; id: string }>(({ label }) => ({
@@ -29,7 +25,7 @@ async function storageAssets(): Promise<Record<string, Blob | string>> {
   const root = resolve(import.meta.dir, "..");
   return {
     "/page.js": await browserBundle(join(import.meta.dir, "storage-page.ts")),
-    "/tests.js": await browserBundle(join(root, "../testing/storage-browser.ts")),
+    "/tests.js": await browserBundle(join(root, "storage-browser.ts")),
     "/fs-worker.js": await browserBundle(resolve(root, "../browser/fs-worker.ts")),
     "/open-fs-worker.js": await browserBundle(join(root, "storage-open-worker.ts")),
     "/worker.js": `(${storageWorker.toString()})();`,

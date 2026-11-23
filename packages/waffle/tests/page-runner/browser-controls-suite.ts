@@ -24,7 +24,7 @@ import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { join, resolve, isAbsolute } from "node:path";
 import { Collector } from "../../testing/page-runner/collector.js";
 import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
-import { runStorage } from "./storage-host.js";
+import { runStorage } from "../../testing/page-runner/storage-host.js";
 import {
   serveCollector,
   retireDocument,
@@ -32,7 +32,7 @@ import {
 } from "../../testing/page-runner/suite-host.js";
 import { storageBudgets } from "../../testing/page-runner/protocol.js";
 import { bounded } from "../../testing/page-runner/driver.js";
-import { storageWorker } from "./storage-worker.js";
+import { storageWorker } from "../../testing/page-runner/storage-worker.js";
 import { withStorageCleanup } from "../../testing/storage-allocation.js";
 import { browserBundle, engines } from "../../testing/browser-runner-lifecycle.js";
 import { captureWebKitDiagnostics } from "../../testing/webkit-diagnostics.js";
@@ -203,7 +203,9 @@ async function malformedAllocationControl(
   const collector = new Collector(run, [id], [id], storagePolicy);
   const fixture = serveCollector(collector, {
     "/page.js": "",
-    "/cleanup.js": await browserBundle(join(import.meta.dir, "storage-cleanup.ts")),
+    "/cleanup.js": await browserBundle(
+      join(import.meta.dir, "../../testing/page-runner/storage-cleanup.ts"),
+    ),
   });
   const scratch = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "prb-"));
   const driver = new PlaywrightDriver(engine, scratch);

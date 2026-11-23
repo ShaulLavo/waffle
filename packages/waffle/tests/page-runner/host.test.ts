@@ -4,7 +4,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { FakeDriver, type FakeMode } from "./fake-driver.js";
-import { runStorage } from "./storage-host.js";
+import { runStorage } from "../../testing/page-runner/storage-host.js";
 import { probeDocument } from "../../testing/page-runner/suite-host.js";
 import { Collector } from "../../testing/page-runner/collector.js";
 import { storageBudgets } from "../../testing/page-runner/protocol.js";

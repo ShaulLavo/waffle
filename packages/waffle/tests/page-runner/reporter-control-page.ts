@@ -1,7 +1,7 @@
 import { Reporter } from "../../testing/page-runner/reporter.js";
 import { storageTests, opfsStorageTests } from "../../testing/storage-browser.js";
 import { validateWorkerLabel } from "../../testing/page-runner/protocol.js";
-import { storageCase, type WorkerRequest } from "./storage-worker.js";
+import { storageCase, type WorkerRequest } from "../../testing/page-runner/storage-worker.js";
 import type { Configuration } from "../../testing/page-runner/page-main.js";
 declare const PAGE_RUNNER_CONTROL: string;
 const mode = PAGE_RUNNER_CONTROL;

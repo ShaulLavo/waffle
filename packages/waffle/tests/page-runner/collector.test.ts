@@ -8,7 +8,7 @@ import {
   validateWorkerLabel,
   type Body,
 } from "../../testing/page-runner/protocol.js";
-import { storageInventory } from "./storage-host.js";
+import { storageInventory } from "../../testing/page-runner/storage-host.js";
 const first = "indexeddb: first",
   second = "opfs: second";
 function fixture() {

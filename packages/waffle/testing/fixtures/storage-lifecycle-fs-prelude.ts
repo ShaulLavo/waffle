@@ -1,5 +1,5 @@
 import { installStorageLifecycleObserver } from "../storage-lifecycle-observer.js";
-import { storageLifecycleMarker } from "../../testing/storage-lifecycle-marker.js";
+import { storageLifecycleMarker } from "../storage-lifecycle-marker.js";
 import { IndexedDBStorage } from "../../fs/indexeddb.js";
 
 installStorageLifecycleObserver("filesystem-service");
