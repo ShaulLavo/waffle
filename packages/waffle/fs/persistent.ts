@@ -1,4 +1,5 @@
 import { restoreTree } from "./persisted-tree.js";
+import { ColdReadCache } from "./cold-read-cache.js";
 import { utf8ByteLength } from "./utf8-size.js";
 import type { ReadBacking } from "./workspace-read.js";
 import type { MemoryBudget } from "./memory-budget.js";
@@ -77,6 +78,7 @@ export class PersistentBackend extends MemoryBackend {
   private stopped = false;
   private nonce = crypto.randomUUID();
   private renewing?: Promise<void>;
+  private readonly coldReads = new ColdReadCache();
   private constructor(
     private storage: StorageBackend,
     fs: MemFS,
@@ -279,15 +281,20 @@ export class PersistentBackend extends MemoryBackend {
     const handle = this.fs.handleForNode(node);
     if (!length || this.shared.isResident(handle) || node.size === undefined)
       return super.selectReadBacking(node, offset, length, full);
+    const key = this.coldKey(node, handle);
+    const size = this.readMetadata(node, cancelled).size;
+    const retention = this.storage.retainPayload(key, size, metadata);
+    return { kind: "cold", key, size, storage: this.storage, retention };
+  }
+  /** The stored payload key of a clean cold file, which names exactly its current bytes. */
+  private coldKey(node: FileNode, handle: FileHandle): string {
     const key = this.detachedKeys.get(node.ino) ?? this.committedKeys.get(node.ino);
     if (
       !key ||
       (this.shared.hasFile(handle) && this.shared.revision(handle) !== this.revisions.get(handle))
     )
       throw new FilesystemError(6, "cold revision is not retained");
-    const size = this.readMetadata(node, cancelled).size;
-    const retention = this.storage.retainPayload(key, size, metadata);
-    return { kind: "cold", key, size, storage: this.storage, retention };
+    return key;
   }
   prepareDescriptorRead(
     handle: FileHandle,
@@ -307,6 +314,13 @@ export class PersistentBackend extends MemoryBackend {
     const size = this.readMetadata(node, cancelled).size;
     const count = Math.min(length, PAGE, Math.max(0, size - offset));
     if (!count) return Promise.resolve(new Uint8Array());
+    // Resident files returned above; a clean cold file's key fixes its bytes, so cached
+    // pages need neither storage nor a payload retention.
+    const cached =
+      node.size === undefined
+        ? undefined
+        : this.coldReads.read(this.coldKey(node, handle), offset, count);
+    if (cached) return this.cachedDescriptorRange(cached, cancelled);
     const backing = this.selectReadBacking(node, offset, count, false, undefined, cancelled);
     if (backing.kind !== "cold") throw new FilesystemError(6);
     const drained = Promise.withResolvers<void>();
@@ -327,6 +341,14 @@ export class PersistentBackend extends MemoryBackend {
     const bytes = await backing.storage.readRange(backing.key, { offset, length });
     if (cancelled() || this.stopped) throw new FilesystemError(11);
     if (bytes.length !== length) throw new Error("Short retained descriptor range");
+    this.coldReads.store(backing.key, offset, bytes, backing.size);
+    return bytes;
+  }
+  private async cachedDescriptorRange(
+    bytes: Uint8Array,
+    cancelled: () => boolean,
+  ): Promise<Uint8Array> {
+    if (cancelled() || this.stopped) throw new FilesystemError(11);
     return bytes;
   }
   private evictClean(except?: FileHandle): void {
@@ -895,6 +917,7 @@ export class PersistentBackend extends MemoryBackend {
   private stopPersistence(): void {
     this.stopped = true;
     this.cancelTimer();
+    this.coldReads.clear();
   }
   dispose(): void {
     if (this.closing) return;
