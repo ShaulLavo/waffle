@@ -73,8 +73,9 @@ const RETIRED_PAGE = -1;
 const FREED_REVISION_LOW = 7;
 const FREED_REVISION_HIGH = 8;
 // Slots with a nonzero kind word, maintained under the global lock, so a resource check does
-// not scan the whole identity table.
-const REGISTERED_SLOTS = 9;
+// not scan the whole identity table. Other header words: 9 and 10 are DirtyAdmission's
+// signals, 16 to 24 the identity allocator, and 32 onward the dirty-admission ledger.
+const REGISTERED_SLOTS = 11;
 // Global-lock accelerators. Nothing below a hint is free; ownership stays authoritative.
 const PHYSICAL_HINT = 27;
 const TABLE_HINT = 28;

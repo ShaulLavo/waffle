@@ -161,6 +161,15 @@ test("unlink retains open pages then zeroes and reuses them on last close", () =
 
 test("the registered file count follows registration, release and eviction", () => {
   const state = new SharedFilesystemState();
+  // Dirty admission shares the header and signals page releases; it must not move the count.
+  state.mutate(undefined, undefined, () =>
+    state.dirtyAdmission.configure(
+      {},
+      { maxBytes: 64 * PAGE, maxMetadataBytes: 1 << 20, maxOperations: 1024 },
+      0,
+    ),
+  );
+  expect(state.dirtyAdmission.enabled).toBe(true);
   const scanned = () => {
     let count = 0;
     for (let at = SLOT_WORDS; at < state.slots.length; at += SLOT_WORDS)
@@ -193,9 +202,16 @@ test("the registered file count follows registration, release and eviction", () 
   expectCount(4);
   state.release(1);
   expectCount(3);
+  const change = state.dirtyAdmission.change;
   expect(state.evict(3, state.revision(3)!)).toBe(true);
+  expect(state.dirtyAdmission.change).not.toBe(change);
   expectCount(2);
   state.register(5, file(6), new Uint8Array(3));
+  expectCount(3);
+  for (let round = 0; round < 50; round++) {
+    state.register(10, file(10), new Uint8Array(3));
+    expect(state.evict(10, state.revision(10)!)).toBe(true);
+  }
   expectCount(3);
 });
 
