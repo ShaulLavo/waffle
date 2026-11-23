@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import * as production from "../proc/pipes.js";
 import { PipeRealm } from "./fixtures/pipe-interleave.ts";
+import { workerMessage } from "./fixtures/worker-message.ts";
 
 // Registry cells are reused once their last hold drops. These tests pin down the one rule that
 // makes reuse safe: nothing that can still act on a cell (a paused operation, a retained
@@ -182,22 +183,7 @@ test("a cell that runs out of tags retires instead of repeating a reference", ()
   expect(cells.cellsInUse).toBe(1);
 });
 
-function message(worker: Worker): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => finish(new Error("registry worker timed out")), 5000);
-    const onMessage = (event: MessageEvent<unknown>) => finish(undefined, event.data);
-    const onError = (event: ErrorEvent) => finish(event.error ?? new Error(event.message));
-    function finish(error?: unknown, value?: unknown) {
-      clearTimeout(timer);
-      worker.removeEventListener("message", onMessage);
-      worker.removeEventListener("error", onError);
-      if (error) reject(error);
-      else resolve(value);
-    }
-    worker.addEventListener("message", onMessage);
-    worker.addEventListener("error", onError);
-  });
-}
+const message = (worker: Worker) => workerMessage(worker, "registry worker");
 
 for (const mode of ["read", "write"] as const)
   test(`a Worker terminated mid-${mode} while holding a cell quarantines only that cell`, async () => {
