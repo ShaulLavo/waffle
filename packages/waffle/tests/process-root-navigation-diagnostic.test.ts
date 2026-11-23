@@ -387,13 +387,35 @@ async function collectorControl(interrupt: boolean, breakSink = false): Promise<
         JSON.stringify({ status, result, stdoutHex: bytes.toString("hex"), stderr: savedErrors }),
       );
   } finally {
-    // Read the record before stopping the collector, which writes it right after spawning.
-    capturedPid ??= recordedCollectionPid(evidence);
-    if (child) killIfAlive(-child.pid);
-    if (capturedPid) killIfAlive(-capturedPid);
-    if (child) await child.exited;
+    await stopCollector(child, evidence, capturedPid);
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+/** Direct children of a running process, found by parent PID. */
+function childPids(pid: number): number[] {
+  const listed = Bun.spawnSync(["pgrep", "-P", String(pid)], { stdout: "pipe" });
+  return listed.stdout
+    .toString()
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map(Number);
+}
+
+/** Stop the collector and its detached child, for example after a readiness timeout. The
+ * child's PID comes from the test, the collector's record, or, if the collector has not
+ * written its record yet, its live children, all read before the collector is killed. */
+async function stopCollector(
+  child: Bun.Subprocess | undefined,
+  evidence: string,
+  capturedPid: number | undefined,
+): Promise<void> {
+  if (!child) return;
+  const recorded = capturedPid ?? recordedCollectionPid(evidence);
+  const collected = (recorded === undefined ? [] : [recorded]).concat(childPids(child.pid));
+  killIfAlive(-child.pid);
+  for (const pid of collected) killIfAlive(-pid);
+  await child.exited;
 }
 
 test(
