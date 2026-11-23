@@ -54,21 +54,6 @@ function sameTimes(left: DirectoryTimes | undefined, right: DirectoryTimes): boo
     left.ctime === right.ctime
   );
 }
-const namespaceOperations = new Set([
-  "preopen",
-  "bindSocket",
-  "bindSocketPath",
-  "unbindSocket",
-  "create",
-  "symlink",
-  "link",
-  "removePath",
-  "rename",
-  "writeFile",
-  "mkdirp",
-  "remove",
-  "move",
-]);
 interface NamespaceAction {
   readonly kind: "namespace";
   readonly plan: NamespacePlan;
@@ -300,6 +285,16 @@ export class MemoryBackend implements FilesystemBackend {
   release(handle: number): void {
     this.shared.release(handle);
     this.fs.release(handle);
+    this.pruneDirectoryTimes(handle);
+  }
+  /** Drops the copied times of a directory whose handle died, as sync would fail on it. */
+  private pruneDirectoryTimes(handle: FileHandle): void {
+    if (!this.directoryTimes.has(handle)) return;
+    try {
+      this.fs.nodeForHandle(handle);
+    } catch {
+      this.directoryTimes.delete(handle);
+    }
   }
   private check(handle: number, kind?: "file" | "directory"): void {
     let stat;
@@ -334,13 +329,11 @@ export class MemoryBackend implements FilesystemBackend {
     return { handle, node };
   }
   execute(operation: string, args: any[], data: Uint8Array): unknown {
-    try {
-      const intent = mutationIntent(operation, args);
-      if (!intent) return this.executeOperation(operation, args, data);
-      return this.shared.mutate(undefined, undefined, () => this.executePublication(intent, data));
-    } finally {
-      if (namespaceOperations.has(operation)) this.syncDirectoryTimes();
-    }
+    // A namespace edit syncs exactly the directories it changed in applyNamespace. Syncing
+    // every known directory after each edit made creating a file cost O(directories).
+    const intent = mutationIntent(operation, args);
+    if (!intent) return this.executeOperation(operation, args, data);
+    return this.shared.mutate(undefined, undefined, () => this.executePublication(intent, data));
   }
   private executePublication(intent: MutationIntent, data: Uint8Array): unknown {
     const plan = this.planPublication(intent, data);
@@ -352,15 +345,6 @@ export class MemoryBackend implements FilesystemBackend {
       throw error;
     }
     return mutationValue(plan.result);
-  }
-  private syncDirectoryTimes(): void {
-    for (const handle of this.directoryTimes.keys()) {
-      try {
-        this.sync(handle);
-      } catch {
-        this.directoryTimes.delete(handle);
-      }
-    }
   }
   private checkMissingParent(path: string): void {
     const parts = path.split("/").filter((part) => part.length > 0);
@@ -874,6 +858,7 @@ export class MemoryBackend implements FilesystemBackend {
     }
     for (const entry of action.removed) {
       if (this.isLinked(entry.node)) continue;
+      this.pruneDirectoryTimes(entry.handle);
       this.shared.unlink(entry.handle);
       if (this.shared.revision(entry.handle) === undefined)
         this.shared.publication?.forgetContent(entry.node.ino);

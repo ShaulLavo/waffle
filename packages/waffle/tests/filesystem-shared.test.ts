@@ -138,6 +138,28 @@ test("namespace edits refresh shared parent directory timestamps", () => {
   expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(ms(1));
 });
 
+test("a namespace edit syncs only the directories it changed", () => {
+  const backend = new MemoryBackend();
+  const call = (operation: string, args: unknown[]) =>
+    backend.execute(operation, args, new Uint8Array());
+  const root = call("preopen", ["/"]) as number;
+  const directories = Array.from(
+    { length: 200 },
+    (_, index) =>
+      call("create", [call("resolve", [root, `d${index}`]), "directory", true]) as number,
+  );
+  const target = directories[7]!;
+  const other = directories[8]!;
+  call("setTimes", [target, null, ms(1)]);
+  call("setTimes", [other, null, ms(1)]);
+  const sync = spyOn(backend as unknown as { sync(handle: number): void }, "sync");
+  call("create", [call("resolve", [target, "file"]), "file", true]);
+  // The new file and its parent, not every directory the backend has seen.
+  expect(sync.mock.calls.length).toBeLessThanOrEqual(4);
+  expect(backend.shared.stat(target)!.mtime).toBeGreaterThan(ms(1));
+  expect(backend.shared.stat(other)!.mtime).toBe(ms(1));
+});
+
 test("unlink retains open pages then zeroes and reuses them on last close", () => {
   const state = new SharedFilesystemState(undefined, PAGE * DATA_PAGES_PER_SEGMENT);
   state.register(
