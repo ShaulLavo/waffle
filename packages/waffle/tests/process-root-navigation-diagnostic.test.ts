@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -302,14 +302,24 @@ async function waitForReady(
   }
 }
 
+/** The collected child's PID, once the collector has recorded it, so cleanup reaches that
+ * process group even when readiness never arrived. */
+function recordedCollectionPid(evidence: string): number | undefined {
+  const path = join(evidence, "collector-owner.json");
+  if (!existsSync(path)) return undefined;
+  const owner: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (typeof owner !== "object" || owner === null || !("pid" in owner)) return undefined;
+  return typeof owner.pid === "number" ? owner.pid : undefined;
+}
+
 async function collectorControl(interrupt: boolean, breakSink = false): Promise<void> {
   const root = mkdtempSync(
     join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-collector-"),
   );
+  const evidence = join(root, "evidence");
   let child: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
   let capturedPid: number | undefined;
   try {
-    const evidence = join(root, "evidence");
     const scratch = join(root, "scratch");
     mkdirSync(evidence);
     mkdirSync(scratch);
@@ -377,6 +387,8 @@ async function collectorControl(interrupt: boolean, breakSink = false): Promise<
         JSON.stringify({ status, result, stdoutHex: bytes.toString("hex"), stderr: savedErrors }),
       );
   } finally {
+    // Read the record before stopping the collector, which writes it right after spawning.
+    capturedPid ??= recordedCollectionPid(evidence);
     if (child) killIfAlive(-child.pid);
     if (capturedPid) killIfAlive(-capturedPid);
     if (child) await child.exited;
