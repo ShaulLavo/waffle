@@ -1,5 +1,6 @@
 import { PipeErrno, type PipeEndpoint } from "../proc/pipes.js";
 import { ProcessError } from "../proc/types.js";
+import { yieldTask } from "./yield-task.js";
 
 const BATCH = 32;
 
@@ -79,8 +80,4 @@ export class CommandInput {
       if (++writes % BATCH === 0) await yieldTask();
     }
   }
-}
-
-function yieldTask(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
 }
