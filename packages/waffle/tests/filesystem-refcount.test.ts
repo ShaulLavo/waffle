@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import * as protocol from "../fs/protocol.ts";
 import * as shared from "../fs/shared.ts";
 import * as native from "../proc/intrinsics.ts";
+import { EpochCache } from "../fs/epoch-cache.ts";
 import { localPublication } from "../fs/publication-internal.ts";
 import { mutationIntent } from "../fs/publication.ts";
 import { takeResolveObservation } from "../fs/resolve-observation.ts";
@@ -44,6 +45,7 @@ class TrackingBackend extends MemoryBackend {
 function isolatedClient() {
   const hooks = { compareExchange: native.atomicsCompareExchange };
   const bindings = {
+    EpochCache,
     localPublication,
     mutationIntent,
     takeResolveObservation,
@@ -220,6 +222,12 @@ test("a transient stat keeps its capability alive through service eviction and r
   expect(client.stat(handle)).toMatchObject({ kind: "file", size: 8 });
   expect(Atomics.load(cells, index)).toBe(0);
   client.shared.stat = stat;
+  // The batch eviction ran while the stat held the handle. Renewed pressure evicts it as the
+  // least recently used idle capability.
+  for (let i = 0; i < protocol.TRANSIENT_HANDLES / 2; i++) {
+    await client.asyncCall("writeFile", [`/stat-pressure-again-${i}`], new Uint8Array());
+    await client.asyncCall("resolve", [root, `stat-pressure-again-${i}`]);
+  }
   await client.asyncCall("listFiles", ["/"]);
   expect(backend.pins.has(handle)).toBe(false);
   expect(() => client.stat(handle)).toThrow(new FilesystemError(8));

@@ -751,17 +751,22 @@ export class FilesystemService {
       if (references === 0 && shared?.isUnlinked(handle)) detached = true;
     }
     if (idle <= TRANSIENT_HANDLES && !detached) return;
+    // Over the bound, evict the least recently used down to half of it. Each eviction bumps the
+    // namespace epoch and so drops every client's cached answers; one handle per new path
+    // would do that on every resolve of a build that touches more paths than the bound.
+    const keep = idle > TRANSIENT_HANDLES ? TRANSIENT_HANDLES / 2 : TRANSIENT_HANDLES;
     // Eviction is a capability mutation, serialized against direct guest mutations too.
     const epoch = session.epoch;
     const invalidate = !shared?.ownsServiceMutation;
+    let opened = false;
     if (invalidate) {
       if (shared) shared.beginServiceMutation(epoch);
-      else Atomics.add(epoch, 0, 1);
+      else opened = this.beginEpochMutation(epoch);
     }
     try {
       for (const handle of session.transient.keys()) {
         if (session.preparingHandles.has(handle)) continue;
-        if (idle <= TRANSIENT_HANDLES && !shared?.isUnlinked(handle)) continue;
+        if (idle <= keep && !shared?.isUnlinked(handle)) continue;
         const key = session.handles.get(handle)!;
         // A local retain racing this CAS either owns a live pin or sees a revoked entry.
         if (Atomics.compareExchange(session.capabilities, key + 1, 0, -1) !== 0) continue;
@@ -775,8 +780,43 @@ export class FilesystemService {
     } finally {
       if (invalidate) {
         if (shared) shared.endServiceMutation(epoch);
-        else Atomics.add(epoch, 0, 1);
+        else this.endEpochMutation(epoch, opened);
       }
+    }
+  }
+  /** A backend without shared state marks its mutations on the epoch alone, and only this
+   * service changes that epoch. Requests mutate one at a time through the queue and evictions
+   * are synchronous, so an epoch already odd belongs to an open mutation that outlives this one,
+   * such as the creating request around an eviction. The nested one joins it and the epoch stays
+   * odd until the outer one ends. The shared value decides, so every session's view of the same
+   * memory agrees, including structured-cloned wrappers. Returns whether this call opened it. */
+  private beginEpochMutation(epoch: Int32Array): boolean {
+    if (Atomics.load(epoch, 0) & 1) return false;
+    Atomics.add(epoch, 0, 1);
+    return true;
+  }
+  private endEpochMutation(epoch: Int32Array, opened: boolean): void {
+    if (opened) Atomics.add(epoch, 0, 1);
+  }
+  /** Offer the segments a request built, then close its mutation even if the offer fails, so a
+   * failure can neither strand the epoch odd nor keep the service mutation lock. */
+  private finishRequestMutation(
+    epoch: Int32Array,
+    mutation: boolean,
+    opened: boolean,
+  ): { error: unknown } | undefined {
+    try {
+      // A segment that was built stays, even when the request that needed it was cancelled or
+      // failed afterwards. Offer every one exactly once, indexed so a peer that connected in
+      // between can take both its snapshot and this broadcast.
+      this.announceSegments(this.backend.takeSharedSegments?.() ?? [], this.sessions);
+      return undefined;
+    } catch (error) {
+      return { error };
+    } finally {
+      if (mutation && this.backend instanceof MemoryBackend)
+        this.backend.shared.endServiceMutation(epoch);
+      else if (mutation) this.endEpochMutation(epoch, opened);
     }
   }
   private check(session: Session, handle: number | undefined, held?: number[]): void {
@@ -1162,6 +1202,7 @@ export class FilesystemService {
     const bytes = requestInput(session, id, response);
     let state = State.Complete;
     let mutation = false;
+    let opened = false;
     let preparing = false;
     let staging = false;
     let admission: PublicationAdmission | undefined;
@@ -1198,7 +1239,7 @@ export class FilesystemService {
       mutation = mutations.has(operation) && !local;
       if (mutation) {
         if (this.backend instanceof MemoryBackend) this.backend.shared.beginServiceMutation(epoch);
-        else Atomics.add(epoch, 0, 1);
+        else opened = this.beginEpochMutation(epoch);
       }
       const payload = bytes.subarray(inputLength, inputLength + dataLength);
       const value = prepared?.read
@@ -1227,13 +1268,12 @@ export class FilesystemService {
         state = cells[3] === 11 ? State.Cancelled : State.Failed;
       }
     } finally {
-      // A segment that was built stays, even when the request that needed it was cancelled or
-      // failed afterwards. Offer every one exactly once, indexed so a peer that connected in
-      // between can take both its snapshot and this broadcast.
-      this.announceSegments(this.backend.takeSharedSegments?.() ?? [], this.sessions);
-      if (mutation) {
-        if (this.backend instanceof MemoryBackend) this.backend.shared.endServiceMutation(epoch);
-        else Atomics.add(epoch, 0, 1);
+      const offered = this.finishRequestMutation(epoch, mutation, opened);
+      // A failed offer fails the request rather than leaving it pending.
+      if (offered && !preparing && state !== State.Failed && state !== State.Cancelled) {
+        this.discardResponse(session, id);
+        cells[3] = errno(offered.error);
+        state = State.Failed;
       }
       if (!preparing) {
         this.cancelPublication(session, admission);

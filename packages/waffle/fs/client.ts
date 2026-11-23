@@ -7,6 +7,7 @@ import { checkDirectoryPage } from "./directory-pages.js";
 import { DirtyCapacityError } from "./dirty-admission.js";
 import { ResidentAttachment, stopWorkspaceBridge } from "./publication-attachment.js";
 import { localPublication } from "./publication-internal.js";
+import { EpochCache } from "./epoch-cache.js";
 import { takeResolveObservation, type ResolveObservation } from "./resolve-observation.js";
 import {
   FilesystemRequestAllocator,
@@ -467,9 +468,11 @@ export class FilesystemClient implements FileSystem {
   readonly completions = new MapConstructor<number, FilesystemCompletion>();
   private readonly requests: FilesystemRequestAllocator;
   private reads = new Map<number, { offset: number; bytes: Uint8Array; epoch: number }>();
-  private stats = new Map<number, { stat: FileStat; epoch: number }>();
-  private paths = new Map<string, { path: ResolvedPath | number; epoch: number }>();
-  private readdirs = new Map<number, { entries: DirectoryEntry[]; epoch: number }>();
+  // A missing-path probe adds no handle, so module resolution can hold thousands of valid
+  // answers within one epoch. Bound each epoch's set; the epoch itself invalidates them.
+  private stats = new EpochCache<number, FileStat>(4096);
+  private paths = new EpochCache<string, ResolvedPath | number>(4096);
+  private readdirs = new EpochCache<number, DirectoryEntry[]>(64);
   private openHandles = new MapConstructor<number, number>();
   // Shared slots of open regular files: a live handle never changes slot, and direct I/O
   // rechecks the slot's handle under its file lock.
@@ -1676,9 +1679,9 @@ export class FilesystemClient implements FileSystem {
     try {
       const epoch = this.version();
       const key = `${directory}\0${Number(followFinal) | (Number(rooted) << 1)}\0${path}`;
-      const cached = this.paths.get(key);
-      if (!this.resident && !this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
-        return typeof cached.path === "number" ? cached.path : { ...cached.path };
+      const cached = this.paths.get(key, epoch);
+      if (!this.resident && !this.shared.publication && !(epoch & 1) && cached !== undefined)
+        return typeof cached === "number" ? cached : { ...cached };
       return this.#resolveCold(key, [directory, path, followFinal, rooted]);
     } catch (error) {
       return errno(error);
@@ -1698,8 +1701,7 @@ export class FilesystemClient implements FileSystem {
     epoch: number,
     resolved: ResolvedPath | number,
   ): ResolvedPath | number {
-    if (this.paths.size >= 256) this.paths.clear();
-    this.paths.set(key, { path: resolved, epoch });
+    this.paths.set(key, resolved, epoch);
     return typeof resolved === "number" ? resolved : { ...resolved };
   }
   stat(handle: FileHandle): FileStat {
@@ -1709,14 +1711,13 @@ export class FilesystemClient implements FileSystem {
       const direct = this.resident ? undefined : this.shared.stat(handle, this.revoked);
       if (direct) return direct;
       const epoch = this.version();
-      const cached = this.stats.get(handle);
-      if (!this.resident && !this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
-        return { ...cached.stat };
+      const cached = this.stats.get(handle, epoch);
+      if (!this.resident && !this.shared.publication && !(epoch & 1) && cached)
+        return { ...cached };
       const completion = this.submit("stat", [handle]);
       try {
         const stat = completion.wait();
-        if (this.stats.size >= 256) this.stats.clear();
-        this.stats.set(handle, { stat, epoch: completion.epoch });
+        this.stats.set(handle, stat, completion.epoch);
         return { ...stat };
       } finally {
         completion.release();
@@ -2185,14 +2186,13 @@ export class FilesystemClient implements FileSystem {
   }
   readdir(handle: FileHandle): DirectoryEntry[] {
     const epoch = this.version();
-    const cached = this.readdirs.get(handle);
-    if (!this.resident && !this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
-      return cached.entries.map((entry) => ({ ...entry }));
+    const cached = this.readdirs.get(handle, epoch);
+    if (!this.resident && !this.shared.publication && !(epoch & 1) && cached)
+      return cached.map((entry) => ({ ...entry }));
     const completion = this.submit("readdir", [handle]);
     try {
       const entries = completion.wait() as DirectoryEntry[];
-      if (this.readdirs.size >= 64) this.readdirs.clear();
-      this.readdirs.set(handle, { entries, epoch: completion.epoch });
+      this.readdirs.set(handle, entries, completion.epoch);
       return entries.map((entry) => ({ ...entry }));
     } finally {
       completion.release();
