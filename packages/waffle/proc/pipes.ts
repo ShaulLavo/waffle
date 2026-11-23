@@ -1,5 +1,6 @@
 import {
   cryptoRandomUUID,
+  objectHasOwn,
   scheduleTimeout,
   arrayFrom,
   isSharedArrayBuffer,
@@ -2108,7 +2109,8 @@ export class PipeController {
   private reportedClosed = false;
   constructor(options: PipeOptions = {}, attached?: PipeEndpointHandle) {
     this.onClosed = options.onClosed;
-    this.relayYield = options.relayYield;
+    // Guest code creates option objects too; an inherited getter must never see one.
+    this.relayYield = objectHasOwn(options, "relayYield") ? options.relayYield : undefined;
     if (attached) this.state = new PipeState(attached, options.allocateShared);
     else {
       const capacity = options.capacity ?? 65536;
