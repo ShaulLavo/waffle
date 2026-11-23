@@ -196,25 +196,15 @@ Each passed on rerun with no code change, and none touches the code those PRs ch
   `host-body-failure` on main ecf82eee, run 45003278103 attempt 1; attempt 2 passed.
   This is an outcome mismatch, not a timeout: the body failed with `Wrong negative C
   assertion: --corrupt-range` (`tests/gpu-async-command.ts:129`). The compiled guest
-  (`tests/fixtures/gpu/async.c`) must report exactly `GPU_ASYNC_FAIL stage=completion-correlation`
-  after the corrupt writeback, when the service's closed reply arrives; it reported some other
-  stage. A completions errno arriving before the closed reply (stage `completions`) would match
-  the earlier terminal-ordering race fixed in PR 498, but CI kept neither the guest text nor
-  the retained results, so the stage is unknown. Not reproduced on the PC (2026-11-23) with a
+  (`tests/fixtures/gpu/async.c`) must print exactly one failure line,
+  `GPU_ASYNC_FAIL stage=completion-correlation`, after the corrupt writeback when the service's
+  closed reply arrives. The assertion also fails if that line is missing or repeated, and CI
+  kept neither the guest text nor the retained results, so what the guest printed is unknown.
+  One candidate is a completions errno arriving before the closed reply (stage `completions`),
+  which would resemble the terminal-ordering race fixed in PR 498. Not reproduced on the PC (2026-11-23) with a
   local `build-gpu-fixture.ts` build: 100 Chromium runs, 4 at once, all passed, and 60 runs,
   4 at once on 2 CPU cores, had no `--corrupt-range` mismatch. One of those 60 failed in
   teardown instead, with `Process browser resource closure did not settle during teardown`
   after the command passed: the 5 s close cap in the same family as canonical-ownership above.
   If the mismatch recurs, print the guest's `GPU_ASYNC_FAIL` line in the error.
 
-## Known cleanup gap
-
-`tests/process-root-navigation-diagnostic.test.ts` collector tests: when the 40 s readiness cap
-fires, cleanup kills the collector's process group and the detached `--collection` child named
-by the test or by `collector-owner.json`. `collectChild` writes that record synchronously right
-after spawning, so a kill landing inside that step can still miss the child. This predates the
-2026-11-23 fix (the old 5 s cap had the same path and never read the record). Review of PR 612
-tried a `pgrep -P` lookup and a `SIGSTOP` freeze; each left another edge (an in-flight macOS
-`posix_spawn`, a stuck stopped collector when `pgrep` fails to start), so they were not kept.
-A complete fix would have the collector itself own its child's teardown on `SIGTERM` before
-the test escalates.

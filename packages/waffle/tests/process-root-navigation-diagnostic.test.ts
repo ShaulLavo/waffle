@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -303,11 +303,15 @@ async function waitForReady(
 }
 
 /** The collected child's PID, once the collector has recorded it, so cleanup reaches that
- * process group even when readiness never arrived. */
+ * process group even when readiness never arrived. Best effort: a missing or unreadable record
+ * must not skip the rest of teardown. */
 function recordedCollectionPid(evidence: string): number | undefined {
-  const path = join(evidence, "collector-owner.json");
-  if (!existsSync(path)) return undefined;
-  const owner: unknown = JSON.parse(readFileSync(path, "utf8"));
+  let owner: unknown;
+  try {
+    owner = JSON.parse(readFileSync(join(evidence, "collector-owner.json"), "utf8"));
+  } catch {
+    return undefined;
+  }
   if (typeof owner !== "object" || owner === null || !("pid" in owner)) return undefined;
   return typeof owner.pid === "number" ? owner.pid : undefined;
 }
@@ -392,16 +396,20 @@ async function collectorControl(interrupt: boolean, breakSink = false): Promise<
   }
 }
 
-/** Stop the collector and its detached child, for example after a readiness timeout. The
- * child's PID comes from the test or, before readiness, the collector's record, read before
- * the collector is killed. The collector writes that record synchronously after spawning, so
- * only a kill landing inside that synchronous step can miss the child (plans/ci-flakes.md). */
+/** Stop the collector and its detached child, for example after a readiness timeout. A
+ * running collector gets SIGTERM first: its own handler stops the child it spawned, whether or
+ * not it has recorded that child yet. After a bounded wait, SIGKILL both process groups, using
+ * the test's PID or the collector's record for the child. */
 async function stopCollector(
   child: Bun.Subprocess | undefined,
   evidence: string,
   capturedPid: number | undefined,
 ): Promise<void> {
   if (!child) return;
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGTERM");
+    await Promise.race([child.exited, Bun.sleep(10_000)]);
+  }
   const collectedPid = capturedPid ?? recordedCollectionPid(evidence);
   killIfAlive(-child.pid);
   if (collectedPid) killIfAlive(-collectedPid);
