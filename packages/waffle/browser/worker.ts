@@ -357,16 +357,26 @@ export function describeWorkerError(err: unknown): string {
     return describeStartError(err);
   }
 }
+function stripErrorHeader(stack: string, err: Error, head: string): string {
+  if (stack === head || (err.message === "" && stack === err.name)) return "";
+  if (stack.startsWith(`${head}\n`)) return stack.slice(head.length + 1);
+  if (stack.startsWith(`${head}\r\n`)) return stack.slice(head.length + 2);
+  if (err.message === "" && stack.startsWith(`${err.name}\n`))
+    return stack.slice(err.name.length + 1);
+  if (err.message === "" && stack.startsWith(`${err.name}\r\n`))
+    return stack.slice(err.name.length + 2);
+  return stack;
+}
 function workerErrorText(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
   const head = `${err.name}: ${err.message}`;
-  const frames = (err.stack ?? "")
+  const body = stripErrorHeader(err.stack ?? "", err, head);
+  const frames = body
     .split("\n")
-    .filter((line) => line.trim() && !line.includes(err.message))
+    .map((line) => line.trim())
+    .filter(Boolean)
     .slice(0, 15);
-  return frames.length
-    ? `${head}\n${frames.map((frame) => `    ${frame.trim()}`).join("\n")}`
-    : head;
+  return frames.length ? `${head}\n${frames.map((frame) => `    ${frame}`).join("\n")}` : head;
 }
 
 function createSleepCell(host: RuntimeWorkerHost): Int32Array | null {

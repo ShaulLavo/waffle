@@ -391,6 +391,13 @@
       "browser": "./interrupt/rewriter.ts",
       "default": "./interrupt/rewriter.ts"
     },
+    "./interrupt/symbols": {
+      "types": "./interrupt/symbols.ts",
+      "node": "./dist/interrupt/symbols.js",
+      "bun": "./interrupt/symbols.ts",
+      "browser": "./interrupt/symbols.ts",
+      "default": "./interrupt/symbols.ts"
+    },
     "./browser/fs-worker": {
       "types": "./browser/fs-worker.ts",
       "bun": "./browser/fs-worker.ts",
