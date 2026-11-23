@@ -288,12 +288,16 @@ async function waitForReady(
   child: Bun.Subprocess,
   errors: Promise<string>,
 ): Promise<void> {
-  // Readiness is the fixture's file or its exit. A child that hangs is caught by the test's
-  // hang cap; an elapsed limit here failed healthy runs under full-suite load.
+  // Readiness is the fixture's file or its exit. The cap only catches a hung fixture: it is far
+  // above healthy startup under full-suite load (a 5 s limit failed there) and below the test's
+  // own cap, so the caller's finally block still stops and joins the owned processes.
+  const start = performance.now();
   while (!(await Bun.file(path).exists())) {
     if (child.exitCode !== null && !(await Bun.file(path).exists())) {
       throw new Error(`Collector fixture exited before admission: ${await errors}`);
     }
+    if (performance.now() - start > 40_000)
+      throw new Error("Synthetic collector readiness timeout");
     await Bun.sleep(10);
   }
 }

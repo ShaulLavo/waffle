@@ -8,9 +8,9 @@ import {
 import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 import { record } from "../../testing/page-runner/protocol.js";
 
-/** separate-hook: the body's case budget and how long before its deadline the body ends. The
- * page's separate-hook teardown (host-drive-control-page.ts) lasts 800 ms, longer than the
- * margin. Setup and verdict delivery get the rest as slack, so runner speed does not decide it. */
+/** separate-hook: the body's case budget, and the margin its deadline is moved to once setup is
+ * done. The page's separate-hook teardown (host-drive-control-page.ts) lasts 800 ms, longer than
+ * the margin. Setup gets the whole budget, so runner speed does not decide the outcome. */
 const SEPARATE_HOOK_CASE_MS = 2000;
 const SEPARATE_HOOK_MARGIN_MS = 400;
 
@@ -107,10 +107,10 @@ async function drive(host: HostCase, mode: string): Promise<unknown> {
   if (mode === "large-errors") throw new Error('😀\u0000"\\'.repeat(16_384));
   if (mode === "expression") await host.script("throw new Error('KNOWN_EXPRESSION_FAILURE');");
   if (mode === "thenable") await host.script("return Promise.resolve(1);");
-  // End the body a fixed margin before its deadline, however long setup took. The page's
+  // Move the body deadline to a fixed margin from now, however long setup took. The page's
   // teardown hook outlasts that margin, so the case passes only if the hook has its own clock.
   if (mode === "separate-hook")
-    await host.sleep(Math.max(0, host.remainingMs() - SEPARATE_HOOK_MARGIN_MS));
+    host.setTimeout(SEPARATE_HOOK_CASE_MS - host.remainingMs() + SEPARATE_HOOK_MARGIN_MS);
   if (mode === "array" || mode === "array-mismatch") {
     const expected = Array.from({ length: 196608 }, (_, index) => index % 251);
     const actual = await host.script(

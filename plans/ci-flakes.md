@@ -1,7 +1,9 @@
 # CI failures observed during 0.0.127
 
 Status: Approved follow-up. Managing assigns a separate owner for the flake-fix pass.
-Keep the original assertions and deadlines. Fix deterministic causes before changing bounds.
+Keep the original assertions, and keep any deadline that is itself the behavior under test.
+Fix deterministic causes before changing bounds. A fixture's own wait may become a generous
+hang cap, since tests check outcomes, not durations.
 
 ## Terminal input notification
 
