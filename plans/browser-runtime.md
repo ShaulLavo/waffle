@@ -408,28 +408,36 @@ when the connection carries publication buffers. This is a size rewrite, so it w
 
 ## Saved workspaces evict their whole clean cache past 1,024 entries
 
-`PersistentBackend.prepareOperation` calls `evictClean()` once more than 1,024 shared slots are
-registered, and `evictClean` evicts every clean entry (and unloads clean payloads it cannot
-evict). An install touches thousands of files, so reads right after it go to storage through
-`prepareDescriptorRead`, one 4 KiB range per filesystem request (220 to 300 µs each in Chromium)
-without loading the file. Reading a freshly installed 1,000-file tree took 0.9 to 2.6 s in a saved
-workspace versus about 0.2 s in memory mode.
+`PersistentBackend.prepareOperation` calls `evictClean(handle)` once more than 1,024 shared slots
+are registered. Apart from the requesting handle and handles still loading, `evictClean` evicts
+every eligible clean entry (and unloads clean payloads it cannot evict). An install touches
+thousands of files, so reads right after it go to storage through `prepareDescriptorRead`
+without loading the file: each filesystem request fetches at most 4 KiB, limited by the requested
+length and the bytes left in the file, and cost 220 to 300 µs in Chromium. Reading a freshly
+installed 1,000-file tree took 0.9 to 2.6 s in a saved workspace across the three engines. In
+memory mode the same read took 223 ms in Chromium, 669 ms in Firefox and 573 ms in WebKit, in a
+separate run.
 
 PR 617 tried least-recently-used eviction down to 6,144 past 8,192 entries (read tree 67 to 80
 percent faster in all three engines) and was closed: the 1,024 limit also keeps two metadata
 budgets safe, and its review reproduced both breaking.
 
-1. Dirty admission charges 2,048 units per registered slot (1,024 reserved at baseline) against a
-   default 8 MiB metadata budget (`shared.ts` register, `dirty-admission.ts`), so about 4,096
-   registrations fill it and `waitForDirtyCapacity` evicts every clean entry anyway.
-2. `pinMetadataBytes()` charges every registered file with a committed payload key, and a pending
-   commit charges it again. With 5,000 cached files and `dirtyLimits: false`, `flush()` after a
-   one-byte overwrite failed with "filesystem checkpoint pressure limit reached".
+1. Dirty admission: registering a slot charges 2,048 units (1,024 reserved at baseline), compared
+   with the default 8 MiB capture ceiling (`shared.ts` register, `dirty-admission.ts`). About
+   4,096 registrations reach it, the registration fails, and the retry through
+   `waitForDirtyCapacity` evicts every clean entry anyway.
+2. Checkpoint capture: `pinMetadataBytes()` counts every registered file with a committed payload
+   key and also detached payload keys, and a queued write commit adds a fresh pin estimate when it
+   starts. With 5,000 cached files and `dirtyLimits: false`, `flush()` after a one-byte overwrite
+   failed with "filesystem checkpoint pressure limit reached".
 
-A fix derives the limit and the eviction target from both budgets' remaining headroom (or charges
-checkpoint metadata only for files the retention list owns), evicts least recently used first
-(re-inserting into `registeredNodes` in `sync` gives the order, and walking that map avoids the
-32,768-slot `registeredHandles()` scan), and tests the default path through `FilesystemClient`.
+A fix needs both limits. Checkpoint pressure could be resolved by charging only the files the
+retention list owns, but the eviction threshold and target must still leave dirty-admission
+headroom. Evict least recently used first: re-inserting into `registeredNodes` in `sync` orders
+entries by service-side touches, and walking that map avoids the 32,768-slot
+`registeredHandles()` scan. Resident `FilesystemClient` reads go straight through shared memory and
+never reach `sync`, so the design must state which accesses count as use (service requests only, or
+also a cheap shared-memory touch marker). Test the default path through `FilesystemClient`.
 Evicting only down to a target with the 1,024 limit kept made no consistent difference, because a
 sequential read of a tree larger than the cache misses under least-recently-used order too. Cold
 reads of small files could also load the whole file instead of one range per request.
