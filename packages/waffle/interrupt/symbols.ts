@@ -91,13 +91,14 @@ const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 // Engine-specific grammars for unnamed Wasm frames carrying only subsection-0 module name:
 //   Chromium (V8):  `    at <nonce> (wasm://wasm/<nonce>-<8hex>:wasm-function[N]:0x...)`
 //   Firefox (SM):   `<nonce>.@<url-or-empty>:wasm-function[N]:0x...`
-//                   (URL may contain `@` when scheme-prefixed or `/`-rooted, e.g. `/@tests.js`)
+//                   Admission strips every guest custom section and injects only the subsection-0
+//                   module nonce, so an owned module never has an engine-supplied function name;
+//                   any function-name part was written by this annotator (never containing `@`).
 //   WebKit (JSC):   `@<nonce>:wasm-function[N]`
 const V8_OWNED_FRAME =
   /^(\s*at )([A-Za-z0-9_]+)( \(wasm:\/\/wasm\/\2-[0-9a-f]{8}:wasm-function\[(0|[1-9]\d*)\]:0x[0-9a-f]+\))$/;
 const FIREFOX_OWNED_FRAME =
-  /^(\s*)([A-Za-z0-9_]+)\.@((?:[^@]*|(?:[A-Za-z][A-Za-z0-9+.-]*:|\/)[^\r\n]*):wasm-function\[(0|[1-9]\d*)\]:0x[0-9a-f]+)$/;
-const AMBIGUOUS_FIREFOX_URL_AT = /@(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|(?:blob|data|about):|\/|$)/i;
+  /^(\s*)([A-Za-z0-9_]+)\.@([^\r\n]*:wasm-function\[(0|[1-9]\d*)\]:0x[0-9a-f]+)$/;
 const WEBKIT_OWNED_FRAME = /^(\s*)@([A-Za-z0-9_]+)(:wasm-function\[(0|[1-9]\d*)\])$/;
 
 interface ParsedOwnedLine {
@@ -110,14 +111,7 @@ interface ParsedOwnedLine {
 interface EngineParserSpec {
   readonly engine: FrameEngine;
   readonly pattern: RegExp;
-  readonly accept?: (tail: string) => boolean;
   readonly format: (lead: string, nonce: string, symbol: string, tail: string) => string;
-}
-
-function isUnambiguousFirefoxTail(tail: string): boolean {
-  const split = tail.lastIndexOf(":wasm-function[");
-  const urlPart = split >= 0 ? tail.slice(0, split) : tail;
-  return !AMBIGUOUS_FIREFOX_URL_AT.test(urlPart);
 }
 
 const ENGINE_PARSERS: readonly EngineParserSpec[] = [
@@ -129,7 +123,6 @@ const ENGINE_PARSERS: readonly EngineParserSpec[] = [
   {
     engine: "firefox",
     pattern: FIREFOX_OWNED_FRAME,
-    accept: isUnambiguousFirefoxTail,
     format: (lead, nonce, symbol, tail) => `${lead}${nonce}.${symbol}@${tail}`,
   },
   {
@@ -149,7 +142,6 @@ function parseOwnedLine(line: string, engine?: FrameEngine): ParsedOwnedLine | n
     const lead = match[1]!;
     const nonce = match[2]!;
     const tail = match[3]!;
-    if (spec.accept && !spec.accept(tail)) continue;
     return {
       engine: spec.engine,
       nonce,
@@ -456,15 +448,19 @@ export async function loadSymbolTable(
   return bindSymbolSidecar(diagnostics, sidecar);
 }
 
+const SAFE_SYMBOL_CHAR = /^[A-Za-z0-9_$.:<>,-]$/;
+
 function escapeFrameSymbol(symbol: string): string {
-  const escaped = symbol
-    .replaceAll("\r", "\\r")
-    .replaceAll("\n", "\\n")
-    .replaceAll("\0", "\\0")
-    .replaceAll("@", "\\x40");
-  return escaped.trim().length > 0
-    ? escaped
-    : escaped.replaceAll(" ", "\\x20").replaceAll("\t", "\\t");
+  let out = "";
+  for (const char of symbol) {
+    if (SAFE_SYMBOL_CHAR.test(char)) {
+      out += char;
+    } else {
+      const hex = char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0");
+      out += `\\u{${hex}}`;
+    }
+  }
+  return out;
 }
 
 /**

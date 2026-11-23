@@ -936,44 +936,10 @@ test("sidecar names containing LF, CR, or NUL match PR 608 acceptance and render
   expect(annotated.annotatedFrames).toBe(3);
   expect(annotated.stack.split("\n")).toHaveLength(4);
   expect(annotated.stack).toContain(`${tok}.inner_trap`);
-  expect(annotated.stack).toContain(`${tok}.weird\\nline\\r\\0name`);
+  expect(annotated.stack).toContain(`${tok}.weird\\u{000A}line\\u{000D}\\u{0000}name`);
   expect(annotated.stack).toContain(`${tok}._start`);
   // Idempotent on second pass
   expect(annotateStack(annotated.stack, [table]).annotatedFrames).toBe(0);
-});
-
-test("Firefox owned-frame grammar accepts @ in compile-site URLs while rejecting already-named and truncated frames", async () => {
-  const source = ordinaryGuestFixture(33);
-  const mod = await new InterruptModuleCache(16, null, {}, { symbolDiagnostics: true }).compile(
-    source,
-  );
-  const facts = admittedModuleDiagnostics(mod)!;
-  const sidecar = await encodeSidecar(source, 2, ["_start", "outer", "inner_trap"]);
-  const table = bindSymbolSidecar(facts, sidecar.payload)!;
-  const tok = facts.nonce;
-
-  const ffAtStack = [
-    `${tok}.@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
-    `${tok}.@/@tests.js line 1904 > WebAssembly.compile:wasm-function[4]:0x10b`,
-    `${tok}.@https://user@example.test/@scope/page.js line 12 > WebAssembly.compile:wasm-function[3]:0xeb`,
-    `${tok}.already_named@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
-    `${tok}.@spoof_fn@http://127.0.0.1:41234/page.js line 10 > WebAssembly.compile:wasm-function[5]:0x128`,
-    `${tok}.@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x1... [truncated]`,
-  ].join("\n");
-
-  const annotated = annotateStack(ffAtStack, [table], { engine: "firefox" });
-  expect(annotated.annotatedFrames).toBe(3);
-  expect(annotated.stack).toBe(
-    [
-      `${tok}.inner_trap@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
-      `${tok}.outer@/@tests.js line 1904 > WebAssembly.compile:wasm-function[4]:0x10b`,
-      `${tok}._start@https://user@example.test/@scope/page.js line 12 > WebAssembly.compile:wasm-function[3]:0xeb`,
-      `${tok}.already_named@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
-      `${tok}.@spoof_fn@http://127.0.0.1:41234/page.js line 10 > WebAssembly.compile:wasm-function[5]:0x128`,
-      `${tok}.@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x1... [truncated]`,
-    ].join("\n"),
-  );
-  expect(annotateStack(annotated.stack, [table], { engine: "firefox" }).annotatedFrames).toBe(0);
 });
 
 test("parseSymbolSidecar snapshots caller-owned bytes before hashing so mid-verification mutation cannot spoof decoded names", async () => {
@@ -997,56 +963,6 @@ test("parseSymbolSidecar snapshots caller-owned bytes before hashing so mid-veri
   const parsed = await pending;
   expect(parsed).toBeDefined();
   expect(parsed!.names[2]).toBe("inner_trap");
-});
-
-test("Firefox rejects already-named @https:// frames and annotation is idempotent for delimiter-bearing names", async () => {
-  const source = ordinaryGuestFixture(35);
-  const mod = await new InterruptModuleCache(16, null, {}, { symbolDiagnostics: true }).compile(
-    source,
-  );
-  const facts = admittedModuleDiagnostics(mod)!;
-  const sidecar = await encodeSidecar(source, 2, [
-    "   ",
-    "@https://name.example/symbol",
-    "inner_trap",
-  ]);
-  const table = bindSymbolSidecar(facts, sidecar.payload)!;
-  const tok = facts.nonce;
-
-  // Natively named Firefox frames whose function name begins with `@https://` must stay raw.
-  const nativeAtUrlStack = [
-    `${tok}.@https://name.example/f@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
-    `${tok}.@https://name.example/f@:wasm-function[5]:0x128`,
-    `${tok}.@https://name.example/f@/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
-  ].join("\n");
-  const nativeRes = annotateStack(nativeAtUrlStack, [table], { engine: "firefox" });
-  expect(nativeRes.annotatedFrames).toBe(0);
-  expect(nativeRes.stack).toBe(nativeAtUrlStack);
-
-  // Sidecar symbols starting with `@https://` or whitespace-only must be idempotent on pass 2 in all engines.
-  for (const [engine, rawStack] of [
-    [
-      "chromium",
-      [
-        `    at ${tok} (wasm://wasm/${tok}-deadbeef:wasm-function[4]:0x10b)`,
-        `    at ${tok} (wasm://wasm/${tok}-deadbeef:wasm-function[3]:0xeb)`,
-      ].join("\n"),
-    ],
-    [
-      "firefox",
-      [
-        `${tok}.@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[4]:0x10b`,
-        `${tok}.@:wasm-function[3]:0xeb`,
-      ].join("\n"),
-    ],
-    ["webkit", [`@${tok}:wasm-function[4]`, `@${tok}:wasm-function[3]`].join("\n")],
-  ] as const) {
-    const pass1 = annotateStack(rawStack, [table], { engine });
-    expect(pass1.annotatedFrames).toBe(2);
-    const pass2 = annotateStack(pass1.stack, [table], { engine });
-    expect(pass2.annotatedFrames).toBe(0);
-    expect(pass2.stack).toBe(pass1.stack);
-  }
 });
 
 test("pending stream cancel() on oversized or non-OK response settles promptly and unlocks the reader", async () => {
@@ -1136,4 +1052,126 @@ test("monotonic deadline stops consecutive ready reads even when the macrotask t
   expect(result).toBeUndefined();
   expect(cancelled).toBe(true);
   expect(index).toBeLessThan(payload.length);
+});
+
+test("Firefox owned-frame grammar accepts /@/tests.js, /@tests.js, scoped npm paths, and userinfo URLs", async () => {
+  const source = ordinaryGuestFixture(36);
+  const mod = await new InterruptModuleCache(16, null, {}, { symbolDiagnostics: true }).compile(
+    source,
+  );
+  const facts = admittedModuleDiagnostics(mod)!;
+  const sidecar = await encodeSidecar(source, 2, ["_start", "outer", "inner_trap"]);
+  const table = bindSymbolSidecar(facts, sidecar.payload)!;
+  const tok = facts.nonce;
+
+  const ffStack = [
+    `${tok}.@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x120`,
+    `${tok}.@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[4]:0x10b`,
+    `${tok}.@http://127.0.0.1:41234/node_modules/@scope/pkg/test.js line 42 > WebAssembly.compile:wasm-function[3]:0xeb`,
+    `${tok}.@https://user@example.test:8080/@scope/page.js line 12 > WebAssembly.compile:wasm-function[5]:0x128`,
+    `${tok}.@/@/tests.js line 9 > WebAssembly.compile:wasm-function[4]:0x10b`,
+    `${tok}.@:wasm-function[3]:0xeb`,
+    `${tok}.already_named@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x120`,
+    `other_mod.@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x120`,
+    `other_mod.@https://name.example/f@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x120`,
+    `${tok}.@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x1... [truncated]`,
+  ].join("\n");
+
+  const pass1 = annotateStack(ffStack, [table], { engine: "firefox" });
+  expect(pass1.annotatedFrames).toBe(6);
+  expect(pass1.stack).toBe(
+    [
+      `${tok}.inner_trap@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x120`,
+      `${tok}.outer@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[4]:0x10b`,
+      `${tok}._start@http://127.0.0.1:41234/node_modules/@scope/pkg/test.js line 42 > WebAssembly.compile:wasm-function[3]:0xeb`,
+      `${tok}.inner_trap@https://user@example.test:8080/@scope/page.js line 12 > WebAssembly.compile:wasm-function[5]:0x128`,
+      `${tok}.outer@/@/tests.js line 9 > WebAssembly.compile:wasm-function[4]:0x10b`,
+      `${tok}._start@:wasm-function[3]:0xeb`,
+      `${tok}.already_named@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x120`,
+      `other_mod.@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x120`,
+      `other_mod.@https://name.example/f@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x120`,
+      `${tok}.@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x1... [truncated]`,
+    ].join("\n"),
+  );
+  const pass2 = annotateStack(pass1.stack, [table], { engine: "firefox" });
+  expect(pass2.annotatedFrames).toBe(0);
+  expect(pass2.stack).toBe(pass1.stack);
+});
+
+test("restricted ASCII escaping guarantees lossless reversible rendering and idempotency for hostile names across all three engines", async () => {
+  const source = ordinaryGuestFixture(37);
+  const mod = await new InterruptModuleCache(16, null, {}, { symbolDiagnostics: true }).compile(
+    source,
+  );
+  const facts = admittedModuleDiagnostics(mod)!;
+  const tok = facts.nonce;
+
+  const hostileNames = [
+    "\u00A0",
+    "\u2003",
+    "\u2028",
+    "\u00A0\u2003\u2028\uFEFF",
+    "   ",
+    "\t",
+    "@https://name.example/symbol",
+    "@",
+    "weird\nline\r\0name",
+    `    at ${tok} (wasm://wasm/${tok}-deadbeef:wasm-function[5]:0x128)`,
+    `${tok}.@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x120`,
+    `@${tok}:wasm-function[5]`,
+    `${tok}.`,
+    "trap_😀_𐍈",
+    "\\u{0040}",
+    "a\\b",
+  ];
+
+  const decodeEscaped = (rendered: string): string =>
+    rendered.replace(/\\u\{([0-9A-F]+)\}/g, (_all, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    );
+
+  for (const hostile of hostileNames) {
+    const sidecar = await encodeSidecar(source, 2, ["_start", "outer", hostile]);
+    const parsed = await parseSymbolSidecar(
+      sidecar.bytes,
+      sidecar.sha256,
+      sidecar.bytes.byteLength,
+    );
+    expect(parsed).toBeDefined();
+    const table = bindSymbolSidecar(facts, parsed!)!;
+    expect(table.lookup(5)).toBe(hostile);
+
+    const engineCases = [
+      [
+        "chromium",
+        `    at ${tok} (wasm://wasm/${tok}-deadbeef:wasm-function[5]:0x128)`,
+        (line: string) => line.slice(`    at ${tok}.`.length, line.indexOf(" (wasm://")),
+      ],
+      [
+        "firefox",
+        `${tok}.@http://127.0.0.1:41234/@/tests.js line 1905 > WebAssembly.compile:wasm-function[5]:0x120`,
+        (line: string) => line.slice(`${tok}.`.length, line.indexOf("@http://")),
+      ],
+      [
+        "webkit",
+        `@${tok}:wasm-function[5]`,
+        (line: string) => line.slice(0, line.indexOf(`@${tok}:wasm-function[5]`)),
+      ],
+    ] as const;
+
+    for (const [engine, rawLine, extractRendered] of engineCases) {
+      const pass1 = annotateStack(rawLine, [table], { engine });
+      expect(pass1.annotatedFrames).toBe(1);
+      expect(pass1.stack.split("\n")).toHaveLength(1);
+      const rendered = extractRendered(pass1.stack);
+      expect(rendered).toMatch(/^[A-Za-z0-9_$.:<>,\\u{}-]+$/);
+      expect(decodeEscaped(rendered)).toBe(hostile);
+      const pass2 = annotateStack(pass1.stack, [table], { engine });
+      expect(pass2.annotatedFrames).toBe(0);
+      expect(pass2.stack).toBe(pass1.stack);
+      const pass2Auto = annotateStack(pass1.stack, [table]);
+      expect(pass2Auto.annotatedFrames).toBe(0);
+      expect(pass2Auto.stack).toBe(pass1.stack);
+    }
+  }
 });
