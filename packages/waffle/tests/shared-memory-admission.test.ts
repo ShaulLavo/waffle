@@ -143,7 +143,7 @@ test("root adoption publishes a ledger-charged registry before bootstrap can rea
     expect(data).not.toBe(oldData);
     expect(
       reservations.snapshot().holders.filter((holder) => holder.label === "pipe-registry"),
-    ).toMatchObject([{ declaredBytes: 16_785_424, state: "live" }]);
+    ).toMatchObject([{ declaredBytes: 1_056_784, state: "live" }]);
   } finally {
     await broker.dispose();
   }

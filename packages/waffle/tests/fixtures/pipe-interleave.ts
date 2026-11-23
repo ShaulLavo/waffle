@@ -113,9 +113,8 @@ interface Kind {
 /** Check a quiescent pipe (nobody paused mid-operation, relay pumped) against the page
  * invariant: every mapped page touches its ring's unread window, except the partly used page
  * at a writer ring's own position; each page has one owner; the pools' counts and bitmaps
- * match the pages the tables reference. Returns one line per violation. Local cursors only. */
+ * match the pages the tables reference. Returns one line per violation. */
 export function auditPipePages(handle: production.PipeEndpointHandle): string[] {
-  if (handle.registry) throw new Error("audit reads local cursors; use a pipe without a registry");
   const layout = production.pipeLayoutOf(handle);
   const { buffer, maxWriters, maxReaders, capacity } = handle;
   const problems: string[] = [];
@@ -146,7 +145,7 @@ export function auditPipePages(handle: production.PipeEndpointHandle): string[] 
   for (const kind of kinds) {
     const audit = new KindAudit(kind, problems);
     for (let index = 0; index < maxWriters + maxReaders; index++) {
-      const cursor = (at: number) => new BigInt64Array(buffer, ring(index) + at, 1)[0]!;
+      const cursor = (at: number) => ringCursor(handle, ring(index), at);
       const writer = index < maxWriters;
       if (audit.ring(index, writer, kind.position(cursor(16)), kind.position(cursor(8))) && !writer)
         delivering.add(index);
@@ -169,6 +168,17 @@ export function auditPipePages(handle: production.PipeEndpointHandle): string[] 
   if (delivering.size > 1)
     problems.push(`delivery rings ${Array.from(delivering).join(", ")} all hold pages`);
   return problems;
+}
+/** A ring's cursor at header offset 8 (published) or 16 (consumed): its local copy, or the
+ * registry cell its mapping word (offset 24 or 28) names. */
+function ringCursor(handle: production.PipeEndpointHandle, ring: number, at: number): bigint {
+  const local = new BigInt64Array(handle.buffer, ring + at, 1)[0]!;
+  const registry = handle.registry;
+  if (!registry) return local;
+  const word = new Int32Array(handle.buffer, ring + 24 + (at === 8 ? 0 : 4), 1)[0]!;
+  if (word <= 0) return local;
+  const cells = 16 + registry.processCapacity * 8;
+  return new BigInt64Array(registry.buffer, cells + ((word - 1) & 0xffff) * 16 + 8, 1)[0]!;
 }
 /** One page kind's audit across every ring of a pipe. */
 class KindAudit {

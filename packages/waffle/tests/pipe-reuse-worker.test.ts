@@ -1,22 +1,6 @@
 import { expect, test } from "bun:test";
 import { PipeController, PipeErrno, pipeReservationBytes, pipeRingOffset } from "../proc/pipes.js";
-
-function message(worker: Worker): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => finish(new Error("pipe reuse worker timed out")), 5000);
-    const onMessage = (event: MessageEvent<unknown>) => finish(undefined, event.data);
-    const onError = (event: ErrorEvent) => finish(event.error ?? new Error(event.message));
-    function finish(error?: unknown, value?: unknown) {
-      clearTimeout(timer);
-      worker.removeEventListener("message", onMessage);
-      worker.removeEventListener("error", onError);
-      if (error) reject(error);
-      else resolve(value);
-    }
-    worker.addEventListener("message", onMessage);
-    worker.addEventListener("error", onError);
-  });
-}
+import { workerMessage as message } from "./fixtures/worker-message.ts";
 function worker() {
   return new Worker(new URL("./fixtures/pipe-reuse-worker.ts", import.meta.url));
 }

@@ -85,10 +85,11 @@ test("seeded memory backend keeps its identities and bytes on an imported root",
   expect(backend.fs.root.identity?.id).not.toBe(identity?.id);
 });
 
-test("default pipe registry declares 16 MiB of permanent cursors with unchanged initial backing", () => {
+test("default pipe registry declares about 1 MiB of reusable cursor cells", () => {
   const registry = new PipePublicationRegistry();
-  expect(registry.handle().buffer.byteLength).toBe(2105360);
-  expect(sharedArrayBufferMaxByteLength(registry.handle().buffer)).toBe(16785424);
+  // 16-byte header, 1024 owner rows of 8 bytes, 65536 cells of 16 bytes.
+  expect(registry.handle().buffer.byteLength).toBe(1056784);
+  expect(sharedArrayBufferMaxByteLength(registry.handle().buffer)).toBe(1056784);
 });
 
 test("persistent recovery imports the root without replacing durable identities or payloads", async () => {
@@ -171,9 +172,10 @@ test("persistent identity migration finishes before publication attaches to the 
   }
 });
 
-test("explicit large pipe capacity remains available and one reader/writer pair uses four cells", () => {
-  const registry = new PipePublicationRegistry({ maxCells: 1 << 24 });
-  expect(sharedArrayBufferMaxByteLength(registry.handle().buffer)).toBe(268443664);
+test("the registry caps explicit capacity at 65536 cells and one reader/writer pair uses four", () => {
+  expect(() => new PipePublicationRegistry({ maxCells: (1 << 16) + 1 })).toThrow(RangeError);
+  const registry = new PipePublicationRegistry({ maxCells: 1 << 16 });
+  expect(sharedArrayBufferMaxByteLength(registry.handle().buffer)).toBe(1056784);
   registry.registerProcess(1);
   const controller = new PipeController({
     registry,
