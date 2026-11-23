@@ -244,6 +244,32 @@ describe("base closure", () => {
     expect(guests.get("@waffle-os/base")).toEqual({ descriptor: [], staticReference: [] });
   });
 
+  test("echo's symbol sidecar is an admitted artifact behind its own opt-in subpath", () => {
+    const coreutils = manifest.packages.find((item) => item.name === "@waffle-os/coreutils");
+    if (!coreutils) throw new Error("coreutils is missing from the release");
+    const symbolArtifacts = coreutils.artifacts.filter((file) => file.path.includes("-symbols."));
+    expect(symbolArtifacts.map((file) => file.path)).toEqual([
+      "dist/echo-symbols.json",
+      "dist/echo-symbols.ts",
+    ]);
+    const archive = resolve(out, "assets", coreutils.filename);
+    const packed = (path: string) => execFileSync("tar", ["-xzOf", archive, `package/${path}`]);
+    const receipt = JSON.parse(packed("dist/echo-program.json").toString());
+    const sidecar = packed("dist/echo-symbols.json");
+    expect(receipt.symbols.output).toEqual({
+      bytes: sidecar.length,
+      sha256: createHash("sha256").update(sidecar).digest("hex"),
+    });
+    expect(symbolArtifacts[0]?.sha256).toBe(receipt.symbols.output.sha256);
+    expect(packed("dist/echo-symbols.ts").toString()).toContain(receipt.symbols.output.sha256);
+    expect(manifest.installCheck.imports).toContain("@waffle-os/coreutils/symbols/echo");
+    expect(manifest.installCheck.wasm.map((guest) => guest.path)).not.toContain(
+      "node_modules/@waffle-os/coreutils/dist/echo-symbols.json",
+    );
+    const plain = JSON.parse(packed("dist/ls-program.json").toString());
+    expect(plain.symbols).toBeUndefined();
+  });
+
   test("a symlinked output directory still proves guest containment in the real install", async () => {
     const linkedRoot = preparedFixture("symlink-output");
     const target = resolve(scratch, "actual-output");
@@ -360,6 +386,15 @@ describe("refusals", () => {
       out: resolve(scratch, "missing-guest-out"),
     });
     await expect(release).rejects.toThrow(/grep\.wasm|ENOENT/);
+  }, 60_000);
+
+  test("an undeclared symbol sidecar fails admission before packing", async () => {
+    const root = preparedFixture("undeclared-symbols");
+    const dist = resolve(root, "packages/coreutils/dist");
+    const sidecar = readFileSync(resolve(dist, "echo-symbols.json"));
+    writeFileSync(resolve(dist, "ls-symbols.json"), sidecar);
+    const release = buildRelease(await fixtureOptions(root, "undeclared-symbols"));
+    await expect(release).rejects.toThrow(/not declared by the derivation: dist\/ls-symbols\.json/);
   }, 60_000);
 
   test("dirty sources and wrong runtime bytes", async () => {

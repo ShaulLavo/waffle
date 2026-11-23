@@ -15,6 +15,7 @@ export const programToolSources = [
   "program-build-tools.ts",
   "program-optimize.ts",
   "program-derivation.ts",
+  "program-symbols.ts",
 ] as const;
 
 function canonicalRepository(repository: string): boolean {

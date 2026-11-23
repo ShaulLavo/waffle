@@ -13,7 +13,9 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { brotliCompressSync, gzipSync } from "node:zlib";
+import { namedWasiFixture } from "./program-symbols-fixture.ts";
 import {
   admitProgramPackage,
   packProgramPackage,
@@ -235,6 +237,89 @@ test("declared companions are validated once and remain required", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+function symbolPackage(root: string, files: readonly string[]) {
+  writeFileSync(resolve(root, "package-artifacts.json"), JSON.stringify({ files }));
+}
+
+test("a declared sidecar must ship, match its receipt and reference, and never ship undeclared", async (context) => {
+  const parent = resolve(import.meta.dirname, "../.build");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(resolve(parent, "symbols-admission-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(resolve(root, "dist"));
+  const input = resolve(root, "input.wasm");
+  const output = resolve(root, "dist/echo.wasm");
+  const sidecar = resolve(root, "dist/echo-symbols.json");
+  const reference = resolve(root, "dist/echo-symbols.ts");
+  writeFileSync(input, namedWasiFixture(["_start", "outer"]));
+  const declared = ["dist/echo.wasm", "dist/echo-program.json"];
+  const opted = declared.concat(["dist/echo-symbols.json", "dist/echo-symbols.ts"]);
+  const receipt = stageProgram(input, output, {}, undefined, { emitSymbols: true });
+  symbolPackage(root, opted);
+  assert.deepEqual(
+    admitProgramPackage(root),
+    opted.concat(["dist/echo.wasm.gz", "dist/echo.wasm.br"]),
+  );
+  const bytes = readFileSync(sidecar);
+  const { symbols } = await import(pathToFileURL(reference).href);
+  assert.equal(symbols.url.href, pathToFileURL(sidecar).href);
+  assert.equal(symbols.bytes, bytes.length);
+  assert.equal(symbols.sha256, receipt.symbols?.output.sha256);
+  assert.equal(symbols.sha256, createHash("sha256").update(bytes).digest("hex"));
+
+  symbolPackage(root, declared.concat(["dist/echo-symbols.ts"]));
+  assert.throws(() => admitProgramPackage(root), /Missing declared program symbols/);
+  symbolPackage(root, opted);
+  rmSync(sidecar);
+  assert.throws(() => admitProgramPackage(root), /ENOENT/);
+  writeFileSync(sidecar, Buffer.from(bytes.toString().replace('"outer"', '"other"')));
+  assert.throws(() => admitProgramPackage(root), /Program symbols identity/);
+  writeFileSync(sidecar, bytes);
+  const module = readFileSync(reference, "utf8");
+  writeFileSync(reference, module.replace(/"[a-f0-9]{64}"/, `"${"0".repeat(64)}"`));
+  assert.throws(() => admitProgramPackage(root), /reference differs/);
+  writeFileSync(reference, module);
+  const other = Buffer.from(bytes.toString().replace('"outer"', '"other"'));
+  writeFileSync(`${sidecar}.br`, brotliCompressSync(other));
+  assert.throws(() => admitProgramPackage(root), /differs from final bytes/);
+  writeFileSync(`${sidecar}.br`, brotliCompressSync(Buffer.concat([bytes, Buffer.from(" ")])));
+  assert.throws(() => admitProgramPackage(root), /larger than/);
+  writeFileSync(`${sidecar}.br`, brotliCompressSync(bytes));
+  assert.ok(admitProgramPackage(root).includes("dist/echo-symbols.json.br"));
+  rmSync(`${sidecar}.br`);
+  symbolPackage(root, opted.concat(["dist/other-symbols.json"]));
+  writeFileSync(resolve(root, "dist/other-symbols.json"), bytes);
+  assert.throws(() => admitProgramPackage(root), /not declared: dist\/other-symbols\.json/);
+
+  stageProgram(input, output);
+  writeFileSync(sidecar, bytes);
+  writeFileSync(reference, module);
+  symbolPackage(root, opted);
+  assert.throws(() => admitProgramPackage(root), /not declared by the derivation/);
+  symbolPackage(root, declared);
+  assert.throws(() => admitProgramPackage(root), /not declared by the derivation/);
+  rmSync(sidecar);
+  rmSync(reference);
+  assert.deepEqual(
+    admitProgramPackage(root),
+    declared.concat(["dist/echo.wasm.gz", "dist/echo.wasm.br"]),
+  );
+});
+
+test("Coreutils echo is the one program that declares a sidecar and its subpath export", () => {
+  const coreutils = resolve(import.meta.dirname, "../packages/coreutils");
+  const recipe = JSON.parse(readFileSync(resolve(coreutils, "package-artifacts.json"), "utf8"));
+  const symbols = recipe.files.filter((file: string) => /-symbols\.(json|ts)$/.test(file));
+  assert.deepEqual(symbols, ["dist/echo-symbols.json", "dist/echo-symbols.ts"]);
+  const manifest = JSON.parse(readFileSync(resolve(coreutils, "package.json"), "utf8"));
+  assert.deepEqual(manifest.exports, {
+    ".": "./src/index.ts",
+    "./symbols/echo": "./dist/echo-symbols.ts",
+  });
+  const index = readFileSync(resolve(coreutils, "src/index.ts"), "utf8");
+  assert.doesNotMatch(index, /symbols/, "default imports never reach the sidecar");
 });
 
 test("optional leaf staging leaves compression to the shared final-output helper", () => {

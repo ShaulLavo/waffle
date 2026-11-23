@@ -10,11 +10,12 @@ import {
   mkdtempSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve, sep } from "node:path";
+import { basename, dirname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
-import { validateProgramDerivation } from "./program-derivation.ts";
+import { programBytesIdentity, validateProgramDerivation } from "./program-derivation.ts";
 import { stripWasmNames } from "./program-build-tools.ts";
+import { programSymbolsReference } from "./program-symbols.ts";
 import { assertWaffleFamilyManifest } from "../packages/waffle/tooling/host-interface.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -94,12 +95,59 @@ function admitProgramCompanions(root: string, name: string, raw: Buffer) {
   return admitted;
 }
 
+const symbolFiles = /-symbols\.(?:json|ts)$/;
+
+function assertNoSymbols(root: string, files: readonly string[], names: readonly string[]) {
+  for (const name of names) {
+    assert.ok(
+      !files.includes(name) && optionalCompanion(root, name) === undefined,
+      `Program symbols are not declared by the derivation: ${name}`,
+    );
+  }
+}
+
+/**
+ * A declared sidecar ships with its reference module; an undeclared one never ships. `validate`
+ * binds the sidecar to the derivation before its reference module is compared.
+ */
+function admitProgramSymbols(
+  root: string,
+  files: readonly string[],
+  wasm: string,
+  receipt: Record<string, unknown>,
+  validate: (symbols?: Uint8Array) => void,
+) {
+  const base = wasm.replace(/\.wasm$/, "");
+  const sidecar = `${base}-symbols.json`;
+  const reference = `${base}-symbols.ts`;
+  if (receipt.symbols === undefined) {
+    assertNoSymbols(root, files, [sidecar, reference]);
+    validate();
+    return { names: [], companions: [] };
+  }
+  for (const name of [sidecar, reference])
+    assert.ok(files.includes(name), `Missing declared program symbols: ${name}`);
+  const bytes = requiredFile(root, sidecar);
+  validate(bytes);
+  const expected = programSymbolsReference(basename(base), programBytesIdentity(bytes));
+  assert.equal(
+    requiredFile(root, reference).toString(),
+    expected,
+    `Program symbols reference differs: ${reference}`,
+  );
+  return {
+    names: [sidecar, reference],
+    companions: admitProgramCompanions(root, sidecar, bytes),
+  };
+}
+
 /** Admission consumes prepared artifacts only; it never builds or fetches them. */
 export function admitProgramPackage(root: string): string[] {
   const recipe = record(JSON.parse(readFileSync(resolve(root, "package-artifacts.json"), "utf8")));
   assert.ok(Array.isArray(recipe.files) && recipe.files.every((name) => typeof name === "string"));
   const files: string[] = recipe.files;
   const companions: string[] = [];
+  const boundSymbols = new Set<string>();
   for (const name of files) {
     const bytes = requiredFile(root, name);
     if (!name.endsWith(".wasm")) continue;
@@ -108,10 +156,16 @@ export function admitProgramPackage(root: string): string[] {
     assert.ok(files.includes(sidecar), `Missing declared program derivation: ${sidecar}`);
     const producer =
       name === "assets/python.wasm" ? requiredFile(root, "assets/python-build.json") : undefined;
-    validateProgramDerivation(JSON.parse(requiredFile(root, sidecar).toString()), bytes, producer);
-    const discovered = admitProgramCompanions(root, name, bytes);
+    const receipt = record(JSON.parse(requiredFile(root, sidecar).toString()));
+    const symbols = admitProgramSymbols(root, files, name, receipt, (symbolBytes) =>
+      validateProgramDerivation(receipt, bytes, producer, symbolBytes),
+    );
+    for (const symbol of symbols.names) boundSymbols.add(symbol);
+    const discovered = admitProgramCompanions(root, name, bytes).concat(symbols.companions);
     companions.push(...discovered.filter((companion) => !files.includes(companion)));
   }
+  const unbound = files.filter((name) => symbolFiles.test(name) && !boundSymbols.has(name));
+  assert.equal(unbound.length, 0, `Program symbols are not declared: ${unbound.join(" ")}`);
   if (recipe.dependencies !== undefined) {
     assert.ok(Array.isArray(recipe.dependencies));
     for (const name of recipe.dependencies) {

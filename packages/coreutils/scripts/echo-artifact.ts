@@ -25,7 +25,8 @@ const finalized = readFileSync(resolve(workspaceRoot, "packages/coreutils/dist/e
 const derivation: unknown = JSON.parse(
   readFileSync(resolve(workspaceRoot, "packages/coreutils/dist/echo-program.json"), "utf8"),
 );
-validateProgramDerivation(derivation, finalized);
+const symbols = readFileSync(resolve(workspaceRoot, "packages/coreutils/dist/echo-symbols.json"));
+validateProgramDerivation(derivation, finalized, undefined, symbols);
 assert.ok(derivation && typeof derivation === "object" && "input" in derivation);
 assert.deepEqual(derivation.input, programBytesIdentity(bytes));
 
@@ -46,6 +47,7 @@ const proof = {
     "tools/program-build-tools.ts",
     "tools/program-optimize.ts",
     "tools/program-derivation.ts",
+    "tools/program-symbols.ts",
     "tools/program-locales",
     "packages/waffle/scripts/build-wasi-libc.sh",
     "packages/waffle/patches/wasi-libc/preopen-scan.patch",
