@@ -267,14 +267,13 @@ Status: Approved. Owner: process-lifecycle track. The paged-ring change (perf la
 `packages/waffle/tests/pipe-pages.test.ts`, measure it with the perf suite's section 4.5 rows,
 and record before and after numbers in the PR.
 
-1. **Pipe registry maximum.** Each runtime root's `PipePublicationRegistry` is a growable
-   buffer declaring 16,785,424 bytes (1,048,576 append-only cells), which Safari reserves in
-   full at construction (`docs/shared-memory.md`). Cells are never reused because a retained raw
-   view must never alias another cursor. Design incarnation-tagged cells (or cell pages that a
-   collected owner returns once no endpoint can name them) so the declared maximum can drop to
-   about 1 MiB without lowering the lifetime pipe count. Check how gVisor and FreeBSD bound
-   per-process pipe metadata first. Reproduce the reservation with
-   `runtime.sharedMemory.snapshot()` after `createRuntime()` and one root adoption.
+1. **Pipe registry maximum.** Done (2026-11-23). Registry cells are reference counted and
+   tagged: a ring mapping a cell and every operation mutating its cursor hold it, unheld loads
+   are checked against the tag, and a cell is reused only after its last hold drops and its tag
+   advances. A retiring pipe returns its cells. The root's registry declares 1,056,784 bytes
+   (65,536 cells) instead of 16,785,424, and lifetime capacity is about 2^31 cell uses.
+   `tests/pipe-registry-reuse.test.ts` covers paused readers, stale endpoints, delayed revokes,
+   real Worker death and 70,000 pipes on one default registry.
 2. **Shell pipelines always relay.** A shell holds its read end while it forks the reading
    child, so `retain(child, "read")` sees two reader processes and switches the pipe to relay
    mode for good; every byte of `cat | grep` then crosses the page's relay. Defer the switch
@@ -295,8 +294,12 @@ and record before and after numbers in the PR.
    fixed code, it catches all but two: a retire that frees pages without a wake (another wake
    always follows in its workload; `pipe-page-recovery.test.ts` catches it), and an unfenced
    sweep judging against a stale cursor (unreachable in a test now that laps are full width:
-   half the lap space is 2 GiB of traffic). It runs no registry-backed pipes and no real Worker
-   termination; add both when the registry or quarantine recovery changes. A tag-back
+   half the lap space is 2 GiB of traffic). It also runs every scenario on registry cells, with
+   actions that churn freed cells into a bystander pipe and collect a writer's process, and
+   checks every cell comes back. Within one live pipe, slot incarnations already fence every
+   cell release, so a paused operation losing its hold shows up only when a whole pipe retires
+   under it; `pipe-registry-reuse.test.ts` pauses there directly, with real Worker
+   termination. It runs no real Worker termination itself. A tag-back
    (`sweep.retag`) needs an aborted write that wrapped onto unread bytes, which the matrix
    workload never makes; `pipe-interleave.test.ts` pauses there directly.
 6. **Mixed-size atomics on page entries.** `PageMap.find` and `reservedBusy` read the low and

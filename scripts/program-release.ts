@@ -22,7 +22,11 @@ import { basename, dirname, extname, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { CommandCleanupError, runOwned } from "../packages/waffle/scripts/owned-command.ts";
-import { admitProgramPackage, verifyProgramTarball } from "../tools/program-package.ts";
+import {
+  admitProgramPackage,
+  assertPackedSymbols,
+  verifyProgramTarball,
+} from "../tools/program-package.ts";
 import {
   assertExactHostInterface,
   assertWaffleFamilyManifest,
@@ -580,13 +584,14 @@ async function stageOne(entry: WorkspacePackage, plan: PackPlan, control: Contro
     runtimeHostInterface,
   });
   writeFileSync(resolve(staged, "package.json"), `${JSON.stringify(rewrite.manifest, null, 2)}\n`);
-  const artifacts = existsSync(resolve(staged, "package-artifacts.json"))
-    ? admitProgramPackage(staged)
-    : [];
+  const recipe = existsSync(resolve(staged, "package-artifacts.json"));
+  const artifacts = recipe ? admitProgramPackage(staged) : [];
   const archive = resolve(plan.destination, assetFilename(entry.name, version));
   const pack = ["bun", "pm", "pack", "--quiet", "--ignore-scripts", "--filename", archive];
   await runCommand(pack, staged, process.env, control);
-  if (artifacts.length) verifyProgramTarball(staged, archive);
+  // Zero-artifact archives are still checked: rebind refuses any file a release did not record.
+  if (recipe) verifyProgramTarball(staged, archive);
+  else assertPackedSymbols(archive, new Set());
   const packed = extract(archive, resolve(work, "extracted", entry.directory));
   assertPackedEdges(readJson(resolve(packed, "package.json")), rewrite.manifest);
   assertLicense(packed, entry.name);

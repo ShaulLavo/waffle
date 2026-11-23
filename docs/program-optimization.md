@@ -41,6 +41,29 @@ features, flags, environment and actual transformation source hashes. A Git comm
 is provenance, not a reason to invalidate identical transformation sources after
 a documentation-only commit.
 
+## Optional symbol sidecars
+
+A program can opt in with `stageProgram(..., { emitSymbols: true })`. Staging then
+reads subsection 1 of the named optimized candidate before deleting it, and
+publishes `<name>-symbols.json` and a generated `<name>-symbols.ts` beside the
+stripped program. The stripped bytes, their compressed copies and the two-step
+chain are unchanged; the derivation gains one `symbols` block binding the
+sidecar to the optimizer's named output and to the extractor source.
+
+The sidecar is compact JSON with the keys `version` (1), `source` (size and
+SHA-256 of the stripped program), `named` (the named candidate), `importedFunctions`
+and `names`. `names` has one entry per original function definition, in
+definition order, so a runtime maps an admitted frame index back by subtracting
+the original and inserted imports. An entry is the producer's name, duplicates
+included, or `null` when the producer named none. Imports carry no entry.
+
+The reference module exports `symbols = { url, bytes, sha256 }`. Callers take the
+trusted digest from it, never from the fetched sidecar. Packages expose it on its
+own subpath (Coreutils: `@waffle-os/coreutils/symbols/echo`), so default imports
+never reach it. Package admission requires a declared sidecar and reference to be
+listed and to match the derivation, checks any compressed sidecar copies, and
+refuses any sidecar a derivation does not declare.
+
 Python retains `python-build.json` verbatim. Its separate `python-program.json`
 binds that original receipt and interpreter identity to both transformation steps
 and the final interpreter. Payloads, notices and licenses keep their original

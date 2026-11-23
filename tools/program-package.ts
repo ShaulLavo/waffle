@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -10,11 +11,12 @@ import {
   mkdtempSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve, sep } from "node:path";
+import { basename, dirname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
-import { validateProgramDerivation } from "./program-derivation.ts";
+import { programBytesIdentity, validateProgramDerivation } from "./program-derivation.ts";
 import { stripWasmNames } from "./program-build-tools.ts";
+import { programSymbolsReference } from "./program-symbols.ts";
 import { assertWaffleFamilyManifest } from "../packages/waffle/tooling/host-interface.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -94,12 +96,86 @@ function admitProgramCompanions(root: string, name: string, raw: Buffer) {
   return admitted;
 }
 
+/** Any symbol sidecar, reference module or compressed copy of either. */
+const symbolFiles = /-symbols\.[^/]*$/;
+
+/** Symbol files on disk beside the listed guests; Coreutils packs its whole `dist`. */
+function symbolFilesBesideGuests(root: string, files: readonly string[]) {
+  const directories = new Set(files.filter((name) => name.endsWith(".wasm")).map(dirname));
+  return Array.from(directories).flatMap((directory) =>
+    readdirSync(resolve(root, directory))
+      .filter((name) => symbolFiles.test(name))
+      .map((name) => (directory === "." ? name : `${directory}/${name}`)),
+  );
+}
+
+/** Every symbol file listed, staged or packed must be one a receipt binds. */
+function assertSymbolsBound(candidates: readonly string[], bound: ReadonlySet<string>) {
+  // Sorted so the message doesn't depend on the filesystem's directory order.
+  const unbound = Array.from(new Set(candidates))
+    .filter((name) => symbolFiles.test(name) && !bound.has(name))
+    .sort();
+  assert.equal(unbound.length, 0, `Program symbols are not declared: ${unbound.join(" ")}`);
+}
+
+/**
+ * A declared sidecar ships with its reference module and validated companions; anything else
+ * named like a sidecar is refused by the caller. `validate` binds the sidecar to the derivation
+ * before its reference module is compared.
+ */
+function admitProgramSymbols(
+  root: string,
+  files: readonly string[],
+  wasm: string,
+  receipt: Record<string, unknown>,
+  validate: (symbols?: Uint8Array) => void,
+) {
+  const base = wasm.replace(/\.wasm$/, "");
+  const sidecar = `${base}-symbols.json`;
+  const reference = `${base}-symbols.ts`;
+  if (receipt.symbols === undefined) {
+    validate();
+    return { names: [], companions: [] };
+  }
+  for (const name of [sidecar, reference])
+    assert.ok(files.includes(name), `Missing declared program symbols: ${name}`);
+  const bytes = requiredFile(root, sidecar);
+  validate(bytes);
+  const expected = programSymbolsReference(basename(base), programBytesIdentity(bytes));
+  assert.equal(
+    requiredFile(root, reference).toString(),
+    expected,
+    `Program symbols reference differs: ${reference}`,
+  );
+  return {
+    names: [sidecar, reference],
+    companions: admitProgramCompanions(root, sidecar, bytes),
+  };
+}
+
 /** Admission consumes prepared artifacts only; it never builds or fetches them. */
 export function admitProgramPackage(root: string): string[] {
+  return admitProgram(root).files;
+}
+
+/**
+ * Refuse any packed symbol file outside `bound`. Every family archive runs this, including
+ * one whose recipe admits no artifacts, since `files` rules pack whole directories.
+ */
+export function assertPackedSymbols(archive: string, bound: ReadonlySet<string>): void {
+  const members = execFileSync("tar", ["-tf", archive], { encoding: "utf8", stdio: "pipe" })
+    .split("\n")
+    .filter((member) => member.startsWith("package/"))
+    .map((member) => member.slice("package/".length));
+  assertSymbolsBound(members, bound);
+}
+
+function admitProgram(root: string): { files: string[]; symbols: ReadonlySet<string> } {
   const recipe = record(JSON.parse(readFileSync(resolve(root, "package-artifacts.json"), "utf8")));
   assert.ok(Array.isArray(recipe.files) && recipe.files.every((name) => typeof name === "string"));
   const files: string[] = recipe.files;
   const companions: string[] = [];
+  const boundSymbols = new Set<string>();
   for (const name of files) {
     const bytes = requiredFile(root, name);
     if (!name.endsWith(".wasm")) continue;
@@ -108,10 +184,15 @@ export function admitProgramPackage(root: string): string[] {
     assert.ok(files.includes(sidecar), `Missing declared program derivation: ${sidecar}`);
     const producer =
       name === "assets/python.wasm" ? requiredFile(root, "assets/python-build.json") : undefined;
-    validateProgramDerivation(JSON.parse(requiredFile(root, sidecar).toString()), bytes, producer);
-    const discovered = admitProgramCompanions(root, name, bytes);
+    const receipt = record(JSON.parse(requiredFile(root, sidecar).toString()));
+    const symbols = admitProgramSymbols(root, files, name, receipt, (symbolBytes) =>
+      validateProgramDerivation(receipt, bytes, producer, symbolBytes),
+    );
+    for (const symbol of symbols.names.concat(symbols.companions)) boundSymbols.add(symbol);
+    const discovered = admitProgramCompanions(root, name, bytes).concat(symbols.companions);
     companions.push(...discovered.filter((companion) => !files.includes(companion)));
   }
+  assertSymbolsBound(files.concat(symbolFilesBesideGuests(root, files)), boundSymbols);
   if (recipe.dependencies !== undefined) {
     assert.ok(Array.isArray(recipe.dependencies));
     for (const name of recipe.dependencies) {
@@ -119,14 +200,19 @@ export function admitProgramPackage(root: string): string[] {
       admitProgramPackage(resolve(root, "..", name));
     }
   }
-  if (recipe.payloadManifest === undefined) return files.concat(companions);
+  const admitted = files.concat(companions);
+  if (recipe.payloadManifest === undefined) return { files: admitted, symbols: boundSymbols };
   assert.ok(typeof recipe.payloadManifest === "string");
-  return files.concat(companions, payloadFiles(root, recipe.payloadManifest));
+  // A payload hash is not a symbol derivation; only a receipt binds a sidecar.
+  const payload = payloadFiles(root, recipe.payloadManifest);
+  assertSymbolsBound(payload, boundSymbols);
+  return { files: admitted.concat(payload), symbols: boundSymbols };
 }
 
 /** Check the actual archive, including files removed by package files/ignore rules. */
 export function verifyProgramTarball(root: string, archive: string): void {
-  const files = admitProgramPackage(root);
+  const { files, symbols } = admitProgram(root);
+  assertPackedSymbols(archive, symbols);
   if (!files.length) return;
   const parent = resolve(root, ".build");
   mkdirSync(parent, { recursive: true });

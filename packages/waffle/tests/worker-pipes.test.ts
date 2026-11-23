@@ -490,9 +490,10 @@ test("a real child worker repeatedly creates and transfers pipes beyond one regi
   await runChildPipeTransfers(f, pid, 40);
 });
 
-test("sixteen distinct child workers each use IPC across shared registry growth", async () => {
+test("sixteen distinct child workers each use IPC and return their registry cells", async () => {
   const f = processFixture(1, 32);
   const originalBytes = f.registry.handle().buffer.byteLength;
+  const baseline = f.registry.cellsInUse;
   const pids = new Set<number>();
   for (let child = 0; child < 16; child++) {
     const pid = f.root.spawn(1, request());
@@ -505,7 +506,9 @@ test("sixteen distinct child workers each use IPC across shared registry growth"
     f.supervisor.exit(pid, 0);
   }
   expect(pids.size).toBe(16);
-  expect(f.registry.handle().buffer.byteLength).toBeGreaterThan(originalBytes);
+  // 48 pipes, four cells each, fit the 32-cell initial backing: retired pipes return cells.
+  expect(f.registry.handle().buffer.byteLength).toBe(originalBytes);
+  expect(f.registry.cellsInUse).toBe(baseline);
   expect(f.broker.size).toBe(0);
 });
 

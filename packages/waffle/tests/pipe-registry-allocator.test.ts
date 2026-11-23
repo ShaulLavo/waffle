@@ -11,7 +11,7 @@ test("registry allocator receives the exact initial and maximum backing sizes", 
       return backing;
     },
   });
-  expect(calls).toEqual([[2105360, 16785424]]);
+  expect(calls).toEqual([[1056784, 1056784]]);
   if (!backing) throw new Error("allocator was not called");
   expect(registry.handle().buffer).toBe(backing);
   registry.registerProcess(1);

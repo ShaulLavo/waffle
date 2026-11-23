@@ -13,7 +13,9 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { brotliCompressSync, gzipSync } from "node:zlib";
+import { namedWasiFixture } from "./program-symbols-fixture.ts";
 import {
   admitProgramPackage,
   packProgramPackage,
@@ -235,6 +237,194 @@ test("declared companions are validated once and remain required", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+function symbolPackage(root: string, files: readonly string[]) {
+  writeFileSync(resolve(root, "package-artifacts.json"), JSON.stringify({ files }));
+}
+
+test("a declared sidecar must ship, match its receipt and reference, and never ship undeclared", async (context) => {
+  const parent = resolve(import.meta.dirname, "../.build");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(resolve(parent, "symbols-admission-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(resolve(root, "dist"));
+  const input = resolve(root, "input.wasm");
+  const output = resolve(root, "dist/echo.wasm");
+  const sidecar = resolve(root, "dist/echo-symbols.json");
+  const reference = resolve(root, "dist/echo-symbols.ts");
+  writeFileSync(input, namedWasiFixture(["_start", "outer"]));
+  const declared = ["dist/echo.wasm", "dist/echo-program.json"];
+  const opted = declared.concat(["dist/echo-symbols.json", "dist/echo-symbols.ts"]);
+  const receipt = stageProgram(input, output, {}, undefined, { emitSymbols: true });
+  symbolPackage(root, opted);
+  assert.deepEqual(
+    admitProgramPackage(root),
+    opted.concat(["dist/echo.wasm.gz", "dist/echo.wasm.br"]),
+  );
+  const bytes = readFileSync(sidecar);
+  const { symbols } = await import(pathToFileURL(reference).href);
+  assert.equal(symbols.url.href, pathToFileURL(sidecar).href);
+  assert.equal(symbols.bytes, bytes.length);
+  assert.equal(symbols.sha256, receipt.symbols?.output.sha256);
+  assert.equal(symbols.sha256, createHash("sha256").update(bytes).digest("hex"));
+
+  symbolPackage(root, declared.concat(["dist/echo-symbols.ts"]));
+  assert.throws(() => admitProgramPackage(root), /Missing declared program symbols/);
+  symbolPackage(root, opted);
+  rmSync(sidecar);
+  assert.throws(() => admitProgramPackage(root), /ENOENT/);
+  writeFileSync(sidecar, Buffer.from(bytes.toString().replace('"outer"', '"other"')));
+  assert.throws(() => admitProgramPackage(root), /Program symbols identity/);
+  writeFileSync(sidecar, bytes);
+  const module = readFileSync(reference, "utf8");
+  writeFileSync(reference, module.replace(/"[a-f0-9]{64}"/, `"${"0".repeat(64)}"`));
+  assert.throws(() => admitProgramPackage(root), /reference differs/);
+  writeFileSync(reference, module);
+  const other = Buffer.from(bytes.toString().replace('"outer"', '"other"'));
+  writeFileSync(`${sidecar}.br`, brotliCompressSync(other));
+  assert.throws(() => admitProgramPackage(root), /differs from final bytes/);
+  writeFileSync(`${sidecar}.br`, brotliCompressSync(Buffer.concat([bytes, Buffer.from(" ")])));
+  assert.throws(() => admitProgramPackage(root), /larger than/);
+  writeFileSync(`${sidecar}.br`, brotliCompressSync(bytes));
+  assert.ok(admitProgramPackage(root).includes("dist/echo-symbols.json.br"));
+  rmSync(`${sidecar}.br`);
+  const listedGzip = opted.concat(["dist/echo-symbols.json.gz"]);
+  symbolPackage(root, listedGzip);
+  writeFileSync(`${sidecar}.gz`, gzipSync(other));
+  assert.throws(() => admitProgramPackage(root), /differs from final bytes/, "declared gzip");
+  writeFileSync(`${sidecar}.gz`, gzipSync(bytes));
+  assert.deepEqual(
+    admitProgramPackage(root),
+    listedGzip.concat(["dist/echo.wasm.gz", "dist/echo.wasm.br"]),
+  );
+  rmSync(`${sidecar}.gz`);
+  symbolPackage(root, opted.concat(["dist/other-symbols.json"]));
+  writeFileSync(resolve(root, "dist/other-symbols.json"), bytes);
+  assert.throws(() => admitProgramPackage(root), /not declared: dist\/other-symbols\.json/);
+  symbolPackage(root, opted);
+  assert.throws(() => admitProgramPackage(root), /not declared: dist\/other-symbols\.json/);
+  rmSync(resolve(root, "dist/other-symbols.json"));
+  writeFileSync(`${reference}.gz`, gzipSync(module));
+  assert.throws(() => admitProgramPackage(root), /not declared: dist\/echo-symbols\.ts\.gz/);
+  rmSync(`${reference}.gz`);
+
+  stageProgram(input, output);
+  writeFileSync(sidecar, bytes);
+  writeFileSync(reference, module);
+  symbolPackage(root, opted);
+  assert.throws(() => admitProgramPackage(root), /not declared: dist\/echo-symbols\.json/);
+  symbolPackage(root, declared);
+  assert.throws(() => admitProgramPackage(root), /not declared: dist\/echo-symbols\.json/);
+  rmSync(sidecar);
+  rmSync(reference);
+  for (const suffix of [".gz", ".br"]) {
+    const companion = `dist/echo-symbols.json${suffix}`;
+    writeFileSync(resolve(root, companion), gzipSync(bytes));
+    symbolPackage(root, declared);
+    assert.throws(() => admitProgramPackage(root), /not declared/, `unlisted ${suffix}`);
+    symbolPackage(root, declared.concat([companion]));
+    assert.throws(() => admitProgramPackage(root), /not declared/, `listed ${suffix}`);
+    rmSync(resolve(root, companion));
+  }
+  symbolPackage(root, declared);
+  assert.deepEqual(
+    admitProgramPackage(root),
+    declared.concat(["dist/echo.wasm.gz", "dist/echo.wasm.br"]),
+  );
+});
+
+test("a packed archive carries no symbol file that admission did not bind", (context) => {
+  const parent = resolve(import.meta.dirname, "../.build");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(resolve(parent, "symbols-archive-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(resolve(root, "dist"));
+  mkdirSync(resolve(root, "extra"));
+  const input = resolve(root, "input.wasm");
+  writeFileSync(input, namedWasiFixture(["_start", "outer"]));
+  stageProgram(input, resolve(root, "dist/echo.wasm"), {}, undefined, { emitSymbols: true });
+  writeFileSync(
+    resolve(root, "package.json"),
+    JSON.stringify({
+      name: "fixture",
+      version: "0.0.0",
+      waffleHostInterface: 1,
+      peerDependencies: { "@waffle-os/runtime": "*" },
+      files: ["dist", "extra"],
+    }),
+  );
+  symbolPackage(root, [
+    "dist/echo.wasm",
+    "dist/echo-program.json",
+    "dist/echo-symbols.json",
+    "dist/echo-symbols.ts",
+  ]);
+  const archive = packProgramPackage(root);
+  verifyProgramTarball(root, archive);
+  writeFileSync(resolve(root, "extra/stale-symbols.json"), "{}");
+  assert.throws(() => packProgramPackage(root), /not declared: extra\/stale-symbols\.json/);
+});
+
+test("a zero-artifact family archive still refuses a stray symbol file", (context) => {
+  const parent = resolve(import.meta.dirname, "../.build");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(resolve(parent, "symbols-zero-artifact-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(resolve(root, "src"));
+  writeFileSync(
+    resolve(root, "package.json"),
+    JSON.stringify({
+      name: "fixture",
+      version: "0.0.0",
+      waffleHostInterface: 1,
+      peerDependencies: { "@waffle-os/runtime": "*" },
+      files: ["src", "package-artifacts.json"],
+    }),
+  );
+  symbolPackage(root, []);
+  writeFileSync(resolve(root, "src/index.ts"), "export const family = [];\n");
+  assert.ok(readFileSync(packProgramPackage(root)).length > 0);
+  writeFileSync(resolve(root, "src/stale-symbols.json.gz"), gzipSync("{}"));
+  assert.throws(() => packProgramPackage(root), /not declared: src\/stale-symbols\.json\.gz/);
+});
+
+test("a payload manifest entry cannot stand in for a symbol derivation", (context) => {
+  const parent = resolve(import.meta.dirname, "../.build");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(resolve(parent, "symbols-payload-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(resolve(root, "assets/Lib"), { recursive: true });
+  const write = (url: string, bytes: Uint8Array) => {
+    writeFileSync(resolve(root, "assets", url), bytes);
+    const entry = { url, bytes: bytes.length, sha256: digest(bytes) };
+    writeFileSync(resolve(root, "assets/payload.json"), JSON.stringify({ files: [entry] }));
+  };
+  writeFileSync(
+    resolve(root, "package-artifacts.json"),
+    JSON.stringify({ files: ["assets/payload.json"], payloadManifest: "assets/payload.json" }),
+  );
+  write("Lib/module.py", Buffer.from("x = 1\n"));
+  assert.deepEqual(admitProgramPackage(root), ["assets/payload.json", "assets/Lib/module.py"]);
+  write("Lib/stale-symbols.json.gz", gzipSync("{}"));
+  assert.throws(
+    () => admitProgramPackage(root),
+    /not declared: assets\/Lib\/stale-symbols\.json\.gz/,
+  );
+});
+
+test("Coreutils echo is the one program that declares a sidecar and its subpath export", () => {
+  const coreutils = resolve(import.meta.dirname, "../packages/coreutils");
+  const recipe = JSON.parse(readFileSync(resolve(coreutils, "package-artifacts.json"), "utf8"));
+  const symbols = recipe.files.filter((file: string) => /-symbols\.(json|ts)$/.test(file));
+  assert.deepEqual(symbols, ["dist/echo-symbols.json", "dist/echo-symbols.ts"]);
+  const manifest = JSON.parse(readFileSync(resolve(coreutils, "package.json"), "utf8"));
+  assert.deepEqual(manifest.exports, {
+    ".": "./src/index.ts",
+    "./symbols/echo": "./dist/echo-symbols.ts",
+  });
+  const index = readFileSync(resolve(coreutils, "src/index.ts"), "utf8");
+  assert.doesNotMatch(index, /symbols/, "default imports never reach the sidecar");
 });
 
 test("optional leaf staging leaves compression to the shared final-output helper", () => {

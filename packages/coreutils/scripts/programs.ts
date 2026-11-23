@@ -45,6 +45,9 @@ export const coreutilsPackageNames = coreutilsNames.filter(
 
 const cooperative = new Set(["cat", "mkdir", "seq", "tail"]);
 
+/** Programs that publish an optional function-name sidecar for trap diagnostics. */
+export const symbolPrograms: ReadonlySet<string> = new Set(["echo"]);
+
 export function verificationOptions(name: string) {
   return cooperative.has(name)
     ? { filesystemAdapter: "waffle_program_support::runtime::wasi" }
