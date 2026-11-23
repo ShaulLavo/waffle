@@ -111,9 +111,10 @@ function symbolFilesBesideGuests(root: string, files: readonly string[]) {
 
 /** Every symbol file listed, staged or packed must be one a receipt binds. */
 function assertSymbolsBound(candidates: readonly string[], bound: ReadonlySet<string>) {
-  const unbound = Array.from(new Set(candidates)).filter(
-    (name) => symbolFiles.test(name) && !bound.has(name),
-  );
+  // Sorted so the message doesn't depend on the filesystem's directory order.
+  const unbound = Array.from(new Set(candidates))
+    .filter((name) => symbolFiles.test(name) && !bound.has(name))
+    .sort();
   assert.equal(unbound.length, 0, `Program symbols are not declared: ${unbound.join(" ")}`);
 }
 
