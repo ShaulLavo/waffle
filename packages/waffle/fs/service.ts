@@ -751,6 +751,10 @@ export class FilesystemService {
       if (references === 0 && shared?.isUnlinked(handle)) detached = true;
     }
     if (idle <= TRANSIENT_HANDLES && !detached) return;
+    // Over the bound, evict the least recently used down to half of it. Each eviction bumps the
+    // namespace epoch and so drops every client's cached answers; one handle per new path
+    // would do that on every resolve of a build that touches more paths than the bound.
+    const keep = idle > TRANSIENT_HANDLES ? TRANSIENT_HANDLES / 2 : TRANSIENT_HANDLES;
     // Eviction is a capability mutation, serialized against direct guest mutations too.
     const epoch = session.epoch;
     const invalidate = !shared?.ownsServiceMutation;
@@ -761,7 +765,7 @@ export class FilesystemService {
     try {
       for (const handle of session.transient.keys()) {
         if (session.preparingHandles.has(handle)) continue;
-        if (idle <= TRANSIENT_HANDLES && !shared?.isUnlinked(handle)) continue;
+        if (idle <= keep && !shared?.isUnlinked(handle)) continue;
         const key = session.handles.get(handle)!;
         // A local retain racing this CAS either owns a live pin or sees a revoked entry.
         if (Atomics.compareExchange(session.capabilities, key + 1, 0, -1) !== 0) continue;

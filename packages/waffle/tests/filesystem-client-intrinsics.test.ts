@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import type { FilesystemClient, FilesystemCompletion } from "../fs/client.ts";
 import * as protocol from "../fs/protocol.ts";
 import * as native from "../proc/intrinsics.ts";
+import { EpochCache } from "../fs/epoch-cache.ts";
 import { localPublication } from "../fs/publication-internal.ts";
 import { mutationIntent } from "../fs/publication.ts";
 import { takeResolveObservation } from "../fs/resolve-observation.ts";
@@ -83,6 +84,7 @@ function fixture(overrides: Partial<typeof native> = {}) {
   };
   const bindings = {
     allocateSharedControl: (length: number) => new captures.SharedArrayBufferConstructor(length),
+    EpochCache,
     localPublication,
     mutationIntent,
     takeResolveObservation,

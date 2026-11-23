@@ -341,3 +341,31 @@ Status: Approved, scheduled later, owner November 8, 2026. Add inline tiny files
 entry without a block, extents for large files to recover sequential performance, and packed
 small tails. Baseline: Nuxt backing about 510 MB to 288 MB after compact 4 KiB storage, with
 sequential writes 32% slower and reads 54% slower.
+
+### Follow-ups from the read-path performance pass, 2026-11-23
+
+Status: Approved follow-ups, found while removing the profiled bottlenecks of bun-wasm warm Vite
+and Next.js builds (cold rereads, the client path cache, transport admission).
+
+- **The section exit wake cannot simply be skipped.** `FilesystemTransportSection.leaveTransport`
+  (`packages/waffle/fs/request-memory.ts`) bumps and notifies the connection tree's shared signal
+  whenever its count reaches zero. Teardown waits for that, but so do event-loop callers that got
+  EAGAIN from a lock this section held: `proc/command-stdio.ts` and bun-wasm's
+  `src/package-continuation-io.ts` await the signal with no timeout, and nothing else wakes them
+  when the lock is released. Meanwhile every exit also wakes the service's `watchTransport` loop
+  for every session in the tree. To make the wake conditional, add a registered-waiter count to
+  a buffer the whole tree shares (the request budget's free Int32 word 6 is one candidate), have
+  both stdio adapters register before sampling the signal, and change bun-wasm in the same pass.
+- **The first cold pass still opens two IndexedDB transactions per page.** `readRange`
+  (`packages/waffle/fs/indexeddb.ts`) reads the payload manifest for every range. Payload keys
+  are immutable, so a small manifest cache would halve first-pass transactions; drop an entry
+  where `deletingPayloads` deletes its key, so a deleted payload still fails as missing.
+- **Content writes invalidate cached paths.** Every mutation, including a file write or a handle
+  eviction, bumps the one namespace epoch, which drops every client's cached paths, stats and
+  directory listings. A separate namespace epoch, bumped only by changes to names, links and
+  handle lifetimes, would keep path answers through a build's output writes. It needs every
+  mutation site classified, so design it before changing code.
+- **`trim` scans every transient handle after every operation** (`fs/service.ts`, about 256 map
+  entries and one atomic load each). That cost blocks raising `TRANSIENT_HANDLES`, which bounds
+  how many distinct resolved paths a client can keep cached. A fast path needs a proof that no
+  idle handle can have become unlinked since the last full scan.

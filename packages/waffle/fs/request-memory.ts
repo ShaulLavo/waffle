@@ -28,6 +28,9 @@ import {
   SetConstructor,
   setAdd,
   setDelete,
+  WeakMapConstructor,
+  weakMapGet,
+  weakMapSet,
 } from "../proc/intrinsics.js";
 
 import { PAGE } from "./shared-capacity.js";
@@ -139,11 +142,34 @@ const MASK = 0xffffffffn;
 function tagged(generation: number, value: number): bigint {
   return (BigIntConstructor(generation) << 32n) | BigIntConstructor(value);
 }
+interface ControlView {
+  readonly words: BigInt64Array;
+  /** The generation, as a word's high half reads after `>> 32n`. */
+  readonly tag: bigint;
+  /** The generation already shifted into place, ready to combine with a value. */
+  readonly high: bigint;
+}
+/** Captured memory is frozen and its control buffer has a fixed length, so one view and one tag
+ * serve its whole lifetime. A reused arena gets a new control buffer and so a new record. Every
+ * request checks the control words several times; building them per check was most of the cost. */
+const controlViews = new WeakMapConstructor<FilesystemRequestMemory, ControlView>();
+function view(memory: FilesystemRequestMemory): ControlView {
+  const cached = weakMapGet(controlViews, memory);
+  if (cached) return cached;
+  const created: ControlView = objectFreeze({
+    words: new BigInt64ArrayConstructor(memory.control),
+    tag: BigIntConstructor(memory.generation),
+    high: tagged(memory.generation, 0),
+  });
+  weakMapSet(controlViews, memory, created);
+  return created;
+}
 function control(memory: FilesystemRequestMemory): BigInt64Array {
-  return new BigInt64ArrayConstructor(memory.control);
+  return view(memory).words;
 }
 function current(memory: FilesystemRequestMemory): boolean {
-  return atomicsLoad(control(memory), C.generation) >> 32n === BigIntConstructor(memory.generation);
+  const { words, tag } = view(memory);
+  return atomicsLoad(words, C.generation) >> 32n === tag;
 }
 function readWord(words: BigInt64Array, generation: bigint, index: number): number {
   const word = atomicsLoad(words, index);
@@ -151,19 +177,22 @@ function readWord(words: BigInt64Array, generation: bigint, index: number): numb
   return Number(word & MASK);
 }
 function get(memory: FilesystemRequestMemory, index: number): number {
-  return readWord(control(memory), BigIntConstructor(memory.generation), index);
+  const { words, tag } = view(memory);
+  return readWord(words, tag, index);
 }
+/** Returns the stored value, or undefined when the generation has moved on and nothing changed. */
 function update(
   memory: FilesystemRequestMemory,
   index: number,
   value: (previous: number) => number,
-): void {
-  const words = control(memory);
+): number | undefined {
+  const { words, tag, high } = view(memory);
   for (;;) {
     const previous = atomicsLoad(words, index);
-    if (previous >> 32n !== BigIntConstructor(memory.generation)) return;
-    const next = tagged(memory.generation, value(Number(previous & MASK)));
-    if (atomicsCompareExchange(words, index, previous, next) === previous) return;
+    if (previous >> 32n !== tag) return;
+    const stored = value(Number(previous & MASK));
+    const next = high | BigIntConstructor(stored);
+    if (atomicsCompareExchange(words, index, previous, next) === previous) return stored;
   }
 }
 /** Connection fault admission complements, and never replaces, the identity's native-stop fence. */
@@ -190,9 +219,13 @@ export class FilesystemTransportSection extends FilesystemSection {
     super.exit();
     this.leaveTransport();
   }
+  /** Emptying the count wakes the shared signal. Teardown waits for that, and so does an
+   * event-loop caller that got EAGAIN from a lock this section held: command stdio and its
+   * consumer adaptations await the signal untimed, so the wake cannot depend on a teardown. */
   private leaveTransport(): void {
-    update(this.memory, C.sections, (value) => value - 1);
-    if (get(this.memory, C.sections)) return;
+    const remaining = update(this.memory, C.sections, (value) => value - 1);
+    if (remaining === undefined) throw new FilesystemTransportError("stale");
+    if (remaining) return;
     atomicsAdd(this.signal, 0, 1);
     atomicsNotify(this.signal, 0);
   }
@@ -216,9 +249,7 @@ export async function waitForRequestQuiescence(
 export function requestTransportError(
   memory: FilesystemRequestMemory,
 ): FilesystemTransportError | undefined {
-  // Every request checks this several times, so it makes one view and one generation tag.
-  const words = control(memory);
-  const generation = BigIntConstructor(memory.generation);
+  const { words, tag: generation } = view(memory);
   if (atomicsLoad(words, C.generation) >> 32n !== generation)
     return new FilesystemTransportError("stale");
   const closed = readWord(words, generation, C.closed);
@@ -325,16 +356,13 @@ function claimRequest(budget: SharedArrayBuffer): void {
   }
 }
 function releaseCount(memory: FilesystemRequestMemory, bytes: number): void {
-  const words = control(memory);
+  const { words, tag, high } = view(memory);
   for (;;) {
     const previous = atomicsLoad(words, C.count);
-    if (previous >> 32n !== BigIntConstructor(memory.generation)) return;
+    if (previous >> 32n !== tag) return;
     const count = Number(previous & MASK);
-    if (
-      atomicsCompareExchange(words, C.count, previous, tagged(memory.generation, count - 1)) !==
-      previous
-    )
-      continue;
+    const next = high | BigIntConstructor(count - 1);
+    if (atomicsCompareExchange(words, C.count, previous, next) !== previous) continue;
     atomicsAdd(new Int32ArrayConstructor(memory.budget), B.pending, -1);
     update(memory, C.bytes, (value) => value - bytes);
     return;
@@ -851,12 +879,14 @@ export function requestMemoryResources(memory: FilesystemRequestMemory) {
 }
 
 export function requestCancelled(buffer: FilesystemRequestBuffer): boolean {
-  const memory = buffer.memory;
-  const generation = BigIntConstructor(memory.generation);
-  const word = atomicsLoad(new BigInt64ArrayConstructor(memory.data, buffer.offset - 8, 1), 0);
+  const { words, tag: generation } = view(buffer.memory);
+  const word = atomicsLoad(
+    new BigInt64ArrayConstructor(buffer.memory.data, buffer.offset - 8, 1),
+    0,
+  );
   // Same identity as ownership(generation, id, 0) >> 3n, with one tag conversion.
   return (
-    atomicsLoad(control(memory), C.generation) >> 32n !== generation ||
+    atomicsLoad(words, C.generation) >> 32n !== generation ||
     word >> 3n !== ((generation << 29n) | BigIntConstructor(buffer.id)) ||
     !!(word & 4n)
   );

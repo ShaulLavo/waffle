@@ -8,7 +8,7 @@ import {
   revokeFilesystem,
   type FilesystemBackend,
 } from "../fs";
-import { PAGE, State, pack } from "../fs/protocol";
+import { PAGE, State, TRANSIENT_HANDLES, pack } from "../fs/protocol";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -506,7 +506,9 @@ test("transient eviction invalidates hot resolve/read/stat caches before a cache
   result = nextMessage(worker);
   worker.postMessage({ scenario: "churn" });
   expect(await result).toEqual({ churned: 300 });
-  expect(service.resources().transient).toBe(256);
+  // Pressure evicts the least recently used half in one batch, not one handle per resolve.
+  expect(service.resources().transient).toBeLessThanOrEqual(TRANSIENT_HANDLES);
+  expect(service.resources().transient).toBeGreaterThan(TRANSIENT_HANDLES / 2);
   expect(service.resources().retained).toBe(backend.pinCount);
   expect(Atomics.load(new Int32Array(connection.epoch), 0)).toBeGreaterThan(epoch);
   expect(Atomics.load(new Int32Array(connection.epoch), 0) & 1).toBe(0);
@@ -609,7 +611,8 @@ test("resolve protects both returned capabilities from eviction when an old hard
   expect(linked.node).toBe(original.node);
   expect(text(await client.asyncCall("read", [linked.node, 8, 0]))).toBe("linked");
   expect((await client.asyncCall("stat", [linked.parent])).kind).toBe("directory");
-  expect(service.resources().transient).toBe(256);
+  // The batch eviction this resolve caused kept both of its returned capabilities.
+  expect(service.resources().transient).toBe(TRANSIENT_HANDLES / 2);
   expect(service.resources().retained).toBe(backend.pinCount);
 });
 
