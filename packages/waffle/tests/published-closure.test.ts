@@ -14,7 +14,9 @@ const published = new Set(
     (match) => match[1] as string,
   ),
 );
-// `dist/` is emitted by prepare and `.build/` holds tools downloaded at run time.
+// `dist/` is emitted by prepare and `.build/` holds tools downloaded at run time, so neither
+// exists when this runs and references into them are not checked here. The installed-archive
+// smoke in `tooling/tarball-smoke.ts` is what exercises those paths.
 const generated = /^dist\/|(?:^|\/)\.build\//;
 
 const directories = new Set<string>();
@@ -150,11 +152,24 @@ function callArguments(source: string, from: number): string {
   return source.slice(from);
 }
 
+// `browserBundle("tests/x.ts")` resolves a lone string argument from the package root, where the
+// suites run. Other bundler calls may join their strings onto another directory or resolve them
+// through a plugin, so only this form is checked.
+const rootEntry = /^\s*["']([\w./-]+\.(?:ts|tsx|js|mjs))["']\s*,?\s*$/;
+
+function staleRootEntry(entry: string): string | undefined {
+  const options = [entry, entry.replace(/\.js$/, ".ts")];
+  return options.some((option) => existsInPackage(posix.normalize(option))) ? undefined : entry;
+}
+
 function staleBundleEntries(file: string, source: string): string[] {
   const missing: string[] = [];
   for (const start of source.matchAll(entryStart)) {
     const text = callArguments(source, (start.index ?? 0) + start[0].length);
     missing.push(...referencedPaths(file, text, existsInPackage, true).filter(Boolean));
+    const direct = start[0].startsWith("browserBundle") ? rootEntry.exec(text)?.[1] : undefined;
+    const stale = direct === undefined ? undefined : staleRootEntry(direct);
+    if (stale !== undefined) missing.push(stale);
   }
   return missing;
 }
@@ -168,7 +183,9 @@ function trackedTypeScript(run: Run): string[] {
   if (listing.exitCode !== 0) throw new Error("git ls-files failed");
   const files = listing.stdout.toString().split("\0").filter(Boolean);
   if (!files.includes("package.json")) throw new Error("git ls-files returned no package files");
-  return files.filter((file) => file.endsWith(".ts") && !file.endsWith(".d.ts"));
+  const sources = files.filter((file) => file.endsWith(".ts") && !file.endsWith(".d.ts"));
+  if (!sources.length) throw new Error("git ls-files returned no TypeScript files");
+  return sources;
 }
 
 test("the bundle entry check parses wrapped calls and fails closed", () => {
@@ -185,8 +202,18 @@ test("the bundle entry check parses wrapped calls and fails closed", () => {
   expect(staleBundleEntries("tests/example.ts", stale)).toEqual(["tests/missing-worker.js"]);
   const present = 'browserBundle(resolve(import.meta.dir, "../testing/storage-browser.ts"))';
   expect(staleBundleEntries("tests/example.ts", present)).toEqual([]);
+  const rooted = 'browserBundle("tests/missing-browser.ts")';
+  expect(staleBundleEntries("tests/example.ts", rooted)).toEqual(["tests/missing-browser.ts"]);
+  const wrappedRooted = 'browserBundle(\n    "tests/missing-browser.ts",\n  )';
+  expect(staleBundleEntries("tests/example.ts", wrappedRooted)).toEqual([
+    "tests/missing-browser.ts",
+  ]);
+  const real = 'browserBundle("tests/indexeddb-chunks-browser.ts")';
+  expect(staleBundleEntries("tests/example.ts", real)).toEqual([]);
   expect(() => trackedTypeScript(() => ({ exitCode: 128, stdout: "" }))).toThrow("failed");
   expect(() => trackedTypeScript(() => ({ exitCode: 0, stdout: "" }))).toThrow("no package files");
+  const manifestOnly = () => ({ exitCode: 0, stdout: "package.json\0" });
+  expect(() => trackedTypeScript(manifestOnly)).toThrow("no TypeScript files");
 });
 
 test("literal bundle entries in package source point at files that exist", () => {
