@@ -23,6 +23,7 @@ import {
 import type { BrowserProcessBroker } from "./process-broker.js";
 import { createRuntimeTerminalCodec } from "./runtime-terminals.js";
 import { CommandInput } from "./command-input.js";
+import { yieldTask } from "./yield-task.js";
 
 const READ = 1n << 1n;
 const WRITE = 1n << 6n;
@@ -90,7 +91,7 @@ class Command {
   private root?: WorkerProcessTransport;
   private owner?: BrowserProcessBroker;
   private input?: CommandInput;
-  private outputTask?: ReturnType<typeof setTimeout>;
+  private outputTask?: Promise<void>;
   private outputBatch = OUTPUT_BATCH;
   private ioFailure?: { error: unknown };
   private settled = false;
@@ -157,7 +158,6 @@ class Command {
       this.leader.resolve(undefined);
       this.stopped.removeEventListener("abort", this.stop);
       this.disposeSignal.removeEventListener("abort", this.dispose);
-      clearTimeout(this.outputTask);
     }
   }
 
@@ -338,13 +338,13 @@ class Command {
 
   private deliver(fd: 1 | 2, bytes: Uint8Array): number {
     if (this.outputBatch === 0) {
-      this.outputTask ??= setTimeout(() => {
+      this.outputTask ??= yieldTask().then(() => {
         this.outputTask = undefined;
         this.outputBatch = OUTPUT_BATCH;
-        if (!this.root || this.runtime.disposed) return;
+        if (this.settled || !this.root || this.runtime.disposed) return;
         this.owner?.outputDrained(this.root.pid);
         wakeWorkerProcess(this.root);
-      }, 0);
+      });
       return 0;
     }
     this.outputBatch--;
