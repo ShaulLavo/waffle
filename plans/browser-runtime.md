@@ -356,3 +356,30 @@ seven constraints surfaced in PR 600 review rounds 1 to 3:
    unconditionally from `FilesystemClient` turns a subdirectory `ENOENT` (44) into `ENOSYS` (52).
    Carry optional capability discovery across the service boundary or fall back to the existing
    inode comparison without hiding errors from a supported query.
+
+**Second attempt (PR 606, closed after one review round, 2026-11-23).** It asked the tree instead
+of the preopen: the root is the directory whose rooted `..` (`fs.resolve(handle, "..", false,
+true)`) is itself, compared by inode, in both `resolveDescriptorPath` and `Wasi.rootNamespace`. It
+removed the `preopen` call over MemFS and an ordinary `FilesystemClient` (epoch unchanged in a
+worker test), but review found four problems, and any future design must also avoid them:
+
+8. **Inode numbers are not object identity.** MemFS snapshots can give distinct nodes the same
+   serialized inode number (`tests/host.test.ts` has a collision case). A parent and child sharing
+   one made a subdirectory look like the root. Decide root identity by filesystem object identity.
+9. **Root identity must not depend on search permission.** A `..` lookup needs search permission.
+   With `/` bound through a symlink and search denied at guest entry, the startup snapshot recorded
+   a confined namespace for good, so an absolute symlink later failed with EPERM. Keep permission
+   checks on the requested lookup only, and test the startup path directly.
+10. **A lookup that returns a handle can still move the epoch.** Besides the publication-mode lock
+    and epoch step (constraint 5), a cold `resolve` whose returned parent fills the 256-entry
+    transient handle cache evicts an entry and advances the epoch. An identity read should return
+    no new handle.
+11. **Custom backends may ignore `rooted`.** Such a backend answers the root's `..` with EPERM, so
+    a `{ "/work": "/" }` guest lost `dev/null` and `dev/fd/N` at the preopen and through an opened
+    copy of it.
+
+Points 8, 10 and 11, together with constraint 5, point at one shape: a read-only identity query
+across the service boundary (no handle returned, no mutation lock, and publication's session,
+handle, activation and resident-grant checks kept) with capability discovery for custom backends.
+That is the `isRoot` direction PR 600 tried. The PR 606 branch `lane/loose-ends-openat` and its
+worker test (`tests/wasi-root-identity.test.ts`) are kept for reuse.
