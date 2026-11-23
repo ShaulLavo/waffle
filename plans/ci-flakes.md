@@ -1,7 +1,9 @@
 # CI failures observed during 0.0.127
 
 Status: Approved follow-up. Managing assigns a separate owner for the flake-fix pass.
-Keep the original assertions and deadlines. Fix deterministic causes before changing bounds.
+Keep the original assertions, and keep any deadline that is itself the behavior under test.
+Fix deterministic causes before changing bounds. A fixture's own wait may become a generous
+hang cap, since tests check outcomes, not durations.
 
 ## Terminal input notification
 
@@ -142,10 +144,17 @@ control each time, all different:
   (`page-runner/framework-host.ts:732`): run 43394478779.
 - host-deadline-teardown: `Body timeout extension changed the independent teardown clock`
   (`page-runner/host-drive-controls.ts:146`): run 43072689064.
-- command-notification-complete: `collector-failure` with `heartbeat-lost` and `Process browser
-  resource closure did not settle during teardown`: run 45093449673 (PR 607).
-- host-separate-hook, on Chromium (`browser-controls-runner.ts chromium --prepared`):
-  `host-body-failure`, `Host setup/body timed out`: run 45095766650 (PR 608). Passed on rerun.
+- command-notification-complete, WebKit: `collector-failure` with `heartbeat-lost` and `Process
+  browser resource closure did not settle during teardown`: run 45093449673 (PR 607). Browser
+  pid 98750 launched at 01:27:43.7. The page sent no heartbeat for the 10 s budget while each
+  sibling notification control finished in about 1.5 s, and graceful close then took 12 s
+  (01:27:57.2 to 01:28:09.4) before WebKit exited with code 0. Every busy wait in the
+  notification command runs in a worker, not on the page's main thread, so this looks like a
+  stalled WebKit content process rather than a slow test. Not reproduced on the PC
+  (2026-11-23): 120 runs of this control alone, 4 at once, and 60 runs of all 13 WebKit
+  notification controls, 4 at once on 2 CPU cores, all passed. Next step if it recurs: run the
+  control with `DEBUG=pw:protocol` and WebKit stderr, and record which worker or scenario was
+  active when heartbeats stopped.
 
 The link runner hit `evaluate: Target page, context or browser has been closed` in
 run 44729859695, attempt 1. Navigation returned before evaluation began. The runner had
@@ -175,32 +184,37 @@ provisional target commit.
 
 Each passed on rerun with no code change, and none touches the code those PRs changed.
 
-- `tests/process-root-navigation-diagnostic.test.ts:296` threw `Synthetic collector readiness
-  timeout` once in a local full `bun run test` at load average 54; the file then passed 56 of 56
-  twice at the same load. The readiness wait is a fixed 5 s limit inside the test. Make it a
-  generous hang cap or wait on the fixture's readiness signal instead of elapsed time.
 - `tests/threads-runtime-browser-runner.ts webkit` failed `sibling descriptor reuse`
   (`tests/threads-runtime-fd-browser.ts:188`, a 15 s `until` cap) on PR 598, run 45003846225
-  attempt 1; attempt 2 passed.
+  attempt 1; attempt 2 passed. The runner started at 08:47:16 and failed at 08:47:37, so a
+  one-byte write on the reused descriptor did not complete in 15 s: a hang, not a slow run.
+  Not reproduced on the PC (2026-11-23) with a local threads fixture and
+  `--case fd-read --case fd-write`: 100 runs, 4 at once, then 60 runs, 4 at once on one CPU
+  core (slowest 9.1 s), all passed. If it recurs, capture the runtime's completion and pin
+  state for the held original operation when the cap fires.
 - `tests/page-runner/gpu-async-controls-runner.ts --ci chromium webkit` failed with
   `host-body-failure` on main ecf82eee, run 45003278103 attempt 1; attempt 2 passed.
+  This is an outcome mismatch, not a timeout: the body failed with `Wrong negative C
+  assertion: --corrupt-range` (`tests/gpu-async-command.ts:129`). The compiled guest
+  (`tests/fixtures/gpu/async.c`) must print exactly one failure line,
+  `GPU_ASYNC_FAIL stage=completion-correlation`, after the corrupt writeback when the service's
+  closed reply arrives. The assertion also fails if that line is missing or repeated, and CI
+  kept neither the guest text nor the retained results, so what the guest printed is unknown.
+  One candidate is a completions errno arriving before the closed reply (stage `completions`),
+  which would resemble the terminal-ordering race fixed in PR 498. Not reproduced on the PC (2026-11-23) with a
+  local `build-gpu-fixture.ts` build: 100 Chromium runs, 4 at once, all passed, and 60 runs,
+  4 at once on 2 CPU cores, had no `--corrupt-range` mismatch. One of those 60 failed in
+  teardown instead, with `Process browser resource closure did not settle during teardown`
+  after the command passed: the 5 s close cap in the same family as canonical-ownership above.
+  If the mismatch recurs, print the guest's `GPU_ASYNC_FAIL` line in the error.
 
-## Failures seen during the 2026-11-23 loose-ends lane
+## Known cleanup limit
 
-Each passed on rerun or alone, and none touches the code those PRs changed. Browser-controls
-failures from this lane are listed with that family above.
-
-- `tests/page-runner/framework-verdict.test.ts:203`, "framework verdict with fail, failed,
-  started=true", got `Error: No navigated owned framework window` under `bun run test
-  --parallel=2` on PR 608 (run 45093095342). The file passed 27 of 27 three times alone.
-- `tests/page-runner/host-drive.test.ts:162`, "interruption after-acceptance" and "interruption
-  before-dispatch ... prevents allocation return and constructors": a `SIGINT` listener present
-  before the fixture was gone after it, under `--parallel=2` on PR 607's merge commit (run
-  45100991155). Every `SIGINT` removal in the tree removes its own handler, so another file's
-  cleanup finishing during the test is the likely cause; which files share a worker depends on
-  the file list. The file passed 477 of 477 three times alone, and two full `--parallel=2` runs
-  of that tree passed. The rerun passed.
-- `tests/default-allocation-parity.test.ts`, "P7 PRE-IMPORT ..." (desktop and iOS user-agent
-  variants), hit its 5 s per-test timeout under full-suite load on the PC twice (PR 607 and PR
-  608 branches). The file passes 3 of 3 alone. Like the readiness wait above, make it a generous
-  hang cap or wait on a signal rather than elapsed time.
+`tests/process-root-navigation-diagnostic.test.ts` collector tests: after the 40 s readiness
+cap, cleanup sends the collector SIGTERM (its handler stops the child it spawned), waits 10 s,
+then kills the collector's group and the child named by the test or by `collector-owner.json`.
+If the collector itself hangs after spawning the detached child but before writing that record,
+the child survives. `collectChild` spawns and writes the record in one synchronous step, so this
+needs a hang inside that step; on main any readiness timeout leaked the child. A complete fix
+would have the collector pass the child's PID to the test before it can be lost, for example
+by writing the record from a spawn wrapper that runs first.

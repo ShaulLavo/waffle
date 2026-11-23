@@ -288,24 +288,42 @@ async function waitForReady(
   child: Bun.Subprocess,
   errors: Promise<string>,
 ): Promise<void> {
+  // Readiness is the fixture's file or its exit. The cap only catches a hung fixture: it is far
+  // above healthy startup under full-suite load (a 5 s limit failed there) and below the test's
+  // own cap, so the caller's finally block still stops and joins the owned processes.
   const start = performance.now();
   while (!(await Bun.file(path).exists())) {
     if (child.exitCode !== null && !(await Bun.file(path).exists())) {
       throw new Error(`Collector fixture exited before admission: ${await errors}`);
     }
-    if (performance.now() - start > 5000) throw new Error("Synthetic collector readiness timeout");
+    if (performance.now() - start > 40_000)
+      throw new Error("Synthetic collector readiness timeout");
     await Bun.sleep(10);
   }
+}
+
+/** The collected child's PID, once the collector has recorded it, so cleanup reaches that
+ * process group even when readiness never arrived. Best effort: a missing or unreadable record
+ * must not skip the rest of teardown. */
+function recordedCollectionPid(evidence: string): number | undefined {
+  let owner: unknown;
+  try {
+    owner = JSON.parse(readFileSync(join(evidence, "collector-owner.json"), "utf8"));
+  } catch {
+    return undefined;
+  }
+  if (typeof owner !== "object" || owner === null || !("pid" in owner)) return undefined;
+  return typeof owner.pid === "number" ? owner.pid : undefined;
 }
 
 async function collectorControl(interrupt: boolean, breakSink = false): Promise<void> {
   const root = mkdtempSync(
     join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-collector-"),
   );
+  const evidence = join(root, "evidence");
   let child: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
   let capturedPid: number | undefined;
   try {
-    const evidence = join(root, "evidence");
     const scratch = join(root, "scratch");
     mkdirSync(evidence);
     mkdirSync(scratch);
@@ -373,27 +391,45 @@ async function collectorControl(interrupt: boolean, breakSink = false): Promise<
         JSON.stringify({ status, result, stdoutHex: bytes.toString("hex"), stderr: savedErrors }),
       );
   } finally {
-    if (child) killIfAlive(-child.pid);
-    if (capturedPid) killIfAlive(-capturedPid);
-    if (child) await child.exited;
+    await stopCollector(child, evidence, capturedPid);
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+/** Stop the collector and its detached child, for example after a readiness timeout. A
+ * running collector gets SIGTERM first: its own handler stops the child it spawned, whether or
+ * not it has recorded that child yet. After a bounded wait, SIGKILL both process groups, using
+ * the test's PID or the collector's record for the child. */
+async function stopCollector(
+  child: Bun.Subprocess | undefined,
+  evidence: string,
+  capturedPid: number | undefined,
+): Promise<void> {
+  if (!child) return;
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGTERM");
+    await Promise.race([child.exited, Bun.sleep(10_000)]);
+  }
+  const collectedPid = capturedPid ?? recordedCollectionPid(evidence);
+  killIfAlive(-child.pid);
+  if (collectedPid) killIfAlive(-collectedPid);
+  await child.exited;
 }
 
 test(
   "collector retains exact bytes, primary failure and cleanup across normal completion",
   () => collectorControl(false),
-  15000,
+  60_000,
 );
 test(
   "collector drains owned child cleanup after interruption and retains primary failure",
   () => collectorControl(true),
-  15000,
+  60_000,
 );
 test(
   "collector rejects an unwritable durable sink before spawning its fixture",
   () => collectorControl(false, true),
-  15000,
+  60_000,
 );
 
 test("collector forwards capture environment set immediately before spawn", async () => {

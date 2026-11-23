@@ -60,14 +60,13 @@ const run: HostPageRun<Request> = {
       const until = performance.now() + 80;
       while (performance.now() < until) performance.now();
     }
+    // Longer than SEPARATE_HOOK_MARGIN_MS in host-drive-controls.ts: the body ends that
+    // margin before its deadline, so charging this hook to the body clock would fail the case.
+    if (request.mode === "separate-hook") await new Promise((resolve) => setTimeout(resolve, 800));
     if (
-      [
-        "separate-hook",
-        "verdict-delivery",
-        "teardown-report",
-        "interruption",
-        "deadline-teardown",
-      ].includes(request.mode)
+      ["verdict-delivery", "teardown-report", "interruption", "deadline-teardown"].includes(
+        request.mode,
+      )
     )
       await new Promise((resolve) => setTimeout(resolve, 80));
     if (request.mode === "late-error")

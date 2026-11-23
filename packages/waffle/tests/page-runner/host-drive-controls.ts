@@ -8,6 +8,12 @@ import {
 import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 import { record } from "../../testing/page-runner/protocol.js";
 
+/** separate-hook: the body's case budget, and the margin its deadline is moved to once setup is
+ * done. The page's separate-hook teardown (host-drive-control-page.ts) lasts 800 ms, longer than
+ * the margin. Setup gets the whole budget, so runner speed does not decide the outcome. */
+const SEPARATE_HOOK_CASE_MS = 2000;
+const SEPARATE_HOOK_MARGIN_MS = 400;
+
 export const hostControlModes = [
   "deadline-teardown",
   "query-deadline",
@@ -101,7 +107,10 @@ async function drive(host: HostCase, mode: string): Promise<unknown> {
   if (mode === "large-errors") throw new Error('😀\u0000"\\'.repeat(16_384));
   if (mode === "expression") await host.script("throw new Error('KNOWN_EXPRESSION_FAILURE');");
   if (mode === "thenable") await host.script("return Promise.resolve(1);");
-  if (mode === "separate-hook") await host.sleep(90);
+  // Move the body deadline to a fixed margin from now, however long setup took. The page's
+  // teardown hook outlasts that margin, so the case passes only if the hook has its own clock.
+  if (mode === "separate-hook")
+    host.setTimeout(SEPARATE_HOOK_CASE_MS - host.remainingMs() + SEPARATE_HOOK_MARGIN_MS);
   if (mode === "array" || mode === "array-mismatch") {
     const expected = Array.from({ length: 196608 }, (_, index) => index % 251);
     const actual = await host.script(
@@ -229,9 +238,11 @@ export async function hostControl(
       heartbeat: 2000,
       case: mode.startsWith("query-deadline")
         ? 1000
-        : ["separate-hook", "admission-ack", "late-init"].includes(mode)
-          ? 150
-          : 4000,
+        : mode === "separate-hook"
+          ? SEPARATE_HOOK_CASE_MS
+          : ["admission-ack", "late-init"].includes(mode)
+            ? 150
+            : 4000,
       teardown: ["disposal-hang", "sync-hook", "deadline-teardown"].includes(mode)
         ? 60
         : ["verdict-delivery", "teardown-report"].includes(mode)

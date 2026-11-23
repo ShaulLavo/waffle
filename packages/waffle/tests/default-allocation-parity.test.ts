@@ -193,4 +193,6 @@ for (const [mode, agent] of [
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
-  });
+    // A hang cap, not a speed limit: the reference archive and two captures take seconds
+    // alone and much longer under full-suite load, past Bun's 5 s default.
+  }, 120_000);
