@@ -586,3 +586,34 @@ test("ordinary close saves then disposes before closing storage", async () => {
     expect(store.syncs).toEqual([undefined]);
   });
 });
+
+test("over the registration limit, only least recently used clean files leave, down to the target", async () => {
+  const store = new Store();
+  const backend = await PersistentBackend.open(store, { intervalMs: 0 });
+  try {
+    const limits = backend as unknown as { registrationLimit: number; registrationTarget: number };
+    limits.registrationLimit = 10;
+    limits.registrationTarget = 7;
+    for (let index = 0; index < 12; index++)
+      backend.execute("writeFile", [`/f${index}`], encode(`file ${index}`));
+    await backend.checkpoint();
+    const handles = Array.from({ length: 12 }, (_, index) =>
+      backend.fs.handleForNode(backend.fs.lookup(`/f${index}`)!),
+    );
+    // Use the files oldest to newest, so f0 is the least recently used.
+    const sync = (backend as unknown as { sync(handle: number): void }).sync.bind(backend);
+    for (const handle of handles) sync(handle);
+    expect(backend.shared.resources().files).toBeGreaterThan(10);
+    backend.prepare("readFile", ["/f11"]);
+    expect(backend.shared.resources().files).toBeLessThanOrEqual(7);
+    expect(backend.shared.revision(handles[0]!)).toBeUndefined();
+    for (const handle of handles.slice(-6)) expect(backend.shared.revision(handle)).toBeDefined();
+    // An evicted file loads again from storage on its next use.
+    await backend.prepare("readFile", ["/f0"]);
+    expect(decode(backend.execute("readFile", ["/f0"], new Uint8Array()) as Uint8Array)).toBe(
+      "file 0",
+    );
+  } finally {
+    backend.dispose();
+  }
+});

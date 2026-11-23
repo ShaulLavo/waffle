@@ -64,6 +64,11 @@ export class PersistentBackend extends MemoryBackend {
   private detachedKeys = new Map<number, string>();
   private revisions = new Map<number, number>();
   private registeredNodes = new Map<number, Node>();
+  /** Above this many registered slots, evict least-recently-used clean entries down to the
+   * target. A package tree's working set is thousands of files; evicting it whole at a small
+   * limit sent every later read to storage. Memory stays bounded by the byte check. */
+  private registrationLimit = 8192;
+  private registrationTarget = 6144;
   private loading = new Map<FileHandle, Promise<void>>();
   private lastCommit: Promise<void> = Promise.resolve();
   private tail: Promise<void> = Promise.resolve();
@@ -242,6 +247,8 @@ export class PersistentBackend extends MemoryBackend {
   }
   protected sync(handle: FileHandle): void {
     const node = this.fs.nodeForHandle(handle);
+    // Reinsertion keeps registeredNodes in least-recently-used order for eviction.
+    this.registeredNodes.delete(handle);
     this.registeredNodes.set(handle, node);
     if (node.kind !== "file") {
       super.sync(handle);
@@ -329,16 +336,17 @@ export class PersistentBackend extends MemoryBackend {
     if (bytes.length !== length) throw new Error("Short retained descriptor range");
     return bytes;
   }
-  private evictClean(except?: FileHandle): void {
+  /** Evicts clean entries, least recently used first, until at most `target` slots stay
+   * registered; without a target, every clean entry. */
+  private evictClean(except?: FileHandle, target = 0): void {
     // Registration is bounded independently of workspace size. Idle metadata and clean payload
     // slots may be reclaimed; held capabilities keep their identity and dirty bytes stay resident.
-    for (const handle of this.shared.registeredHandles()) {
+    for (const [handle, node] of this.registeredNodes) {
+      if (target && this.shared.resources().files <= target) return;
       if (handle === except || this.loading.has(handle)) continue;
       const revision = this.shared.revision(handle);
       const stat = this.shared.stat(handle);
       if (!stat || revision === undefined) continue;
-      const node = this.registeredNodes.get(handle);
-      if (!node) continue;
       if (node.kind !== "file") {
         if (this.shared.evict(handle, revision)) this.registeredNodes.delete(handle);
         continue;
@@ -534,8 +542,9 @@ export class PersistentBackend extends MemoryBackend {
       if (!(this.fs.permissions(handle).access & 2)) throw new FilesystemError(2);
     }
     const resources = this.shared.resources();
-    if (resources.files > 1024 || resources.usedBytes >= resources.maxBytes / 2)
-      this.evictClean(handle);
+    if (resources.usedBytes >= resources.maxBytes / 2) this.evictClean(handle);
+    else if (resources.files > this.registrationLimit)
+      this.evictClean(handle, this.registrationTarget);
     if (["read", "write", "append", "grow", "resize"].includes(operation)) {
       if (operation === "resize" && args[1] === 0 && args[2]) this.sync(args[0]);
       else return this.ensureLoaded(args[0]);
