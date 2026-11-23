@@ -349,13 +349,16 @@ and Next.js builds (cold rereads, the client path cache, transport admission).
 
 - **The section exit wake cannot simply be skipped.** `FilesystemTransportSection.leaveTransport`
   (`packages/waffle/fs/request-memory.ts`) bumps and notifies the connection tree's shared signal
-  whenever its count reaches zero. Teardown waits for that, but so do event-loop callers that got
+  on every transition of its count to zero, not only during teardown, and so wakes every waiter
+  on that signal each time. Teardown waits for that, but so do event-loop callers that got
   EAGAIN from a lock this section held: `proc/command-stdio.ts` and bun-wasm's
   `src/package-continuation-io.ts` await the signal with no timeout, and nothing else wakes them
-  when the lock is released. Meanwhile every exit also wakes the service's `watchTransport` loop
-  for every session in the tree. To make the wake conditional, add a registered-waiter count to
-  a buffer the whole tree shares (the request budget's free Int32 word 6 is one candidate), have
-  both stdio adapters register before sampling the signal, and change bun-wasm in the same pass.
+  when the lock is released. Meanwhile every such wake also runs the service's `watchTransport`
+  loop for every session in the tree. To make the wake conditional, add a registered-waiter count
+  in a dedicated word of a buffer the whole tree shares. The request budget has no free word:
+  Int32 words 0 to 3 hold its two 64-bit counters, and 4 to 7 the generation, the connector
+  probe, the service probe (`assertRequestBudget`) and the pending count. Have both stdio
+  adapters register before sampling the signal, and change bun-wasm in the same pass.
 - **The first cold pass still opens two IndexedDB transactions per page.** `readRange`
   (`packages/waffle/fs/indexeddb.ts`) reads the payload manifest for every range. Payload keys
   are immutable, so a small manifest cache would halve first-pass transactions; drop an entry

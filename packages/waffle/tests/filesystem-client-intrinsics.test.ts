@@ -288,3 +288,40 @@ test("filesystem client keeps completion, capability, and revocation views out o
   expect(references).toBe(1);
   expect(reservations).toBe(1);
 });
+
+test("the client's epoch caches keep capability-bearing answers out of guest intrinsics", () => {
+  // A tracked private buffer stands in for the capability an answer names.
+  const secret = new native.SharedArrayBufferConstructor(8);
+  const answer = (index: number) => ({ index, capability: { held: secret } });
+  const cache = new EpochCache<number, ReturnType<typeof answer>>(2);
+  const seen: (number | undefined)[] = [];
+  let report: IntrinsicsReport | undefined;
+  let observer = poisonProcessIntrinsics([secret]);
+  try {
+    cache.set(1, answer(1), 2);
+    cache.set(2, answer(2), 2);
+    seen.push(cache.get(1, 2)?.index);
+    // Insertion past the bound evicts the oldest; replacement keeps the count.
+    cache.set(3, answer(3), 2);
+    cache.set(3, answer(33), 2);
+    seen.push(cache.get(1, 2)?.index, cache.get(2, 2)?.index, cache.get(3, 2)?.index);
+    // A newer epoch drops every older answer.
+    cache.set(4, answer(4), 4);
+    seen.push(cache.get(2, 4)?.index, cache.get(4, 4)?.index, cache.get(4, 2)?.index);
+    cache.clear();
+    seen.push(cache.get(4, 4)?.index);
+  } finally {
+    report = observer.restore();
+  }
+  expect(report.leaks).toEqual([]);
+  expect(seen).toEqual([1, undefined, 2, 33, undefined, 4, undefined, undefined]);
+  // Control: the observer reports the same answer stored in an ordinary map.
+  const plain = new Map<number, ReturnType<typeof answer>>();
+  observer = poisonProcessIntrinsics([secret]);
+  try {
+    plain.set(1, answer(1));
+  } finally {
+    report = observer.restore();
+  }
+  expect(report.leaks).toContain("Map.set");
+});

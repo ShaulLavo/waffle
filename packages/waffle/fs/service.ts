@@ -196,6 +196,8 @@ export class FilesystemService {
   }
 
   private sessions = new Set<Session>();
+  /** Open epoch-only mutations by epoch buffer; see beginEpochMutation. */
+  private readonly epochMutations = new Map<SharedArrayBuffer, number>();
   private requestBudget?: SharedArrayBuffer;
   private readBudget?: WorkspaceReadBudget;
   private queue = Promise.resolve();
@@ -760,7 +762,7 @@ export class FilesystemService {
     const invalidate = !shared?.ownsServiceMutation;
     if (invalidate) {
       if (shared) shared.beginServiceMutation(epoch);
-      else Atomics.add(epoch, 0, 1);
+      else this.beginEpochMutation(epoch);
     }
     try {
       for (const handle of session.transient.keys()) {
@@ -779,9 +781,28 @@ export class FilesystemService {
     } finally {
       if (invalidate) {
         if (shared) shared.endServiceMutation(epoch);
-        else Atomics.add(epoch, 0, 1);
+        else this.endEpochMutation(epoch);
       }
     }
+  }
+  /** A backend without shared state marks its mutations on the epoch alone. A mutation nested in
+   * another one on the same epoch, such as an eviction inside a creating request, joins it: the
+   * epoch stays odd until the outermost one ends, never publishing a stable value mid-change. */
+  private beginEpochMutation(epoch: Int32Array): void {
+    const buffer = epoch.buffer as SharedArrayBuffer;
+    const depth = this.epochMutations.get(buffer) ?? 0;
+    this.epochMutations.set(buffer, depth + 1);
+    if (!depth) Atomics.add(epoch, 0, 1);
+  }
+  private endEpochMutation(epoch: Int32Array): void {
+    const buffer = epoch.buffer as SharedArrayBuffer;
+    const depth = this.epochMutations.get(buffer)!;
+    if (depth > 1) {
+      this.epochMutations.set(buffer, depth - 1);
+      return;
+    }
+    this.epochMutations.delete(buffer);
+    Atomics.add(epoch, 0, 1);
   }
   private check(session: Session, handle: number | undefined, held?: number[]): void {
     if (handle === undefined) return;
@@ -1202,7 +1223,7 @@ export class FilesystemService {
       mutation = mutations.has(operation) && !local;
       if (mutation) {
         if (this.backend instanceof MemoryBackend) this.backend.shared.beginServiceMutation(epoch);
-        else Atomics.add(epoch, 0, 1);
+        else this.beginEpochMutation(epoch);
       }
       const payload = bytes.subarray(inputLength, inputLength + dataLength);
       const value = prepared?.read
@@ -1237,7 +1258,7 @@ export class FilesystemService {
       this.announceSegments(this.backend.takeSharedSegments?.() ?? [], this.sessions);
       if (mutation) {
         if (this.backend instanceof MemoryBackend) this.backend.shared.endServiceMutation(epoch);
-        else Atomics.add(epoch, 0, 1);
+        else this.endEpochMutation(epoch);
       }
       if (!preparing) {
         this.cancelPublication(session, admission);
