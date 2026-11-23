@@ -16,7 +16,7 @@ import { PipePublicationRegistry } from "../proc/pipes.js";
 import { createWorkerProcessTransport, workerProcessState } from "../proc/worker-client.js";
 
 const controlQuota = 64 * 1024 ** 2;
-const registryBytes = 16_785_424;
+const registryBytes = 1_056_784;
 
 function fixture(budgetBytes: number) {
   const platform = declareSharedMemoryPlatform({

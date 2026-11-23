@@ -580,32 +580,52 @@ function allocatePipeBuffer(length: number): SharedArrayBuffer {
 }
 
 const OWNER_REVOKED = 1n << 31n;
-const OWNER_HEAD = OWNER_REVOKED - 1n;
 function registryPid(value: bigint): number {
   return Number(value >> 32n);
 }
 function registryOwner(pid: number): bigint {
   return BigInt(pid) << 32n;
 }
+// A cell's epoch word holds its reuse tag (bits 16 to 30) and its hold count (bits 0 to 15).
+// A cell reference is (tag << 16) | index, so a reference names one incarnation of a cell.
+const CELL_INDEX = 0xffff;
+const CELL_HOLDS = 0xffff;
+const CELL_TAG_SHIFT = 16;
+const LAST_CELL_TAG = 0x7ffe;
+const MAX_CELLS = 1 << 16;
+const CELL_BYTES = 16;
+/** Ring mapping word after its pipe retired: the ring's local cursors hold the frozen copy. */
+const RETIRED = -1;
 
 /** Host-only service capability: never expose this control buffer as guest WASM memory.
  * Authorization (parent chain/job ownership) belongs to the process service, BEFORE revoke.
  * The service enrolls each newly issued, never-reused PID before exporting any endpoints.
- * Collection freezes its cursors and releases its bounded owner row. PID, revoked flag and
- * list head share one CAS word: a paused allocator or killer cannot change a reused row.
+ * Collection freezes its cursors and releases its bounded owner row. PID and revoked flag
+ * share one CAS word: a paused allocator or killer cannot change a reused row.
  * Only enrollment creates owners; delayed allocate/revoke/collect calls never recreate one.
- * Canonical cells have append-only global indices in a growable SAB. Their full cursor
- * payload has no incarnation tag, so retained raw views must NEVER alias another cursor.
+ *
+ * Cells are reference counted and reused. Each 16-byte cell holds an epoch word (reuse tag
+ * and hold count), its owner PID and the 64-bit cursor. A ring mapping the cell is one hold;
+ * every operation that mutates the cursor (CAS, freeze) holds it too, and every load outside
+ * a hold is validated against the tag afterwards. The cell returns to a tagged free stack
+ * only when its last hold drops, and its tag advances first, so a retained raw view or a
+ * stale reference can never act on another pipe's cursor: either it still holds the old
+ * incarnation (which therefore is not reused), or its enter and tag checks fail. A Worker
+ * that dies holding a cell quarantines that one cell. A tag that reaches LAST_CELL_TAG
+ * retires its cell. Revocation scans the allocated cells for the owner PID.
+ * Bounds: 1024 simultaneous enrolled processes and 65536 simultaneous cells by default, and
+ * at most 65536 cells (the declared maximum is ~1 MiB). Each cell can be reused 32767 times,
+ * so a root's lifetime cell capacity is about 2^31. Exhaustion is ENFILE.
  * No guest holds a lock. This requires modern growable SharedArrayBuffer support.
- * Bounds: 1024 simultaneous enrolled processes by default; 1048576 lifetime cells
- * (16 MiB maximum committed cell storage). Explicit maxCells supports up to 16777216 cells.
- * Cell exhaustion is ENFILE, not unsafe reuse or unbounded allocation. Initial storage is
- * ~2 MiB. Collecting owners does not reclaim the intentionally permanent cursor arena.
  */
 export class PipePublicationRegistry {
   readonly wake: Int32Array;
   private readonly owners: BigInt64Array;
   private readonly allocated: Int32Array;
+  /** Tagged free-stack head: low word is index + 1 (0 when empty), high word an ABA count. */
+  private readonly free: BigInt64Array;
+  /** Length-tracking view of the cells: epoch at index * 4, owner PID at index * 4 + 1. */
+  private readonly cells: Int32Array;
   private readonly cellBase: number;
   private readonly maxCells: number;
   private readonly data: PipePublicationRegistryHandle;
@@ -632,9 +652,9 @@ export class PipePublicationRegistry {
       throw new TypeError("registry wake must be one shared int32");
     this.cellBase = 16 + processCapacity * 8;
     this.maxCells = attached
-      ? (sharedArrayBufferMaxByteLength(attached.buffer) - this.cellBase) / 16
-      : (options.maxCells ?? 1 << 20);
-    if (!Number.isInteger(this.maxCells) || this.maxCells <= 0 || this.maxCells > 1 << 24)
+      ? (sharedArrayBufferMaxByteLength(attached.buffer) - this.cellBase) / CELL_BYTES
+      : (options.maxCells ?? MAX_CELLS);
+    if (!Number.isInteger(this.maxCells) || this.maxCells <= 0 || this.maxCells > MAX_CELLS)
       throw new RangeError("invalid pipe registry cell limit");
     const initialCells = Math.min(processCapacity * cellsPerProcess, this.maxCells);
     // ES2022's declarations predate growable SABs; the host must implement the modern API.
@@ -644,14 +664,19 @@ export class PipePublicationRegistry {
     const buffer =
       attached?.buffer ??
       (options.allocate
-        ? options.allocate(this.cellBase + initialCells * 16, this.cellBase + this.maxCells * 16)
-        : new SharedBuffer(this.cellBase + initialCells * 16, {
+        ? options.allocate(
+            this.cellBase + initialCells * CELL_BYTES,
+            this.cellBase + this.maxCells * CELL_BYTES,
+          )
+        : new SharedBuffer(this.cellBase + initialCells * CELL_BYTES, {
             __proto__: null,
-            maxByteLength: this.cellBase + this.maxCells * 16,
+            maxByteLength: this.cellBase + this.maxCells * CELL_BYTES,
           }));
     this.data = { buffer, processCapacity, cellsPerProcess, wake: this.wake };
     this.allocated = new Int32ArrayConstructor(buffer, 0, 1);
+    this.free = new BigInt64ArrayConstructor(buffer, 8, 1);
     this.owners = new BigInt64ArrayConstructor(buffer, 16, processCapacity);
+    this.cells = new Int32ArrayConstructor(buffer, this.cellBase);
   }
   handle(): PipePublicationRegistryHandle {
     return { ...this.data };
@@ -699,17 +724,42 @@ export class PipePublicationRegistry {
     const owner = this.process(pid);
     return !owner || (owner.value & OWNER_REVOKED) !== 0n;
   }
+  /** Pop a released cell, or take a never-used one. Its hold count is zero. */
   private reserveCell(): number {
+    for (;;) {
+      const head = atomicsLoad(this.free, 0);
+      const top = low(head);
+      if (!top) break;
+      // The link lives in the free cell's owner word. A cell popped and reused meanwhile
+      // gives a garbage link, but then the head's ABA count has moved and the CAS fails.
+      const next = atomicsLoad(this.cells, (top - 1) * 4 + 1);
+      if (atomicsCompareExchange(this.free, 0, head, pack(next, high(head) + 1)) === head)
+        return top - 1;
+    }
     for (;;) {
       const index = atomicsLoad(this.allocated, 0);
       if (index >= this.maxCells)
         throw new ProcessError(PipeErrno.NFILE, "pipe cursor registry limit reached");
-      if (atomicsCompareExchange(this.allocated, 0, index, index + 1) === index) return index;
+      if (atomicsCompareExchange(this.allocated, 0, index, index + 1) !== index) continue;
+      this.ensureCell(index);
+      return index;
+    }
+  }
+  /** Return a cell whose last hold dropped. Its tag advances before anyone can reuse it. */
+  private releaseCell(index: number, tag: number): void {
+    // A cell out of tags stays retired with no holds, so no reference can enter it again.
+    if (tag >= LAST_CELL_TAG) return;
+    atomicsStore(this.cells, index * 4, (tag + 1) << CELL_TAG_SHIFT);
+    for (;;) {
+      const head = atomicsLoad(this.free, 0);
+      atomicsStore(this.cells, index * 4 + 1, low(head));
+      if (atomicsCompareExchange(this.free, 0, head, pack(index + 1, high(head) + 1)) === head)
+        return;
     }
   }
   private ensureCell(index: number): void {
     const buffer = this.data.buffer;
-    const needed = this.cellBase + (index + 1) * 16;
+    const needed = this.cellBase + (index + 1) * CELL_BYTES;
     if (sharedArrayBufferByteLength(buffer) >= needed) return;
     const target = Math.min(
       sharedArrayBufferMaxByteLength(buffer),
@@ -725,46 +775,75 @@ export class PipePublicationRegistry {
         throw error;
     }
   }
-  /** Internal cursor allocation; the returned global cell never moves or gets recycled. */
+  /** Internal cursor allocation. Returns a cell reference holding one hold, which the caller
+   * owns: a ring keeps it while its mapping names the cell, then drops it with `leave`. */
   allocate(pid: number): number {
     const owner = this.process(pid);
     if (!owner || owner.value & OWNER_REVOKED) throw new Error("pipe process is revoked");
     const index = this.reserveCell();
-    this.ensureCell(index);
-    const entry = new Int32ArrayConstructor(this.data.buffer, this.cellBase + index * 16, 2);
-    const cell = this.canonical(index);
-    atomicsStore(entry, 0, pid);
+    const tag = atomicsLoad(this.cells, index * 4) >>> CELL_TAG_SHIFT;
+    const ref = (tag << CELL_TAG_SHIFT) | index;
+    const cell = this.canonical(ref);
+    // Nobody can enter a cell with no holds, so these stores precede any other use of it.
+    atomicsStore(this.cells, index * 4 + 1, pid);
     atomicsStore(cell, 0, ALLOCATED);
-    for (;;) {
-      const value = atomicsLoad(this.owners, owner.slot);
-      if (registryPid(value) !== pid || value & OWNER_REVOKED) {
-        atomicsOr(cell, 0, STOP);
-        throw new Error("pipe process is revoked");
-      }
-      atomicsStore(entry, 1, Number(value & OWNER_HEAD));
-      const linked = (value & ~OWNER_HEAD) | BigInt(index + 1);
-      if (atomicsCompareExchange(this.owners, owner.slot, value, linked) === value) break;
-    }
-    // Linking and revoking contend on the SAME incarnation-tagged word. Once linked, the
-    // next pointer is immutable. Revocation either freezes this cell or wins before the CAS.
+    atomicsStore(this.cells, index * 4, (tag << CELL_TAG_SHIFT) | 1);
+    // Dekker pair with freezeOwner: the owner store above precedes this row load, and a
+    // killer's revoked-row CAS precedes its scan. Either this load sees the revocation or
+    // the scan sees this cell.
     const value = atomicsLoad(this.owners, owner.slot);
     if (registryPid(value) !== pid || value & OWNER_REVOKED) {
       atomicsOr(cell, 0, STOP);
+      this.leave(ref);
       throw new Error("pipe process is revoked");
     }
-    return index;
+    return ref;
   }
-  canonical(index: number): BigInt64Array {
-    const offset = this.cellBase + index * 16 + 8;
+  /** Take one hold on this incarnation of a cell. False once it was released. */
+  enter(ref: number): boolean {
+    const at = (ref & CELL_INDEX) * 4,
+      tag = ref >>> CELL_TAG_SHIFT;
+    for (;;) {
+      const epoch = atomicsLoad(this.cells, at);
+      const holds = epoch & CELL_HOLDS;
+      if (epoch >>> CELL_TAG_SHIFT !== tag || !holds) return false;
+      if (holds === CELL_HOLDS) throw new RangeError("pipe cursor hold limit reached");
+      if (atomicsCompareExchange(this.cells, at, epoch, epoch + 1) === epoch) return true;
+    }
+  }
+  /** Drop one hold; the last one returns the cell for reuse. */
+  leave(ref: number): void {
+    const index = ref & CELL_INDEX;
+    const previous = atomicsAdd(this.cells, index * 4, -1);
+    if ((previous & CELL_HOLDS) === 1) this.releaseCell(index, previous >>> CELL_TAG_SHIFT);
+  }
+  /** Whether this incarnation is still unreleased: validates a cursor loaded without a hold. */
+  current(ref: number): boolean {
+    return (
+      atomicsLoad(this.cells, (ref & CELL_INDEX) * 4) >>> CELL_TAG_SHIFT === ref >>> CELL_TAG_SHIFT
+    );
+  }
+  /** Raw cursor view of a cell. Callers act on it only while holding the reference. */
+  canonical(ref: number): BigInt64Array {
+    const index = ref & CELL_INDEX;
+    const offset = this.cellBase + index * CELL_BYTES + 8;
     if (
-      !Number.isInteger(index) ||
-      index < 0 ||
+      !Number.isInteger(ref) ||
+      ref < 0 ||
       index >= atomicsLoad(this.allocated, 0) ||
       offset + 8 > sharedArrayBufferByteLength(this.data.buffer)
     )
       throw new RangeError("invalid pipe cursor");
     // Per-cell views remain valid after growth, including in a handle cloned before growth.
     return new BigInt64ArrayConstructor(this.data.buffer, offset, 1);
+  }
+  /** Cells currently held, for diagnostics and tests. */
+  get cellsInUse(): number {
+    let count = 0;
+    const limit = atomicsLoad(this.allocated, 0);
+    for (let index = 0; index < limit; index++)
+      if (atomicsLoad(this.cells, index * 4) & CELL_HOLDS) count++;
+    return count;
   }
   private freezeOwner(pid: number): { slot: number; value: bigint } | undefined {
     const owner = this.process(pid);
@@ -774,16 +853,20 @@ export class PipePublicationRegistry {
       if (registryPid(value) !== pid) return undefined;
       const revoked = value | OWNER_REVOKED;
       if (atomicsCompareExchange(this.owners, owner.slot, value, revoked) !== value) continue;
-      let link = Number(revoked & OWNER_HEAD);
-      while (link) {
-        const index = link - 1;
-        atomicsOr(this.canonical(index), 0, STOP);
-        link = atomicsLoad(
-          new Int32ArrayConstructor(this.data.buffer, this.cellBase + index * 16 + 4, 1),
-          0,
-        );
-      }
+      this.freezeCells(pid);
       return { slot: owner.slot, value: revoked };
+    }
+  }
+  /** Freeze every held cell this PID owns. A hold pins the owner word while it is checked. */
+  private freezeCells(pid: number): void {
+    const limit = atomicsLoad(this.allocated, 0);
+    for (let index = 0; index < limit; index++) {
+      const epoch = atomicsLoad(this.cells, index * 4);
+      if (!(epoch & CELL_HOLDS) || atomicsLoad(this.cells, index * 4 + 1) !== pid) continue;
+      const ref = (epoch & ~CELL_HOLDS) | index;
+      if (!this.enter(ref)) continue;
+      if (atomicsLoad(this.cells, index * 4 + 1) === pid) atomicsOr(this.canonical(ref), 0, STOP);
+      this.leave(ref);
     }
   }
   revoke(pid: number): void {
@@ -791,8 +874,8 @@ export class PipePublicationRegistry {
     notify(this.wake);
   }
   /** Host resource-fence completion: freeze even unannounced descendant-created pipes and
-   * release this owner's metadata. Physical worker termination is not required. Retained
-   * handles can still address only the old permanent cells, never a new occupant's row/list.
+   * release this owner's row. Physical worker termination is not required. Cells stay with
+   * the rings that map them: a reader may still drain a collected writer's committed bytes.
    */
   collectProcess(pid: number): void {
     const owner = this.freezeOwner(pid);
@@ -822,8 +905,11 @@ class Ring {
   private readonly localPublished: BigInt64Array;
   private readonly localConsumed: BigInt64Array;
   private readonly mapping: Int32Array;
-  private publication?: { index: number; cell: BigInt64Array };
-  private consumption?: { index: number; cell: BigInt64Array };
+  // Cached raw views of the mapped registry cells, keyed by mapping word (reference + 1).
+  private publicationMapped = 0;
+  private publicationCell?: BigInt64Array;
+  private consumptionMapped = 0;
+  private consumptionCell?: BigInt64Array;
   readonly epoch: Int32Array;
   readonly capacity: number;
   private readonly recordCapacity: number;
@@ -922,36 +1008,73 @@ class Ring {
   }
   reopen(pid: number, kind: "published" | "consumed"): void {
     const at = kind === "published" ? 0 : 1;
-    const current = kind === "published" ? this.published : this.consumed;
-    const local = kind === "published" ? this.localPublished : this.localConsumed;
-    const value = atomicsLoad(current, 0) & ~(STOP | ALLOCATED);
+    if (this.registry && atomicsLoad(this.mapping, at) === RETIRED)
+      throw new Error("pipe endpoint is closed");
+    const local = at ? this.localConsumed : this.localPublished;
+    const value = this.load(at) & ~(STOP | ALLOCATED);
     atomicsStore(local, 0, value);
     if (!this.registry) return;
-    const index = this.registry.allocate(pid);
-    atomicsOr(this.registry.canonical(index), 0, value);
-    atomicsStore(this.mapping, at, index + 1);
+    const ref = this.registry.allocate(pid);
+    atomicsOr(this.registry.canonical(ref), 0, value);
+    // The slot's advanced incarnation fences its own operations; other parties holding the
+    // old cell keep it until they drop it, so it is never reused under them.
+    for (;;) {
+      const old = atomicsLoad(this.mapping, at);
+      if (old === RETIRED) {
+        this.registry.leave(ref);
+        throw new Error("pipe endpoint is closed");
+      }
+      if (atomicsCompareExchange(this.mapping, at, old, ref + 1) !== old) continue;
+      this.drop(old);
+      return;
+    }
   }
-  get published(): BigInt64Array {
-    const index = atomicsLoad(this.mapping, 0);
-    if (!index) return this.localPublished;
-    if (this.publication?.index !== index)
-      this.publication = { index, cell: this.registry!.canonical(index - 1) };
-    return this.publication.cell;
+  /** Raw cursor for a mapping word from `hold`: the registry cell, or the local cursor. */
+  private cursor(at: 0 | 1, mapped: number): BigInt64Array {
+    if (mapped <= 0) return at ? this.localConsumed : this.localPublished;
+    if (at === 0) {
+      if (this.publicationMapped !== mapped) {
+        this.publicationCell = this.registry!.canonical(mapped - 1);
+        this.publicationMapped = mapped;
+      }
+      return this.publicationCell!;
+    }
+    if (this.consumptionMapped !== mapped) {
+      this.consumptionCell = this.registry!.canonical(mapped - 1);
+      this.consumptionMapped = mapped;
+    }
+    return this.consumptionCell!;
   }
-  get consumed(): BigInt64Array {
-    const index = atomicsLoad(this.mapping, 1);
-    if (!index) return this.localConsumed;
-    if (this.consumption?.index !== index)
-      this.consumption = { index, cell: this.registry!.canonical(index - 1) };
-    return this.consumption.cell;
+  /** Load a cursor (0 published, 1 consumed). A registry cell may be released and reused
+   * at any time nobody holds it, so its load is validated against the cell's tag after. */
+  load(at: 0 | 1): bigint {
+    for (;;) {
+      const mapped = atomicsLoad(this.mapping, at);
+      const value = atomicsLoad(this.cursor(at, mapped), 0);
+      if (mapped <= 0 || this.registry!.current(mapped - 1)) return value;
+      // The mapping moves on before its hold drops, so a released cell means a new mapping,
+      // unless a corrupted mapping names a released cell: then report a stopped cursor.
+      if (atomicsLoad(this.mapping, at) === mapped) return value | STOP;
+    }
+  }
+  /** Hold the mapped cell across a mutation. Returns the mapping word for cursor/drop. */
+  private hold(at: 0 | 1): number {
+    for (;;) {
+      const mapped = atomicsLoad(this.mapping, at);
+      if (mapped <= 0 || this.registry!.enter(mapped - 1)) return mapped;
+      if (atomicsLoad(this.mapping, at) === mapped) return RETIRED;
+    }
+  }
+  private drop(mapped: number): void {
+    if (mapped > 0) this.registry!.leave(mapped - 1);
   }
   bind(pid: number, kind: "published" | "consumed"): void {
     if (!this.registry) return;
     const at = kind === "published" ? 0 : 1;
     if (atomicsLoad(this.mapping, at)) return;
-    let index: number;
+    let ref: number;
     try {
-      index = this.registry.allocate(pid);
+      ref = this.registry.allocate(pid);
     } catch (error) {
       if (kind === "consumed" && this.registry.isRevoked(pid)) {
         this.freezeReader();
@@ -959,10 +1082,33 @@ class Ring {
       }
       throw error;
     }
-    const local = kind === "published" ? this.localPublished : this.localConsumed;
-    atomicsOr(this.registry.canonical(index), 0, atomicsLoad(local, 0));
-    atomicsCompareExchange(this.mapping, at, 0, index + 1);
-    atomicsOr(this.registry.canonical(index), 0, atomicsLoad(local, 0));
+    const local = at ? this.localConsumed : this.localPublished;
+    const cell = this.registry.canonical(ref);
+    // One hold for the mapping, one for the copy after publishing it: a retiring pipe may
+    // drop the mapping's hold as soon as the mapping names this cell.
+    this.registry.enter(ref);
+    atomicsOr(cell, 0, atomicsLoad(local, 0));
+    if (atomicsCompareExchange(this.mapping, at, 0, ref + 1) === 0)
+      atomicsOr(cell, 0, atomicsLoad(local, 0));
+    else this.registry.leave(ref);
+    this.registry.leave(ref);
+  }
+  /** The pipe retired: keep each cursor's frozen value locally and release its cells. */
+  retire(): void {
+    if (!this.registry) return;
+    this.retireCursor(0);
+    this.retireCursor(1);
+  }
+  private retireCursor(at: 0 | 1): void {
+    const local = at ? this.localConsumed : this.localPublished;
+    for (;;) {
+      const mapped = atomicsLoad(this.mapping, at);
+      if (mapped === RETIRED) return;
+      atomicsStore(local, 0, this.load(at) | STOP);
+      if (atomicsCompareExchange(this.mapping, at, mapped, RETIRED) !== mapped) continue;
+      this.drop(mapped);
+      return;
+    }
   }
   get owner(): number {
     return atomicsLoad(this.pid, 0);
@@ -971,15 +1117,15 @@ class Ring {
     return atomicsLoad(this.refs, 0);
   }
   get closed(): boolean {
-    return stopped(atomicsLoad(this.published, 0));
+    return stopped(this.load(0));
   }
   get available(): number {
-    const consumed = atomicsLoad(this.consumed, 0);
-    return Math.min(this.capacity, distance(atomicsLoad(this.published, 0), consumed));
+    const consumed = this.load(1);
+    return Math.min(this.capacity, distance(this.load(0), consumed));
   }
   get writable(): boolean {
-    const consumed = atomicsLoad(this.consumed, 0),
-      published = atomicsLoad(this.published, 0);
+    const consumed = this.load(1),
+      published = this.load(0);
     const position = low(published),
       record = recordCounter(published);
     return (
@@ -989,22 +1135,26 @@ class Ring {
       this.bytes.canMap(position)
     );
   }
+  private freeze(at: 0 | 1): void {
+    atomicsOr(at ? this.localConsumed : this.localPublished, 0, STOP);
+    const mapped = this.hold(at);
+    atomicsOr(this.cursor(at, mapped), 0, STOP);
+    this.drop(mapped);
+  }
   freezeWriter(): void {
-    atomicsOr(this.localPublished, 0, STOP);
-    atomicsOr(this.published, 0, STOP);
+    this.freeze(0);
   }
   freezeReader(): void {
-    atomicsOr(this.localConsumed, 0, STOP);
-    atomicsOr(this.consumed, 0, STOP);
+    this.freeze(1);
   }
   request(count: number): boolean {
     return atomicsCompareExchange(this.demand, 0, 0, Math.min(count, this.capacity)) === 0;
   }
   head(): PipeRecord | undefined {
-    wide[0] = atomicsLoad(this.consumed, 0);
+    wide[0] = this.load(1);
     const position = halves[LOW]!,
       index = (halves[HIGH]! >>> 2) & RECORD_MASK;
-    if (index === recordCounter(atomicsLoad(this.published, 0))) return undefined;
+    if (index === recordCounter(this.load(0))) return undefined;
     const slot = this.recordSlot(index);
     if (slot < 0) return undefined;
     const end = this.space.ends[slot * 4 + 2]!;
@@ -1029,9 +1179,12 @@ class Ring {
     atomic = true,
   ): number {
     if (!this.enter(incarnation)) return -PipeErrno.BADF;
+    // Hold the published cell from its load to the publishing CAS.
+    const mapped = this.hold(0);
     try {
-      return this.writeEntered(chunks, valid, ticket, atomic);
+      return this.writeEntered(chunks, valid, ticket, atomic, this.cursor(0, mapped));
     } finally {
+      this.drop(mapped);
       this.leave();
     }
   }
@@ -1040,15 +1193,15 @@ class Ring {
     valid: () => boolean,
     ticket: bigint,
     atomic: boolean,
+    publication: BigInt64Array,
   ): number {
-    const publication = this.published;
     const published = atomicsLoad(publication, 0);
     wide[0] = published;
     const position = halves[LOW]!,
       flags = halves[HIGH]!;
     if (flags & 1) return -PipeErrno.BADF;
     const record = (flags >>> 2) & RECORD_MASK;
-    wide[0] = atomicsLoad(this.consumed, 0);
+    wide[0] = this.load(1);
     const free = this.capacity - ((position - halves[LOW]!) >>> 0);
     const usedRecords = (record - (halves[HIGH]! >>> 2)) & RECORD_MASK;
     const requested = length(chunks);
@@ -1098,16 +1251,12 @@ class Ring {
    * the caller wakes waiters. */
   sweep(fenced: boolean): boolean {
     // Published first: a consumer cursor read after it never passes it.
-    const published = atomicsLoad(this.published, 0);
+    const published = this.load(0);
     const end = low(published),
       last = recordCounter(published);
     pipePause("sweep.cursors");
-    const bytes = this.bytes.sweep(() => low(atomicsLoad(this.consumed, 0)), end, fenced);
-    const records = this.records.sweep(
-      () => recordCounter(atomicsLoad(this.consumed, 0)),
-      last,
-      fenced,
-    );
+    const bytes = this.bytes.sweep(() => low(this.load(1)), end, fenced);
+    const records = this.records.sweep(() => recordCounter(this.load(1)), last, fenced);
     return bytes || records;
   }
   private copyIn(chunks: readonly Uint8Array[], position: number, count: number): void {
@@ -1144,13 +1293,26 @@ class Ring {
     return true;
   }
   read(chunks: readonly Uint8Array[], supervisor = false): number {
-    const consumed = atomicsLoad(this.consumed, 0);
+    // Hold the consumed cell from its load to the consuming CAS.
+    const mapped = this.hold(1);
+    try {
+      return this.readHeld(chunks, supervisor, this.cursor(1, mapped));
+    } finally {
+      this.drop(mapped);
+    }
+  }
+  private readHeld(
+    chunks: readonly Uint8Array[],
+    supervisor: boolean,
+    consumption: BigInt64Array,
+  ): number {
+    const consumed = atomicsLoad(consumption, 0);
     wide[0] = consumed;
     const position = halves[LOW]!,
       flags = halves[HIGH]!;
     if (!supervisor && flags & 1) return -PipeErrno.AGAIN;
     const record = (flags >>> 2) & RECORD_MASK;
-    wide[0] = atomicsLoad(this.published, 0);
+    wide[0] = this.load(0);
     const written = halves[LOW]!,
       writtenFlags = halves[HIGH]!;
     if (record === ((writtenFlags >>> 2) & RECORD_MASK))
@@ -1171,7 +1333,7 @@ class Ring {
       (position + count) >>> 0,
       (flags & 3) | (((record + (complete ? 1 : 0)) & RECORD_MASK) << 2),
     );
-    if (atomicsCompareExchange(this.consumed, 0, consumed, next) !== consumed)
+    if (atomicsCompareExchange(consumption, 0, consumed, next) !== consumed)
       return -PipeErrno.AGAIN;
     pipePause("read.committed");
     this.bytes.release(position, count);
@@ -1287,8 +1449,19 @@ class PipeState {
     return atomicsLoad(this.control, 3) !== 0;
   }
   get closed(): boolean {
-    const generation = atomicsLoad(this.control, 5);
-    if (this.disposed || generation === -1) return true;
+    for (;;) {
+      const generation = atomicsLoad(this.control, 5);
+      if (generation === -1) return true;
+      if (!this.disposed) return this.retireIdle(generation);
+      // A disposed pipe admits nobody; retire it once, so its registry cells return.
+      if (atomicsCompareExchange(this.control, 5, generation, -1) !== generation) continue;
+      this.retireCells();
+      return true;
+    }
+  }
+  /** Retire the pipe if no slot is alive. The one winning CAS releases its registry cells:
+   * every endpoint is then dead, and an operation still running holds the cells it uses. */
+  private retireIdle(generation: number): boolean {
     if (generation === 0) return false;
     let alive = false;
     for (let index = 0; index < this.writers.length + this.readers.length; index++) {
@@ -1312,7 +1485,19 @@ class PipeState {
     if (alive) return false;
     // A new reservation changes the generation AFTER publishing its negative owner but
     // BEFORE publishing references. A scan that passed that slot cannot retire the pipe.
-    return atomicsCompareExchange(this.control, 5, generation, -1) === generation;
+    if (atomicsCompareExchange(this.control, 5, generation, -1) !== generation) return false;
+    this.retireCells();
+    return true;
+  }
+  /** After a close: retire a registry-backed pipe now if that was its last live slot, so its
+   * cells return even when no relay or broker is watching it. */
+  settle(): boolean {
+    return this.registry !== undefined && this.closed;
+  }
+  private retireCells(): void {
+    if (!this.registry) return;
+    ringForEach(this.writers, (ring) => ring.retire());
+    ringForEach(this.readers, (ring) => ring.retire());
   }
   private admit(): void {
     for (;;) {
@@ -1562,9 +1747,7 @@ class PipeState {
     // counted sections exclude old producers even when committed bytes remain.
     if (
       mode === "read" &&
-      (ring.available !== 0 ||
-        recordCounter(atomicsLoad(ring.consumed, 0)) !==
-          recordCounter(atomicsLoad(ring.published, 0)))
+      (ring.available !== 0 || recordCounter(ring.load(1)) !== recordCounter(ring.load(0)))
     )
       return undefined;
     if (atomicsCompareExchange(ring.pid, 0, owner, RECLAIMING) !== owner) return undefined;
@@ -1725,6 +1908,7 @@ export class PipeEndpoint implements Stream {
         this.ring.leave();
       }
     }
+    this.state.settle();
     this.state.signal();
   }
   private releaseReference(): void {

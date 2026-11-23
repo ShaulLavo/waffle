@@ -1381,7 +1381,7 @@ export class BrowserProcessBroker {
     const registry = new PipePublicationRegistry({
       processCapacity,
       cellsPerProcess: 16,
-      maxCells: processCapacity * 128,
+      maxCells: Math.min(processCapacity * 128, 1 << 16),
       wake: workerProcessState(transport).wake,
       allocate: (length, maximum) =>
         this.options.reservations.buffer("pipe-registry", {

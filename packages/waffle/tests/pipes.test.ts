@@ -1427,8 +1427,12 @@ test("a reservation paused after claiming its negative owner cannot publish afte
 });
 
 describe("growable canonical registry", () => {
-  test("10000 sequential pipes grow a shared registry without reusing old canonical cells", () => {
-    const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 1 });
+  test("10000 sequential pipes reuse 64 registry cells without reusing a held one", () => {
+    const registry = new PipePublicationRegistry({
+      processCapacity: 8,
+      cellsPerProcess: 1,
+      maxCells: 64,
+    });
     registry.registerProcess(1);
     registry.registerProcess(7);
     const initial = registry.handle().buffer.byteLength,
@@ -1458,72 +1462,65 @@ describe("growable canonical registry", () => {
         controller.dispose();
       }
     }
+    // Four cells per pipe, 40000 in all, through 64: each retired pipe returned its cells.
     expect(completed).toBe(10000);
-    expect(registry.handle().buffer.byteLength).toBeGreaterThan(initial);
+    expect(registry.cellsInUse).toBe(1);
+    // The held cell and one live pipe's four never outgrew the 8-cell initial backing.
+    expect(Atomics.load(new Int32Array(registry.handle().buffer, 0, 1), 0)).toBeLessThanOrEqual(8);
+    expect(registry.handle().buffer.byteLength).toBe(initial);
     expect(cloned.handle().buffer.byteLength).toBe(registry.handle().buffer.byteLength);
-    expect(Atomics.load(cloned.canonical(old), 0) & (1n << 32n)).toBe(1n << 32n);
+    // The held cell kept its value through every reuse around it.
+    expect(Atomics.load(cloned.canonical(old), 0)).toBe((1n << 32n) | (1n << 33n));
     const after = cloned.allocate(7);
-    expect(after).toBeGreaterThan(old);
+    expect(after & 0xffff).not.toBe(old);
     registry.revoke(7);
     expect(Atomics.load(cloned.canonical(after), 0) & (1n << 32n)).toBe(1n << 32n);
   });
 });
 
-for (const killAt of ["before-link", "after-link", "after-final-check"] as const) {
+for (const killAt of ["before-owner-store", "before-final-check", "after-final-check"] as const) {
   test(`registry allocation cannot escape revocation ${killAt}`, () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 1 });
     registry.registerProcess(2);
     const buffer = registry.handle().buffer;
-    const compareExchange = Atomics.compareExchange,
+    // Cells follow the 16-byte header and eight 8-byte owner rows.
+    const cellBase = 16 + 8 * 8;
+    const store = Atomics.store,
       load = Atomics.load;
     let killed = false,
       ownerLoads = 0;
-    Atomics.compareExchange = ((
-      array: BigInt64Array,
-      index: number,
-      expected: bigint,
-      replacement: bigint,
-    ) => {
-      const link =
-        array instanceof BigInt64Array &&
+    const kill = () => {
+      killed = true;
+      registry.revoke(2);
+    };
+    Atomics.store = ((array: Int32Array, index: number, value: number) => {
+      const owner =
+        array instanceof Int32Array &&
         array.buffer === buffer &&
-        array.byteOffset === 16 &&
-        index === 2 &&
-        expected >> 32n === 2n &&
-        (replacement & 0x7fffffffn) !== 0n &&
-        !(replacement & (1n << 31n));
-      if (!killed && link && killAt === "before-link") {
-        killed = true;
-        registry.revoke(2);
-      }
-      const result = compareExchange(array, index, expected, replacement);
-      if (!killed && link && killAt === "after-link") {
-        killed = true;
-        registry.revoke(2);
-      }
-      return result;
-    }) as typeof Atomics.compareExchange;
+        array.byteOffset === cellBase &&
+        index % 4 === 1 &&
+        value === 2;
+      if (!killed && owner && killAt === "before-owner-store") kill();
+      return store(array, index, value);
+    }) as typeof Atomics.store;
     Atomics.load = ((array: BigInt64Array, index: number) => {
-      const result = load(array, index);
-      if (
+      const row =
         array instanceof BigInt64Array &&
         array.buffer === buffer &&
         array.byteOffset === 16 &&
-        index === 2
-      ) {
-        ownerLoads++;
-        if (!killed && killAt === "after-final-check" && ownerLoads === 3) {
-          killed = true;
-          registry.revoke(2);
-        }
-      }
+        index === 2;
+      // The first row load finds the owner, the second is the final check.
+      if (row) ownerLoads++;
+      if (!killed && row && ownerLoads === 2 && killAt === "before-final-check") kill();
+      const result = load(array, index);
+      if (!killed && row && ownerLoads === 2 && killAt === "after-final-check") kill();
       return result;
     }) as typeof Atomics.load;
     try {
       if (killAt === "after-final-check") expect(registry.allocate(2)).toBe(0);
       else expect(() => registry.allocate(2)).toThrow("revoked");
     } finally {
-      Atomics.compareExchange = compareExchange;
+      Atomics.store = store;
       Atomics.load = load;
     }
     expect(killed).toBe(true);

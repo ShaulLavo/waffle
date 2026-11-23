@@ -450,16 +450,21 @@ a direct host retain of that old pid can create a new endpoint. Production enrol
 pids in the registry, which permanently refuses collected identities. Retained old endpoints
 still fail their incarnation check.
 
-Registry cells are append-only, 16 bytes each, in a growable shared buffer. A simple same-process
-pipe uses four cells, or 64 bytes of lifetime metadata after its pipe buffers are released.
-Defaults allocate 2,105,360 bytes initially and allow 1,048,576 cells, or 16,785,424 bytes
-including owner metadata. An explicit maximum can admit up to 16,777,216 cells. The optional
-host allocator receives both exact sizes before construction so page owners can account for
-the declared backing. A fresh direct writer uses a publication cell and a reader-lease cell;
-each reused writer needs only one new publication cell. Each fresh or reused reader needs two
-cells. A root-held default pipe with 3,001 sequential child writers uses 3,020 cells, or 48,320
-bytes of cell storage, without growing its initial registry backing. The root's four cells and
-15 fresh writer leases are included. Cells remain shared with all other service uses.
+Registry cells are 16 bytes each (an epoch word, the owner pid and the cursor) in a growable
+shared buffer, and they are reused. A ring that maps a cell holds it, and so does every
+operation that changes the cursor, from its load to its compare-and-swap; loads outside a hold
+are checked against the cell's reuse tag afterwards. A cell returns to a free stack, with its
+tag advanced, when its last hold drops: when a reclaimed slot maps a new cell, or when the
+pipe retires because no slot is live. A retained view or stale endpoint therefore never acts
+on another pipe's cursor. A Worker that dies holding a cell keeps only that cell. Each cell can
+be reused 32,767 times before it retires, so a root's lifetime capacity is about 2^31 cell
+uses. Revocation scans the allocated cells for the owner pid.
+Defaults allocate and declare 1,056,784 bytes: 65,536 cells plus 1,024 owner rows. An explicit
+maximum is at most 65,536 cells. The optional host allocator receives both exact sizes before
+construction so page owners can account for the declared backing. A simple same-process pipe
+uses four cells while it lives. A fresh direct writer uses a publication cell and a
+reader-lease cell; a reclaimed writer maps one new publication cell and returns the old one.
+Each fresh or reclaimed reader maps two cells. Cells remain shared with all other service uses.
 `PipeOptions.allocateShared(length)` supplies a realm-local allocator for fixed pipe backing,
 a locally created wake, endpoint lifetimes and new description flags. Attached handles reuse
 existing backing without charging it again; their later endpoint controls use the receiving
@@ -469,7 +474,7 @@ cloneable wire handle. Inherited descriptions share flags and allocate only a ne
 The hook provides accounting, not a nominal allowance, refund policy or lifetime ledger.
 
 The separate process directory supports 1,024 simultaneously enrolled processes; collected
-process rows can be reused. Exhausting either bound returns WASI ENFILE (41). `cellsPerProcess` is an initial-size hint, not a lifetime cap.
+process rows can be reused. Exhausting either bound returns WASI ENFILE (41). `cellsPerProcess` is an initial-size hint, not a cap.
 
 A completed write precedes any write that begins later in another process. Writes of at most
 4 KiB remain contiguous across short reads; deliberately tiny pipes use their capacity as the

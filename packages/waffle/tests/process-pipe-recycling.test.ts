@@ -19,7 +19,8 @@ const { WorkerPipeBroker, WorkerPipeHost } =
 
 const STOP = 1n << 32n;
 const REVOKED = 1n << 31n;
-const HEAD = REVOKED - 1n;
+/** Cell region offset for a one-process registry: 16-byte header plus one owner row. */
+const CELL_BASE = 24;
 const bytes = new Uint8Array([120]);
 
 function ownerWords(registry: PipePublicationRegistry): BigInt64Array {
@@ -139,7 +140,7 @@ test("collected canonical views never alias the next occupant and unknown revoke
   expect(registry.processCount).toBe(0);
 });
 
-for (const phase of ["before-link", "after-link", "after-final-check"] as const) {
+for (const phase of ["before-owner-store", "before-final-check", "after-final-check"] as const) {
   test(`an allocator paused ${phase} cannot modify a recycled owner`, () => {
     const registry = new PipePublicationRegistry({
       processCapacity: 1,
@@ -148,7 +149,7 @@ for (const phase of ["before-link", "after-link", "after-final-check"] as const)
     });
     registry.registerProcess(1);
     const buffer = registry.handle().buffer;
-    const compareExchange = Atomics.compareExchange,
+    const store = Atomics.store,
       load = Atomics.load;
     let raced = false,
       ownerLoads = 0,
@@ -159,42 +160,35 @@ for (const phase of ["before-link", "after-link", "after-final-check"] as const)
       registry.registerProcess(2);
       fresh = registry.allocate(2);
     }
-    Atomics.compareExchange = ((
-      array: BigInt64Array,
-      index: number,
-      expected: bigint,
-      replacement: bigint,
-    ) => {
-      const link =
-        array instanceof BigInt64Array &&
+    // The cell's owner word: the allocator records its PID there before its final row check.
+    Atomics.store = ((array: Int32Array, index: number, value: number) => {
+      const owner =
+        array instanceof Int32Array &&
         array.buffer === buffer &&
-        array.byteOffset === 16 &&
-        expected >> 32n === 1n &&
-        (replacement & HEAD) !== 0n &&
-        !(replacement & REVOKED);
-      if (!raced && link && phase === "before-link") recycle();
-      const value = compareExchange(array, index, expected, replacement);
-      if (!raced && link && phase === "after-link") recycle();
-      return value;
-    }) as typeof Atomics.compareExchange;
+        array.byteOffset === CELL_BASE &&
+        index % 4 === 1 &&
+        value === 1;
+      if (!raced && owner && phase === "before-owner-store") recycle();
+      return store(array, index, value);
+    }) as typeof Atomics.store;
     Atomics.load = ((array: BigInt64Array, index: number) => {
-      const value = load(array, index);
-      if (
+      const row =
         !raced &&
         array instanceof BigInt64Array &&
         array.buffer === buffer &&
-        array.byteOffset === 16
-      ) {
-        ownerLoads++;
-        if (phase === "after-final-check" && ownerLoads === 3) recycle();
-      }
+        array.byteOffset === 16;
+      // The first row load finds the owner, the second is the final check.
+      if (row) ownerLoads++;
+      if (row && ownerLoads === 2 && phase === "before-final-check") recycle();
+      const value = load(array, index);
+      if (row && ownerLoads === 2 && phase === "after-final-check") recycle();
       return value;
     }) as typeof Atomics.load;
     try {
       if (phase === "after-final-check") expect(registry.allocate(1)).toBe(0);
       else expect(() => registry.allocate(1)).toThrow("revoked");
     } finally {
-      Atomics.compareExchange = compareExchange;
+      Atomics.store = store;
       Atomics.load = load;
     }
     expect(raced).toBe(true);
@@ -282,7 +276,7 @@ function message<T>(worker: Worker): Promise<T> {
   });
 }
 
-test("a physically running worker paused at owner CAS loses to collection without touching its successor", async () => {
+test("a physically running worker paused at its owner store loses to collection without touching its successor", async () => {
   const registry = new PipePublicationRegistry({
     processCapacity: 1,
     cellsPerProcess: 1,
@@ -296,20 +290,20 @@ test("a physically running worker paused at owner CAS loses to collection withou
     const {attachPipePublicationRegistry} = isolated.pipes;
     self.onmessage = ({data}) => {
       const registry = attachPipePublicationRegistry(data.registry), gate = data.gate;
-      const cas = Atomics.compareExchange;
+      const store = Atomics.store;
       let paused = false;
-      Atomics.compareExchange = (array, index, expected, replacement) => {
-        if (!paused && array instanceof BigInt64Array && array.byteOffset === 16 &&
-            expected >> 32n === 1n && (replacement & 0x7fffffffn) !== 0n) {
+      Atomics.store = (array, index, value) => {
+        if (!paused && array instanceof Int32Array && array.byteOffset === ${CELL_BASE} &&
+            index % 4 === 1 && value === 1) {
           paused = true;
           self.postMessage("paused");
           Atomics.wait(gate, 0, 0);
         }
-        return cas(array, index, expected, replacement);
+        return store(array, index, value);
       };
       try { registry.allocate(1); self.postMessage("unexpected allocation"); }
       catch (error) { self.postMessage(error.message); }
-      finally { Atomics.compareExchange = cas; }
+      finally { Atomics.store = store; }
     };`;
   const worker = new Worker(new URL(`data:application/typescript,${encodeURIComponent(source)}`));
   try {
