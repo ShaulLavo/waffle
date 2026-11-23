@@ -20,6 +20,12 @@ import {
   transformationProvenance,
   validateProgramDerivation,
 } from "./program-derivation.ts";
+import {
+  programSymbols,
+  programSymbolsExtractorSha256,
+  programSymbolsOperation,
+  programSymbolsReference,
+} from "./program-symbols.ts";
 import { fileURLToPath } from "node:url";
 import {
   brotliCompressSync,
@@ -226,11 +232,40 @@ export function stripWasmNames(bytes: Uint8Array): Uint8Array {
   return removed ? Buffer.concat(retained) : bytes;
 }
 
+export interface StageProgramOptions {
+  /** Also publish `<name>-symbols.json` and its `<name>-symbols.ts` reference module. */
+  readonly emitSymbols?: boolean;
+}
+
+type BytesIdentity = ReturnType<typeof programBytesIdentity>;
+
+interface SymbolsReceipt {
+  readonly symbols?: {
+    readonly operation: typeof programSymbolsOperation;
+    readonly extractorSha256: string;
+    readonly input: BytesIdentity;
+    readonly output: BytesIdentity;
+  };
+}
+
+function symbolsReceipt(named: BytesIdentity, sidecar?: Uint8Array): SymbolsReceipt {
+  if (sidecar === undefined) return {};
+  return {
+    symbols: {
+      operation: programSymbolsOperation,
+      extractorSha256: programSymbolsExtractorSha256(),
+      input: named,
+      output: programBytesIdentity(sidecar),
+    },
+  };
+}
+
 export function stageProgram(
   source: string,
   destination: string | readonly string[],
   verification: WasiGuestVerification = {},
   producerReceipt?: string,
+  options: StageProgramOptions = {},
 ) {
   const destinations = typeof destination === "string" ? [destination] : destination;
   for (const path of destinations) assertSeparateSource(realpathSync(source), resolve(path));
@@ -245,8 +280,11 @@ export function stageProgram(
       producerReceipt,
       verify: (path) => verifyWasiGuest(path, verification),
     });
-    const bytes = stripWasmNames(readFileSync(candidate));
+    const named = readFileSync(candidate);
+    const bytes = stripWasmNames(named);
     const output = programBytesIdentity(bytes);
+    // Names exist only in the candidate deleted below, so the sidecar is read here or never.
+    const symbols = options.emitSymbols ? programSymbols(named, bytes) : undefined;
     const receipt = {
       operation: "optimize-and-strip-program",
       transformer: transformationProvenance(),
@@ -259,13 +297,15 @@ export function stageProgram(
         { operation: "strip-wasm-name-sections", input: optimization.output, output },
       ],
       output,
+      ...symbolsReceipt(optimization.output, symbols),
     };
     validateProgramDerivation(
       receipt,
       bytes,
       producerReceipt === undefined ? undefined : readFileSync(producerReceipt),
+      symbols,
     );
-    const outputs = compressedProgramOutputs(bytes);
+    const outputs = { ...compressedProgramOutputs(bytes), symbols };
     for (const path of destinations) publishProgram(path, outputs, receipt);
     return receipt;
   } finally {
@@ -286,9 +326,27 @@ function compressedProgramOutputs(bytes: Uint8Array) {
   return { bytes, gzip, brotli };
 }
 
+/** Write or remove the sidecar pair, so a program that stops opting in leaves none behind. */
+function publishSymbols(scratch: string, destination: string, symbols?: Uint8Array) {
+  const base = basename(destination, ".wasm");
+  const sidecar = resolve(dirname(destination), `${base}-symbols.json`);
+  const reference = resolve(dirname(destination), `${base}-symbols.ts`);
+  if (symbols === undefined) {
+    rmSync(reference, { force: true });
+    rmSync(sidecar, { force: true });
+    return;
+  }
+  const staged = resolve(scratch, "program-symbols.json");
+  const module = resolve(scratch, "program-symbols.ts");
+  writeFileSync(staged, symbols);
+  writeFileSync(module, programSymbolsReference(base, programBytesIdentity(symbols)));
+  renameSync(staged, sidecar);
+  renameSync(module, reference);
+}
+
 function publishProgram(
   destination: string,
-  outputs: ReturnType<typeof compressedProgramOutputs>,
+  outputs: ReturnType<typeof compressedProgramOutputs> & { symbols?: Uint8Array },
   receipt: unknown,
 ) {
   const scratch = mkdtempSync(resolve(dirname(destination), ".program-publish-"));
@@ -301,6 +359,7 @@ function publishProgram(
     writeFileSync(gzip, outputs.gzip);
     writeFileSync(brotli, outputs.brotli);
     writeFileSync(metadata, JSON.stringify(receipt, null, 2) + "\n");
+    publishSymbols(scratch, destination, outputs.symbols);
     renameSync(
       metadata,
       resolve(dirname(destination), `${basename(destination, ".wasm")}-program.json`),

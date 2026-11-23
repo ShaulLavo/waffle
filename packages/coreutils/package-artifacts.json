@@ -40,6 +40,8 @@
     "dist/mv-program.json",
     "dist/echo.wasm",
     "dist/echo-program.json",
+    "dist/echo-symbols.json",
+    "dist/echo-symbols.ts",
     "dist/date.wasm",
     "dist/date-program.json",
     "dist/b2sum.wasm",

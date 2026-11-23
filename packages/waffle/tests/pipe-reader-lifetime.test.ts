@@ -14,6 +14,7 @@ test("registry-backed inherited readers reuse fully recovered slots", () => {
     writer = pipe.retain(1, "write");
   const allocated = new Int32Array(registry.handle().buffer, 0, 1);
   const initial = Atomics.load(allocated, 0);
+  const inUse = registry.cellsInUse;
   let stale: ReturnType<typeof attachPipeEndpoint> | undefined;
   try {
     for (let pid = 2; pid < 102; pid++) {
@@ -30,7 +31,11 @@ test("registry-backed inherited readers reuse fully recovered slots", () => {
       else registry.revoke(pid);
       registry.collectProcess(pid);
       expect(stale.tryRead([output])).toBe(-PipeErrno.BADF);
-      expect(Atomics.load(allocated, 0)).toBe(initial + (pid - 1) * 2);
+      // Two cells per child reader slot. Once all 15 free slots are used, each reclaim maps
+      // two new cells and returns the two it replaced, so usage stops growing.
+      const slots = Math.min(pid - 1, 15);
+      expect(registry.cellsInUse).toBe(inUse + 2 * slots);
+      expect(Atomics.load(allocated, 0)).toBeLessThanOrEqual(initial + 2 * slots + 2);
     }
     expect(writer.tryWrite([new Uint8Array([123])])).toBe(1);
     expect(reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);

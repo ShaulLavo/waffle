@@ -20,7 +20,7 @@ import {
   singleProgramBuilds,
 } from "../../../tools/program-locales/prepare.ts";
 import { usesProgramCatalogs } from "../../../tools/program-locales/selection.ts";
-import { verificationOptions } from "./programs.ts";
+import { symbolPrograms, verificationOptions } from "./programs.ts";
 
 type Execute = typeof execFileSync;
 type Environment = typeof wasiBuildEnvironment;
@@ -103,6 +103,8 @@ export function stageFamilyPrograms(names: readonly string[]) {
       resolve(releaseDirectory, `${name}.wasm`),
       destinations,
       verificationOptions(name),
+      undefined,
+      { emitSymbols: symbolPrograms.has(name) },
     );
   }
 }
