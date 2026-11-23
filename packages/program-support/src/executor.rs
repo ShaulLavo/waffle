@@ -446,11 +446,7 @@ impl std::fmt::Display for Cancelled {
     }
 }
 impl std::error::Error for Cancelled {}
-/// Ordinary cancellation checks consult the host once per this many calls. A host probe is
-/// a Wasm-to-JavaScript call that reads the signal table, and a shell makes about 90 checks
-/// per loop iteration, so at 16 the probe was a third of a browser loop's time. 256 still
-/// probes every few iterations; boundaries that must not wait use `probe_now`.
-const HOST_PROBE_STRIDE: usize = 256;
+const HOST_PROBE_STRIDE: usize = 16;
 
 struct CancelShared {
     flag: Cell<bool>,
