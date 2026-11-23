@@ -998,3 +998,142 @@ test("parseSymbolSidecar snapshots caller-owned bytes before hashing so mid-veri
   expect(parsed).toBeDefined();
   expect(parsed!.names[2]).toBe("inner_trap");
 });
+
+test("Firefox rejects already-named @https:// frames and annotation is idempotent for delimiter-bearing names", async () => {
+  const source = ordinaryGuestFixture(35);
+  const mod = await new InterruptModuleCache(16, null, {}, { symbolDiagnostics: true }).compile(
+    source,
+  );
+  const facts = admittedModuleDiagnostics(mod)!;
+  const sidecar = await encodeSidecar(source, 2, [
+    "   ",
+    "@https://name.example/symbol",
+    "inner_trap",
+  ]);
+  const table = bindSymbolSidecar(facts, sidecar.payload)!;
+  const tok = facts.nonce;
+
+  // Natively named Firefox frames whose function name begins with `@https://` must stay raw.
+  const nativeAtUrlStack = [
+    `${tok}.@https://name.example/f@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
+    `${tok}.@https://name.example/f@:wasm-function[5]:0x128`,
+    `${tok}.@https://name.example/f@/@tests.js line 1904 > WebAssembly.compile:wasm-function[5]:0x128`,
+  ].join("\n");
+  const nativeRes = annotateStack(nativeAtUrlStack, [table], { engine: "firefox" });
+  expect(nativeRes.annotatedFrames).toBe(0);
+  expect(nativeRes.stack).toBe(nativeAtUrlStack);
+
+  // Sidecar symbols starting with `@https://` or whitespace-only must be idempotent on pass 2 in all engines.
+  for (const [engine, rawStack] of [
+    [
+      "chromium",
+      [
+        `    at ${tok} (wasm://wasm/${tok}-deadbeef:wasm-function[4]:0x10b)`,
+        `    at ${tok} (wasm://wasm/${tok}-deadbeef:wasm-function[3]:0xeb)`,
+      ].join("\n"),
+    ],
+    [
+      "firefox",
+      [
+        `${tok}.@http://127.0.0.1:41234/@tests.js line 1904 > WebAssembly.compile:wasm-function[4]:0x10b`,
+        `${tok}.@:wasm-function[3]:0xeb`,
+      ].join("\n"),
+    ],
+    ["webkit", [`@${tok}:wasm-function[4]`, `@${tok}:wasm-function[3]`].join("\n")],
+  ] as const) {
+    const pass1 = annotateStack(rawStack, [table], { engine });
+    expect(pass1.annotatedFrames).toBe(2);
+    const pass2 = annotateStack(pass1.stack, [table], { engine });
+    expect(pass2.annotatedFrames).toBe(0);
+    expect(pass2.stack).toBe(pass1.stack);
+  }
+});
+
+test("pending stream cancel() on oversized or non-OK response settles promptly and unlocks the reader", async () => {
+  const validSha = "d".repeat(64);
+
+  // Oversized response whose cancel() returns a never-settling promise
+  let oversizedCancels = 0;
+  const oversizedBody = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        controller.enqueue(new Uint8Array(24));
+      },
+      cancel() {
+        oversizedCancels++;
+        return new Promise<void>(() => {});
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const oversizedRes = await fetchSymbolSidecar(
+    { url: "https://example.test/oversized-hang-cancel.json", sha256: validSha },
+    {
+      maxBytes: 16,
+      timeoutMs: 100,
+      fetch: mockFetchOf(() => new Response(oversizedBody)),
+    },
+  );
+  expect(oversizedRes).toBeUndefined();
+  expect(oversizedCancels).toBe(1);
+  expect(oversizedBody.locked).toBe(false);
+
+  // Non-OK response whose cancel() returns a never-settling promise
+  let errorCancels = 0;
+  const errorBody = new ReadableStream<Uint8Array>({
+    cancel() {
+      errorCancels++;
+      return new Promise<void>(() => {});
+    },
+  });
+  const errorRes = await fetchSymbolSidecar(
+    { url: "https://example.test/error-hang-cancel.json", sha256: validSha },
+    {
+      timeoutMs: 100,
+      fetch: mockFetchOf(() => new Response(errorBody, { status: 500 })),
+    },
+  );
+  expect(errorRes).toBeUndefined();
+  expect(errorCancels).toBe(1);
+});
+
+test("monotonic deadline stops consecutive ready reads even when the macrotask timer is starved", async () => {
+  const payload = new Uint8Array(
+    textEncoder.encode('{"version":1,"pad":"0123456789abcdefghijklmnopqrstuvwxyz"}'),
+  );
+  const sha = await sha256Hex(payload);
+  let index = 0;
+  let cancelled = false;
+  const readyStream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        if (index >= payload.length) {
+          controller.close();
+          return;
+        }
+        // Keep reads synchronous/ready so macrotask timers cannot fire between chunks,
+        // while consuming >30 ms total across all 1-byte chunks.
+        const until = performance.now() + 0.75;
+        while (performance.now() < until) {
+          // intentional synchronous spin
+        }
+        controller.enqueue(payload.subarray(index, index + 1));
+        index++;
+      },
+      cancel() {
+        cancelled = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const result = await fetchSymbolSidecar(
+    { url: "https://example.test/starve.json", bytes: payload.byteLength, sha256: sha },
+    {
+      timeoutMs: 10,
+      fetch: mockFetchOf(() => new Response(readyStream)),
+    },
+  );
+  expect(result).toBeUndefined();
+  expect(cancelled).toBe(true);
+  expect(index).toBeLessThan(payload.length);
+});

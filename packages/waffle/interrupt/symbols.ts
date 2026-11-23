@@ -97,6 +97,7 @@ const V8_OWNED_FRAME =
   /^(\s*at )([A-Za-z0-9_]+)( \(wasm:\/\/wasm\/\2-[0-9a-f]{8}:wasm-function\[(0|[1-9]\d*)\]:0x[0-9a-f]+\))$/;
 const FIREFOX_OWNED_FRAME =
   /^(\s*)([A-Za-z0-9_]+)\.@((?:[^@]*|(?:[A-Za-z][A-Za-z0-9+.-]*:|\/)[^\r\n]*):wasm-function\[(0|[1-9]\d*)\]:0x[0-9a-f]+)$/;
+const AMBIGUOUS_FIREFOX_URL_AT = /@(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|(?:blob|data|about):|\/|$)/i;
 const WEBKIT_OWNED_FRAME = /^(\s*)@([A-Za-z0-9_]+)(:wasm-function\[(0|[1-9]\d*)\])$/;
 
 interface ParsedOwnedLine {
@@ -109,7 +110,14 @@ interface ParsedOwnedLine {
 interface EngineParserSpec {
   readonly engine: FrameEngine;
   readonly pattern: RegExp;
+  readonly accept?: (tail: string) => boolean;
   readonly format: (lead: string, nonce: string, symbol: string, tail: string) => string;
+}
+
+function isUnambiguousFirefoxTail(tail: string): boolean {
+  const split = tail.lastIndexOf(":wasm-function[");
+  const urlPart = split >= 0 ? tail.slice(0, split) : tail;
+  return !AMBIGUOUS_FIREFOX_URL_AT.test(urlPart);
 }
 
 const ENGINE_PARSERS: readonly EngineParserSpec[] = [
@@ -121,6 +129,7 @@ const ENGINE_PARSERS: readonly EngineParserSpec[] = [
   {
     engine: "firefox",
     pattern: FIREFOX_OWNED_FRAME,
+    accept: isUnambiguousFirefoxTail,
     format: (lead, nonce, symbol, tail) => `${lead}${nonce}.${symbol}@${tail}`,
   },
   {
@@ -140,6 +149,7 @@ function parseOwnedLine(line: string, engine?: FrameEngine): ParsedOwnedLine | n
     const lead = match[1]!;
     const nonce = match[2]!;
     const tail = match[3]!;
+    if (spec.accept && !spec.accept(tail)) continue;
     return {
       engine: spec.engine,
       nonce,
@@ -267,6 +277,22 @@ export function bindSymbolSidecar(
   });
 }
 
+function monotonicNow(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+function cancelWithoutWaiting(
+  target: { cancel?: () => Promise<unknown> } | null | undefined,
+): void {
+  try {
+    void target?.cancel?.().catch(() => {});
+  } catch {
+    // Ignore synchronous cancellation throws.
+  }
+}
+
 function concatChunks(chunks: readonly Uint8Array[], total: number): Uint8Array<ArrayBuffer> {
   const combined = new Uint8Array(total);
   let offset = 0;
@@ -283,50 +309,56 @@ async function readBoundedResponse(
   expectedBytes: number | undefined,
   signal: AbortSignal,
   aborted: Promise<never>,
+  deadline: number,
 ): Promise<Uint8Array<ArrayBuffer> | undefined> {
   const limit = expectedBytes !== undefined ? Math.min(maxBytes, expectedBytes) : maxBytes;
   const reader = response.body?.getReader();
   if (!reader) {
+    if (signal.aborted || monotonicNow() >= deadline) return undefined;
     const buffer = await Promise.race([response.arrayBuffer(), aborted]);
-    if (signal.aborted || buffer.byteLength > limit) return undefined;
+    if (signal.aborted || monotonicNow() >= deadline || buffer.byteLength > limit) return undefined;
     if (expectedBytes !== undefined && buffer.byteLength !== expectedBytes) return undefined;
     return new Uint8Array(buffer);
   }
-  const cancelReader = () => {
-    void reader.cancel().catch(() => {});
+  let cancelStarted = false;
+  const cancelOnce = () => {
+    if (cancelStarted) return;
+    cancelStarted = true;
+    cancelWithoutWaiting(reader);
   };
-  signal.addEventListener("abort", cancelReader, { once: true });
+  signal.addEventListener("abort", cancelOnce, { once: true });
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     for (;;) {
-      if (signal.aborted) {
-        cancelReader();
+      if (signal.aborted || monotonicNow() >= deadline) {
+        cancelOnce();
         return undefined;
       }
       const step = await Promise.race([reader.read(), aborted]);
-      if (signal.aborted) {
-        cancelReader();
+      if (signal.aborted || monotonicNow() >= deadline) {
+        cancelOnce();
         return undefined;
       }
       if (step.done) break;
       const chunk = step.value;
       total += chunk.byteLength;
       if (total > limit) {
-        await reader.cancel().catch(() => {});
+        cancelOnce();
         return undefined;
       }
       chunks.push(chunk);
     }
   } finally {
-    signal.removeEventListener("abort", cancelReader);
+    signal.removeEventListener("abort", cancelOnce);
     try {
       reader.releaseLock();
     } catch {
       // Lock may already be released if cancel settled concurrently.
     }
   }
-  if (signal.aborted || (expectedBytes !== undefined && total !== expectedBytes)) return undefined;
+  if (signal.aborted || monotonicNow() >= deadline) return undefined;
+  if (expectedBytes !== undefined && total !== expectedBytes) return undefined;
   return concatChunks(chunks, total);
 }
 
@@ -346,6 +378,7 @@ export async function fetchSymbolSidecar(
   if (typeof fetchFn !== "function") return undefined;
   if (options.signal?.aborted) return undefined;
 
+  const deadline = monotonicNow() + timeoutMs;
   const controller = new AbortController();
   let triggerAbort!: () => void;
   const aborted = new Promise<never>((_resolve, reject) => {
@@ -359,6 +392,7 @@ export async function fetchSymbolSidecar(
   options.signal?.addEventListener("abort", abortAll, { once: true });
   const timer = setTimeout(abortAll, timeoutMs);
   let settledResponse: Response | undefined;
+  let bodyReadingStarted = false;
   try {
     const fetchPromise = Promise.resolve().then(() =>
       fetchFn(source.url, { signal: controller.signal }),
@@ -367,20 +401,28 @@ export async function fetchSymbolSidecar(
     fetchPromise.then(
       (response) => {
         if (controller.signal.aborted && response !== settledResponse) {
-          void response.body?.cancel?.().catch(() => {});
+          cancelWithoutWaiting(response.body);
         }
       },
       () => {},
     );
     const response = await Promise.race([fetchPromise, aborted]);
     settledResponse = response;
-    if (controller.signal.aborted || !response.ok) {
-      await response.body?.cancel?.().catch(() => {});
+    if (controller.signal.aborted || monotonicNow() >= deadline || !response.ok) {
+      cancelWithoutWaiting(response.body);
       return undefined;
     }
-    return await readBoundedResponse(response, maxBytes, expectedBytes, controller.signal, aborted);
+    bodyReadingStarted = true;
+    return await readBoundedResponse(
+      response,
+      maxBytes,
+      expectedBytes,
+      controller.signal,
+      aborted,
+      deadline,
+    );
   } catch {
-    if (settledResponse) await settledResponse.body?.cancel?.().catch(() => {});
+    if (settledResponse && !bodyReadingStarted) cancelWithoutWaiting(settledResponse.body);
     return undefined;
   } finally {
     clearTimeout(timer);
@@ -415,7 +457,14 @@ export async function loadSymbolTable(
 }
 
 function escapeFrameSymbol(symbol: string): string {
-  return symbol.replaceAll("\r", "\\r").replaceAll("\n", "\\n").replaceAll("\0", "\\0");
+  const escaped = symbol
+    .replaceAll("\r", "\\r")
+    .replaceAll("\n", "\\n")
+    .replaceAll("\0", "\\0")
+    .replaceAll("@", "\\x40");
+  return escaped.trim().length > 0
+    ? escaped
+    : escaped.replaceAll(" ", "\\x20").replaceAll("\t", "\\t");
 }
 
 /**
