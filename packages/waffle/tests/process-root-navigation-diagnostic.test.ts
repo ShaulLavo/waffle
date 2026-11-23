@@ -275,9 +275,9 @@ test("source provenance accepts the frozen historical reference and rejects wron
   }
 });
 
-function killIfAlive(pid: number, signal: NodeJS.Signals = "SIGKILL"): void {
+function killIfAlive(pid: number): void {
   try {
-    process.kill(pid, signal);
+    process.kill(pid, "SIGKILL");
   } catch (error) {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "ESRCH") throw error;
   }
@@ -392,31 +392,19 @@ async function collectorControl(interrupt: boolean, breakSink = false): Promise<
   }
 }
 
-/** Direct children of a process, found by parent PID. The system pgrep is used by path, and
- * values below 2 are dropped, so a nonconforming pgrep cannot direct a kill at init. */
-function childPids(pid: number): number[] {
-  const listed = Bun.spawnSync(["/usr/bin/pgrep", "-P", String(pid)], { stdout: "pipe" });
-  return listed.stdout
-    .toString()
-    .split("\n")
-    .map(Number)
-    .filter((child) => Number.isSafeInteger(child) && child >= 2);
-}
-
 /** Stop the collector and its detached child, for example after a readiness timeout. The
- * collector's group is frozen first so it cannot spawn while its children are listed; the
- * child's PID comes from the test, the collector's record, or its live children. */
+ * child's PID comes from the test or, before readiness, the collector's record, read before
+ * the collector is killed. The collector writes that record synchronously after spawning, so
+ * only a kill landing inside that synchronous step can miss the child (plans/ci-flakes.md). */
 async function stopCollector(
   child: Bun.Subprocess | undefined,
   evidence: string,
   capturedPid: number | undefined,
 ): Promise<void> {
   if (!child) return;
-  killIfAlive(-child.pid, "SIGSTOP");
-  const recorded = capturedPid ?? recordedCollectionPid(evidence);
-  const collected = (recorded === undefined ? [] : [recorded]).concat(childPids(child.pid));
-  for (const pid of collected) killIfAlive(-pid);
+  const collectedPid = capturedPid ?? recordedCollectionPid(evidence);
   killIfAlive(-child.pid);
+  if (collectedPid) killIfAlive(-collectedPid);
   await child.exited;
 }
 

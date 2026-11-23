@@ -144,8 +144,17 @@ control each time, all different:
   (`page-runner/framework-host.ts:732`): run 43394478779.
 - host-deadline-teardown: `Body timeout extension changed the independent teardown clock`
   (`page-runner/host-drive-controls.ts:146`): run 43072689064.
-- command-notification-complete: `collector-failure` with `heartbeat-lost` and `Process browser
-  resource closure did not settle during teardown`: run 45093449673 (PR 607).
+- command-notification-complete, WebKit: `collector-failure` with `heartbeat-lost` and `Process
+  browser resource closure did not settle during teardown`: run 45093449673 (PR 607). Browser
+  pid 98750 launched at 01:27:43.7. The page sent no heartbeat for the 10 s budget while each
+  sibling notification control finished in about 1.5 s, and graceful close then took 12 s
+  (01:27:57.2 to 01:28:09.4) before WebKit exited with code 0. Every busy wait in the
+  notification command runs in a worker, not on the page's main thread, so this looks like a
+  stalled WebKit content process rather than a slow test. Not reproduced on the PC
+  (2026-11-23): 120 runs of this control alone, 4 at once, and 60 runs of all 13 WebKit
+  notification controls, 4 at once on 2 CPU cores, all passed. Next step if it recurs: run the
+  control with `DEBUG=pw:protocol` and WebKit stderr, and record which worker or scenario was
+  active when heartbeats stopped.
 
 The link runner hit `evaluate: Target page, context or browser has been closed` in
 run 44729859695, attempt 1. Navigation returned before evaluation began. The runner had
@@ -177,6 +186,35 @@ Each passed on rerun with no code change, and none touches the code those PRs ch
 
 - `tests/threads-runtime-browser-runner.ts webkit` failed `sibling descriptor reuse`
   (`tests/threads-runtime-fd-browser.ts:188`, a 15 s `until` cap) on PR 598, run 45003846225
-  attempt 1; attempt 2 passed.
+  attempt 1; attempt 2 passed. The runner started at 08:47:16 and failed at 08:47:37, so a
+  one-byte write on the reused descriptor did not complete in 15 s: a hang, not a slow run.
+  Not reproduced on the PC (2026-11-23) with a local threads fixture and
+  `--case fd-read --case fd-write`: 100 runs, 4 at once, then 60 runs, 4 at once on one CPU
+  core (slowest 9.1 s), all passed. If it recurs, capture the runtime's completion and pin
+  state for the held original operation when the cap fires.
 - `tests/page-runner/gpu-async-controls-runner.ts --ci chromium webkit` failed with
   `host-body-failure` on main ecf82eee, run 45003278103 attempt 1; attempt 2 passed.
+  This is an outcome mismatch, not a timeout: the body failed with `Wrong negative C
+  assertion: --corrupt-range` (`tests/gpu-async-command.ts:129`). The compiled guest
+  (`tests/fixtures/gpu/async.c`) must report exactly `GPU_ASYNC_FAIL stage=completion-correlation`
+  after the corrupt writeback, when the service's closed reply arrives; it reported some other
+  stage. A completions errno arriving before the closed reply (stage `completions`) would match
+  the earlier terminal-ordering race fixed in PR 498, but CI kept neither the guest text nor
+  the retained results, so the stage is unknown. Not reproduced on the PC (2026-11-23) with a
+  local `build-gpu-fixture.ts` build: 100 Chromium runs, 4 at once, all passed, and 60 runs,
+  4 at once on 2 CPU cores, had no `--corrupt-range` mismatch. One of those 60 failed in
+  teardown instead, with `Process browser resource closure did not settle during teardown`
+  after the command passed: the 5 s close cap in the same family as canonical-ownership above.
+  If the mismatch recurs, print the guest's `GPU_ASYNC_FAIL` line in the error.
+
+## Known cleanup gap
+
+`tests/process-root-navigation-diagnostic.test.ts` collector tests: when the 40 s readiness cap
+fires, cleanup kills the collector's process group and the detached `--collection` child named
+by the test or by `collector-owner.json`. `collectChild` writes that record synchronously right
+after spawning, so a kill landing inside that step can still miss the child. This predates the
+2026-11-23 fix (the old 5 s cap had the same path and never read the record). Review of PR 612
+tried a `pgrep -P` lookup and a `SIGSTOP` freeze; each left another edge (an in-flight macOS
+`posix_spawn`, a stuck stopped collector when `pgrep` fails to start), so they were not kept.
+A complete fix would have the collector itself own its child's teardown on `SIGTERM` before
+the test escalates.
