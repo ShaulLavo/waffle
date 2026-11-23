@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { validateFrameworkOptions } from "./framework-validation.js";
-import type { FrameworkOptions } from "./framework-types.js";
+import { validateFrameworkOptions } from "../../testing/page-runner/framework-validation.js";
+import type { FrameworkOptions } from "../../testing/page-runner/framework-types.js";
 
 function options(timeoutMs: number): FrameworkOptions {
   return {

@@ -1,6 +1,10 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { existsSync } from "node:fs";
-import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
+import {
+  BrowserRunnerLifecycle,
+  browserBundle,
+  engines,
+} from "../testing/browser-runner-lifecycle.js";
 
 export async function runSafeStagingNative(engine: string, control?: string): Promise<void> {
   if (!(engine in engines)) throw new Error(`Unknown staging test engine ${engine}`);

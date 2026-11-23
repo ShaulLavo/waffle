@@ -1,5 +1,5 @@
-import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
-import { ms } from "./fixtures/file-times.js";
+import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
+import { ms } from "../testing/fixtures/file-times.js";
 import { expect, test } from "bun:test";
 import {
   MemoryBackend,

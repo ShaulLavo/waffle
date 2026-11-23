@@ -3,7 +3,7 @@ import { retainedClientFixture } from "./fixtures/retained-client.js";
 import { FilesystemError, revokeFilesystem } from "../fs/protocol.js";
 import { FilesystemClient, createFilesystemConnection } from "../fs/index.js";
 import type { ResolvedPath } from "../core/filesystem.js";
-import { statTimes } from "./fixtures/file-times.js";
+import { statTimes } from "../testing/fixtures/file-times.js";
 
 const stops: (() => void)[] = [];
 afterEach(() => {

@@ -1,4 +1,4 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { runIsolatedPages } from "./isolated-page-runner.js";
 import {
   prepareThreadsRuntimeSafari,

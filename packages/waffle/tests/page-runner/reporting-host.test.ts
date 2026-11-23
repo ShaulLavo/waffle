@@ -3,9 +3,9 @@ import { createServer } from "node:http";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PageFrameworkHost } from "./framework-host.js";
-import { OrderedReporter } from "./ordered-reporter.js";
-import { record } from "./protocol.js";
+import { PageFrameworkHost } from "../../testing/page-runner/framework-host.js";
+import { OrderedReporter } from "../../testing/page-runner/ordered-reporter.js";
+import { record } from "../../testing/page-runner/protocol.js";
 import { waitUntil } from "./reporting-fixture.js";
 
 function ignoreFailure(): void {}

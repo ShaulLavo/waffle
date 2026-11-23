@@ -186,7 +186,7 @@ for (const mode of ["success", "failure", "interrupted"] as const)
         writeFileSync(
           suite,
           `import { writeFileSync } from "node:fs";
-import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "browser-runner-lifecycle.ts"))};
+import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "../testing/browser-runner-lifecycle.ts"))};
 writeFileSync(process.env.PROBE + "/state.json", JSON.stringify({
   tmp: process.env.TMPDIR, scratch: process.env.SCRATCH,
   owned: process.env.STORAGE_SCRATCH_ROOT, gpu: process.env.GPU_SCRATCH_ROOT, shm: process.env.WAFFLE_BROWSER_SHM_ROOT,
@@ -262,7 +262,7 @@ linuxTest(
       writeFileSync(
         suite,
         `import { writeFileSync } from "node:fs";
-import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "browser-runner-lifecycle.ts"))};
+import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "../testing/browser-runner-lifecycle.ts"))};
 writeFileSync(process.env.PROBE + "/before", process.env.TMPDIR);
 writeFileSync(process.env.PROBE + "/owned", process.env.STORAGE_SCRATCH_ROOT + "\\n" + process.env.WAFFLE_BROWSER_SHM_ROOT);
 const lifecycle = new BrowserRunnerLifecycle(5000);

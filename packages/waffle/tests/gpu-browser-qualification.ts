@@ -1,13 +1,17 @@
 import { fileURLToPath } from "node:url";
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type { Browser, Page } from "playwright";
-import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
+import {
+  BrowserRunnerLifecycle,
+  browserBundle,
+  engines,
+} from "../testing/browser-runner-lifecycle.js";
 import {
   stopBrowserResource,
   type BrowserResourceOwner,
-} from "./process-recycling-browser-runner-control.js";
+} from "../testing/process-recycling-browser-runner-control.js";
 import {
   canvasSize,
   pressurePolicy,

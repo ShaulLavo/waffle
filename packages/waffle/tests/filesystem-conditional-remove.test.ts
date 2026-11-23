@@ -1,4 +1,4 @@
-import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
 import { expect, test } from "bun:test";
 import {
   FilesystemClient,

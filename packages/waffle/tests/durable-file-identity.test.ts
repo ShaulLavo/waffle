@@ -1,6 +1,6 @@
-import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
-import { ms, storedTimes } from "./fixtures/file-times";
+import { ms, storedTimes } from "../testing/fixtures/file-times";
 import { expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import { MemoryBackend } from "../fs/backend";

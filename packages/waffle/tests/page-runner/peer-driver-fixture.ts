@@ -1,5 +1,5 @@
-import { record, type Body } from "./protocol.js";
-import { OrderedReporter } from "./ordered-reporter.js";
+import { record, type Body } from "../../testing/page-runner/protocol.js";
+import { OrderedReporter } from "../../testing/page-runner/ordered-reporter.js";
 import { FakeDriver } from "./fake-driver.js";
 
 export type PeerFault =

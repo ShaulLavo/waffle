@@ -1,19 +1,19 @@
-import { BrowserObservation, requestEvent } from "./browser-observation.js";
+import { BrowserObservation, requestEvent } from "../../testing/page-runner/browser-observation.js";
 import { loadBootstrap } from "./bootstrap-control.js";
-import type { DriverObservationBinding } from "./driver.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { BrowserRunnerLifecycle } from "../browser-runner-lifecycle.js";
+import type { DriverObservationBinding } from "../../testing/page-runner/driver.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { BrowserRunnerLifecycle } from "../../testing/browser-runner-lifecycle.js";
 import { expect, test, spyOn } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { ownedDatabase } from "./storage-policy.js";
-import { HostDrive } from "./host-drive.js";
-import { HostConsumers } from "./owned-consumers.js";
-import { Collector } from "./collector.js";
+import { ownedDatabase } from "../../testing/page-runner/storage-policy.js";
+import { HostDrive } from "../../testing/page-runner/host-drive.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
+import { Collector } from "../../testing/page-runner/collector.js";
 import { FakeDriver } from "./fake-driver.js";
-import type { Observation } from "./ordered-reporter.js";
-import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
+import type { Observation } from "../../testing/page-runner/ordered-reporter.js";
+import { runPageSuite, type SuiteAdapter } from "../../testing/page-runner/suite-host.js";
 import {
   record,
   formatHostError,
@@ -21,7 +21,7 @@ import {
   type Budgets,
   type HostCase,
   type HostVerdict,
-} from "./protocol.js";
+} from "../../testing/page-runner/protocol.js";
 
 class HostDriver extends FakeDriver {
   readonly verdicts: HostVerdict[] = [];
@@ -1795,7 +1795,7 @@ test("overlap reserves busy synchronously and sends no second preparation", asyn
 });
 test("a retained dispatch rejects after normal press return while body is still active", async () => {
   const f = keyUnit();
-  let retained: import("./driver.js").DriverPressControl | undefined;
+  let retained: import("../../testing/page-runner/driver.js").DriverPressControl | undefined;
   let sends = 0;
   f.d.press = async (_key, control) => {
     retained = control;

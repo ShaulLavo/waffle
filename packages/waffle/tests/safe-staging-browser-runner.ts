@@ -2,7 +2,7 @@ import { runSafeStagingNative } from "./safe-staging-native.js";
 
 if (process.argv[2] === "ios-safari") {
   const startedAt = performance.now();
-  const { nativeMain } = await import("./page-runner/native.js");
+  const { nativeMain } = await import("../testing/page-runner/native.js");
   const { safeStagingAdapter } = await import("./page-runner/safe-staging-suite.js");
   const selected = process.env.SAFE_STAGING_CONTROL || undefined;
   process.exit(

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { notificationCommand, notificationSources } from "./notification-command.js";
-import { formatHostError } from "./page-runner/protocol.js";
+import { formatHostError } from "../testing/page-runner/protocol.js";
 
 const calls: [string, ...(string | boolean)[]][] = [
   ["mixedNotificationCases", "/guest.js", "/helper.js"],

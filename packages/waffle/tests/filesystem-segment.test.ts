@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { statTimes } from "./fixtures/file-times";
+import { statTimes } from "../testing/fixtures/file-times";
 import {
   MissingSegmentError,
   SharedFilesystemState,

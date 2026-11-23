@@ -1,5 +1,5 @@
 import * as requests from "../fs/request-memory.js";
-import { filesystemHostConnector } from "./fixtures/filesystem-host.js";
+import { filesystemHostConnector } from "../testing/fixtures/filesystem-host.js";
 import { SLOT_WORDS } from "../fs/shared.js";
 import { readFileSync } from "node:fs";
 import * as protocol from "../fs/protocol.ts";
@@ -20,7 +20,7 @@ import {
   revokeFilesystem,
   type FilesystemConnection,
 } from "../fs";
-import { ms } from "./fixtures/file-times";
+import { ms } from "../testing/fixtures/file-times";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {

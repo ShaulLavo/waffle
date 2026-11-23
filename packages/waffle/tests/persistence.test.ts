@@ -1,12 +1,12 @@
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
-import { ms, storedTimes } from "./fixtures/file-times";
+import { ms, storedTimes } from "../testing/fixtures/file-times";
 import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { DescriptorTable } from "../core/descriptors.js";
 import { ProcessABI } from "../proc/abi.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
 import { ExecutableRegistry } from "../proc/registry.js";
-import { permissionStorageCase } from "./fixtures/permissions-storage.js";
-import { rootedSymlinkStorageCase } from "./fixtures/rooted-symlinks-storage.js";
+import { permissionStorageCase } from "../testing/fixtures/permissions-storage.js";
+import { rootedSymlinkStorageCase } from "../testing/fixtures/rooted-symlinks-storage.js";
 import { afterEach, expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import { validatePersistedIndex, type StorageBackend } from "../fs/storage";

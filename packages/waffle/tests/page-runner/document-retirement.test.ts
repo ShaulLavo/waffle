@@ -1,6 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
-import { BrowserObservation, WorkerCloseUnconfirmed } from "./browser-observation.js";
-import { HostConsumers } from "./owned-consumers.js";
+import {
+  BrowserObservation,
+  WorkerCloseUnconfirmed,
+} from "../../testing/page-runner/browser-observation.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
 
 function fixture(cleanup: () => Promise<void> = async () => {}) {
   const consumers = new HostConsumers();
@@ -222,8 +225,10 @@ for (const brokenClone of [false, true])
   });
 
 test("ignored exact, retirement and immediate invalid waits have owned rejection observation", async () => {
-  const moduleURL = new URL("./browser-observation.ts", import.meta.url).href;
-  const consumersURL = new URL("./owned-consumers.ts", import.meta.url).href;
+  const moduleURL = new URL("../../testing/page-runner/browser-observation.ts", import.meta.url)
+    .href;
+  const consumersURL = new URL("../../testing/page-runner/owned-consumers.ts", import.meta.url)
+    .href;
   const script = `
     import { BrowserObservation } from ${JSON.stringify(moduleURL)};
     import { HostConsumers } from ${JSON.stringify(consumersURL)};

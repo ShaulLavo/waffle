@@ -19,11 +19,11 @@ const originalHashes = {
   "fixtures/publication-guest.ts":
     "78619558fa3965ebad62b27063be171cb560a37e6cee4446e7f01ea2e98bd06f",
   "workspace-vfs-read-browser.ts":
-    "6724f44c5d28721e1abc537770b22080f3dff21dd8a10710e9748db4153e1318",
+    "b04780cd00034d31acc1cced82f420be0ba19797dc2dcc9f5c1744aea18f0537",
   "fixtures/publication-channel-observer.ts":
     "d30e355a0c6b733dda387a24bd42e522a09d0802df1615dcffea78726246e911",
   "recovery-r42-browser-runner.ts":
-    "fcf07ba902e231c5c158ac6f576f31e7e41c33fea1875cce452cdb43c836c791",
+    "1ff4879b7e52a2014f56d258c26127d8c422d00d3f564c9b670a4e124443857e",
 };
 test("original fixture bodies, channel observer, and follow-on command files remain byte-identical", async () => {
   for (const [path, expected] of Object.entries(originalHashes))

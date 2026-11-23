@@ -7,9 +7,9 @@ import {
   type StorageLockScenario,
 } from "./storage-lock-cases.js";
 import { storageLockSchedule } from "./storage-lock-schedules.js";
-import { withStorageCleanup } from "./storage-allocation.js";
-import { record, strings, type HostCase } from "./page-runner/protocol.js";
-import type { SuiteAdapter } from "./page-runner/suite-host.js";
+import { withStorageCleanup } from "../testing/storage-allocation.js";
+import { record, strings, type HostCase } from "../testing/page-runner/protocol.js";
+import type { SuiteAdapter } from "../testing/page-runner/suite-host.js";
 import { CasePeers } from "./storage-lock-peer.js";
 
 export type StorageLockRequest = { name: string; backend: StorageLockBackend; ordinal: number };

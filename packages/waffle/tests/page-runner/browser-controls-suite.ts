@@ -13,7 +13,7 @@ import { frameworkDOMControl, frameworkControlModes } from "./framework-dom-cont
 import { hostStorageControl, hostStorageControlModes } from "./host-storage-controls.js";
 import { hostControl, hostControlModes } from "./host-drive-controls.js";
 import { consumerControl, consumerControlModes } from "./consumer-controls.js";
-import { storagePolicy } from "./storage-policy.js";
+import { storagePolicy } from "../../testing/page-runner/storage-policy.js";
 import {
   commandControl,
   commandControlModes,
@@ -22,16 +22,20 @@ import {
 import { tmpdir } from "node:os";
 import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { join, resolve, isAbsolute } from "node:path";
-import { Collector } from "./collector.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { runStorage } from "./storage-host.js";
-import { serveCollector, retireDocument, writeResult } from "./suite-host.js";
-import { storageBudgets } from "./protocol.js";
-import { bounded } from "./driver.js";
-import { storageWorker } from "./storage-worker.js";
-import { withStorageCleanup } from "../storage-allocation.js";
-import { browserBundle, engines } from "../browser-runner-lifecycle.js";
-import { captureWebKitDiagnostics } from "../webkit-diagnostics.js";
+import { Collector } from "../../testing/page-runner/collector.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { runStorage } from "../../testing/page-runner/storage-host.js";
+import {
+  serveCollector,
+  retireDocument,
+  writeResult,
+} from "../../testing/page-runner/suite-host.js";
+import { storageBudgets } from "../../testing/page-runner/protocol.js";
+import { bounded } from "../../testing/page-runner/driver.js";
+import { storageWorker } from "../../testing/page-runner/storage-worker.js";
+import { withStorageCleanup } from "../../testing/storage-allocation.js";
+import { browserBundle, engines } from "../../testing/browser-runner-lifecycle.js";
+import { captureWebKitDiagnostics } from "../../testing/webkit-diagnostics.js";
 function hangWorker(): void {
   globalThis.onmessage = () => {};
 }
@@ -199,7 +203,9 @@ async function malformedAllocationControl(
   const collector = new Collector(run, [id], [id], storagePolicy);
   const fixture = serveCollector(collector, {
     "/page.js": "",
-    "/cleanup.js": await browserBundle(join(import.meta.dir, "storage-cleanup.ts")),
+    "/cleanup.js": await browserBundle(
+      join(import.meta.dir, "../../testing/page-runner/storage-cleanup.ts"),
+    ),
   });
   const scratch = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "prb-"));
   const driver = new PlaywrightDriver(engine, scratch);

@@ -1,10 +1,14 @@
 import { join, resolve } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { browserBundle, engines } from "../browser-runner-lifecycle.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { record, strings } from "./protocol.js";
-import { runPageSuite, type SuiteAdapter, type SuiteResult } from "./suite-host.js";
+import { browserBundle, engines } from "../../testing/browser-runner-lifecycle.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { record, strings } from "../../testing/page-runner/protocol.js";
+import {
+  runPageSuite,
+  type SuiteAdapter,
+  type SuiteResult,
+} from "../../testing/page-runner/suite-host.js";
 import { rootContinuityAdapter, rootContinuityIds } from "./root-continuity-suite.js";
 import { rootContinuityOpenPaths, type RootContinuityRequest } from "../root-continuity-command.js";
 

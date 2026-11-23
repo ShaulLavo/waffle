@@ -79,7 +79,7 @@ const adapter: SuiteAdapter<null> = {
 };
 async function bootstrap(): Promise<Blob> {
   const built = await Bun.build({
-    entrypoints: [new URL("./page-runner/consumer-page.ts", import.meta.url).pathname],
+    entrypoints: [new URL("../testing/page-runner/consumer-page.ts", import.meta.url).pathname],
     target: "browser",
   });
   if (!built.success || !built.outputs[0]) throw new AggregateError(built.logs);

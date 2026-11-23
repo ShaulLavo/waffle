@@ -21,7 +21,7 @@ import {
   type StorageBackend,
 } from "../fs/storage";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
-import { storedTimes } from "./fixtures/file-times";
+import { storedTimes } from "../testing/fixtures/file-times";
 
 const HOLD_MS = 150;
 

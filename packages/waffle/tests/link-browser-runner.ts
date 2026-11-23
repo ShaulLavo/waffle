@@ -1,12 +1,12 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { chromium, firefox, webkit, type Page } from "playwright";
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import {
   boundWebKitError,
   captureWebKitDiagnostics,
   observeWebKitPage,
-} from "./webkit-diagnostics.js";
+} from "../testing/webkit-diagnostics.js";
 
 const root = process.env.PROCESS_SCRATCH_ROOT;
 if (!root) throw new Error("PROCESS_SCRATCH_ROOT must name an owned data-drive directory");

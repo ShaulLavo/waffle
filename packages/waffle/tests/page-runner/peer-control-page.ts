@@ -1,6 +1,6 @@
-import { startPage } from "./page-main.js";
-import { cleanupStorage } from "./storage-cleanup.js";
-import { record } from "./protocol.js";
+import { startPage } from "../../testing/page-runner/page-main.js";
+import { cleanupStorage } from "../../testing/page-runner/storage-cleanup.js";
+import { record } from "../../testing/page-runner/protocol.js";
 
 declare const PEER_CONTROL: string;
 const mode = PEER_CONTROL;

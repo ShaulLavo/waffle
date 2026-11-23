@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { verifiedGpuFixture, verifiedGpuSceneFixture } from "../scripts/build-gpu-fixture.js";
 import { gpuLazyRoutes, assertGpuLazyBrowser } from "./gpu-loading-browser.js";
 import { resolve } from "node:path";
@@ -11,7 +11,7 @@ import {
   qualifyGpuBrowser,
   qualificationRoutes,
 } from "./gpu-browser-qualification.js";
-import { browserBundle } from "./browser-runner-lifecycle.js";
+import { browserBundle } from "../testing/browser-runner-lifecycle.js";
 import { serviceFailureCases } from "./gpu-service-failure-browser.js";
 import { disposalCases } from "./gpu-disposal-browser.js";
 import { regrantCases } from "./gpu-regrant-browser.js";

@@ -1,7 +1,7 @@
 import { open } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { withStorageCleanup } from "../storage-allocation.js";
-import { writeResult } from "./result-file.js";
+import { withStorageCleanup } from "../../testing/storage-allocation.js";
+import { writeResult } from "../../testing/page-runner/result-file.js";
 
 function spawnControls(command: string[], controlsPath: string) {
   return Bun.spawn(command.concat(["--result", controlsPath]), {

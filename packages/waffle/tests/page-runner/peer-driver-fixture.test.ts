@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { bounded } from "./driver.js";
+import { bounded } from "../../testing/page-runner/driver.js";
 import { PeerDriverFixture } from "./peer-driver-fixture.js";
-import { record } from "./protocol.js";
+import { record } from "../../testing/page-runner/protocol.js";
 
 function retirementFixture(driver = new PeerDriverFixture()) {
   const entered = Promise.withResolvers<void>();

@@ -2,7 +2,7 @@ import { webkit, type Browser } from "playwright";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { navigateTestPage } from "./browser-navigation.ts";
+import { navigateTestPage } from "../testing/browser-navigation.ts";
 
 const base = process.argv.includes("--base");
 const revision = "27b03a8c519b4d48d00d3723b4ee2993d735f27d";

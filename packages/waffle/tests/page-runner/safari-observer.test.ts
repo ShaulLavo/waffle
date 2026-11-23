@@ -1,9 +1,20 @@
 import { expect, test } from "bun:test";
-import { SafariObserver, observationIdentityExpression } from "./safari-observer.js";
-import { Frames, frame, isDict, type PlistDict } from "./inspector-plist.js";
-import { inspectorEnvelope, type InspectorTransport } from "./inspector-stream.js";
-import { HostConsumers } from "./owned-consumers.js";
-import { record } from "./protocol.js";
+import {
+  SafariObserver,
+  observationIdentityExpression,
+} from "../../testing/page-runner/safari-observer.js";
+import {
+  Frames,
+  frame,
+  isDict,
+  type PlistDict,
+} from "../../testing/page-runner/inspector-plist.js";
+import {
+  inspectorEnvelope,
+  type InspectorTransport,
+} from "../../testing/page-runner/inspector-stream.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
+import { record } from "../../testing/page-runner/protocol.js";
 
 const bootstrapURL = "https://owned.test/_waffle_observation_bootstrap?token=unique";
 function fixture(

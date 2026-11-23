@@ -2,11 +2,11 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Collector } from "./collector.js";
-import { bounded, type DriverObservation } from "./driver.js";
-import { HostConsumers } from "./owned-consumers.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { serveCollector } from "./suite-host.js";
+import { Collector } from "../../testing/page-runner/collector.js";
+import { bounded, type DriverObservation } from "../../testing/page-runner/driver.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { serveCollector } from "../../testing/page-runner/suite-host.js";
 
 class ArrivalControlDriver extends PlaywrightDriver {
   readonly joining = Promise.withResolvers<void>();

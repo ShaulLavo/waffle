@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { BrowserRunnerLifecycle, browserBundle } from "../tests/browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle, browserBundle } from "../testing/browser-runner-lifecycle.js";
 import {
   GpuQualificationLifecycle,
   qualificationEngine,
@@ -17,7 +17,7 @@ import {
 import { verifiedGpuFixture, verifiedGpuSceneFixture } from "../scripts/build-gpu-fixture.js";
 
 import { runDesktopMeasurements, type MeasurementController } from "./gpu-desktop-measure.js";
-import { navigateTestPage } from "../tests/browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { sampleProcessMemory } from "./gpu-measure-host.js";
 
 type Controller = MeasurementController;

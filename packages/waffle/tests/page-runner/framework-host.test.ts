@@ -424,7 +424,9 @@ test("a host fault immediately cancels an owned request before its callback retu
   fixture(immediateFaultCancellation));
 
 // check:tooling checks these overloads; the invalid calls never execute.
-function providerSignatures(host: import("./framework-types.js").FrameworkHost): void {
+function providerSignatures(
+  host: import("../../testing/page-runner/framework-types.js").FrameworkHost,
+): void {
   const viewport: Promise<void> = host.provider({ kind: "viewport", width: 800.5, height: 600 });
   const value = Object.freeze({ path: "fixture.png", buffer: new Uint8Array(0) });
   const screenshot: Promise<typeof value> = host.provider(

@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { bounded } from "./driver.js";
-import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
-import type { HostCase } from "./protocol.js";
+import { bounded } from "../../testing/page-runner/driver.js";
+import { runPageSuite, type SuiteAdapter } from "../../testing/page-runner/suite-host.js";
+import type { HostCase } from "../../testing/page-runner/protocol.js";
 import { PeerDriverFixture, type PeerFault } from "./peer-driver-fixture.js";
 
 async function fixture(

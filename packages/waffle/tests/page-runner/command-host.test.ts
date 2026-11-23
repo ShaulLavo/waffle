@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { commandAdapter, type CommandRequest } from "./command-suites.js";
 import { checkedGuestWatchControl } from "./guest-watch-controls-runner.js";
 import { FakeDriver, type FakeCommand, type FakeMode } from "./fake-driver.js";
-import { runPageSuite, type RunOptions, type SuiteAdapter } from "./suite-host.js";
+import {
+  runPageSuite,
+  type RunOptions,
+  type SuiteAdapter,
+} from "../../testing/page-runner/suite-host.js";
 
 async function control(
   adapter: SuiteAdapter<CommandRequest>,

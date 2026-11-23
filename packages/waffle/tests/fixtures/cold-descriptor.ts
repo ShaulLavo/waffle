@@ -11,7 +11,7 @@ import {
   type FilesystemDescriptorToken,
 } from "../../proc/filesystem-codec";
 import type { StorageBackend } from "../../fs/storage";
-import { storedTimes } from "./file-times";
+import { storedTimes } from "../../testing/fixtures/file-times";
 
 export const coldSize = 32 * 1024 * 1024;
 export const coldByte = (offset: number) =>

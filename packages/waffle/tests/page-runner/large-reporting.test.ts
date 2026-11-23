@@ -1,18 +1,18 @@
 import { expect, test } from "bun:test";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { dispatchReports } from "./collector-fetch.js";
-import { FrameworkCollector } from "./framework-collector.js";
-import { frameworkMiddleware } from "./framework-middleware.js";
-import { OrderedReporter } from "./ordered-reporter.js";
-import { reportChunk, reportChunkLength } from "./report-chunks.js";
-import { record, resultByteLimit } from "./protocol.js";
+import { dispatchReports } from "../../testing/page-runner/collector-fetch.js";
+import { FrameworkCollector } from "../../testing/page-runner/framework-collector.js";
+import { frameworkMiddleware } from "../../testing/page-runner/framework-middleware.js";
+import { OrderedReporter } from "../../testing/page-runner/ordered-reporter.js";
+import { reportChunk, reportChunkLength } from "../../testing/page-runner/report-chunks.js";
+import { record, resultByteLimit } from "../../testing/page-runner/protocol.js";
 import type {
   ExpectedCase,
   FrameworkEvent,
   FrameworkTask,
   FrameworkUpdate,
-} from "./framework-types.js";
+} from "../../testing/page-runner/framework-types.js";
 import { largeAssertion } from "./fixtures/large-assertion.js";
 
 type Body = { token: string } & (

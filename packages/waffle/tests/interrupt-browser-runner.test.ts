@@ -7,7 +7,7 @@ import {
   cleanupInterruptResources,
   finishInterruptCleanup,
   type InterruptCleanupResult,
-} from "./interrupt-browser-runner-control";
+} from "../testing/interrupt-browser-runner-control";
 
 test("a never-resolving page evaluation has bounded grace, then real resources close and a failure report is persisted", async () => {
   let scratch: string | undefined,

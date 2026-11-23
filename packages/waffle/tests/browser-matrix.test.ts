@@ -89,7 +89,7 @@ function expectedFailureMessage(entry: string): string {
           ? "tests/network-browser-runner.ts"
           : entry.startsWith(`${rootControls}:`)
             ? `tests/${rootContinuity}-browser-runner.ts`
-            : `tests/${name}-browser-runner.ts`;
+            : `${name === "storage" ? "testing" : "tests"}/${name}-browser-runner.ts`;
   const engines = rawEngines ? rawEngines.split(",").join(" ") : "";
   return engines ? `${runner} ${engines} failed` : `${runner} failed`;
 }
@@ -221,6 +221,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
   try {
     await mkdir(join(root, "scripts"));
     await mkdir(join(root, "tests"));
+    await mkdir(join(root, "testing"));
     await copyFile(
       join(import.meta.dir, "../scripts/test-browser.ts"),
       join(root, "scripts/test-browser.ts"),
@@ -235,7 +236,10 @@ async function matrix(failing: readonly string[]): Promise<void> {
     for (const runner of runners
       .concat(chromiumOnly, [socket, notification, assetRecovery, notificationFairness])
       .filter((name) => name !== rootControls && name !== networkControls))
-      await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
+      await writeFile(
+        join(root, runner === "storage" ? "testing" : "tests", `${runner}-browser-runner.ts`),
+        fixture,
+      );
     await writeFile(join(root, "tests/recovery-r42-browser-runner.ts"), recoveryFixture);
     await writeFile(join(root, "tests/gpu-native-browser-runner.ts"), nativeGpuFixture);
     await writeFile(join(root, "tests/gpu-async-browser-runner.ts"), asyncGpuFixture);
@@ -420,7 +424,7 @@ export async function runBrowserSuite(command, options) {
     writeFileSync("peak-concurrency.txt", String(peak));
   }
   appendFileSync("commands.jsonl", JSON.stringify(command.slice(1)) + "\\n");
-  if (command[1] === "tests/storage-browser-runner.ts")
+  if (command[1] === "testing/storage-browser-runner.ts")
     appendFileSync("storage-observers.txt", command.slice(2).join(",") + "=" + (options.env.STORAGE_LIFECYCLE_OBSERVER ?? "") + "\\n");
   await Bun.sleep(5);
   active--;
@@ -540,9 +544,9 @@ test("a configured STORAGE_TEST_PORT keeps storage Chromium and Firefox paired",
   const fixedPort = await discoverCommands("runtime", undefined, { STORAGE_TEST_PORT: "41234" });
   expect(fixedPort.failed).toBe(false);
   const commands: string[][] = fixedPort.commands.map((line) => JSON.parse(line));
-  expect(commands.filter((command) => command[0] === "tests/storage-browser-runner.ts")).toEqual([
-    ["tests/storage-browser-runner.ts", "chromium", "firefox"],
-    ["tests/storage-browser-runner.ts", "webkit"],
+  expect(commands.filter((command) => command[0] === "testing/storage-browser-runner.ts")).toEqual([
+    ["testing/storage-browser-runner.ts", "chromium", "firefox"],
+    ["testing/storage-browser-runner.ts", "webkit"],
   ]);
   expect(fixedPort.storageObservers).toEqual(["chromium,firefox=1", "webkit=0"]);
 });

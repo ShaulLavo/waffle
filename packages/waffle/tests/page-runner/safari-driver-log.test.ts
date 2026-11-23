@@ -4,9 +4,9 @@ import { fstatSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { nativeMain } from "./native.js";
-import { SafariDriver } from "./safari-driver.js";
-import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
+import { nativeMain } from "../../testing/page-runner/native.js";
+import { SafariDriver } from "../../testing/page-runner/safari-driver.js";
+import { runPageSuite, type SuiteAdapter } from "../../testing/page-runner/suite-host.js";
 
 const udid = "C4D2FFD4-A0D2-4608-B180-35854521B830";
 const output = "owned launcher stdout\nowned launcher stderr\n";

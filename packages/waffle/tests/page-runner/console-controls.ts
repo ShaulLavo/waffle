@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { browserBundle } from "../browser-runner-lifecycle.js";
-import { nativeMain } from "./native.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
+import { nativeMain } from "../../testing/page-runner/native.js";
 import {
   LateConsoleControl,
   isLateConsoleMode,
   lateConsoleModes,
   type LateConsoleMode,
 } from "./console-late-control.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { runPageSuite, type SuiteAdapter, type SuiteResult } from "./suite-host.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import {
+  runPageSuite,
+  type SuiteAdapter,
+  type SuiteResult,
+} from "../../testing/page-runner/suite-host.js";
 
 const consoleControlModes = [
   "page-clean",

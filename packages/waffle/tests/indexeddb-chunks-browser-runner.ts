@@ -1,6 +1,6 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { existsSync } from "node:fs";
-import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle, browserBundle } from "../testing/browser-runner-lifecycle.js";
 
 const lifecycle = new BrowserRunnerLifecycle(300_000);
 let scratchRemoved = false;

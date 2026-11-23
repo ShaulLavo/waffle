@@ -1,7 +1,7 @@
 import { FilesystemService } from "../fs/service.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { createFilesystemConnection } from "../fs/protocol.js";
-import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
 import { PipeController } from "../proc/pipes.js";
 import { createRing, RingReader, RingWriter } from "../browser/net/ring.js";
 import { Kind } from "../browser/net/protocol.js";

@@ -15,7 +15,7 @@ Status: **Approved** · Owner direction: 2026-10-18. Evidence decision: 2026-10-
 - **MEASURED [E4]**: `/work/reports/waffle-vfs/rethink-20261018/E4-guest-path.md` and `E4-evidence/{summary,gates,cleanup}.json`. Completed guest-path experiment with separately measured prototypes and profiling-disabled controls.
 - **MEASURED [E5]**: `/work/reports/waffle-vfs/rethink-20261018/E5-multitab.md` and `E5-evidence/manifest.json`. Transport, capability and close/crash screens, not a working multi-writer filesystem or frozen-owner proof.
 - **DERIVED [R1]**: `/work/reports/bash-web/hill-climb/r1-permissions/{report.md,source-anchors.txt,contract-evidence.json}`. Shell source and exact pinned-runtime evidence for missing authoritative permissions metadata. No new shell score measurement.
-- **DERIVED [S]** — repository source: `fs/{persistent,indexeddb,opfs,shared,vfs}.ts`, `browser/{shared-fs,fs-worker}.ts`, `runtime.ts`, and `tests/{indexeddb,opfs}-storage-browser.ts`. Resolve these against the execution commit, not the stale shared clone.
+- **DERIVED [S]** — repository source: `fs/{persistent,indexeddb,opfs,shared,vfs}.ts`, `browser/{shared-fs,fs-worker}.ts`, `runtime.ts`, and `testing/{indexeddb,opfs}-storage-browser.ts`. Resolve these against the execution commit, not the stale shared clone.
 
 **DERIVED [C, O]** — Every assertion/decision below carries a classification and evidence key. MEASURED describes observed cells only; DERIVED covers code facts and approved obligations; SUSPECTED is an experiment hypothesis, never a shipping guarantee. Evidence keys resolve to the paths above. Historical backend labels remain in frozen campaigns; they are not product names.
 

@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import {
   observeContinuityLocks,
   projectContinuityDiagnostic,
-} from "./continuity-lock-diagnostic.js";
-import { StallDiagnostics } from "./stall-diagnostics.js";
+} from "../../testing/page-runner/continuity-lock-diagnostic.js";
+import { StallDiagnostics } from "../../testing/page-runner/stall-diagnostics.js";
 
 class Manager implements Pick<LockManager, "request" | "query"> {
   requests = 0;

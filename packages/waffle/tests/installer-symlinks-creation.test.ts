@@ -8,7 +8,7 @@ import {
   symlinkSnapshotValue,
 } from "./fixtures/installer-symlinks-support.js";
 import { guestFunction, guestModule } from "./fixtures/publication-wasm.js";
-import { ms } from "./fixtures/file-times.js";
+import { ms } from "../testing/fixtures/file-times.js";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 const encoder = new TextEncoder();

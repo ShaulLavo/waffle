@@ -1,7 +1,7 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { resolve } from "node:path";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
-import { browserBundle } from "./browser-runner-lifecycle.js";
+import { browserBundle } from "../testing/browser-runner-lifecycle.js";
 
 export const sceneNativeControls = ["normal", "no-depth", "black-texture"];
 

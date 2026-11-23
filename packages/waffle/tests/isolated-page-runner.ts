@@ -1,4 +1,4 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -12,7 +12,7 @@ import {
 import {
   closeBrowserResources,
   type BrowserResourceOwner,
-} from "./process-recycling-browser-runner-control.js";
+} from "../testing/process-recycling-browser-runner-control.js";
 
 export const engines = { chromium, firefox, webkit };
 

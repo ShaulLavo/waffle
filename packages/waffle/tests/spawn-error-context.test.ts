@@ -3,7 +3,7 @@ import { ExecutionUnwind } from "../core/unwind.js";
 import { FilesystemError } from "../fs/protocol.js";
 import { ProcessError } from "../proc/errors.js";
 import { spawnError } from "../proc/start-failure.js";
-import { formatHostError } from "./page-runner/protocol.js";
+import { formatHostError } from "../testing/page-runner/protocol.js";
 
 for (const [original, errno] of [
   [new RangeError("Out of memory"), 48],

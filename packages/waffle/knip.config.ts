@@ -41,7 +41,7 @@ export default {
         // Pre-import native getter control and the separate shared-memory growing Worker.
         "tests/fixtures/stable-memory-{reader,grow-worker}.ts",
         // Bundled dynamically for the storage lifecycle observer's service Worker.
-        "tests/fixtures/storage-lifecycle-fs-worker.ts",
+        "testing/fixtures/storage-lifecycle-fs-worker.ts",
         "tests/page-runner/*-page.ts",
         // The Console control runner bundles these Worker scripts by path.
         "tests/page-runner/console-controls.ts",
@@ -62,7 +62,7 @@ export default {
         "tests/page-runner/browser-controls-suite.ts",
         "tests/page-runner/browser-controls-process-fixture.ts",
         "tests/page-runner/asset-hold-controls.ts",
-        "tests/page-runner/framework-bootstrap-main.ts",
+        "testing/page-runner/framework-bootstrap-main.ts",
         "tests/page-runner/framework-controls/installed.ts",
         "tests/network-{page,relay-page,control-page,signal-control,browser-service-worker,relay-browser-runner}.ts",
         "tests/gpu-browser-qualification.ts",
@@ -139,13 +139,16 @@ export default {
         "tests/storage-lock-page.ts",
         "tests/storage-lock-browser.ts",
         "tests/storage-lock-recovery-worker.ts",
-        "tests/storage-open-worker.ts",
+        "testing/storage-open-worker.ts",
+        // The published storage runner is a command line entry; it bundles the page by path.
+        "testing/storage-browser-runner.ts",
+        "testing/page-runner/storage-page.ts",
         "tests/memory-group-browser{,-runner}.ts",
         "tests/fixtures/memory-group-worker.ts",
       ],
       project: [
         "*.ts",
-        "{browser,core,fs,group,thread,proc,interrupt,search,scripts,tooling,tests}/**/*.{ts,js}",
+        "{browser,core,fs,group,thread,proc,interrupt,search,scripts,tooling,tests,testing}/**/*.{ts,js}",
       ],
     },
   },

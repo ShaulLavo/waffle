@@ -1,11 +1,11 @@
 import { encodeCrossTabValue, decodeCrossTabValue } from "./cross-tab-value.js";
-import { continuityDiagnosticSnapshot } from "./continuity-lock-diagnostic.js";
+import { continuityDiagnosticSnapshot } from "../../testing/page-runner/continuity-lock-diagnostic.js";
 import {
   BoundedTrace,
   collectDiagnostic,
   evaluationOperation,
   evaluationMode,
-} from "./stall-diagnostics.js";
+} from "../../testing/page-runner/stall-diagnostics.js";
 export type Evaluation = {
   id: string;
   source: string;

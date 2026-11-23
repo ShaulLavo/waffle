@@ -58,7 +58,7 @@ test("fixture differs from merged baseline only at four pre-open and two name si
 test("desktop command body and its 150000 ms lifecycle remain byte-identical", async () => {
   const source = await Bun.file(`${import.meta.dir}/root-continuity-browser-runner.ts`).text();
   const desktop = source.slice(source.indexOf("import { navigateTestPage }"));
-  expect(digest(desktop)).toBe("00b0311ae7364830eb0a91fb1bccfc1d45f23b664370418d3108e353a9f84d83");
+  expect(digest(desktop)).toBe("399bfa627bc31fe6f629027ad3ac68eb21a5b3f10c5cd6aaba5d630a0688bcdd");
   const native = source.slice(
     0,
     source.indexOf('if (import.meta.main && process.argv[2] === "--page-controls")'),

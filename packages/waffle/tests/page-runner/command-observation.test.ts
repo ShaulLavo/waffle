@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { FrameworkQueue } from "./framework-queue.js";
-import { HostConsumers } from "./owned-consumers.js";
-import { SafariDriver } from "./safari-driver.js";
-import type { CommandFailure } from "./framework-types.js";
+import { FrameworkQueue } from "../../testing/page-runner/framework-queue.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
+import { SafariDriver } from "../../testing/page-runner/safari-driver.js";
+import type { CommandFailure } from "../../testing/page-runner/framework-types.js";
 
 function observedThenable(read: () => unknown): object {
   return new Proxy({}, { get: (_target, key) => (key === "then" ? read() : undefined) });

@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
-import { BrowserObservation, WorkerCloseUnconfirmed } from "./browser-observation.js";
-import { Collector } from "./collector.js";
-import { HostConsumers } from "./owned-consumers.js";
-import { serveCollector } from "./suite-host.js";
+import {
+  BrowserObservation,
+  WorkerCloseUnconfirmed,
+} from "../../testing/page-runner/browser-observation.js";
+import { Collector } from "../../testing/page-runner/collector.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
+import { serveCollector } from "../../testing/page-runner/suite-host.js";
 
 function fixture() {
   const consumers = new HostConsumers();

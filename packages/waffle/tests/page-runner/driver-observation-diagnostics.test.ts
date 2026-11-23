@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { BrowserObservation } from "./browser-observation.js";
-import { HostConsumers } from "./owned-consumers.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { SafariDriver } from "./safari-driver.js";
-import { record } from "./protocol.js";
+import { BrowserObservation } from "../../testing/page-runner/browser-observation.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { SafariDriver } from "../../testing/page-runner/safari-driver.js";
+import { record } from "../../testing/page-runner/protocol.js";
 
 async function wrapper(engine: "safari" | "playwright", consoleDeclared: boolean): Promise<void> {
   const consumers = new HostConsumers();

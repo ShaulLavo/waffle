@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { get as httpGet } from "node:http";
-import { Collector, type DocumentState } from "./collector.js";
-import { HostConsumers } from "./owned-consumers.js";
-import { serveCollector } from "./suite-host.js";
-import type { AssetHoldCallback } from "./protocol.js";
+import { Collector, type DocumentState } from "../../testing/page-runner/collector.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
+import { serveCollector } from "../../testing/page-runner/suite-host.js";
+import type { AssetHoldCallback } from "../../testing/page-runner/protocol.js";
 
 const path = "/programs/shell-engine.wasm";
 const bytes = new Uint8Array([0, 97, 115, 109, 1, 0, 255, 0]);

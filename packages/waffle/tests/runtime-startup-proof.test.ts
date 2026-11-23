@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { RuntimeStartupStage } from "../fs/startup.js";
-import { assertRuntimeStartupTrace } from "./runtime-startup-proof.js";
+import { assertRuntimeStartupTrace } from "../testing/runtime-startup-proof.js";
 
 const timeOrigin = 1_790_000_000_000;
 const ownerStages: RuntimeStartupStage[] = [

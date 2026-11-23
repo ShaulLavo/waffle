@@ -1,6 +1,6 @@
-import { BrowserRunnerLifecycle, engines } from "./browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle, engines } from "../testing/browser-runner-lifecycle.js";
 import type { Browser, Page } from "playwright";
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 
 const lifecycle = new BrowserRunnerLifecycle();
 const observed = new Set<string>();

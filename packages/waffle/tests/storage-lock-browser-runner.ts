@@ -10,7 +10,7 @@ import type { Page, BrowserContext } from "playwright";
 
 if (process.argv[2] === "ios-safari") {
   const startedAt = performance.now();
-  const { nativeMain } = await import("./page-runner/native.js");
+  const { nativeMain } = await import("../testing/page-runner/native.js");
   const { storageLockAdapter } = await import("./storage-lock-host.js");
   process.exit(
     await nativeMain(storageLockAdapter, process.argv.slice(3), {

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { WebDriverError } from "./driver.js";
-import { SafariDriver } from "./safari-driver.js";
+import { WebDriverError } from "../../testing/page-runner/driver.js";
+import { SafariDriver } from "../../testing/page-runner/safari-driver.js";
 
 for (const message of ["", "The session has ended"]) {
   test(`WebDriver error text retains its code with message ${JSON.stringify(message)}`, () => {

@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { storedTimes } from "./fixtures/file-times";
+import { storedTimes } from "../testing/fixtures/file-times";
 import { openFilesystemBackend } from "../browser/filesystem-backend.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { MemFS } from "../fs/memory.js";

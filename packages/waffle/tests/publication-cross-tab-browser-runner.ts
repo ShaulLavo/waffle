@@ -1,4 +1,4 @@
-import { BrowserRunnerLifecycle } from "./browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle } from "../testing/browser-runner-lifecycle.js";
 import { crossTabAssets } from "./publication-cross-tab-assets.js";
 import { crossTabCommand } from "./publication-cross-tab-command.js";
 import { desktopCrossTabLifecycle } from "./publication-cross-tab-host.js";

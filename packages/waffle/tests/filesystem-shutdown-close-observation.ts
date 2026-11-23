@@ -13,7 +13,7 @@ import {
   type Stage,
   type Stamp,
 } from "./filesystem-shutdown-browser.js";
-import type { ResourceCloseEvent } from "./process-recycling-browser-runner-control.js";
+import type { ResourceCloseEvent } from "../testing/process-recycling-browser-runner-control.js";
 
 type CloseContext = {
   close(): Promise<void>;

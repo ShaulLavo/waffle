@@ -3,7 +3,7 @@ import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
 import { expect, test } from "bun:test";
 import { createFilesystemIdentity } from "../fs/protocol";
 import * as shared from "../fs/shared";
-import { ms, statTimes } from "./fixtures/file-times";
+import { ms, statTimes } from "../testing/fixtures/file-times";
 
 function fixture() {
   const state = new shared.SharedFilesystemState();

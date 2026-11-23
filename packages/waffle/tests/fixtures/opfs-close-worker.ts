@@ -1,6 +1,6 @@
 import { OpfsStorage } from "../../fs/opfs.js";
 import type { StorageLockManager } from "../../fs/indexeddb.js";
-import { batch, bytes } from "../indexeddb-storage-browser.js";
+import { batch, bytes } from "../../testing/indexeddb-storage-browser.js";
 import {
   OpfsCloseSetupInvalid,
   parseOpfsCloseCommand,
@@ -10,7 +10,7 @@ import {
   type OpfsCloseCommand,
   type OpfsCloseReply,
 } from "../opfs-close-browser.js";
-import { storedTimes } from "./file-times.js";
+import { storedTimes } from "../../testing/fixtures/file-times.js";
 
 type NativeAccess = {
   close(): void;

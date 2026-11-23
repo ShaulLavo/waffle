@@ -1,13 +1,13 @@
 import { resolve } from "node:path";
-import { browserBundle, engines } from "../browser-runner-lifecycle.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
+import { browserBundle, engines } from "../../testing/browser-runner-lifecycle.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
 import {
   safeStagingAdapter,
   safeStagingId,
   type SafeStagingRequest,
 } from "./safe-staging-suite.js";
-import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
-import { record, strings } from "./protocol.js";
+import { runPageSuite, type SuiteAdapter } from "../../testing/page-runner/suite-host.js";
+import { record, strings } from "../../testing/page-runner/protocol.js";
 import { safeStagingLabels } from "../safe-staging-browser.js";
 
 function allocationControls(): SuiteAdapter<SafeStagingRequest> {

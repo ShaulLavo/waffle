@@ -1,4 +1,4 @@
-import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation } from "../fs/file-identity";
 import { afterEach, expect, test } from "bun:test";
@@ -15,7 +15,7 @@ import {
 } from "../fs";
 import { DEFAULT_SHARED_MAX_BYTES, PAGE } from "../fs/protocol";
 import { atomicHost } from "./fixtures/wasi-atomic-host";
-import { storedTimes } from "./fixtures/file-times";
+import { storedTimes } from "../testing/fixtures/file-times";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {

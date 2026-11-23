@@ -6,8 +6,8 @@ import {
   installContinuityLockDiagnostic,
   continuityDiagnosticSnapshot,
   projectContinuityDiagnostic,
-} from "./continuity-lock-diagnostic.js";
-import { StallDiagnostics } from "./stall-diagnostics.js";
+} from "../../testing/page-runner/continuity-lock-diagnostic.js";
+import { StallDiagnostics } from "../../testing/page-runner/stall-diagnostics.js";
 
 function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);

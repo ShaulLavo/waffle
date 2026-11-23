@@ -1,9 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
-import { BrowserRunnerLifecycle } from "../browser-runner-lifecycle.js";
-import { BrowserObservation, requestEvent } from "./browser-observation.js";
-import { HostConsumers } from "./owned-consumers.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { SafariDriver } from "./safari-driver.js";
+import { BrowserRunnerLifecycle } from "../../testing/browser-runner-lifecycle.js";
+import { BrowserObservation, requestEvent } from "../../testing/page-runner/browser-observation.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { SafariDriver } from "../../testing/page-runner/safari-driver.js";
 
 async function failedObservation(reason: unknown): Promise<BrowserObservation> {
   const ledger = new BrowserObservation("page", new HostConsumers(), async () => {});

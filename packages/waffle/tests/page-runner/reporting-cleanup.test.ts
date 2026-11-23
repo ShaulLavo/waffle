@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Collector, type Group } from "./collector.js";
+import { Collector, type Group } from "../../testing/page-runner/collector.js";
 
 function interrupted() {
   const collector = new Collector("run", ["case"], ["case"], {

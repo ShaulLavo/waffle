@@ -3,8 +3,8 @@ import {
   rootContinuityJSON,
   type RootContinuityRequest,
 } from "../root-continuity-command.js";
-import { startPage } from "./page-main.js";
-import { cleanupStorage } from "./storage-cleanup.js";
+import { startPage } from "../../testing/page-runner/page-main.js";
+import { cleanupStorage } from "../../testing/page-runner/storage-cleanup.js";
 import { rootContinuityStorage } from "./root-continuity-allocation.js";
 
 async function composition(): Promise<typeof import("../root-continuity-browser.js")> {

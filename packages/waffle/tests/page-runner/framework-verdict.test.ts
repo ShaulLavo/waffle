@@ -3,10 +3,14 @@ import { createServer } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createFrameworkControl } from "./framework.js";
-import { bounded } from "./driver.js";
-import { record } from "./protocol.js";
-import type { FrameworkEvent, FrameworkUpdate, VitestEnd } from "./framework-types.js";
+import { createFrameworkControl } from "../../testing/page-runner/framework.js";
+import { bounded } from "../../testing/page-runner/driver.js";
+import { record } from "../../testing/page-runner/protocol.js";
+import type {
+  FrameworkEvent,
+  FrameworkUpdate,
+  VitestEnd,
+} from "../../testing/page-runner/framework-types.js";
 
 type VerdictCase = {
   state: FrameworkUpdate["state"] | null;

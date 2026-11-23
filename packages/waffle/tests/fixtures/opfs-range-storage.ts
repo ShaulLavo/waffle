@@ -2,7 +2,7 @@ import { expect } from "bun:test";
 import { OpfsStorage } from "../../fs/opfs";
 import { encodeSnapshot, type PersistedIndex } from "../../fs/storage";
 import type { StorageLockManager } from "../../fs/indexeddb";
-import { storedTimes } from "./file-times";
+import { storedTimes } from "../../testing/fixtures/file-times";
 
 export const payloadSize = 128 * 1024 * 1024;
 const encoded = (value: string) =>

@@ -2,8 +2,8 @@ import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { nativeMain } from "./native.js";
-import { storageAdapter } from "./storage-host.js";
+import { nativeMain } from "../../testing/page-runner/native.js";
+import { storageAdapter } from "../../testing/page-runner/storage-host.js";
 test("native CLI rejects relative result paths before allocating anything", async () => {
   expect(await nativeMain(storageAdapter, ["--result", "relative.json"])).toBe(3);
   expect(await nativeMain(storageAdapter, ["chromium"])).toBe(3);
@@ -33,15 +33,14 @@ const entrypoints = [
   { runner: "fs-socket", suite: "fs-socket-attachment" },
   { runner: "search-executor", suite: "search-executor" },
 ];
+// The storage runner is published, so it lives beside the other `./testing/*` helpers.
+function runnerPath(runner: string): string {
+  const directory = runner === "storage" ? "../../testing" : "..";
+  return join(import.meta.dir, directory, `${runner}-browser-runner.ts`);
+}
 async function invoke(runner: string, resultPath: string, root: string): Promise<number> {
   const child = Bun.spawn(
-    [
-      process.execPath,
-      join(import.meta.dir, "..", `${runner}-browser-runner.ts`),
-      "ios-safari",
-      "--result",
-      resultPath,
-    ],
+    [process.execPath, runnerPath(runner), "ios-safari", "--result", resultPath],
     {
       env: {
         ...process.env,
@@ -75,9 +74,7 @@ for (const { runner, suite } of entrypoints) {
       expect(await readdir(root)).toEqual(["result.json"]);
       expect(await invoke(runner, join(resultPath, "cannot-create.json"), root)).toBe(2);
       expect(await readdir(root)).toEqual(["result.json"]);
-      const source = await Bun.file(
-        join(import.meta.dir, "..", `${runner}-browser-runner.ts`),
-      ).text();
+      const source = await Bun.file(runnerPath(runner)).text();
       expect(source.includes("process.env.STORAGE_TEST_FILTER")).toBe(runner === "storage");
     } finally {
       await rm(root, { recursive: true, force: true });

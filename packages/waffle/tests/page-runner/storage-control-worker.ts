@@ -1,5 +1,5 @@
-import { storageTests } from "../storage-browser.js";
-import type { StorageEntry } from "../storage-allocation.js";
+import { storageTests } from "../../testing/storage-browser.js";
+import type { StorageEntry } from "../../testing/storage-allocation.js";
 async function openDatabase(name: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const request = indexedDB.open(name, 1);

@@ -1,5 +1,5 @@
 if (process.argv[2] === "ios-safari") {
-  const { nativeMain } = await import("./page-runner/native.js");
+  const { nativeMain } = await import("../testing/page-runner/native.js");
   const { commandAdapter } = await import("./page-runner/command-suites.js");
   process.exit(await nativeMain(commandAdapter("search-executor"), process.argv.slice(3), {}));
 }

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { finishNetworkCase } from "./network-finalizer.js";
-import { formatHostError } from "./page-runner/protocol.js";
+import { formatHostError } from "../testing/page-runner/protocol.js";
 
 const order = ["guest 1", "guest 2", "unregister", "listener", "namespace", "runtime"];
 for (const primary of [undefined, new Error("PRIMARY_ASSERTION")])

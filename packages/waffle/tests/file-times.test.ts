@@ -11,7 +11,7 @@ import {
   type FilesystemBackend,
 } from "../fs/index.js";
 import { MetadataStore } from "./fixtures/metadata-enumeration-r173-store.js";
-import { fileTimesStorageCase } from "./fixtures/file-times-storage.js";
+import { fileTimesStorageCase } from "../testing/fixtures/file-times-storage.js";
 import {
   ATIM,
   ATIME,

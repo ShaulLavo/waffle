@@ -1,7 +1,10 @@
 import { createContext, runInContext } from "node:vm";
-import { installFrameworkBootstrap } from "./framework-bootstrap.js";
-import { getFrameworkObservation, type FrameworkObservation } from "./framework-page.js";
-import { record } from "./protocol.js";
+import { installFrameworkBootstrap } from "../../testing/page-runner/framework-bootstrap.js";
+import {
+  getFrameworkObservation,
+  type FrameworkObservation,
+} from "../../testing/page-runner/framework-page.js";
+import { record } from "../../testing/page-runner/protocol.js";
 
 // Execute the actual bootstrap/accessor in an isolated CPU realm. This is not a browser or Vitest runner.
 export async function reportingPage(

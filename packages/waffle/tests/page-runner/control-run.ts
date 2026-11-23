@@ -1,4 +1,4 @@
-import { boundWebKitLogReplay } from "../webkit-diagnostics.js";
+import { boundWebKitLogReplay } from "../../testing/webkit-diagnostics.js";
 
 type ControlResult = {
   engine: string;

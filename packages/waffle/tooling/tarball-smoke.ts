@@ -45,11 +45,12 @@ async function run(): Promise<void> {
   const archive = join(archiveDirectory, archives[0]!);
   execFileSync("tar", ["-xzf", archive, "-C", extractDirectory], { stdio: "pipe" });
   const packedRoot = join(extractDirectory, "package");
-  // Test files and GPU code-generation inputs are never loaded by a consumer.
+  // Test files, the tests/ directory and GPU code-generation inputs are never loaded by a consumer.
   const listing = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" }).split("\n");
   const unwanted = listing.filter(
     (entry) =>
       entry.endsWith(".test.ts") ||
+      entry.startsWith("package/tests/") ||
       entry === "package/browser/gpu/upstream/webgpu.h" ||
       entry === "package/browser/gpu/upstream/webgpu.yml" ||
       entry === "package/browser/gpu/stream.json" ||
@@ -192,8 +193,8 @@ const pageRunnerScript = `
   import { join, resolve } from "node:path";
   if (isHostedPage()) throw new Error("page import accessed a hosted window");
   for (const [specifier, suffix] of [
-    ["@waffle-os/runtime/testing/page-runner", "/tests/page-runner/consumer.ts"],
-    ["@waffle-os/runtime/testing/page-runner/page", "/tests/page-runner/consumer-page.ts"],
+    ["@waffle-os/runtime/testing/page-runner", "/testing/page-runner/consumer.ts"],
+    ["@waffle-os/runtime/testing/page-runner/page", "/testing/page-runner/consumer-page.ts"],
   ]) {
     const path = import.meta.resolve(specifier);
     if (!path.endsWith(suffix) || !path.includes("/node_modules/@waffle-os/runtime/")) throw new Error("wrong installed source entry " + path);
@@ -392,6 +393,19 @@ async function pageRunnerConsumer(directory: string): Promise<void> {
     if (typeof PlaywrightDriver !== "function") throw new Error("missing explicit driver");
   `,
   ]);
+  // The tarball has no tests/ directory, so every exported helper must load on its own.
+  const installedManifest = record(
+    JSON.parse(
+      await readFile(join(directory, "node_modules/@waffle-os/runtime/package.json"), "utf8"),
+    ),
+  );
+  const helperSpecifiers = Object.keys(record(installedManifest.exports))
+    .filter((key) => key.startsWith("./testing/"))
+    .map((key) => `@waffle-os/runtime${key.slice(1)}`);
+  consumerCommand(directory, "bun", [
+    "--eval",
+    `for (const specifier of ${JSON.stringify(helperSpecifiers)}) await import(specifier);`,
+  ]);
   await writeFile(
     join(directory, "cleanup-errors.ts"),
     await readFile(join(import.meta.dir, "fixtures/page-runner-error-consumer.ts")),
@@ -417,6 +431,33 @@ async function pageRunnerConsumer(directory: string): Promise<void> {
   );
   consumerCommand(directory, "bun", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.json"]);
 }
+const bootstrapLookupScript = `
+  import { createFrameworkHost } from "@waffle-os/runtime/testing/page-runner/framework";
+  import { mkdir, readFile } from "node:fs/promises";
+  import { join } from "node:path";
+  const scratch = join(process.cwd(), "bootstrap-lookup-scratch");
+  await mkdir(scratch, { recursive: true });
+  process.env.STORAGE_SCRATCH_ROOT = scratch;
+  const host = createFrameworkHost({
+    suite: "installed-bootstrap",
+    native: { udid: "not-launched" },
+    expected: [{ file: "synthetic.ts", fullName: "case", sourceKey: "case:1", timeoutMs: 15000, retries: 0 }],
+    scope: { kind: "root-selection", command: "test:browser", files: ["synthetic.ts"] },
+    resultPath: join(scratch, "result.json"),
+  });
+  host.mount({ stack: [], use() {} });
+  const installed = import.meta.resolve("@waffle-os/runtime/testing/page-runner/framework");
+  const packageRoot = new URL(installed).pathname.replace(/\\/(?:dist\\/)?testing\\/page-runner\\/framework\\.(?:js|ts)$/, "");
+  const bootstrap = (await readFile(join(packageRoot, "dist/testing/page-runner/framework-bootstrap.js"), "utf8")).replaceAll("</script", "<\\\\/script");
+  let html = "";
+  await host.run(async (registerClose) => {
+    registerClose(async () => {});
+    html = host.instrumentDocument({ kind: "tester", url: "http://fixture/tester", html: "<head></head>" });
+    return { status: "interrupted", errors: ["bootstrap lookup smoke"] };
+  });
+  if (!html.startsWith("<head><script>window.__waffleFrameworkConfiguration=")) throw new Error("bootstrap configuration was not injected");
+  if (bootstrap.length < 1000 || !html.includes(bootstrap)) throw new Error("installed bootstrap script was not injected");
+`;
 async function frameworkConsumer(directory: string, phase: string): Promise<void> {
   consumerCommand(directory, "node", [
     "--input-type=module",
@@ -426,9 +467,13 @@ async function frameworkConsumer(directory: string, phase: string): Promise<void
     import { getFrameworkObservation } from "@waffle-os/runtime/testing/page-runner/framework-page";
     if (typeof createFrameworkHost !== "function" || getFrameworkObservation() !== undefined) throw new Error("bad Node framework entry");
     const entry = import.meta.resolve("@waffle-os/runtime/testing/page-runner/framework");
-    if (!entry.endsWith("/node_modules/@waffle-os/runtime/dist/tests/page-runner/framework.js")) throw new Error("Node did not resolve prepared installed JavaScript");
+    if (!entry.endsWith("/node_modules/@waffle-os/runtime/dist/testing/page-runner/framework.js")) throw new Error("Node did not resolve prepared installed JavaScript");
   `,
   ]);
+  // instrumentDocument walks up from the installed host file to the prepared bootstrap script.
+  await writeFile(join(directory, "bootstrap-lookup.mjs"), bootstrapLookupScript);
+  for (const runtime of ["node", "bun"])
+    consumerCommand(directory, runtime, ["bootstrap-lookup.mjs"]);
   await writeFile(
     join(directory, "framework-page.ts"),
     'export { getFrameworkObservation } from "@waffle-os/runtime/testing/page-runner/framework-page";',
@@ -527,7 +572,7 @@ async function sourceInstallParity(packedRoot: string): Promise<void> {
   const installed = join(consumer, "node_modules/@waffle-os/runtime");
   if (!existsSync(join(installed, "dist/index.js")))
     throw new Error("source preparation did not emit Node entries");
-  if (!existsSync(join(installed, "dist/tests/page-runner/framework.js")))
+  if (!existsSync(join(installed, "dist/testing/page-runner/framework.js")))
     throw new Error("source preparation did not emit the framework host");
   const prepared = join(scratch, "source-prepared-node");
   await rename(join(installed, "dist"), prepared);

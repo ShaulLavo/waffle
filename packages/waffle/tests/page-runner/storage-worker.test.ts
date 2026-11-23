@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { storageCase } from "./storage-worker.js";
+import { storageCase } from "../../testing/page-runner/storage-worker.js";
 
 class ReplyWorker {
   static terminated = 0;

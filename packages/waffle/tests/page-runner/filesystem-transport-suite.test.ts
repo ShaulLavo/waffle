@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runPageSuite, type HostCase } from "@waffle-os/runtime/testing/page-runner";
 import { FakeDriver } from "./fake-driver.js";
-import { bounded } from "./driver.js";
+import { bounded } from "../../testing/page-runner/driver.js";
 import { observeFilesystemWorkers } from "./filesystem-transport-observation.js";
 import {
   filesystemTransportAdapter,
@@ -293,7 +293,7 @@ test("ordinary desktop command and all original browser producers remain byte-id
     sha(
       await Bun.file(resolve(import.meta.dir, "../filesystem-transport-browser-driver.ts")).text(),
     ),
-  ).toBe("a3060737f0f26310d3dddd7f534056a09917ac8d899d454dfd39aea0c1fd641d");
+  ).toBe("d646acebbac0d130feeff708e7e6c6680fca0762d44ba06e441a0aa2ea4fa43b");
   const assets = await adapter.assets({ scratch: tmpdir(), signal: new AbortController().signal });
   for (const [route, source] of Object.entries(filesystemTransportSources)) {
     const original = await Bun.build({

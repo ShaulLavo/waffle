@@ -1,7 +1,7 @@
 import { CHUNK_SIZE } from "../fs/indexeddb-chunks.js";
 import { PersistentBackend } from "../fs/persistent.js";
 import { FilesystemError } from "../core/filesystem.js";
-import { storedTimes } from "./fixtures/file-times.js";
+import { storedTimes } from "../testing/fixtures/file-times.js";
 import type {
   PersistedIndex,
   PersistedNode,

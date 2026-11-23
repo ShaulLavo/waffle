@@ -1,10 +1,14 @@
-import { hostReply } from "./report-control.js";
-import type { StorageEntry } from "../storage-allocation.js";
-import type { Driver, DriverCleanup, DriverPressControl } from "./driver.js";
-import { record, type Body, type HostKey } from "./protocol.js";
-import { listIds } from "./storage-policy.js";
-import { storageTests, opfsStorageTests } from "../storage-browser.js";
-import type { Observation } from "./reporter.js";
+import { hostReply } from "../../testing/page-runner/report-control.js";
+import type { StorageEntry } from "../../testing/storage-allocation.js";
+import type {
+  Driver,
+  DriverCleanup,
+  DriverPressControl,
+} from "../../testing/page-runner/driver.js";
+import { record, type Body, type HostKey } from "../../testing/page-runner/protocol.js";
+import { listIds } from "../../testing/page-runner/storage-policy.js";
+import { storageTests, opfsStorageTests } from "../../testing/storage-browser.js";
+import type { Observation } from "../../testing/page-runner/reporter.js";
 export type FakeMode =
   | "pass"
   | "unretired"

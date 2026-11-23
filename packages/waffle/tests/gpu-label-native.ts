@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
-import { navigateTestPage } from "./browser-navigation.js";
-import { browserBundle } from "./browser-runner-lifecycle.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
+import { browserBundle } from "../testing/browser-runner-lifecycle.js";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 
 export const labelNativeControls = ["labels"];

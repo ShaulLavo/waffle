@@ -1,10 +1,10 @@
 import { join, resolve } from "node:path";
 import { verifiedFixture } from "../../scripts/build-memory-group-fixture.js";
 import { runOwned } from "../../scripts/owned-command.js";
-import { browserBundle } from "../browser-runner-lifecycle.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
 import { commandPageBundle, type CommandRequest } from "./command-suites.js";
-import { record, strings } from "./protocol.js";
-import type { SuiteAdapter } from "./suite-host.js";
+import { record, strings } from "../../testing/page-runner/protocol.js";
+import type { SuiteAdapter } from "../../testing/page-runner/suite-host.js";
 
 export function checkMemoryGroupResult(report: unknown): void {
   if (

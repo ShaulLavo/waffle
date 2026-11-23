@@ -3,7 +3,7 @@ import { isAbsolute, join } from "node:path";
 import { runPageSuite } from "@waffle-os/runtime/testing/page-runner";
 import { swiftShaderArgs } from "../gpu-browser-qualification.js";
 import { gpuAsyncAdapter } from "./gpu-async-suite.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
 
 export async function runGpuAsyncFailureControls(root: string, scratch: string, startedAt: number) {
   if (!isAbsolute(root) || !isAbsolute(scratch)) throw new Error("Control paths must be absolute");

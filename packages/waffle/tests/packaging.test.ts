@@ -58,7 +58,7 @@ test("framework browser controls prepare only their bootstrap in a clean output"
   try {
     const source = new URL("../", import.meta.url).pathname;
     await buildFrameworkBootstrap(source, root);
-    const output = join(root, "tests/page-runner/framework-bootstrap.js");
+    const output = join(root, "testing/page-runner/framework-bootstrap.js");
     const script = await Bun.file(output).text();
     expect(script).toContain("__waffleFrameworkConfiguration");
     expect(new Bun.Transpiler({ loader: "js" }).scanImports(script)).toEqual([]);

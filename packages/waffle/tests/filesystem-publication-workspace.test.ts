@@ -1,4 +1,4 @@
-import { workspaceFilesystemHost } from "./fixtures/filesystem-host.js";
+import { workspaceFilesystemHost } from "../testing/fixtures/filesystem-host.js";
 import {
   FilesystemRequestAllocator,
   requestCells,
