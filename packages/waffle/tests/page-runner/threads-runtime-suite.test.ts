@@ -17,7 +17,7 @@ import {
   checkThreadRuntimeResult,
 } from "./threads-runtime-suite.js";
 import { FakeDriver } from "./fake-driver.js";
-import { record } from "./protocol.js";
+import { record } from "../../testing/page-runner/protocol.js";
 
 const fixtureSha256 = "verified-fixture";
 const ids = runtimeThreadCases.map(threadRuntimeId);

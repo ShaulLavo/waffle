@@ -6,7 +6,7 @@ import {
   type SuiteAdapter,
 } from "@waffle-os/runtime/testing/page-runner";
 import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
-import { record } from "./protocol.js";
+import { record } from "../../testing/page-runner/protocol.js";
 
 export const hostControlModes = [
   "deadline-teardown",

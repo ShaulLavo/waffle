@@ -1,11 +1,11 @@
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeResult } from "./result-file.js";
+import { writeResult } from "../../testing/page-runner/result-file.js";
 import { swiftShaderArgs } from "../gpu-browser-qualification.js";
 import { expect, spyOn, test } from "bun:test";
-import { BrowserRunnerLifecycle } from "../browser-runner-lifecycle.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
+import { BrowserRunnerLifecycle } from "../../testing/browser-runner-lifecycle.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
 
 test("browser temporary roots are siblings of host scratch under a CI supervisor", async () => {
   const root = "/home/runner/work/_temp/wb-123456";

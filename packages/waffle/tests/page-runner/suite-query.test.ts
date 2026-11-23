@@ -3,7 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FakeDriver } from "./fake-driver.js";
-import { runPageSuite, type SuiteAdapter, type SuiteCase } from "./suite-host.js";
+import {
+  runPageSuite,
+  type SuiteAdapter,
+  type SuiteCase,
+} from "../../testing/page-runner/suite-host.js";
 
 async function queryFixture(query: unknown, inspect?: (url: URL) => Promise<void>, worker = false) {
   const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "wq-"));

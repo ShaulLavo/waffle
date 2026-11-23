@@ -1,4 +1,4 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { firefox, chromium, webkit } from "playwright";
 
 const [engine = "firefox", port = "4301", rounds = "60", concurrency = "2"] = process.argv.slice(2);

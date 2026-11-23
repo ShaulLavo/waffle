@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
 import { once } from "node:events";
 import { createServer, request, type IncomingMessage, type ServerResponse } from "node:http";
-import { FrameworkCollector } from "./framework-collector.js";
-import { frameworkMiddleware } from "./framework-middleware.js";
-import { FrameworkTraceOwner } from "./framework-trace.js";
-import { FrameworkTracePageOwner, tracePostObserver } from "./framework-trace-page.js";
+import { FrameworkCollector } from "../../testing/page-runner/framework-collector.js";
+import { frameworkMiddleware } from "../../testing/page-runner/framework-middleware.js";
+import { FrameworkTraceOwner } from "../../testing/page-runner/framework-trace.js";
+import {
+  FrameworkTracePageOwner,
+  tracePostObserver,
+} from "../../testing/page-runner/framework-trace-page.js";
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 type Received = { incoming: IncomingMessage; outgoing: ServerResponse };

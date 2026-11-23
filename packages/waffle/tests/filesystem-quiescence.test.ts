@@ -23,7 +23,7 @@ import {
   assertFilesystemStopped,
   assertFilesystemQuiet,
 } from "./filesystem-stop-observer.js";
-import { ms, statTimes } from "./fixtures/file-times.js";
+import { ms, statTimes } from "../testing/fixtures/file-times.js";
 
 function serviceQuiescence(service: FilesystemService): Promise<void> {
   const sessions = Reflect.get(service, "sessions");

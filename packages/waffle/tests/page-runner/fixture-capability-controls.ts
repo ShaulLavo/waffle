@@ -5,7 +5,7 @@ import {
   type FixtureRequest,
 } from "@waffle-os/runtime/testing/page-runner";
 import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
-import { browserBundle } from "../browser-runner-lifecycle.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rm, stat } from "node:fs/promises";

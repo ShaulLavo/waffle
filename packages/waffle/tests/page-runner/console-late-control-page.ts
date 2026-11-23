@@ -1,4 +1,4 @@
-import { cleanupStorage, startPage } from "./consumer-page.js";
+import { cleanupStorage, startPage } from "../../testing/page-runner/consumer-page.js";
 startPage<{ mode: string; marker: string }>({
   list: async () => ["console"],
   async run({ mode, marker }, _allocate, context) {

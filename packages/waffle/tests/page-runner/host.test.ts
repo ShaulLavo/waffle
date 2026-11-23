@@ -1,14 +1,14 @@
-import { storagePolicy } from "./storage-policy.js";
+import { storagePolicy } from "../../testing/page-runner/storage-policy.js";
 import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { FakeDriver, type FakeMode } from "./fake-driver.js";
 import { runStorage } from "./storage-host.js";
-import { probeDocument } from "./suite-host.js";
-import { Collector } from "./collector.js";
-import { storageBudgets } from "./protocol.js";
-import { withStorageCleanup } from "../storage-allocation.js";
+import { probeDocument } from "../../testing/page-runner/suite-host.js";
+import { Collector } from "../../testing/page-runner/collector.js";
+import { storageBudgets } from "../../testing/page-runner/protocol.js";
+import { withStorageCleanup } from "../../testing/storage-allocation.js";
 async function control(mode: FakeMode, filtered = true) {
   const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "pr-control-"));
   const driver = new FakeDriver(mode);

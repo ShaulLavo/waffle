@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { storedTimes } from "./fixtures/file-times";
+import { storedTimes } from "../testing/fixtures/file-times";
 import { CHUNK_SIZE, preparePayload } from "../fs/indexeddb-chunks";
 import { encodeRecord, encodeSnapshot, type PersistedIndex } from "../fs/storage";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format";

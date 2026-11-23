@@ -1,10 +1,14 @@
 import type { BunPlugin } from "bun";
 import { join } from "node:path";
-import { browserBundle, type engines } from "../browser-runner-lifecycle.js";
+import { browserBundle, type engines } from "../../testing/browser-runner-lifecycle.js";
 import { commandAdapter, commandPageBundle, type CommandRequest } from "./command-suites.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { runPageSuite, type SuiteAdapter, type SuiteResult } from "./suite-host.js";
-import { record } from "./protocol.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import {
+  runPageSuite,
+  type SuiteAdapter,
+  type SuiteResult,
+} from "../../testing/page-runner/suite-host.js";
+import { record } from "../../testing/page-runner/protocol.js";
 import { runStorage } from "./storage-host.js";
 
 const notificationControlModes = [

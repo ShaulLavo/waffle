@@ -1,4 +1,4 @@
-import { gatedIndexedDB } from "./gated-indexeddb.js";
+import { gatedIndexedDB } from "../testing/gated-indexeddb.js";
 
 const gate = gatedIndexedDB(
   indexedDB,

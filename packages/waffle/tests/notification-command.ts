@@ -1,4 +1,4 @@
-import { record } from "./page-runner/protocol.js";
+import { record } from "../testing/page-runner/protocol.js";
 
 export const notificationSources = {
   "/notification.js": "notification-command.ts",

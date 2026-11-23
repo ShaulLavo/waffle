@@ -1,11 +1,14 @@
 import { expect, test } from "bun:test";
 import { createServer, request as httpRequest, type ServerResponse } from "node:http";
 import { once } from "node:events";
-import { FrameworkCollector } from "./framework-collector.js";
-import { FrameworkTraceOwner, tracePath } from "./framework-trace.js";
-import { FrameworkTracePageOwner, tracePostObserver } from "./framework-trace-page.js";
-import { frameworkMiddleware } from "./framework-middleware.js";
-import type { TesterTraceOptions } from "./framework-types.js";
+import { FrameworkCollector } from "../../testing/page-runner/framework-collector.js";
+import { FrameworkTraceOwner, tracePath } from "../../testing/page-runner/framework-trace.js";
+import {
+  FrameworkTracePageOwner,
+  tracePostObserver,
+} from "../../testing/page-runner/framework-trace-page.js";
+import { frameworkMiddleware } from "../../testing/page-runner/framework-middleware.js";
+import type { TesterTraceOptions } from "../../testing/page-runner/framework-types.js";
 
 const cleanupResponse = { event: "response:cleanup", iframeId: "actual-file", messageId: 7 };
 const cleanupCommand = { ...cleanupResponse, event: "cleanup" };

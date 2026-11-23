@@ -62,7 +62,7 @@ export default {
         "tests/page-runner/browser-controls-suite.ts",
         "tests/page-runner/browser-controls-process-fixture.ts",
         "tests/page-runner/asset-hold-controls.ts",
-        "tests/page-runner/framework-bootstrap-main.ts",
+        "testing/page-runner/framework-bootstrap-main.ts",
         "tests/page-runner/framework-controls/installed.ts",
         "tests/network-{page,relay-page,control-page,signal-control,browser-service-worker,relay-browser-runner}.ts",
         "tests/gpu-browser-qualification.ts",
@@ -145,7 +145,7 @@ export default {
       ],
       project: [
         "*.ts",
-        "{browser,core,fs,group,thread,proc,interrupt,search,scripts,tooling,tests}/**/*.{ts,js}",
+        "{browser,core,fs,group,thread,proc,interrupt,search,scripts,tooling,tests,testing}/**/*.{ts,js}",
       ],
     },
   },

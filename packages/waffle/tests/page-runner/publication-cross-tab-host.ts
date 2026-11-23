@@ -4,7 +4,12 @@ import type {
   CrossTabLifecycle,
   CrossTabPage,
 } from "../publication-cross-tab-host.js";
-import { record, type HostCase, type HostPeer, type HostWorker } from "./protocol.js";
+import {
+  record,
+  type HostCase,
+  type HostPeer,
+  type HostWorker,
+} from "../../testing/page-runner/protocol.js";
 import { installWorkspaceChannelObserver } from "../fixtures/publication-channel-observer.js";
 import { encodeCrossTabValue, decodeCrossTabValue } from "./cross-tab-value.js";
 
@@ -14,7 +19,7 @@ import {
   evaluationMode,
   collectDiagnostic,
   type Purpose,
-} from "./stall-diagnostics.js";
+} from "../../testing/page-runner/stall-diagnostics.js";
 
 export type CrossTabWorkerEvent = { peer: number; worker: number; kind: string; url: string };
 

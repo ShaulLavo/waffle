@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { peerStorageControl } from "./peer-storage-controls.js";
-import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import type { HostCase, HostPeer } from "./protocol.js";
+import { runPageSuite, type SuiteAdapter } from "../../testing/page-runner/suite-host.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import type { HostCase, HostPeer } from "../../testing/page-runner/protocol.js";
 
 export const peerControlModes = [
   "peer-pass",

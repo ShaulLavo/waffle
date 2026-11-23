@@ -2,7 +2,7 @@ import { mock, spyOn } from "bun:test";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { BrowserRunnerLifecycle, engines } from "../browser-runner-lifecycle.ts";
+import { BrowserRunnerLifecycle, engines } from "../../testing/browser-runner-lifecycle.ts";
 import type { BrowserContext } from "playwright";
 
 const mode = process.argv[2];
@@ -41,7 +41,7 @@ class ControlledLifecycle extends BrowserRunnerLifecycle {
     return pending;
   }
 }
-mock.module(resolve(import.meta.dir, "../browser-runner-lifecycle.ts"), () => ({
+mock.module(resolve(import.meta.dir, "../../testing/browser-runner-lifecycle.ts"), () => ({
   BrowserRunnerLifecycle: ControlledLifecycle,
   browserBundle: async () => new Blob(["Fixture must not be evaluated"]),
 }));

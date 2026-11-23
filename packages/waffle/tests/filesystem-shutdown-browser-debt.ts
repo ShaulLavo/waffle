@@ -1,6 +1,10 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import type { Browser, Page, Worker } from "playwright";
-import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
+import {
+  BrowserRunnerLifecycle,
+  browserBundle,
+  engines,
+} from "../testing/browser-runner-lifecycle.js";
 import {
   before,
   evidenceJson,

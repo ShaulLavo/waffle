@@ -22,10 +22,10 @@ import {
   type HostPageRun,
   type PageSuite,
 } from "@waffle-os/runtime/testing/page-runner/page";
-import { Collector, type CollectorPolicy } from "./collector.js";
+import { Collector, type CollectorPolicy } from "../../testing/page-runner/collector.js";
 import { FakeDriver } from "./fake-driver.js";
-import { serveCollector } from "./suite-host.js";
-import type { Body } from "./protocol.js";
+import { serveCollector } from "../../testing/page-runner/suite-host.js";
+import type { Body } from "../../testing/page-runner/protocol.js";
 
 const id = "consumer: default";
 const policy: CollectorPolicy = {
@@ -73,7 +73,7 @@ for (const [entry, target] of [
 ] as const) {
   test(`${entry} contains only test host dependencies`, async () => {
     const built = await Bun.build({
-      entrypoints: [join(import.meta.dir, entry)],
+      entrypoints: [join(import.meta.dir, "../../testing/page-runner", entry)],
       target,
       metafile: true,
     });
@@ -99,9 +99,9 @@ for (const entry of ["index.ts", "runtime.ts", "browser/worker.ts"]) {
     });
     expect(built.success).toBe(true);
     if (!built.metafile) throw new Error("Missing runtime graph");
-    expect(Object.keys(built.metafile.inputs).filter((path) => path.includes("/tests/"))).toEqual(
-      [],
-    );
+    expect(
+      Object.keys(built.metafile.inputs).filter((path) => /\/tests(?:ing)?\//.test(path)),
+    ).toEqual([]);
   });
 }
 test("page import and hosted accessor need no window", () => {

@@ -3,9 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeDriver } from "./fake-driver.js";
-import { SafariDriver } from "./safari-driver.js";
-import type { Driver } from "./driver.js";
-import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
+import { SafariDriver } from "../../testing/page-runner/safari-driver.js";
+import type { Driver } from "../../testing/page-runner/driver.js";
+import { runPageSuite, type SuiteAdapter } from "../../testing/page-runner/suite-host.js";
 
 const adapter: SuiteAdapter<object> = {
   suite: "startup-control",

@@ -2,11 +2,15 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BrowserObservation } from "./browser-observation.js";
+import { BrowserObservation } from "../../testing/page-runner/browser-observation.js";
 import { loadBootstrap } from "./bootstrap-control.js";
-import type { DriverObservationBinding } from "./driver.js";
+import type { DriverObservationBinding } from "../../testing/page-runner/driver.js";
 import { FakeDriver } from "./fake-driver.js";
-import { runPageSuite, type SuiteAdapter, type SuiteCase } from "./suite-host.js";
+import {
+  runPageSuite,
+  type SuiteAdapter,
+  type SuiteCase,
+} from "../../testing/page-runner/suite-host.js";
 
 type Mode =
   | "pass"

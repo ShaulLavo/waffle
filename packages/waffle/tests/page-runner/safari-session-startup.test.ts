@@ -1,5 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
-import { SafariDriver, type NativeCommandFailure } from "./safari-driver.js";
+import {
+  SafariDriver,
+  type NativeCommandFailure,
+} from "../../testing/page-runner/safari-driver.js";
 
 const udid = "10128D70-92A7-4626-9CE5-1537CF27BE84";
 function sessionAnswer(): Response {

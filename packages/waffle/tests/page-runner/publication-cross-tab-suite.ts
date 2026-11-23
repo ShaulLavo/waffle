@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { browserBundle } from "../browser-runner-lifecycle.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
 import { crossTabAssets } from "../publication-cross-tab-assets.js";
 import { crossTabCommand } from "../publication-cross-tab-command.js";
 import {
@@ -8,9 +8,9 @@ import {
   crossTabTimeoutMs,
 } from "../publication-cross-tab-inventory.js";
 import { nativeCrossTabLifecycle, type CrossTabWorkerEvent } from "./publication-cross-tab-host.js";
-import { diagnosticsFor } from "./stall-diagnostics.js";
-import { record, type HostCase } from "./protocol.js";
-import type { SuiteAdapter } from "./consumer.js";
+import { diagnosticsFor } from "../../testing/page-runner/stall-diagnostics.js";
+import { record, type HostCase } from "../../testing/page-runner/protocol.js";
+import type { SuiteAdapter } from "../../testing/page-runner/consumer.js";
 
 async function drive(host: HostCase): Promise<unknown> {
   const labels: string[] = [];

@@ -6,7 +6,7 @@ import { createFilesystemConnection } from "../fs/protocol.js";
 import { mutationIntent } from "../fs/publication.js";
 import { decodeSnapshot, encodeRecord } from "../fs/storage.js";
 import type { ResolvedPath } from "../core/filesystem.js";
-import { storedTimes } from "./fixtures/file-times.js";
+import { storedTimes } from "../testing/fixtures/file-times.js";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {

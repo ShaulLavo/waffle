@@ -4,7 +4,7 @@ import {
   retainedWorker,
   filesystemConstructions,
 } from "./storage-lock-observation.js";
-import type { StorageAllocationHooks } from "./storage-allocation.js";
+import type { StorageAllocationHooks } from "../testing/storage-allocation.js";
 import { withVfsImplementation } from "../fs/vfs-internal.js";
 import {
   SharedFilesystem,

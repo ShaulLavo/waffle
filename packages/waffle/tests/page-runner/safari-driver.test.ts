@@ -1,4 +1,4 @@
-import { storagePolicy } from "./storage-policy.js";
+import { storagePolicy } from "../../testing/page-runner/storage-policy.js";
 import { expect, test } from "bun:test";
 import {
   associateListener,
@@ -6,10 +6,10 @@ import {
   SafariDriver,
   driverResponseLimit,
   readDriverResponse,
-} from "./safari-driver.js";
-import { parseSession } from "./driver.js";
-import { Collector } from "./collector.js";
-import { probeDocument } from "./suite-host.js";
+} from "../../testing/page-runner/safari-driver.js";
+import { parseSession } from "../../testing/page-runner/driver.js";
+import { Collector } from "../../testing/page-runner/collector.js";
+import { probeDocument } from "../../testing/page-runner/suite-host.js";
 const udid = "10128D70-92A7-4626-9CE5-1537CF27BE84";
 const capabilities = {
   browserName: "Safari",

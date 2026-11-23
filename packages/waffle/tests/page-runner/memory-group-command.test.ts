@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { checkMemoryGroupResult, memoryGroupAdapter } from "./memory-group-command.js";
 import { checkedMemoryGroupControl } from "./memory-group-controls-runner.js";
 import { FakeDriver, type FakeCommand } from "./fake-driver.js";
-import { runPageSuite } from "./suite-host.js";
+import { runPageSuite } from "../../testing/page-runner/suite-host.js";
 import { retireCommandGroup } from "../../scripts/owned-command.js";
 
 const disposal = "memory group members | guard: A live page runtime already owns this page";

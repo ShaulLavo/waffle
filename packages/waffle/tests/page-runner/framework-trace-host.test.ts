@@ -8,7 +8,7 @@ import {
   type TesterTraceCapture,
   type TraceCheckpoint,
   type TraceSettlement,
-} from "./framework.js";
+} from "../../testing/page-runner/framework.js";
 
 test("an armed but unadmitted public host never waits for a hypothetical producer or restarts cleanup accounting", async () => {
   const priorRoot = process.env.STORAGE_SCRATCH_ROOT;

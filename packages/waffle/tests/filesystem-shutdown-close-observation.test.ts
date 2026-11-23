@@ -128,7 +128,7 @@ import {
   stopBrowserResource,
   type BrowserResourceOwner,
   type ResourceCloseObserver,
-} from "./process-recycling-browser-runner-control.js";
+} from "../testing/process-recycling-browser-runner-control.js";
 
 function contextFixture() {
   const operation = Promise.withResolvers<void>();

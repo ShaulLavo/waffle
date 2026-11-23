@@ -1,9 +1,12 @@
 import { reportingTypes } from "./reporting-types.js";
 import { expect, test } from "bun:test";
-import { FrameworkCollector } from "./framework-collector.js";
-import { dispatchReports } from "./collector-fetch.js";
+import { FrameworkCollector } from "../../testing/page-runner/framework-collector.js";
+import { dispatchReports } from "../../testing/page-runner/collector-fetch.js";
 import { reportingPage, reportBody, waitUntil } from "./reporting-fixture.js";
-import type { FrameworkObservation, FrameworkUpdate } from "./framework-page.js";
+import type {
+  FrameworkObservation,
+  FrameworkUpdate,
+} from "../../testing/page-runner/framework-page.js";
 
 const expected = Array.from({ length: 38 }, (_, index) => ({
   file: "synthetic.ts",

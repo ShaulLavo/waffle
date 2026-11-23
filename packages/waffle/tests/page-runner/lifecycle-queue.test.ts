@@ -2,13 +2,13 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BrowserObservation } from "./browser-observation.js";
+import { BrowserObservation } from "../../testing/page-runner/browser-observation.js";
 import { loadBootstrap } from "./bootstrap-control.js";
-import { bounded, type DriverObservationBinding } from "./driver.js";
+import { bounded, type DriverObservationBinding } from "../../testing/page-runner/driver.js";
 import { PeerDriverFixture } from "./peer-driver-fixture.js";
-import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
+import { runPageSuite, type SuiteAdapter } from "../../testing/page-runner/suite-host.js";
 
-import type { HostCase, HostWorkerCallback } from "./protocol.js";
+import type { HostCase, HostWorkerCallback } from "../../testing/page-runner/protocol.js";
 
 class ObservedPeerFixture extends PeerDriverFixture {
   private bootstrap: string | undefined;

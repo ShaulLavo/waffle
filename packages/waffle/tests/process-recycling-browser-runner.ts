@@ -13,7 +13,7 @@ if (process.argv[2] === "--page-controls") {
   process.exit(0);
 }
 
-const { navigateTestPage } = await import("./browser-navigation.js");
+const { navigateTestPage } = await import("../testing/browser-navigation.js");
 const { mkdir, mkdtemp, rm } = await import("node:fs/promises");
 const { resolve } = await import("node:path");
 const { chromium, firefox, webkit } = await import("playwright");
@@ -31,7 +31,7 @@ const {
   startNavigationEngine,
 } = await import("./process-navigation-observer.js");
 const { closeBrowserResources, stopBrowserResource } =
-  await import("./process-recycling-browser-runner-control.js");
+  await import("../testing/process-recycling-browser-runner-control.js");
 
 // Run from the repository with Bun. Defaults to the full Chromium/Firefox/WebKit matrix.
 // PROCESS_SCRATCH_ROOT selects the parent of a disposable wproc-* tree.

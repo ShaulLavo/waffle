@@ -173,7 +173,7 @@ function installStandIns(): void {
         : delay,
     );
   Object.defineProperty(globalThis, "setTimeout", { configurable: true, value: timer });
-  mock.module("./browser-runner-lifecycle.js", () => ({
+  mock.module("../testing/browser-runner-lifecycle.js", () => ({
     BrowserRunnerLifecycle: StandInLifecycle,
     browserBundle: async () => "labelled-no-bundle",
     engines: { chromium: {} },

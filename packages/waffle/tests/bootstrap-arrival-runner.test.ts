@@ -37,7 +37,7 @@ for (const dispatcher of [false, true])
           `import { test, expect } from "bun:test";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { BrowserRunnerLifecycle } from ${JSON.stringify(join(import.meta.dir, "browser-runner-lifecycle.ts"))};
+import { BrowserRunnerLifecycle } from ${JSON.stringify(join(import.meta.dir, "../testing/browser-runner-lifecycle.ts"))};
 test("actual lifecycle accepts the runner's physical scratch", async () => {
   const lifecycle = new BrowserRunnerLifecycle(60000, 5000, undefined, "caller");
   const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT, "bac-"));

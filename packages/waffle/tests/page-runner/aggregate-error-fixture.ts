@@ -1,4 +1,4 @@
-import { withStorageCleanup } from "../storage-allocation.js";
+import { withStorageCleanup } from "../../testing/storage-allocation.js";
 /** @browserEntry */
 export function storageTests() {
   return [

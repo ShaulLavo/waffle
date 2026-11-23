@@ -5,7 +5,7 @@ Status: Approved. The admission/completion split and four selected late controls
 ## Original blocker
 
 The owned HTTP fixture cannot release a successful response after provisional body success.
-`fixtureResponse` in `tests/page-runner/suite-host.ts` calls `Collector.admitFixture` before
+`fixtureResponse` in `testing/page-runner/suite-host.ts` calls `Collector.admitFixture` before
 and after awaiting the fixture handler. The latter requires the case outcome to remain
 `running` and the document to remain incomplete. Both conditions exclude the requested late
 phase, even while the Console observer is still active and its cutoff has not started.

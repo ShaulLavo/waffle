@@ -1,8 +1,8 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { chromium, type BrowserContext } from "playwright";
-import { cleanupInterruptResources } from "./interrupt-browser-runner-control.js";
+import { cleanupInterruptResources } from "../testing/interrupt-browser-runner-control.js";
 
 // On demand. INTERRUPT_CACHE_LS supplies existing program bytes; no producer build runs here.
 const artifact = process.env.INTERRUPT_CACHE_LS;

@@ -388,6 +388,7 @@ jobs:
               - "packages/waffle-relay/package.json"
               - "packages/waffle/tooling/workspace-safari-runner.ts"
               - "packages/waffle/tests/**"
+              - "packages/waffle/testing/**"
             libc:
               - ".github/actions/setup-wasmtime/**"
               - ".github/workflows/ci.yml"
@@ -1139,6 +1140,7 @@ jobs:
               - "packages/waffle-relay/package.json"
               - "packages/waffle/tooling/workspace-safari-runner.ts"
               - "packages/waffle/tests/**"
+              - "packages/waffle/testing/**"
             libc:
               - ".github/actions/setup-wasmtime/**"
               - ".github/workflows/ci.yml"

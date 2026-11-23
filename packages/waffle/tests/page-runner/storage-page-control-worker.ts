@@ -1,4 +1,4 @@
-import { storageTests, opfsStorageTests } from "../storage-browser.js";
+import { storageTests, opfsStorageTests } from "../../testing/storage-browser.js";
 import type { WorkerRequest } from "./storage-worker.js";
 declare const STORAGE_PAGE_LABEL: "wrong" | "missing";
 globalThis.onmessage = (event: MessageEvent<WorkerRequest>) => {

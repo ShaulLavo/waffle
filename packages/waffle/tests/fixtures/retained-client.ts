@@ -1,5 +1,5 @@
 import { FilesystemClient, createFilesystemConnection } from "../../fs/index.js";
-import { statTimes } from "./file-times.js";
+import { statTimes } from "../../testing/fixtures/file-times.js";
 
 export function retainedClientFixture() {
   const pair = createFilesystemConnection();

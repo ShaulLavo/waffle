@@ -58,7 +58,10 @@ for (const forced of [false, true])
         );
       const suite = join(root, "tests/storage-browser-runner.ts");
       const dependencies = resolve(import.meta.dir, "../node_modules/playwright/index.mjs");
-      const control = resolve(import.meta.dir, "process-recycling-browser-runner-control.ts");
+      const control = resolve(
+        import.meta.dir,
+        "../testing/process-recycling-browser-runner-control.ts",
+      );
       writeFileSync(
         suite,
         `

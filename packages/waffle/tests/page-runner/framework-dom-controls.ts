@@ -1,4 +1,4 @@
-import { navigateTestPage } from "../browser-navigation.js";
+import { navigateTestPage } from "../../testing/browser-navigation.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { isAbsolute, join } from "node:path";
@@ -8,8 +8,8 @@ import {
   type FrameworkHost,
   type FrameworkResult,
 } from "@waffle-os/runtime/testing/page-runner/framework";
-import { writeResult } from "./suite-host.js";
-import { record } from "./protocol.js";
+import { writeResult } from "../../testing/page-runner/suite-host.js";
+import { record } from "../../testing/page-runner/protocol.js";
 
 export const frameworkControlModes = [
   "pass",

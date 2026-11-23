@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { runHostPage } from "./host-page.js";
-import { Reporter } from "./reporter.js";
-import type { Body } from "./protocol.js";
+import { runHostPage } from "../../testing/page-runner/host-page.js";
+import { Reporter } from "../../testing/page-runner/reporter.js";
+import type { Body } from "../../testing/page-runner/protocol.js";
 
 test("page diagnostics and disposal use the passed absolute bound, not a new hook allowance", async () => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, "window");

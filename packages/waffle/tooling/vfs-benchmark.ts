@@ -2,7 +2,7 @@ import { cp, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { cpus, hostname, release, totalmem } from "node:os";
 import type { BrowserContext, Page } from "playwright";
-import { BrowserRunnerLifecycle, browserBundle } from "../tests/browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle, browserBundle } from "../testing/browser-runner-lifecycle.js";
 import {
   BROWSERS,
   WORKLOADS,
@@ -784,8 +784,8 @@ async function assertPairedProtocol(root: string, source: string): Promise<void>
       throw new Error(`Paired workload protocol differs: ${name}`);
   }
   if (
-    (await readFile(resolve(root, "tests/browser-runner-lifecycle.ts"), "utf8")) !==
-    (await readFile(resolve(source, "tests/browser-runner-lifecycle.ts"), "utf8"))
+    (await readFile(resolve(root, "testing/browser-runner-lifecycle.ts"), "utf8")) !==
+    (await readFile(resolve(source, "testing/browser-runner-lifecycle.ts"), "utf8"))
   )
     throw new Error("Paired lifecycle protocol differs");
 }

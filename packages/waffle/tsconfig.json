@@ -27,7 +27,7 @@
     "programs",
     "browser",
     "search",
-    "tests/interrupt-browser-runner-control.ts",
+    "testing/interrupt-browser-runner-control.ts",
     "tests/process-recycling-browser-runner.ts",
     "tests/process-recycling-browser-runner.test.ts",
     "tests/storage-browser-runner.ts",

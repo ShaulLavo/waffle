@@ -1,6 +1,6 @@
 import type { Page, Browser } from "playwright";
-import type { BrowserRunnerLifecycle } from "./browser-runner-lifecycle.js";
-import { navigateTestPage } from "./browser-navigation.js";
+import type { BrowserRunnerLifecycle } from "../testing/browser-runner-lifecycle.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { encodeCrossTabValue, decodeCrossTabValue } from "./page-runner/cross-tab-value.js";
 
 export type CrossTabPage = {

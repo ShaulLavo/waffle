@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { Reporter } from "./reporter.js";
-import { record } from "./protocol.js";
+import { Reporter } from "../../testing/page-runner/reporter.js";
+import { record } from "../../testing/page-runner/protocol.js";
 async function withWindow(run: () => Promise<void>): Promise<void> {
   const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { configurable: true, value: {} });

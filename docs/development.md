@@ -231,6 +231,7 @@ The libc suite builds guest binaries with a pinned wasi-sdk and runs them under 
 | `packages/waffle/interrupt/` | The WebAssembly rewriter that inserts interruption checkpoints.                            |
 | `packages/waffle/runtime.ts` | `createRuntime()` and the capability projections that guests receive.                      |
 | `packages/waffle/tests/`     | Unit tests, browser runners and fixtures.                                                  |
+| `packages/waffle/testing/`   | The published `./testing/*` helpers and the files they need. `tests/` is never published.  |
 | `packages/waffle/tooling/`   | Size gate, quality probes, benchmark and storage tooling.                                  |
 | `site/`                      | The landing page. It has its own `package.json` and [README](../site/README.md).           |
 | `docs/`                      | These docs. [The index](README.md) maps them by kind.                                      |

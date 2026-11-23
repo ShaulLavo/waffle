@@ -3,10 +3,10 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { browserBundle } from "../browser-runner-lifecycle.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
-import type { HostWorker } from "./protocol.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { runPageSuite, type SuiteAdapter } from "../../testing/page-runner/suite-host.js";
+import type { HostWorker } from "../../testing/page-runner/protocol.js";
 
 for (const engine of ["chromium"] as const) {
   test.skipIf(process.env.PUBLICATION_BROWSER_CONTROLS !== "1")(

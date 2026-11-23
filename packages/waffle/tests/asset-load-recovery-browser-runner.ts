@@ -4,7 +4,7 @@ import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { chromium, type Browser, type Page } from "playwright";
-import { navigateTestPage } from "./browser-navigation.ts";
+import { navigateTestPage } from "../testing/browser-navigation.ts";
 import type {} from "./fixtures/asset-load-recovery-page.ts";
 
 const scratch = await mkdtemp(

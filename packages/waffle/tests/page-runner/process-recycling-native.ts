@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { nativeMain, writeResult } from "@waffle-os/runtime/testing/page-runner";
-import { record } from "./protocol.js";
+import { record } from "../../testing/page-runner/protocol.js";
 import { processRecyclingAdapter } from "./process-recycling-suite.js";
 
 export async function processRecyclingNative(args: string[], startedAt: number): Promise<number> {

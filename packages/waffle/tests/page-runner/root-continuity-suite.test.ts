@@ -10,8 +10,12 @@ import {
 import { rootContinuityStorage } from "./root-continuity-allocation.js";
 import { rootContinuityAdapter, rootContinuityIds } from "./root-continuity-suite.js";
 import { FakeDriver } from "./fake-driver.js";
-import { record } from "./protocol.js";
-import { runPageSuite, type RunOptions, type SuiteAdapter } from "./suite-host.js";
+import { record } from "../../testing/page-runner/protocol.js";
+import {
+  runPageSuite,
+  type RunOptions,
+  type SuiteAdapter,
+} from "../../testing/page-runner/suite-host.js";
 
 const evidence = {
   selected: {

@@ -1,5 +1,5 @@
-import { startPage } from "./page-runner/page-main.js";
-import { cleanupStorage } from "./page-runner/storage-cleanup.js";
+import { startPage } from "../testing/page-runner/page-main.js";
+import { cleanupStorage } from "../testing/page-runner/storage-cleanup.js";
 import { storageLockCases } from "./storage-lock-cases.js";
 import type { StorageLockRequest } from "./storage-lock-host.js";
 

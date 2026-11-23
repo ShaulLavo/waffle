@@ -36,7 +36,7 @@ function bootstrapSource(): string {
     if (root === next) throw new Error("Prepared framework bootstrap not found");
     root = next;
   }
-  return readFileSync(join(root, "dist/tests/page-runner/framework-bootstrap.js"), "utf8");
+  return readFileSync(join(root, "dist/testing/page-runner/framework-bootstrap.js"), "utf8");
 }
 function snapshot(value: unknown) {
   if (

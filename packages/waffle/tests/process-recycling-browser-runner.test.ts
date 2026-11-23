@@ -17,7 +17,7 @@ import {
   closeBrowserResources,
   stopBrowserResource,
   type BrowserResourceOwner,
-} from "./process-recycling-browser-runner-control.js";
+} from "../testing/process-recycling-browser-runner-control.js";
 import { createWorkerProcessTransport } from "../proc/worker-client.js";
 
 type FixtureModule = { installProcessTestWorker(): void };

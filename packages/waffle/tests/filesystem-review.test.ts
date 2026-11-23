@@ -1,6 +1,6 @@
 import { SLOT_WORDS } from "../fs/shared.js";
 import { expect, test } from "bun:test";
-import { statTimes } from "./fixtures/file-times";
+import { statTimes } from "../testing/fixtures/file-times";
 import {
   FilesystemClient,
   FilesystemService,

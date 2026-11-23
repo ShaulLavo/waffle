@@ -1,7 +1,7 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { resolve } from "node:path";
 import type { Browser, BrowserContext, CDPSession, Page, Worker } from "playwright";
-import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
+import { BrowserRunnerLifecycle, browserBundle } from "../testing/browser-runner-lifecycle";
 import {
   proofEqual as equal,
   proofFileAdvance,

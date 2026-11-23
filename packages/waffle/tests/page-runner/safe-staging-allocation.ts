@@ -1,5 +1,5 @@
 import type { StagingDatabaseName } from "../indexeddb-checkpoint-decode-browser.js";
-import type { StorageEntry } from "../storage-allocation.js";
+import type { StorageEntry } from "../../testing/storage-allocation.js";
 
 export const stagingPrefixes = ["waffle-staged-test", "checkpoint-decoder-r30"] as const;
 export function stagingDatabaseName(

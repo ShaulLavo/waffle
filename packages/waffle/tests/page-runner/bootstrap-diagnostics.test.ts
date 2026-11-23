@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
-import { bootstrapIdentityClasses, bootstrapURLClass } from "./bootstrap-diagnostics.js";
-import { SafariDriver } from "./safari-driver.js";
-import { SafariObserver } from "./safari-observer.js";
-import { HostConsumers } from "./owned-consumers.js";
-import type { DriverObservationBinding } from "./driver.js";
+import {
+  bootstrapIdentityClasses,
+  bootstrapURLClass,
+} from "../../testing/page-runner/bootstrap-diagnostics.js";
+import { SafariDriver } from "../../testing/page-runner/safari-driver.js";
+import { SafariObserver } from "../../testing/page-runner/safari-observer.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
+import type { DriverObservationBinding } from "../../testing/page-runner/driver.js";
 
 const binding: DriverObservationBinding = {
   window: "private-window",
@@ -89,8 +92,10 @@ for (const count of [0, 2]) {
   test(`actual Inspector selection reports ${count} matches and per-application counts without private rows`, async () => {
     const observer = new SafariObserver(binding);
     let sequence = 0;
-    const feed = (selector: string, argument: import("./inspector-plist.js").PlistDict) =>
-      observer.accept({ selector, argument, sequence: ++sequence });
+    const feed = (
+      selector: string,
+      argument: import("../../testing/page-runner/inspector-plist.js").PlistDict,
+    ) => observer.accept({ selector, argument, sequence: ++sequence });
     observer.connectTransport({
       async send(selector, args) {
         if (selector === "_rpc_reportIdentifier:")

@@ -1,7 +1,7 @@
 import { storageCase, type WorkerRequest } from "./storage-worker.js";
-import { cleanupStorage } from "./storage-cleanup.js";
-import { validateWorkerLabel } from "./protocol.js";
-import { startPage } from "./page-main.js";
+import { cleanupStorage } from "../../testing/page-runner/storage-cleanup.js";
+import { validateWorkerLabel } from "../../testing/page-runner/protocol.js";
+import { startPage } from "../../testing/page-runner/page-main.js";
 
 startPage<Extract<WorkerRequest, { kind: "run" }>>({
   list: () => storageCase({ kind: "list" }),

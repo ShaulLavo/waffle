@@ -1,5 +1,5 @@
 import { captureNativeReturn } from "../proc/observation.js";
-import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemService } from "../fs/service.js";
 import { FilesystemClient } from "../fs/client.js";

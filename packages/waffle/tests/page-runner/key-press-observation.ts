@@ -1,4 +1,4 @@
-import { record, type HostKey } from "./protocol.js";
+import { record, type HostKey } from "../../testing/page-runner/protocol.js";
 import type { KeySnapshot } from "./key-press-fixture.js";
 
 export type KeyEffect = Pick<KeySnapshot, "value" | "start" | "end">;

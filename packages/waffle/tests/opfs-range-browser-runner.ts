@@ -1,7 +1,7 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { resolve } from "node:path";
 import type { Browser, Worker as BrowserWorker } from "playwright";
-import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle, browserBundle } from "../testing/browser-runner-lifecycle.js";
 import type { runOpfsRangeBrowser } from "./opfs-range-browser.js";
 
 type Receipt = Awaited<ReturnType<typeof runOpfsRangeBrowser>>;

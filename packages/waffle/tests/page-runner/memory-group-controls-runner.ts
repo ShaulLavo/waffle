@@ -1,10 +1,14 @@
 import { mkdir, readdir, rmdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { browserBundle } from "../browser-runner-lifecycle.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
 import { memoryGroupAdapter } from "./memory-group-command.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { record } from "./protocol.js";
-import { runPageSuite, type SuiteResult, type PreparationContext } from "./suite-host.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { record } from "../../testing/page-runner/protocol.js";
+import {
+  runPageSuite,
+  type SuiteResult,
+  type PreparationContext,
+} from "../../testing/page-runner/suite-host.js";
 
 const modes = ["missing-member", "wrong-disposal", "complete"] as const;
 type Mode = (typeof modes)[number];

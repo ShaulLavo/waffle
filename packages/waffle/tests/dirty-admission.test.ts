@@ -16,7 +16,7 @@ import {
 } from "../fs/storage";
 
 import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
-import { ms } from "./fixtures/file-times";
+import { ms } from "../testing/fixtures/file-times";
 
 const data = (length: number, value = 65) => new Uint8Array(length).fill(value);
 const turn = () => new Promise<void>((resolve) => setTimeout(resolve, 2));

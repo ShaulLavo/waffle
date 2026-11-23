@@ -1,4 +1,4 @@
-import type { FrameworkObservation } from "./framework-page.js";
+import type { FrameworkObservation } from "../../testing/page-runner/framework-page.js";
 export function reportingTypes(observation: FrameworkObservation): void {
   const operations: Promise<void>[] = [
     observation.collected(() => []),

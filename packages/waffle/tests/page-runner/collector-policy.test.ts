@@ -1,9 +1,13 @@
 import { expect, test } from "bun:test";
-import { Collector, type CollectorPolicy, type Group } from "./collector.js";
+import {
+  Collector,
+  type CollectorPolicy,
+  type Group,
+} from "../../testing/page-runner/collector.js";
 import { commandAdapter, commands } from "./command-suites.js";
 import { storageAdapter } from "./storage-host.js";
-import { storagePolicy } from "./storage-policy.js";
-import { resultByteLimit, type Body } from "./protocol.js";
+import { storagePolicy } from "../../testing/page-runner/storage-policy.js";
+import { resultByteLimit, type Body } from "../../testing/page-runner/protocol.js";
 
 function fixture(policy = commandAdapter("guest-watch").policy, role: Group["role"] = "case") {
   let now = 0,

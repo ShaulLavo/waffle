@@ -2,7 +2,7 @@ import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { nativeMain } from "./native.js";
+import { nativeMain } from "../../testing/page-runner/native.js";
 import { storageAdapter } from "./storage-host.js";
 test("native CLI rejects relative result paths before allocating anything", async () => {
   expect(await nativeMain(storageAdapter, ["--result", "relative.json"])).toBe(3);

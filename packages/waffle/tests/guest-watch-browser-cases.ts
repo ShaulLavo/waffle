@@ -1,5 +1,5 @@
 import { testReservations } from "./fixtures/shared-memory-platform.js";
-import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { RingWriter, createRing } from "../browser/net/ring.js";
 import { Kind } from "../browser/net/protocol.js";

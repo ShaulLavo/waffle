@@ -2,7 +2,7 @@ import { expect, mock, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "playwright";
-import { navigateTestPage, type NavigationPage } from "./browser-navigation.js";
+import { navigateTestPage, type NavigationPage } from "../testing/browser-navigation.js";
 
 function fixture(engine = "webkit") {
   const browserType = { name: () => engine };
@@ -96,11 +96,13 @@ test("about:blank does not install a network route", async () => {
 
 test("browser fixtures use the shared navigation admission helper", () => {
   const direct = [];
-  for (const path of new Bun.Glob("**/*.ts").scanSync(import.meta.dir)) {
-    // The original diagnostic must keep reproducing the unmodified upstream bug.
-    if (path === "browser-navigation.ts" || path === "process-root-navigation-diagnostic.ts")
-      continue;
-    if (/[.]goto\s*[(]/.test(readFileSync(join(import.meta.dir, path), "utf8"))) direct.push(path);
+  for (const directory of [import.meta.dir, join(import.meta.dir, "../testing")]) {
+    for (const path of new Bun.Glob("**/*.ts").scanSync(directory)) {
+      // The original diagnostic must keep reproducing the unmodified upstream bug.
+      if (path === "browser-navigation.ts" || path === "process-root-navigation-diagnostic.ts")
+        continue;
+      if (/[.]goto\s*[(]/.test(readFileSync(join(directory, path), "utf8"))) direct.push(path);
+    }
   }
   expect(direct).toEqual([]);
 }, 30_000);

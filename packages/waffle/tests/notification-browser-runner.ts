@@ -1,5 +1,5 @@
 import { notificationSources } from "./notification-command.js";
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { chromium } from "playwright";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   closeBrowserResources,
   type BrowserResourceOwner,
-} from "./process-recycling-browser-runner-control.js";
+} from "../testing/process-recycling-browser-runner-control.js";
 
 if (process.argv[2] === "ios-safari") {
   const { notificationNative } = await import("./page-runner/notification-native.js");

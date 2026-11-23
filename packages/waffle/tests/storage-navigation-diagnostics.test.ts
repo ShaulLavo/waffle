@@ -1,14 +1,14 @@
 import { expect, mock, test } from "bun:test";
 import { resolve } from "node:path";
 import type { Browser, BrowserContext, Page } from "playwright";
-import { BrowserRunnerLifecycle } from "./browser-runner-lifecycle.ts";
+import { BrowserRunnerLifecycle } from "../testing/browser-runner-lifecycle.ts";
 import {
   NavigationDiagnostics,
   navigationServerError,
   storageNavigate,
   storageNavigationResponse,
   type NavigationServerEvent,
-} from "./storage-navigation-diagnostics.ts";
+} from "../testing/storage-navigation-diagnostics.ts";
 
 test("navigation capture stays bounded and labels construction without claiming delivery", () => {
   const diagnostics = new NavigationDiagnostics();
@@ -404,7 +404,7 @@ test("real route errors remain outside diagnostic guards", () => {
 });
 
 test("throwing error observers leave real route errors to Bun", () => {
-  const script = `import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "browser-runner-lifecycle.ts"))};
+  const script = `import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "../testing/browser-runner-lifecycle.ts"))};
     const lifecycle = new BrowserRunnerLifecycle(60000, 5);
     const routes = { get "/fail"() { throw new TypeError("real route failure"); } };
     try {

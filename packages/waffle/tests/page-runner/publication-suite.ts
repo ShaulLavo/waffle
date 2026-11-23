@@ -1,12 +1,17 @@
 import { resolve } from "node:path";
-import { browserBundle } from "../browser-runner-lifecycle.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
 import {
   checkPublicationLabels,
   publicationId,
   type PublicationMode,
 } from "../publication-command.js";
-import { record, strings, type HostCase, type HostWorker } from "./protocol.js";
-import type { SuiteAdapter } from "./suite-host.js";
+import {
+  record,
+  strings,
+  type HostCase,
+  type HostWorker,
+} from "../../testing/page-runner/protocol.js";
+import type { SuiteAdapter } from "../../testing/page-runner/suite-host.js";
 
 async function drivePublication(host: HostCase, mode: PublicationMode): Promise<unknown> {
   const workers: HostWorker[] = [];

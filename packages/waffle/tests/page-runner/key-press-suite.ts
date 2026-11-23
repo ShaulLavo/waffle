@@ -10,7 +10,7 @@ import {
   type KeyEffect,
 } from "./key-press-observation.js";
 
-import { record } from "./protocol.js";
+import { record } from "../../testing/page-runner/protocol.js";
 async function drive(host: HostCase, reference: readonly KeyEffect[]): Promise<unknown> {
   const observations: unknown[] = [];
   for (const mode of ["default", "prevent", "decoy"]) {
@@ -107,7 +107,10 @@ async function continuousKeys(host: HostCase): Promise<unknown[]> {
   }
   return sequence;
 }
-function rejectKeyMutations(snapshot: unknown, key: import("./protocol.js").HostKey): void {
+function rejectKeyMutations(
+  snapshot: unknown,
+  key: import("../../testing/page-runner/protocol.js").HostKey,
+): void {
   if (!record(snapshot) || !Array.isArray(snapshot.events))
     throw new Error("Missing observed edges");
   const down: unknown = snapshot.events[0];
@@ -128,7 +131,10 @@ function rejectKeyMutations(snapshot: unknown, key: import("./protocol.js").Host
   ];
   for (const mutation of mutations) requireKeyRejection(mutation, key);
 }
-function requireKeyRejection(value: unknown, key: import("./protocol.js").HostKey): void {
+function requireKeyRejection(
+  value: unknown,
+  key: import("../../testing/page-runner/protocol.js").HostKey,
+): void {
   try {
     checkKeyEdges(value, key, "primary", false);
   } catch {

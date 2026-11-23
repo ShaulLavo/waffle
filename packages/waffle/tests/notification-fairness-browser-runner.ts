@@ -1,6 +1,10 @@
 import { resolve } from "node:path";
-import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
-import { navigateTestPage } from "./browser-navigation.js";
+import {
+  BrowserRunnerLifecycle,
+  browserBundle,
+  engines,
+} from "../testing/browser-runner-lifecycle.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 
 const lifecycle = new BrowserRunnerLifecycle(120_000);
 const sources = {

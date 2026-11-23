@@ -7,8 +7,11 @@ import { writeResult } from "@waffle-os/runtime/testing/page-runner";
 import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
 
 for (const [specifier, suffix] of [
-  ["@waffle-os/runtime/testing/page-runner", "/tests/page-runner/consumer.ts"],
-  ["@waffle-os/runtime/testing/page-runner/playwright", "/tests/page-runner/playwright-driver.ts"],
+  ["@waffle-os/runtime/testing/page-runner", "/testing/page-runner/consumer.ts"],
+  [
+    "@waffle-os/runtime/testing/page-runner/playwright",
+    "/testing/page-runner/playwright-driver.ts",
+  ],
 ]) {
   assert(specifier && suffix);
   const entry = import.meta.resolve(specifier);

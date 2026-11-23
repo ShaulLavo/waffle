@@ -1,4 +1,4 @@
-import type { StorageEntry } from "../storage-allocation.js";
+import type { StorageEntry } from "../../testing/storage-allocation.js";
 export type Backend = "indexeddb" | "opfs";
 export type WorkerRequest =
   | { kind: "list" }
@@ -44,7 +44,7 @@ export function storageWorker(): void {
   }
   async function runStorageRequest(request: WorkerRequest): Promise<void> {
     const modulePath = "/tests.js";
-    const tests = (await import(modulePath)) as typeof import("../storage-browser");
+    const tests = (await import(modulePath)) as typeof import("../../testing/storage-browser");
     // The runner owns this route; imported backend suites do not assume one exists.
     const hooks = allocationHooks(request);
     const suites = {

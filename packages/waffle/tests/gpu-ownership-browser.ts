@@ -1,5 +1,5 @@
 import type { Page } from "playwright";
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { invoke, pixels, assertTrianglePixels, assertRetired } from "./gpu-browser-shared.js";
 import { qualificationRecord as record } from "./fixtures/gpu/qualification-contract.js";
 

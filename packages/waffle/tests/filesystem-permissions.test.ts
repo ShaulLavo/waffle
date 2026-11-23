@@ -8,7 +8,7 @@ import {
 } from "../fs/index.js";
 import { SharedFilesystemState } from "../fs/shared.js";
 import { validatePersistedNode } from "../fs/storage.js";
-import { statTimes, storedTimes } from "./fixtures/file-times.js";
+import { statTimes, storedTimes } from "../testing/fixtures/file-times.js";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {

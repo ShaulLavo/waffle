@@ -1,6 +1,10 @@
 import { installWorkspaceChannelObserver } from "../fixtures/publication-channel-observer.js";
-import { record } from "./protocol.js";
-import { BoundedTrace, collectDiagnostic, fixturePath } from "./stall-diagnostics.js";
+import { record } from "../../testing/page-runner/protocol.js";
+import {
+  BoundedTrace,
+  collectDiagnostic,
+  fixturePath,
+} from "../../testing/page-runner/stall-diagnostics.js";
 
 export function installPublicationBootstrap(): void {
   installWorkspaceChannelObserver();

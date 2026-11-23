@@ -1,4 +1,4 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import type { Page } from "playwright";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 import {

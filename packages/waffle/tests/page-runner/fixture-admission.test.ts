@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test";
-import { Collector, ObservationClosed, type CollectorPolicy } from "./collector.js";
-import { BrowserObservation } from "./browser-observation.js";
-import { HostConsumers } from "./owned-consumers.js";
-import type { Body, Budgets } from "./protocol.js";
+import {
+  Collector,
+  ObservationClosed,
+  type CollectorPolicy,
+} from "../../testing/page-runner/collector.js";
+import { BrowserObservation } from "../../testing/page-runner/browser-observation.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
+import type { Body, Budgets } from "../../testing/page-runner/protocol.js";
 
 const budgets: Budgets = { hello: 1000, heartbeat: 1000, case: 100, group: 200, run: 300 };
 function control(options: { budgets?: Budgets; host?: boolean; policy?: CollectorPolicy } = {}) {

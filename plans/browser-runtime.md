@@ -149,12 +149,13 @@ through shared rings. Preview URL routing and service-worker scope remain consum
 
 ## npm package contents
 
-The npm package leaves out test files and GPU code-generation inputs (2.77 MB packed, from
-4.27 MB). About 4.5 MB unpacked of non-test `tests/` files still ships, because the exported
-`./testing/*` helpers import from `tests/` and some load fixtures by path. A hand-kept allowlist
-reached 1.73 MB but kept missing path-loaded fixtures (PR 596 review rounds 1 to 3). To get the
-rest safely, move the exported helpers and the fixtures they use out of `tests/` into their own
-directory, publish that directory, and stop publishing `tests/`.
+Done. The exported `./testing/*` helpers and exactly the files they import now live in
+`packages/waffle/testing/`, which is published; `tests/` is no longer published. The export keys
+are unchanged. The dev-only scripts under `scripts/` and `tooling/` that need `tests/` are no
+longer published either. The package went from 2.80 MB packed and 12.21 MB unpacked (1400 files)
+to 1.75 MB packed and 7.96 MB unpacked (700 files). `tests/published-closure.test.ts` fails if a
+published file imports or path-loads a file the package does not ship, and the tarball smoke
+check imports every `./testing/*` export from an installed archive.
 
 ## Verification
 

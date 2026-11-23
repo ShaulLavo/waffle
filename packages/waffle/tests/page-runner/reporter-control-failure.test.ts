@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { Collector } from "./collector.js";
-import { dispatchReports } from "./collector-fetch.js";
-import { OrderedReporter } from "./ordered-reporter.js";
-import type { Body } from "./protocol.js";
+import { Collector } from "../../testing/page-runner/collector.js";
+import { dispatchReports } from "../../testing/page-runner/collector-fetch.js";
+import { OrderedReporter } from "../../testing/page-runner/ordered-reporter.js";
+import type { Body } from "../../testing/page-runner/protocol.js";
 
 async function control(
   mode: "live" | "unbound" | "timeout" | "malformed",

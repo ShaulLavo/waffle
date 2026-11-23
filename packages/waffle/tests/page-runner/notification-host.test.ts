@@ -7,8 +7,8 @@ import { mixedNotificationCases } from "../notification-mixed-cases.js";
 import { commandControlModes } from "./command-controls.js";
 import { commandAdapter } from "./command-suites.js";
 import { FakeDriver } from "./fake-driver.js";
-import { nativeMain } from "./native.js";
-import { runPageSuite } from "./suite-host.js";
+import { nativeMain } from "../../testing/page-runner/native.js";
+import { runPageSuite } from "../../testing/page-runner/suite-host.js";
 
 function originalResult() {
   const terminationOrder = [

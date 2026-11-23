@@ -1,4 +1,4 @@
-import { hostFilesystemClient } from "./filesystem-host.js";
+import { hostFilesystemClient } from "../../testing/fixtures/filesystem-host.js";
 import { createFilesystemIdentity, connectFilesystemIdentity } from "../../fs/protocol";
 import {
   createFilesystemConnection,

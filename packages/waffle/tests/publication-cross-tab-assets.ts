@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { browserBundle } from "./browser-runner-lifecycle.js";
+import { browserBundle } from "../testing/browser-runner-lifecycle.js";
 
 async function crossTabGuestBundle(): Promise<Blob> {
   const build = await Bun.build({

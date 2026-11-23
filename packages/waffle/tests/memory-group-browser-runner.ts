@@ -1,6 +1,6 @@
 if (process.argv[2] === "ios-safari") {
   const startedAt = performance.now();
-  const { nativeMain } = await import("./page-runner/native.js");
+  const { nativeMain } = await import("../testing/page-runner/native.js");
   const { memoryGroupAdapter } = await import("./page-runner/memory-group-command.js");
   process.exit(await nativeMain(memoryGroupAdapter, process.argv.slice(3), { startedAt }));
 }
@@ -12,7 +12,7 @@ if (process.argv[2] === "--controls") {
   process.exit(0);
 }
 import { checkMemoryGroupResult } from "./page-runner/memory-group-command.js";
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { chromium, type Browser } from "playwright";

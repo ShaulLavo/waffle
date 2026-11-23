@@ -1,4 +1,4 @@
-import { startPage } from "./page-main.js";
+import { startPage } from "../../testing/page-runner/page-main.js";
 import { installPublicationBootstrap } from "./publication-bootstrap.js";
 
 installPublicationBootstrap();

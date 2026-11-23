@@ -1,4 +1,4 @@
-import { startPage, cleanupStorage } from "./consumer-page.js";
+import { startPage, cleanupStorage } from "../../testing/page-runner/consumer-page.js";
 
 type ControlRequest = { mode: string; marker: string };
 async function workerControl({ mode, marker }: ControlRequest): Promise<void> {

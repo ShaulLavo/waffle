@@ -1,11 +1,11 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 if (process.argv[2] === "ios-safari") {
-  const { nativeMain } = await import("./page-runner/native.js");
+  const { nativeMain } = await import("../testing/page-runner/native.js");
   const { commandAdapter } = await import("./page-runner/command-suites.js");
   process.exit(await nativeMain(commandAdapter("fs-socket-attachment"), process.argv.slice(3), {}));
 }
 import { resolve } from "node:path";
-import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle, browserBundle } from "../testing/browser-runner-lifecycle.js";
 
 const lifecycle = new BrowserRunnerLifecycle(60_000);
 try {

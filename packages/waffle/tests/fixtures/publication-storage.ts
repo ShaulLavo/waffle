@@ -1,5 +1,5 @@
 import type { PersistedIndex } from "../../fs/storage";
-import { storedTimes } from "./file-times";
+import { storedTimes } from "../../testing/fixtures/file-times";
 
 export function coldPublicationRoot(): PersistedIndex {
   return {

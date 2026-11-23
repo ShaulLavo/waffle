@@ -35,7 +35,7 @@ import {
   type Cleanup,
   type Rig,
 } from "./fixtures/lazy-backing.js";
-import { statTimes } from "./fixtures/file-times.js";
+import { statTimes } from "../testing/fixtures/file-times.js";
 
 const cleanups: Cleanup[] = [];
 afterEach(async () => {

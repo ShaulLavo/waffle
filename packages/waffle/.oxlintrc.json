@@ -199,7 +199,7 @@
         "tests/fixtures/worker-pipe-transfer-guest.ts",
         "tests/interrupt-browser.ts",
         "tests/interrupt-rewriter.test.ts",
-        "tests/opfs-storage-browser.ts",
+        "testing/opfs-storage-browser.ts",
         "tests/process-core.test.ts",
         "tests/process-pipe-recycling.test.ts",
         "tests/process-recycling-browser.ts",

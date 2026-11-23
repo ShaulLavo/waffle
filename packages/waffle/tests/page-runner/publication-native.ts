@@ -1,4 +1,4 @@
-import { nativeMain } from "./native.js";
+import { nativeMain } from "../../testing/page-runner/native.js";
 import { publicationAdapter } from "./publication-suite.js";
 import type { PublicationMode } from "../publication-command.js";
 

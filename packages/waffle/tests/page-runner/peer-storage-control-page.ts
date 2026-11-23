@@ -1,8 +1,8 @@
-import { startPage } from "./page-main.js";
-import { cleanupStorage } from "./storage-cleanup.js";
+import { startPage } from "../../testing/page-runner/page-main.js";
+import { cleanupStorage } from "../../testing/page-runner/storage-cleanup.js";
 import { storageLockCases } from "../storage-lock-cases.js";
 import type { StorageLockRequest } from "../storage-lock-host.js";
-import { record } from "./protocol.js";
+import { record } from "../../testing/page-runner/protocol.js";
 
 declare const PEER_STORAGE_INTERRUPTED: boolean;
 const selected = storageLockCases.filter(

@@ -2,7 +2,7 @@ import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { CHUNK_SIZE } from "../fs/indexeddb-chunks.js";
 import { encodeRecord, encodeSnapshot, decodeSnapshot } from "../fs/storage.js";
-import { assert, batch, storageTests } from "./indexeddb-storage-browser.js";
+import { assert, batch, storageTests } from "../testing/indexeddb-storage-browser.js";
 
 function nativeRequest<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
