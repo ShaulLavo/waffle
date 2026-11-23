@@ -1,5 +1,6 @@
 import { allocateSharedControl } from "../memory/control.ts";
 import {
+  atomicsLoad,
   isInstance,
   isSharedArrayBuffer,
   isInt32Array,
@@ -128,11 +129,33 @@ export function publishSignal(
  * Keep the wake hint armed while another authoritative pending bit remains, including for WASI
  * waits that observe the interrupt word rather than the entire signal-state table. */
 export function takeSignal(state: ControlCells, interrupt?: ControlCells): number {
+  // Guests poll this between work steps. With no hint to clear and nothing pending, the full
+  // path below changes nothing, so answer it with one unchecked pass over the cells.
+  if ((!interrupt || controlLoad(interrupt, 0) === 0) && !mayHoldPendingSignal(state)) return 0;
   // A racing publisher must retain either its wake hint or its pending bit.
   if (interrupt) controlExchange(interrupt, 0, 0);
   const taken = takePendingSignal(state);
   if (interrupt) rearmPendingSignal(state, interrupt);
   return taken;
+}
+const PENDING_BITS = DISPOSITION_MASK | SIGNAL_PENDING;
+const HANDLED_PENDING = SignalDisposition.HANDLE | SIGNAL_PENDING;
+const TAGGED_PENDING_BITS = BigInt(PENDING_BITS);
+const TAGGED_HANDLED_PENDING = BigInt(HANDLED_PENDING);
+/** The checked scans' predicate, without per-cell validity and identity decoding. Loads are
+ * full-width atomics like every writer's CAS. Validity is checked again after the pass, so a
+ * collection during it fails as the checked read would instead of reading as "none". */
+function mayHoldPendingSignal(state: ControlCells): boolean {
+  if (!isInstance(state, TaggedCells)) {
+    for (let signal = 1; signal <= 64; signal++)
+      if ((atomicsLoad(state, signal) & PENDING_BITS) === HANDLED_PENDING) return true;
+    return false;
+  }
+  state.check();
+  for (let signal = 1; signal <= 64; signal++)
+    if ((state.peek(signal) & TAGGED_PENDING_BITS) === TAGGED_HANDLED_PENDING) return true;
+  state.check();
+  return false;
 }
 function rearmPendingSignal(state: ControlCells, interrupt: ControlCells): void {
   for (let signal = 1; signal <= 64; signal++) {

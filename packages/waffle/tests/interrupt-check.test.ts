@@ -45,3 +45,26 @@ test("ordinary completion and missing shared state are never relabeled as a sign
   expect(fatalInterrupt(state.outcome)).toBe(0);
   expect(fatalInterrupt(null)).toBe(0);
 });
+
+test("a polling taker keeps every handled signal armed through the wake hint", () => {
+  const state = transport();
+  for (const signal of [2, 10, 28]) setSignalDisposition(state.signalState, signal, 2);
+  // Nothing pending: the clear hint answers without consuming anything.
+  expect(takeSignal(state.signalState, state.interrupt)).toBe(0);
+  requestSignal(state, 10);
+  requestSignal(state, 2);
+  requestSignal(state, 28);
+  // Each take re-arms the hint while another pending bit remains.
+  const taken = [0, 0, 0].map(() => takeSignal(state.signalState, state.interrupt));
+  expect(taken.toSorted((a, b) => a - b)).toEqual([2, 10, 28]);
+  expect(controlLoad(state.interrupt, 0)).toBe(0);
+  expect(takeSignal(state.signalState, state.interrupt)).toBe(0);
+  // A stale hint with nothing pending is cleared by the full scan.
+  state.interrupt[0] = 10;
+  expect(takeSignal(state.signalState, state.interrupt)).toBe(0);
+  expect(controlLoad(state.interrupt, 0)).toBe(0);
+  // Re-registering a handler keeps a delivered pending bit and its hint.
+  requestSignal(state, 28);
+  setSignalDisposition(state.signalState, 28, 2, state.interrupt);
+  expect(takeSignal(state.signalState, state.interrupt)).toBe(28);
+});

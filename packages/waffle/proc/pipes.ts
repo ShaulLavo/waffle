@@ -1,5 +1,6 @@
 import {
   cryptoRandomUUID,
+  objectHasOwn,
   scheduleTimeout,
   arrayFrom,
   isSharedArrayBuffer,
@@ -48,6 +49,10 @@ export interface PipeOptions {
   onClosed?(): void;
   /** Realm-local accounting hook. Never placed in cloneable endpoint handles. */
   allocateShared?: (length: number) => SharedArrayBuffer;
+  /** How an automatic relay yields one task after its own progress. Defaults to
+   * setTimeout(0), which browsers clamp to 4 ms when nested; page relays pass a
+   * message-channel yield so a pipeline is not paced at 4 ms per write. */
+  relayYield?: () => Promise<void>;
 }
 export interface PipePublicationRegistryHandle {
   buffer: SharedArrayBuffer;
@@ -2100,9 +2105,12 @@ export class PipeController {
   private pendingTicket = 0n;
   private delivery?: { ring: Ring; incarnation: number };
   private readonly onClosed?: () => void;
+  private readonly relayYield?: () => Promise<void>;
   private reportedClosed = false;
   constructor(options: PipeOptions = {}, attached?: PipeEndpointHandle) {
     this.onClosed = options.onClosed;
+    // Guest code creates option objects too; an inherited getter must never see one.
+    this.relayYield = objectHasOwn(options, "relayYield") ? options.relayYield : undefined;
     if (attached) this.state = new PipeState(attached, options.allocateShared);
     else {
       const capacity = options.capacity ?? 65536;
@@ -2354,7 +2362,7 @@ export class PipeController {
       // Registry revocation has no pipe address, so registry-backed relays use the service word.
       if (atomicsLoad(signal, 0) !== observed) {
         // A microtask-only loop starves kill/exit MessagePort tasks under continuous traffic.
-        await new Promise<void>((resolve) => scheduleTimeout(resolve, 0));
+        await (this.relayYield?.() ?? new Promise<void>((resolve) => scheduleTimeout(resolve, 0)));
         continue;
       }
       await waitChanged(signal, observed);
@@ -2413,7 +2421,7 @@ export function attachPipeEndpoint(
 }
 export function attachPipeController(
   handle: PipeEndpointHandle,
-  options: Pick<PipeOptions, "relay" | "onClosed" | "allocateShared"> = {},
+  options: Pick<PipeOptions, "relay" | "onClosed" | "allocateShared" | "relayYield"> = {},
 ): PipeController {
   return new PipeController(options, handle);
 }

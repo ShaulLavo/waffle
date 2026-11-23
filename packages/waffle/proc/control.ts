@@ -82,6 +82,10 @@ export class TaggedCells {
     this.check();
     return this.checked(atomicsLoad(this.cells, index));
   }
+  /** The whole tagged word, unchecked, for scans that confirm any hit through load(). */
+  peek(index: number): bigint {
+    return atomicsLoad(this.cells, index);
+  }
   compareExchange(index: number, expected: number, replacement: number): number {
     this.check();
     return this.checked(
