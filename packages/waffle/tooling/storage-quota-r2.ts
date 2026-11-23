@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { BrowserContext } from "playwright";
-import { BrowserRunnerLifecycle, browserBundle } from "../tests/browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle, browserBundle } from "../testing/browser-runner-lifecycle.js";
 import {
   quotaCases,
   type QuotaCase,

@@ -149,12 +149,13 @@ through shared rings. Preview URL routing and service-worker scope remain consum
 
 ## npm package contents
 
-The npm package leaves out test files and GPU code-generation inputs (2.77 MB packed, from
-4.27 MB). About 4.5 MB unpacked of non-test `tests/` files still ships, because the exported
-`./testing/*` helpers import from `tests/` and some load fixtures by path. A hand-kept allowlist
-reached 1.73 MB but kept missing path-loaded fixtures (PR 596 review rounds 1 to 3). To get the
-rest safely, move the exported helpers and the fixtures they use out of `tests/` into their own
-directory, publish that directory, and stop publishing `tests/`.
+Done. The exported `./testing/*` helpers and exactly the files they import now live in
+`packages/waffle/testing/`, which is published; `tests/` is no longer published. The export keys
+are unchanged. The dev-only scripts under `scripts/` and `tooling/` that need `tests/` are no
+longer published either. The package went from 2.80 MB packed and 12.21 MB unpacked (1400 files)
+to 1.75 MB packed and 7.96 MB unpacked (700 files). `tests/published-closure.test.ts` fails if a
+published file imports or path-loads a file the package does not ship, and the tarball smoke
+check imports every `./testing/*` export from an installed archive.
 
 ## Verification
 
@@ -266,14 +267,13 @@ Status: Approved. Owner: process-lifecycle track. The paged-ring change (perf la
 `packages/waffle/tests/pipe-pages.test.ts`, measure it with the perf suite's section 4.5 rows,
 and record before and after numbers in the PR.
 
-1. **Pipe registry maximum.** Each runtime root's `PipePublicationRegistry` is a growable
-   buffer declaring 16,785,424 bytes (1,048,576 append-only cells), which Safari reserves in
-   full at construction (`docs/shared-memory.md`). Cells are never reused because a retained raw
-   view must never alias another cursor. Design incarnation-tagged cells (or cell pages that a
-   collected owner returns once no endpoint can name them) so the declared maximum can drop to
-   about 1 MiB without lowering the lifetime pipe count. Check how gVisor and FreeBSD bound
-   per-process pipe metadata first. Reproduce the reservation with
-   `runtime.sharedMemory.snapshot()` after `createRuntime()` and one root adoption.
+1. **Pipe registry maximum.** Done (2026-11-23). Registry cells are reference counted and
+   tagged: a ring mapping a cell and every operation mutating its cursor hold it, unheld loads
+   are checked against the tag, and a cell is reused only after its last hold drops and its tag
+   advances. A retiring pipe returns its cells. The root's registry declares 1,056,784 bytes
+   (65,536 cells) instead of 16,785,424, and lifetime capacity is about 2^31 cell uses.
+   `tests/pipe-registry-reuse.test.ts` covers paused readers, stale endpoints, delayed revokes,
+   real Worker death and 70,000 pipes on one default registry.
 2. **Shell pipelines always relay.** A shell holds its read end while it forks the reading
    child, so `retain(child, "read")` sees two reader processes and switches the pipe to relay
    mode for good; every byte of `cat | grep` then crosses the page's relay. Defer the switch
@@ -294,8 +294,12 @@ and record before and after numbers in the PR.
    fixed code, it catches all but two: a retire that frees pages without a wake (another wake
    always follows in its workload; `pipe-page-recovery.test.ts` catches it), and an unfenced
    sweep judging against a stale cursor (unreachable in a test now that laps are full width:
-   half the lap space is 2 GiB of traffic). It runs no registry-backed pipes and no real Worker
-   termination; add both when the registry or quarantine recovery changes. A tag-back
+   half the lap space is 2 GiB of traffic). It also runs every scenario on registry cells, with
+   actions that churn freed cells into a bystander pipe and collect a writer's process, and
+   checks every cell comes back. Within one live pipe, slot incarnations already fence every
+   cell release, so a paused operation losing its hold shows up only when a whole pipe retires
+   under it; `pipe-registry-reuse.test.ts` pauses there directly, with real Worker
+   termination. It runs no real Worker termination itself. A tag-back
    (`sweep.retag`) needs an aborted write that wrapped onto unread bytes, which the matrix
    workload never makes; `pipe-interleave.test.ts` pauses there directly.
 6. **Mixed-size atomics on page entries.** `PageMap.find` and `reservedBusy` read the low and
@@ -355,3 +359,30 @@ seven constraints surfaced in PR 600 review rounds 1 to 3:
    unconditionally from `FilesystemClient` turns a subdirectory `ENOENT` (44) into `ENOSYS` (52).
    Carry optional capability discovery across the service boundary or fall back to the existing
    inode comparison without hiding errors from a supported query.
+
+**Second attempt (PR 606, closed after one review round, 2026-11-23).** It asked the tree instead
+of the preopen: the root is the directory whose rooted `..` (`fs.resolve(handle, "..", false,
+true)`) is itself, compared by inode, in both `resolveDescriptorPath` and `Wasi.rootNamespace`. It
+removed the `preopen` call over MemFS and an ordinary `FilesystemClient` (epoch unchanged in a
+worker test), but review found four problems, and any future design must also avoid them:
+
+8. **Inode numbers are not object identity.** MemFS snapshots can give distinct nodes the same
+   serialized inode number (`tests/host.test.ts` has a collision case). A parent and child sharing
+   one made a subdirectory look like the root. Decide root identity by filesystem object identity.
+9. **Root identity must not depend on search permission.** A `..` lookup needs search permission.
+   With `/` bound through a symlink and search denied at guest entry, the startup snapshot recorded
+   a confined namespace for good, so an absolute symlink later failed with EPERM. Keep permission
+   checks on the requested lookup only, and test the startup path directly.
+10. **A lookup that returns a handle can still move the epoch.** Besides the publication-mode lock
+    and epoch step (constraint 5), a cold `resolve` whose returned parent fills the 256-entry
+    transient handle cache evicts an entry and advances the epoch. An identity read should return
+    no new handle.
+11. **Custom backends may ignore `rooted`.** Such a backend answers the root's `..` with EPERM, so
+    a `{ "/work": "/" }` guest lost `dev/null` and `dev/fd/N` at the preopen and through an opened
+    copy of it.
+
+Points 8, 10 and 11, together with constraint 5, point at one shape: a read-only identity query
+across the service boundary (no handle returned, no mutation lock, and publication's session,
+handle, activation and resident-grant checks kept) with capability discovery for custom backends.
+That is the `isRoot` direction PR 600 tried. The PR 606 branch `lane/loose-ends-openat` and its
+worker test (`tests/wasi-root-identity.test.ts`) are kept for reuse.

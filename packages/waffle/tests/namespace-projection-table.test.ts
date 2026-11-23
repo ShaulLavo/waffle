@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { ms, storedTimes } from "./fixtures/file-times";
+import { ms, storedTimes } from "../testing/fixtures/file-times";
 import { resourceUsage } from "node:process";
 import { parseFileIdentity } from "../fs/file-identity.js";
 import {

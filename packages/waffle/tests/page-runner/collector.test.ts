@@ -1,14 +1,14 @@
-import { storagePolicy, listIds } from "./storage-policy.js";
+import { storagePolicy, listIds } from "../../testing/page-runner/storage-policy.js";
 import { expect, test } from "bun:test";
-import { Collector } from "./collector.js";
+import { Collector } from "../../testing/page-runner/collector.js";
 import {
   exactInventory,
   parseMessage,
   storageBudgets,
   validateWorkerLabel,
   type Body,
-} from "./protocol.js";
-import { storageInventory } from "./storage-host.js";
+} from "../../testing/page-runner/protocol.js";
+import { storageInventory } from "../../testing/page-runner/storage-host.js";
 const first = "indexeddb: first",
   second = "opfs: second";
 function fixture() {

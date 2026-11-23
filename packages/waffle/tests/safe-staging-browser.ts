@@ -1,5 +1,5 @@
 import { IdentityAllocator } from "../fs/file-identity.js";
-import { storedTimes } from "./fixtures/file-times.js";
+import { storedTimes } from "../testing/fixtures/file-times.js";
 import {
   checkpointDecodeControl,
   type StagingDatabaseName,

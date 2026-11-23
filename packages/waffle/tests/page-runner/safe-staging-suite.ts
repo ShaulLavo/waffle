@@ -1,10 +1,10 @@
 import { resolve } from "node:path";
 import { safeStagingLabels } from "../safe-staging-browser.js";
-import { browserBundle } from "../browser-runner-lifecycle.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
 import { stagingPrefixes } from "./safe-staging-allocation.js";
-import { record, strings } from "./protocol.js";
-import type { CollectorPolicy } from "./collector.js";
-import type { SuiteAdapter } from "./suite-host.js";
+import { record, strings } from "../../testing/page-runner/protocol.js";
+import type { CollectorPolicy } from "../../testing/page-runner/collector.js";
+import type { SuiteAdapter } from "../../testing/page-runner/suite-host.js";
 
 export type SafeStagingRequest = { run: string; selected?: string };
 export const safeStagingId = "safe-staging: safeStagingNative";

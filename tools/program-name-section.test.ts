@@ -30,6 +30,7 @@ function sourceFixture(context: TestContext) {
     "tools/program-build-tools.ts",
     "tools/program-optimize.ts",
     "tools/program-derivation.ts",
+    "tools/program-symbols.ts",
     "tools/program-locales/prepare.ts",
     "tools/program-locales/selection.ts",
     "tools/program-locales/patch.ts",
@@ -178,6 +179,7 @@ function programFixture(
   release: string,
   root: string,
   names: readonly string[],
+  symbols: readonly string[] = [],
 ) {
   const originals = names.map((name) => resolve(release, `${name}.wasm`));
   const staged = names.flatMap((name) =>
@@ -199,7 +201,21 @@ function programFixture(
         0,
       );
       const metadata = JSON.parse(readFileSync(path.replace(/\.wasm$/, "-program.json"), "utf8"));
-      validateProgramDerivation(metadata, bytes);
+      const sidecar = path.replace(/\.wasm$/, "-symbols.json");
+      const opted = symbols.includes(
+        path
+          .split("/")
+          .at(-1)!
+          .replace(/\.wasm$/, ""),
+      );
+      assert.equal(metadata.symbols !== undefined, opted, `${path} symbols declaration`);
+      assert.equal(existsSync(sidecar), opted, `${path} symbols sidecar`);
+      validateProgramDerivation(
+        metadata,
+        bytes,
+        undefined,
+        opted ? readFileSync(sidecar) : undefined,
+      );
       assert.deepEqual(metadata.input, programBytesIdentity(named));
     }
   };
@@ -212,7 +228,9 @@ test("coreutils staging finalizes ls and echo after retaining their compiler pro
   );
   const config = await import(fixture("packages/coreutils/scripts/build-config.ts"));
   const names = ["ls", "echo"];
-  const check = programFixture(context, config.releaseDirectory, config.packageRoot, names);
+  const check = programFixture(context, config.releaseDirectory, config.packageRoot, names, [
+    "echo",
+  ]);
   stageFamilyPrograms(names);
   check();
 });

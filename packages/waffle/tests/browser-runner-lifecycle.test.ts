@@ -3,8 +3,8 @@ import { expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { engines, BrowserRunnerLifecycle } from "./browser-runner-lifecycle.ts";
-import type { BrowserResourceOwner } from "./process-recycling-browser-runner-control.ts";
+import { engines, BrowserRunnerLifecycle } from "../testing/browser-runner-lifecycle.ts";
+import type { BrowserResourceOwner } from "../testing/process-recycling-browser-runner-control.ts";
 
 function nextTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -105,7 +105,7 @@ test("ordinary browser closure failure is not a controller interruption", async 
 });
 
 test("controller deadline marks interruption before closing owned resources", () => {
-  const script = `import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "browser-runner-lifecycle.ts"))};
+  const script = `import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "../testing/browser-runner-lifecycle.ts"))};
     const lifecycle = new BrowserRunnerLifecycle(5);
     (lifecycle as unknown as { contexts: Set<unknown> }).contexts.add({ creation: Promise.resolve({ close: async () => console.log("controller-interrupted=" + lifecycle.controllerInterrupted) }), stopped: false });`;
   const result = Bun.spawnSync([process.execPath, "--eval", script], { timeout: 5000 });

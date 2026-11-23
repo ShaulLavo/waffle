@@ -1,9 +1,9 @@
 import { ControlRun } from "./control-run.js";
 import { join } from "node:path";
-import { withStorageCleanup } from "../storage-allocation.js";
+import { withStorageCleanup } from "../../testing/storage-allocation.js";
 import { runControlProcess } from "./browser-controls-runner.js";
 import { checkControl } from "./browser-controls-suite.js";
-import { captureWebKitDiagnostics } from "../webkit-diagnostics.js";
+import { captureWebKitDiagnostics } from "../../testing/webkit-diagnostics.js";
 
 function nativeDiagnostics(): void {
   const {

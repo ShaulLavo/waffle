@@ -1,6 +1,6 @@
 import { processBrowserCases } from "../process-recycling-browser.js";
 import { processRecyclingAssets } from "./process-recycling-assets.js";
-import { strings } from "./protocol.js";
+import { strings } from "../../testing/page-runner/protocol.js";
 import type { SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
 
 export type ProcessRecyclingRequest = { label: string };

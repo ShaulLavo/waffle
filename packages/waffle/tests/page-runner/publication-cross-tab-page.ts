@@ -1,8 +1,8 @@
-import { startPage } from "./page-main.js";
+import { startPage } from "../../testing/page-runner/page-main.js";
 import { installPublicationBootstrap } from "./publication-bootstrap.js";
 import { crossTabEvaluator } from "./cross-tab-evaluator.js";
 import { crossTabId } from "../publication-cross-tab-inventory.js";
-import { installContinuityLockDiagnostic } from "./continuity-lock-diagnostic.js";
+import { installContinuityLockDiagnostic } from "../../testing/page-runner/continuity-lock-diagnostic.js";
 
 installContinuityLockDiagnostic(() => ({
   activeJobs: window.__crossTabEvaluator?.activeJobs() ?? [],

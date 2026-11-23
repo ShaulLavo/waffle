@@ -1,7 +1,7 @@
 import { safeStagingNative } from "../safe-staging-browser.js";
 import { checkpointDecodeControl } from "../indexeddb-checkpoint-decode-browser.js";
 import { stagingDatabaseName } from "./safe-staging-allocation.js";
-import { startPage } from "./page-main.js";
+import { startPage } from "../../testing/page-runner/page-main.js";
 
 async function gateControl(fixture: "staging" | "decoder", late: boolean): Promise<string> {
   const original = IDBFactory.prototype.open;

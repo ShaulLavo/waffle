@@ -1,5 +1,5 @@
 import { DATA_PAGE_BYTES } from "../fs/storage-geometry.ts";
-import { storedTimes } from "./fixtures/file-times.ts";
+import { storedTimes } from "../testing/fixtures/file-times.ts";
 import { PersistentBackend } from "../fs/persistent.ts";
 import { FilesystemService } from "../fs/service.ts";
 import { PAGE, type FilesystemConnection } from "../fs/protocol.ts";

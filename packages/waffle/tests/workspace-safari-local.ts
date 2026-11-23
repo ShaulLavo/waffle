@@ -1,10 +1,10 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { resolve } from "node:path";
 import {
   prepareWorkspaceSafari,
   serveWorkspaceSafari,
 } from "../tooling/workspace-safari-runner.js";
-import { BrowserRunnerLifecycle } from "./browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle } from "../testing/browser-runner-lifecycle.js";
 
 export async function runWorkspaceSafariLocal(): Promise<void> {
   const lifecycle = new BrowserRunnerLifecycle(180_000);

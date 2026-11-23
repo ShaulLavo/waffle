@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createFilesystemIdentity, createFilesystemConnection } from "../fs/protocol.js";
 import { SHARED_ROOT_BYTES } from "../fs/storage-geometry.js";
 import { installSharedControlAllocator } from "../memory/allocator.js";
-import { formatHostError } from "./page-runner/protocol.js";
+import { formatHostError } from "../testing/page-runner/protocol.js";
 
 const NativeSharedArrayBuffer = globalThis.SharedArrayBuffer;
 /** Fails the given control allocation of one independent identity, counting after its root. */

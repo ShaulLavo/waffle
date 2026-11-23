@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BrowserRunnerLifecycle } from "./browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle } from "../testing/browser-runner-lifecycle.js";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 import {
   gpuMeasurementRoutes,

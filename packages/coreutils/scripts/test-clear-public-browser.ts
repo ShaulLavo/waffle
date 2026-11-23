@@ -108,8 +108,8 @@ async function browserCampaign(consumer: string) {
   const runtime = resolve(consumer, "node_modules/waffle");
   const {
     BrowserRunnerLifecycle,
-  }: typeof import("../../waffle/tests/browser-runner-lifecycle.ts") = await import(
-    resolve(runtime, "tests/browser-runner-lifecycle.ts")
+  }: typeof import("../../waffle/testing/browser-runner-lifecycle.ts") = await import(
+    resolve(runtime, "testing/browser-runner-lifecycle.ts")
   );
   const resources = new BrowserRunnerLifecycle(120000);
   try {

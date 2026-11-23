@@ -1,17 +1,17 @@
 import { expect, test } from "bun:test";
-import { BrowserObservation } from "./browser-observation.js";
-import type { DriverObservationBinding } from "./driver.js";
-import type { FixtureRequest } from "./fixture-owner.js";
-import { HostConsumers } from "./owned-consumers.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { SafariDriver } from "./safari-driver.js";
+import { BrowserObservation } from "../../testing/page-runner/browser-observation.js";
+import type { DriverObservationBinding } from "../../testing/page-runner/driver.js";
+import type { FixtureRequest } from "../../testing/page-runner/fixture-owner.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { SafariDriver } from "../../testing/page-runner/safari-driver.js";
 import {
   LateConsoleControl,
   beforeConsoleCutoff,
   isLateConsoleMode,
   lateConsoleModes,
 } from "./console-late-control.js";
-import type { SuiteAdapter } from "./suite-host.js";
+import type { SuiteAdapter } from "../../testing/page-runner/suite-host.js";
 
 const origin = "http://localhost:1234";
 const base: SuiteAdapter<{ mode: string; marker: string }> = {

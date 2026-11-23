@@ -1,5 +1,5 @@
 import type { RootContinuityRequest, RootContinuityStorage } from "../root-continuity-command.js";
-import type { StorageEntry } from "../storage-allocation.js";
+import type { StorageEntry } from "../../testing/storage-allocation.js";
 
 export function rootContinuityStorage(
   request: RootContinuityRequest,

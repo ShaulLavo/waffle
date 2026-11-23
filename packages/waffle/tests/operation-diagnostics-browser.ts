@@ -10,7 +10,7 @@ import {
   type BrowserContext,
   type Page,
 } from "playwright";
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 
 const {
   positionals: [engine],

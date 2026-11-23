@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { storageLockAdapter, storageLockAssets } from "../storage-lock-host.js";
 import { invoke, object, query, ready, waiting, lockName } from "../storage-lock-peer.js";
-import { runPageSuite } from "./suite-host.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
+import { runPageSuite } from "../../testing/page-runner/suite-host.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
 
 export async function peerStorageControl(
   engine: "chromium" | "webkit",

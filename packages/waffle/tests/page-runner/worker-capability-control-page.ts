@@ -1,5 +1,5 @@
 import { startPage, cleanupStorage } from "@waffle-os/runtime/testing/page-runner/page";
-import { record } from "./protocol.js";
+import { record } from "../../testing/page-runner/protocol.js";
 declare global {
   interface Window {
     __workerControl: {

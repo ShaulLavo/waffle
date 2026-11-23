@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { basename } from "node:path";
 import type { Page } from "playwright";
 export async function gpuLazyRoutes() {

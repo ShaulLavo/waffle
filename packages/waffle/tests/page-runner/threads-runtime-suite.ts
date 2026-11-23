@@ -6,7 +6,7 @@ import {
   stockThreadCase,
   type RuntimeThreadCase,
 } from "../threads-runtime-cases.js";
-import { record, strings } from "./protocol.js";
+import { record, strings } from "../../testing/page-runner/protocol.js";
 
 export type ThreadRuntimeRequest = { selected: RuntimeThreadCase; fixtureSha256: string };
 export const threadRuntimeId = (selected: RuntimeThreadCase): string =>

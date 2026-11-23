@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { Page } from "playwright";
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { engines, runIsolatedPages } from "./isolated-page-runner.js";
 import type { StopOrderOptions, StopOrderReport } from "./stop-order-browser.js";
 

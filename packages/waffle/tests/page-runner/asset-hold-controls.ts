@@ -1,8 +1,12 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { runPageSuite, type HostCase, type SuiteAdapter } from "./consumer.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { engines } from "../browser-runner-lifecycle.js";
+import {
+  runPageSuite,
+  type HostCase,
+  type SuiteAdapter,
+} from "../../testing/page-runner/consumer.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { engines } from "../../testing/browser-runner-lifecycle.js";
 
 const original = [0, 97, 115, 109, 1, 0, 255, 0];
 const ids = ["shell", "unheld-shell", "unheld-guest", "guest"];

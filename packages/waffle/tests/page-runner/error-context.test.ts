@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { ProcessError } from "../../proc/errors.js";
 import { spawnError } from "../../proc/start-failure.js";
-import { formatHostError } from "./protocol.js";
+import { formatHostError } from "../../testing/page-runner/protocol.js";
 
 test("native cause class, message, stack and mapped numeric errno reach the page report", () => {
   const native = new RangeError("Out of memory");

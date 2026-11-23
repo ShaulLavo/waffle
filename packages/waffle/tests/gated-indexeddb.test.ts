@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { gatedIndexedDB } from "./gated-indexeddb.js";
+import { gatedIndexedDB } from "../testing/gated-indexeddb.js";
 
 for (const type of ["error", "blocked"] as const) {
   test(`gated IndexedDB readiness rejects on native ${type}`, async () => {

@@ -1,10 +1,10 @@
 import { IndexedDBStorage } from "../../fs/indexeddb.js";
 import { selectedRootComposition, startupFenceComposition } from "../root-continuity-browser.js";
 import { rootContinuityOpenPaths, type RootContinuityControl } from "../root-continuity-command.js";
-import type { StorageEntry } from "../storage-allocation.js";
-import { cleanupStorage } from "./storage-cleanup.js";
+import type { StorageEntry } from "../../testing/storage-allocation.js";
+import { cleanupStorage } from "../../testing/page-runner/storage-cleanup.js";
 import { rootContinuityStorage } from "./root-continuity-allocation.js";
-import { startPage } from "./page-main.js";
+import { startPage } from "../../testing/page-runner/page-main.js";
 
 async function gate(
   control: RootContinuityControl,

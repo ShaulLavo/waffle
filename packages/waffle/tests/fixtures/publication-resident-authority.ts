@@ -1,4 +1,4 @@
-import { filesystemHostConnector } from "./filesystem-host.js";
+import { filesystemHostConnector } from "../../testing/fixtures/filesystem-host.js";
 import { residentMemory } from "./resident-memory";
 import {
   FilesystemClient,

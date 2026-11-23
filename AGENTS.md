@@ -80,7 +80,7 @@ bun run size
 `bun run --cwd packages/waffle format` fixes Markdown formatting in `docs/`. `README.md` and `AGENTS.md` are not
 formatter inputs.
 
-The browser storage matrix is `bun packages/waffle/tests/storage-browser-runner.ts chromium firefox webkit`.
+The browser storage matrix is `bun packages/waffle/testing/storage-browser-runner.ts chromium firefox webkit`.
 It requires Playwright's three browser engines. Set `STORAGE_SCRATCH_ROOT` to a
 verified data-drive scratch directory; the runner owns its browser and profile cleanup.
 Do not duplicate another agent's substantial browser workload without coordinating.

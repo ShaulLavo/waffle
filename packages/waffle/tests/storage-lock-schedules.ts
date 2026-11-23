@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { HostPeer } from "./page-runner/protocol.js";
+import type { HostPeer } from "../testing/page-runner/protocol.js";
 import type { StorageLockScenario } from "./storage-lock-cases.js";
 import {
   CasePeers,

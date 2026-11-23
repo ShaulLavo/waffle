@@ -2,8 +2,8 @@ import { strict as assert } from "node:assert";
 import {
   BrowserRunnerLifecycle,
   engines,
-} from "../../packages/waffle/tests/browser-runner-lifecycle.js";
-import { navigateTestPage } from "../../packages/waffle/tests/browser-navigation.js";
+} from "../../packages/waffle/testing/browser-runner-lifecycle.js";
+import { navigateTestPage } from "../../packages/waffle/testing/browser-navigation.js";
 import { prepare } from "./prepare.js";
 
 type Engine = keyof typeof engines;

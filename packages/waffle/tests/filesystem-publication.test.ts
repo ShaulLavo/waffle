@@ -1,4 +1,4 @@
-import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
 import { fixturePayloadHooks, coldPublicationRoot } from "./fixtures/publication-storage";
 import { IdentityAllocator, nextReservation } from "../fs/file-identity";
 import { expect, test } from "bun:test";
@@ -1636,7 +1636,7 @@ test("production append EOF growth prepares capacity but retry owns only the lat
 });
 
 import { atomicsLoad, reflectApply, typedArrayBuffer } from "../proc/intrinsics";
-import { ms, statTimes } from "./fixtures/file-times";
+import { ms, statTimes } from "../testing/fixtures/file-times";
 
 function cancelUnconnectedIdentity(identity: FilesystemIdentity): void {
   revokeFilesystem(identity);

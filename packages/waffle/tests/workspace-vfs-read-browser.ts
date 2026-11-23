@@ -1,4 +1,4 @@
-import { storedTimes } from "./fixtures/file-times.js";
+import { storedTimes } from "../testing/fixtures/file-times.js";
 import {
   FilesystemClient,
   FilesystemService,

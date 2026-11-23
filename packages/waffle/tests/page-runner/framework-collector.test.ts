@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { FrameworkCollector } from "./framework-collector.js";
-import { dispatchReports } from "./collector-fetch.js";
+import { FrameworkCollector } from "../../testing/page-runner/framework-collector.js";
+import { dispatchReports } from "../../testing/page-runner/collector-fetch.js";
 import type {
   ExpectedCase,
   FrameworkEvent,
   FrameworkTask,
   FrameworkUpdate,
-} from "./framework-types.js";
+} from "../../testing/page-runner/framework-types.js";
 
 function fixture(timeouts: readonly number[] = [15000]) {
   const expected: ExpectedCase[] = timeouts.map((timeoutMs, index) => ({

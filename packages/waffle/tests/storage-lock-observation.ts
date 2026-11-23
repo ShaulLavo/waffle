@@ -1,4 +1,4 @@
-import { record } from "./page-runner/protocol.js";
+import { record } from "../testing/page-runner/protocol.js";
 
 const post = Worker.prototype.postMessage;
 const apply = Reflect.apply;

@@ -11,7 +11,7 @@ import {
   reapFilesystem,
   State,
 } from "../fs/protocol.js";
-import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
 
 const empty = new Uint8Array();
 function local(overrides: Partial<typeof ORDINARY_WATCH_LIMITS> = {}) {

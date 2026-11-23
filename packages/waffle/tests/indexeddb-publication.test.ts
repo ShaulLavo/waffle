@@ -1,6 +1,6 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { expect, test } from "bun:test";
-import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle, browserBundle } from "../testing/browser-runner-lifecycle.js";
 import { recoverIndex } from "../fs/indexeddb.js";
 import { publicationAdapter } from "./indexeddb-publication-browser.js";
 import type { PersistedIndex } from "../fs/storage.js";

@@ -1,4 +1,4 @@
-import type { StorageAllocationHooks } from "./storage-allocation.js";
+import type { StorageAllocationHooks } from "../testing/storage-allocation.js";
 
 export const rootContinuityControls = ["selected", "cancel", "failure"] as const;
 export type RootContinuityControl = (typeof rootContinuityControls)[number];

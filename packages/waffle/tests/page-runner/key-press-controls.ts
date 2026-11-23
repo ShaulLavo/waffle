@@ -9,7 +9,7 @@ import {
   type KeyEffect,
 } from "./key-press-observation.js";
 import { installKeyControl } from "./key-press-fixture.js";
-import { record } from "./protocol.js";
+import { record } from "../../testing/page-runner/protocol.js";
 
 class OriginalKeyDriver extends PlaywrightDriver {
   constructor(

@@ -11,6 +11,7 @@ import {
   type QuietFailureSink,
 } from "./start-failure-quiet-browser.js";
 import { browserFdKindWithoutProcess, browserPipeFilestat } from "./pipe-filestat-browser.js";
+import { browserPipeRegistryReuse } from "./pipe-registry-browser.js";
 import { browserStartupDiagnostic } from "./startup-diagnostic-browser.js";
 import { browserBrokerCellClone, browserStaleCellClone } from "./process-cell-clone-browser.js";
 import { browserRuntimeDiagnostic } from "./child-diagnostic-browser.js";
@@ -862,6 +863,11 @@ const cases: BrowserCase[] = quietFailureCases.concat(
       label: "pipe filestat and fd_kind: kinds, stdio, dup and inherited child remaps",
       standalone: true,
       run: () => browserPipeFilestat(),
+    },
+    {
+      label: "pipe registry: retired pipes return cells through a grown clone",
+      standalone: true,
+      run: async () => browserPipeRegistryReuse(),
     },
     {
       label: "fd_kind: signal-only worker without process transport",

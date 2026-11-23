@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { BrowserRunnerLifecycle } from "../tests/browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle } from "../testing/browser-runner-lifecycle.js";
 import { mutants, verifyMatrix, type Mutation } from "./storage-crash-r2-mutations.js";
 
 export async function crashMatrixBundle(mutant?: Mutation): Promise<Blob> {

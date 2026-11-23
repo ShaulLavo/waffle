@@ -1,4 +1,4 @@
-import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation } from "../fs/file-identity";
 import { SLOT_WORDS } from "../fs/shared.js";
@@ -11,7 +11,7 @@ import {
 } from "../fs";
 import { PAGE } from "../fs/protocol";
 import { PersistentBackend } from "../fs/persistent";
-import { storedTimes } from "./fixtures/file-times";
+import { storedTimes } from "../testing/fixtures/file-times";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {

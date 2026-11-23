@@ -11,7 +11,7 @@ const gpuRunner = "tests/gpu-browser-runner.ts";
 const asyncGpuRunner = "tests/gpu-async-browser-runner.ts";
 const crossTabRunner = "tests/publication-cross-tab-browser-runner.ts";
 const reporterControls = "tests/page-runner/browser-controls-runner.ts";
-const storageRunner = "tests/storage-browser-runner.ts";
+const storageRunner = "testing/storage-browser-runner.ts";
 const runners = [
   "tests/process-recycling-browser-runner.ts",
   storageRunner,

@@ -151,7 +151,7 @@ const originalFixtures = {
   "publication-cross-tab-browser.ts":
     "31df8f8bc13a4c53cf098b9a8467f007ac615db21813a225ffdb9c6ff97e063c",
   "fixtures/publication-resident-authority.ts":
-    "4d318d95fdff3c70f8058b49689e89d2821ca89a8a076a31877e4679a7671ce7",
+    "cb935be601bf25b76fdbfdff1c90f68968e9bb380e04a56c7bcc1302a3ae80ea",
   "fixtures/publication-resident-guest.ts":
     "9b9652caae3250579d44fe87c2d635722d4c1ea71309f0ee5758ce8663e3ae3c",
   "fixtures/publication-channel-observer.ts":

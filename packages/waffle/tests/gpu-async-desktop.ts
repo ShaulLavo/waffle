@@ -1,7 +1,7 @@
 import { asyncFixture, asyncRoutes } from "./gpu-async-assets.js";
 import { runAsyncSuite, admitAsync, type AsyncCommand } from "./gpu-async-command.js";
 import type { Page } from "playwright";
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { GpuQualificationLifecycle, qualificationEngine } from "./gpu-browser-qualification.js";
 
 function command(page: Page): AsyncCommand {

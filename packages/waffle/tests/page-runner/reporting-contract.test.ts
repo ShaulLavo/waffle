@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { OrderedReporter } from "./ordered-reporter.js";
-import { reportEventByteLimit } from "./report-chunks.js";
-import { record, resultByteLimit } from "./protocol.js";
+import { OrderedReporter } from "../../testing/page-runner/ordered-reporter.js";
+import { reportEventByteLimit } from "../../testing/page-runner/report-chunks.js";
+import { record, resultByteLimit } from "../../testing/page-runner/protocol.js";
 
 function ack(init: RequestInit): Response {
   const body: unknown = JSON.parse(String(init.body));

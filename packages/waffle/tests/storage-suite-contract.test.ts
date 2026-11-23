@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { storageTests, opfsStorageTests } from "./storage-browser.js";
+import { storageTests, opfsStorageTests } from "../testing/storage-browser.js";
 
 const runtimeLabels = (tests: ReturnType<typeof storageTests>) =>
   tests.filter((test) => test.label.includes("actual filesystem worker boundary"));

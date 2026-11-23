@@ -1,10 +1,10 @@
 import { mkdir, readdir, rmdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { browserBundle, type engines } from "../browser-runner-lifecycle.js";
+import { browserBundle, type engines } from "../../testing/browser-runner-lifecycle.js";
 import { commandAdapter, type CommandRequest } from "./command-suites.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { record } from "./protocol.js";
-import { runPageSuite, type SuiteResult } from "./suite-host.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { record } from "../../testing/page-runner/protocol.js";
+import { runPageSuite, type SuiteResult } from "../../testing/page-runner/suite-host.js";
 
 const modes = ["complete", "ordered", "missing-relay", "failed-relay", "incomplete-relay"] as const;
 type Mode = (typeof modes)[number];

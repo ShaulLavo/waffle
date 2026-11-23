@@ -1,4 +1,4 @@
-import { startPage } from "./page-main.js";
+import { startPage } from "../../testing/page-runner/page-main.js";
 import type { CommandDescriptor, CommandRequest } from "./command-suites.js";
 
 declare const PAGE_RUNNER_COMMAND: CommandDescriptor;

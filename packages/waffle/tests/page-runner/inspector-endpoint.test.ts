@@ -3,8 +3,8 @@ import { createServer } from "node:net";
 import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { inspectorEndpoint } from "./inspector-endpoint.js";
-import { parseReceipt } from "./inspector-endpoint-receipt.js";
+import { inspectorEndpoint } from "../../testing/page-runner/inspector-endpoint.js";
+import { parseReceipt } from "../../testing/page-runner/inspector-endpoint-receipt.js";
 
 const scratchRoot = process.env.STORAGE_SCRATCH_ROOT ?? tmpdir();
 

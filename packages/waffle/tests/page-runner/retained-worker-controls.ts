@@ -3,10 +3,10 @@ import { join } from "node:path";
 import { storageLockAdapter, storageLockAssets } from "../storage-lock-host.js";
 import { CasePeers, invoke, object } from "../storage-lock-peer.js";
 import { recovery } from "../storage-lock-schedules.js";
-import { withStorageCleanup } from "../storage-allocation.js";
-import { record } from "./protocol.js";
-import { runPageSuite } from "./suite-host.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
+import { withStorageCleanup } from "../../testing/storage-allocation.js";
+import { record } from "../../testing/page-runner/protocol.js";
+import { runPageSuite } from "../../testing/page-runner/suite-host.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
 
 export const retainedWorkerControlModes = [
   "retained-worker-pass",

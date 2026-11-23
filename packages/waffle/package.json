@@ -8,7 +8,7 @@
   },
   "files": [
     "dist",
-    "scripts",
+    "scripts/build-wasi-libc.sh",
     "patches",
     "browser",
     "core",
@@ -21,8 +21,17 @@
     "search",
     "proc",
     "programs",
-    "tests",
-    "tooling",
+    "testing",
+    "tooling/build-network.ts",
+    "tooling/check-package-metadata.ts",
+    "tooling/gpu-stream-model.ts",
+    "tooling/host-interface.ts",
+    "tooling/network-growth.ts",
+    "tooling/network-translator.ts",
+    "tooling/network-translator/package.json",
+    "tooling/network-translator/bun.lock",
+    "tooling/program",
+    "tooling/program-tools-package.ts",
     "!**/*.test.ts",
     "!browser/gpu/upstream/webgpu.h",
     "!browser/gpu/upstream/webgpu.yml",
@@ -514,19 +523,19 @@
       "default": "./browser/worker.ts"
     },
     "./testing/interrupt-browser-runner-control": {
-      "types": "./tests/interrupt-browser-runner-control.ts",
-      "bun": "./tests/interrupt-browser-runner-control.ts",
-      "browser": "./tests/interrupt-browser-runner-control.ts"
+      "types": "./testing/interrupt-browser-runner-control.ts",
+      "bun": "./testing/interrupt-browser-runner-control.ts",
+      "browser": "./testing/interrupt-browser-runner-control.ts"
     },
     "./testing/storage-browser": {
-      "types": "./tests/storage-browser.ts",
-      "bun": "./tests/storage-browser.ts",
-      "browser": "./tests/storage-browser.ts"
+      "types": "./testing/storage-browser.ts",
+      "bun": "./testing/storage-browser.ts",
+      "browser": "./testing/storage-browser.ts"
     },
     "./testing/opfs-storage-browser": {
-      "types": "./tests/opfs-storage-browser.ts",
-      "bun": "./tests/opfs-storage-browser.ts",
-      "browser": "./tests/opfs-storage-browser.ts"
+      "types": "./testing/opfs-storage-browser.ts",
+      "bun": "./testing/opfs-storage-browser.ts",
+      "browser": "./testing/opfs-storage-browser.ts"
     },
     "./network": {
       "types": "./browser/net/module.ts",
@@ -637,28 +646,28 @@
       "default": "./browser/gpu/service-worker.ts"
     },
     "./testing/page-runner": {
-      "types": "./tests/page-runner/consumer.ts",
-      "bun": "./tests/page-runner/consumer.ts"
+      "types": "./testing/page-runner/consumer.ts",
+      "bun": "./testing/page-runner/consumer.ts"
     },
     "./testing/page-runner/page": {
-      "types": "./tests/page-runner/consumer-page.ts",
-      "bun": "./tests/page-runner/consumer-page.ts",
-      "browser": "./tests/page-runner/consumer-page.ts"
+      "types": "./testing/page-runner/consumer-page.ts",
+      "bun": "./testing/page-runner/consumer-page.ts",
+      "browser": "./testing/page-runner/consumer-page.ts"
     },
     "./testing/page-runner/playwright": {
-      "types": "./tests/page-runner/playwright-driver.ts",
-      "bun": "./tests/page-runner/playwright-driver.ts"
+      "types": "./testing/page-runner/playwright-driver.ts",
+      "bun": "./testing/page-runner/playwright-driver.ts"
     },
     "./testing/page-runner/framework": {
-      "types": "./tests/page-runner/framework.ts",
-      "bun": "./tests/page-runner/framework.ts",
-      "node": "./dist/tests/page-runner/framework.js"
+      "types": "./testing/page-runner/framework.ts",
+      "bun": "./testing/page-runner/framework.ts",
+      "node": "./dist/testing/page-runner/framework.js"
     },
     "./testing/page-runner/framework-page": {
-      "types": "./tests/page-runner/framework-page.ts",
-      "bun": "./tests/page-runner/framework-page.ts",
-      "browser": "./tests/page-runner/framework-page.ts",
-      "node": "./dist/tests/page-runner/framework-page.js"
+      "types": "./testing/page-runner/framework-page.ts",
+      "bun": "./testing/page-runner/framework-page.ts",
+      "browser": "./testing/page-runner/framework-page.ts",
+      "node": "./dist/testing/page-runner/framework-page.js"
     }
   },
   "publishConfig": {

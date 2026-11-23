@@ -6,8 +6,8 @@ import { safeStagingLabels } from "../safe-staging-browser.js";
 import { stagingDatabaseName } from "./safe-staging-allocation.js";
 import { safeStagingAdapter, safeStagingId } from "./safe-staging-suite.js";
 import { FakeDriver } from "./fake-driver.js";
-import { runPageSuite } from "./suite-host.js";
-import { nativeMain } from "./native.js";
+import { runPageSuite } from "../../testing/page-runner/suite-host.js";
+import { nativeMain } from "../../testing/page-runner/native.js";
 
 const run = "b3912068-3872-4a01-a79b-ed67c9fcd7c5";
 const labels = safeStagingLabels();

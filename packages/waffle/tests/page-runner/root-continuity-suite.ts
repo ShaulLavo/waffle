@@ -1,8 +1,8 @@
 import { resolve } from "node:path";
-import { browserBundle } from "../browser-runner-lifecycle.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
 import { rootContinuityControls, type RootContinuityRequest } from "../root-continuity-command.js";
-import { record, strings } from "./protocol.js";
-import type { SuiteAdapter } from "./suite-host.js";
+import { record, strings } from "../../testing/page-runner/protocol.js";
+import type { SuiteAdapter } from "../../testing/page-runner/suite-host.js";
 
 export const rootContinuityIds = rootContinuityControls.map(
   (control) => `root-continuity: ${control}`,

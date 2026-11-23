@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { verifiedGpuAsyncFixture } from "../scripts/build-gpu-fixture.js";
-import { browserBundle } from "./browser-runner-lifecycle.js";
+import { browserBundle } from "../testing/browser-runner-lifecycle.js";
 import { qualificationRoutes } from "./gpu-browser-qualification.js";
 
 export function asyncFixture() {

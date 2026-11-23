@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { HostCase, SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
 import { asyncFixture, asyncRoutes } from "../gpu-async-assets.js";
-import { browserBundle } from "../browser-runner-lifecycle.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
 import {
   runAsyncSuite,
   requireCompleteAsyncResult,
@@ -9,7 +9,7 @@ import {
   type AsyncCommand,
 } from "../gpu-async-command.js";
 import { gpuAsyncId, type GpuAsyncEngine, type GpuAsyncRequest } from "./gpu-async-request.js";
-import { record, strings } from "./protocol.js";
+import { record, strings } from "../../testing/page-runner/protocol.js";
 
 export async function driveGpuAsync(host: HostCase, engine: GpuAsyncEngine) {
   host.signal.throwIfAborted();

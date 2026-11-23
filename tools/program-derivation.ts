@@ -8,6 +8,11 @@ import {
   programOptimizationPolicy,
   programOptimizer,
 } from "./program-optimize.ts";
+import {
+  programSymbolsExtractorSha256,
+  programSymbolsOperation,
+  validateProgramSymbols,
+} from "./program-symbols.ts";
 
 export const programBytesIdentity = (bytes: Uint8Array) => ({
   bytes: bytes.byteLength,
@@ -70,14 +75,14 @@ function identity(input: unknown) {
   return { bytes: value.bytes, sha256: digest(value.sha256) };
 }
 
-function producerIdentity(input: unknown) {
+function fileIdentity(input: unknown) {
   const value = record(input);
   assert.ok(
     typeof value.bytes === "number" &&
       Number.isInteger(value.bytes) &&
       value.bytes > 0 &&
       value.bytes <= 0xffff_ffff,
-    "Invalid producer receipt size",
+    "Invalid derivation file size",
   );
   return { bytes: value.bytes, sha256: digest(value.sha256) };
 }
@@ -86,6 +91,7 @@ export function validateProgramDerivation(
   input: unknown,
   finalBytes: Uint8Array,
   producerBytes?: Uint8Array,
+  symbolBytes?: Uint8Array,
 ) {
   const receipt = record(input);
   assert.equal(
@@ -141,6 +147,40 @@ export function validateProgramDerivation(
   );
   assert.deepEqual(identity(stripped.output), final, "Strip/final chain differs");
   validateProducer(receipt, optimized, original, producerBytes);
+  validateSymbols(receipt.symbols, identity(optimized.output), finalBytes, symbolBytes);
+}
+
+/** An opted-in receipt binds the sidecar read from the optimizer's named output. */
+function validateSymbols(
+  input: unknown,
+  named: ReturnType<typeof identity>,
+  finalBytes: Uint8Array,
+  symbolBytes?: Uint8Array,
+) {
+  if (input === undefined) {
+    assert.equal(symbolBytes, undefined, "Program symbols are not declared by the derivation");
+    return;
+  }
+  assert.ok(symbolBytes !== undefined, "Missing declared program symbols");
+  const symbols = record(input);
+  assert.deepEqual(
+    Object.keys(symbols),
+    ["operation", "extractorSha256", "input", "output"],
+    "Unexpected program symbols receipt fields",
+  );
+  assert.equal(symbols.operation, programSymbolsOperation, "Unexpected program symbols operation");
+  assert.equal(
+    digest(symbols.extractorSha256),
+    programSymbolsExtractorSha256(),
+    "Program symbols extractor changed",
+  );
+  assert.deepEqual(identity(symbols.input), named, "Program symbols input differs from optimizer");
+  assert.deepEqual(
+    fileIdentity(symbols.output),
+    programBytesIdentity(symbolBytes),
+    "Program symbols identity",
+  );
+  validateProgramSymbols(symbolBytes, finalBytes, named);
 }
 
 function validateProducer(
@@ -161,7 +201,7 @@ function validateProducer(
     "Original producer receipt hash",
   );
   assert.deepEqual(
-    producerIdentity(optimized.producerReceipt),
+    fileIdentity(optimized.producerReceipt),
     actual,
     "Optimizer producer receipt identity",
   );

@@ -1,5 +1,5 @@
 import { residentMemory } from "./fixtures/resident-memory";
-import { storedTimes } from "./fixtures/file-times";
+import { storedTimes } from "../testing/fixtures/file-times";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation } from "../fs/file-identity";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";

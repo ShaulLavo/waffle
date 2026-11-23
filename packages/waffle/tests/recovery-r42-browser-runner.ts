@@ -1,9 +1,9 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import type { BrowserContext, Page } from "playwright";
 import { record } from "../fs/publication-attachment";
-import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
+import { BrowserRunnerLifecycle, browserBundle } from "../testing/browser-runner-lifecycle";
 import { runStep } from "./persistent-lifecycle-r2-browser-runner";
 import type * as PageModule from "./fixtures/recovery-r42-page";
 import type {} from "./fixtures/recovery-r42-owner";

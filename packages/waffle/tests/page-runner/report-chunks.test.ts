@@ -5,12 +5,12 @@ import {
   reportChunkLength,
   reportEventByteLimit,
   reportQueuedByteLimit,
-} from "./report-chunks.js";
-import { OrderedReporter } from "./ordered-reporter.js";
-import type { ReportStream } from "./report-stream.js";
-import { resultByteLimit, type Body } from "./protocol.js";
-import { Collector } from "./collector.js";
-import { dispatchReports } from "./collector-fetch.js";
+} from "../../testing/page-runner/report-chunks.js";
+import { OrderedReporter } from "../../testing/page-runner/ordered-reporter.js";
+import type { ReportStream } from "../../testing/page-runner/report-stream.js";
+import { resultByteLimit, type Body } from "../../testing/page-runner/protocol.js";
+import { Collector } from "../../testing/page-runner/collector.js";
+import { dispatchReports } from "../../testing/page-runner/collector-fetch.js";
 
 function stream(): ReportStream {
   return { messages: [], cutoff: null };

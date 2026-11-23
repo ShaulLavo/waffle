@@ -119,9 +119,11 @@ test("one registry-backed worker pipe survives 3001 inherited writer identities"
       expect(stale.tryWrite([byte])).toBe(-PipeErrno.BADF);
       expect(attached.handle().buffer.byteLength).toBe(pipeReservationBytes());
       expect(backing.byteLength).toBe(initialBytes);
-      // One publication cell per child. A fresh direct writer also binds a reader lease.
-      const fresh = Math.min(index + 1, 15);
-      expect(Atomics.load(allocated, 0)).toBe(initialCells + index + 1 + fresh);
+      // One publication cell per child; a fresh direct writer slot also binds a reader
+      // lease. A reclaimed slot returns the cell it replaces, so usage stops at 15 slots.
+      const slots = Math.min(index + 1, 15);
+      expect(Atomics.load(allocated, 0)).toBeLessThanOrEqual(initialCells + 2 * slots + 1);
+      expect(registry.cellsInUse).toBe(initialCells + 2 * slots);
       expect(registry.processCount).toBe(1);
     }
     expect(writer.tryWrite([byte])).toBe(1);

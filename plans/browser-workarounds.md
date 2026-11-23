@@ -177,7 +177,7 @@ while the underlying behavior persists.
 
 - **Site.** `navigateTestPage()` installs a temporary exact-URL route for the real document.
   The handler falls through to existing handlers and the network. It is test infrastructure.
-  [Navigation helper](../packages/waffle/tests/browser-navigation.ts).
+  [Navigation helper](../packages/waffle/testing/browser-navigation.ts).
 - **Evidence.** Reproduced before fixture evaluation on Ubuntu with Playwright 1.64.1,
   WebKit 2370 (27.2). The Ubuntu release is unknown. The fresh-context control recorded
   the provisional page being cancelled before the document request was reported.

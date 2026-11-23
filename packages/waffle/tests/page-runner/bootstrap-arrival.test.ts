@@ -2,12 +2,16 @@ import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { BrowserObservation } from "./browser-observation.js";
+import { BrowserObservation } from "../../testing/page-runner/browser-observation.js";
 import { loadBootstrap } from "./bootstrap-control.js";
-import { Collector } from "./collector.js";
-import { bounded, type DriverObservationBinding } from "./driver.js";
+import { Collector } from "../../testing/page-runner/collector.js";
+import { bounded, type DriverObservationBinding } from "../../testing/page-runner/driver.js";
 import { PeerDriverFixture } from "./peer-driver-fixture.js";
-import { runPageSuite, serveCollector, type SuiteAdapter } from "./suite-host.js";
+import {
+  runPageSuite,
+  serveCollector,
+  type SuiteAdapter,
+} from "../../testing/page-runner/suite-host.js";
 
 function collectorFixture() {
   const collector = new Collector("run", ["case"], ["case"], {

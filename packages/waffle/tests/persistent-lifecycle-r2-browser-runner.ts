@@ -1,7 +1,7 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { resolve } from "node:path";
 import type { BrowserContext, Page, Worker } from "playwright";
-import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
+import { BrowserRunnerLifecycle, browserBundle } from "../testing/browser-runner-lifecycle";
 import type * as PageModule from "./persistent-lifecycle-r2-page";
 import type {} from "./fixtures/persistent-lifecycle-r2-owner";
 

@@ -7,7 +7,7 @@ old web process's load-start message. That late message cancels the same navigat
 provisional page. Playwright can then lose the cancellation and wait until its original
 navigation timeout.
 
-`tests/browser-navigation.ts` installs a one-use request route for the target document
+`testing/browser-navigation.ts` installs a one-use request route for the target document
 on WebKit. The route immediately falls through to the existing handlers and real network.
 Processing its interception message orders the old process's load-start IPC before the
 server can answer and trigger the COOP swap. It does not synthesize a response or retry a

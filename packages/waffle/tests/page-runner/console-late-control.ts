@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { browserBundle } from "../browser-runner-lifecycle.js";
-import { BrowserObservation } from "./browser-observation.js";
-import type { ConsoleFailure, ConsoleSummary } from "./console-observation.js";
-import type { DriverObservation, DriverObservationBinding } from "./driver.js";
-import type { FixtureRequest, SuiteFixture } from "./fixture-owner.js";
-import { PlaywrightDriver } from "./playwright-driver.js";
-import { SafariDriver } from "./safari-driver.js";
-import type { SuiteAdapter, SuiteResult } from "./suite-host.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
+import { BrowserObservation } from "../../testing/page-runner/browser-observation.js";
+import type {
+  ConsoleFailure,
+  ConsoleSummary,
+} from "../../testing/page-runner/console-observation.js";
+import type {
+  DriverObservation,
+  DriverObservationBinding,
+} from "../../testing/page-runner/driver.js";
+import type { FixtureRequest, SuiteFixture } from "../../testing/page-runner/fixture-owner.js";
+import { PlaywrightDriver } from "../../testing/page-runner/playwright-driver.js";
+import { SafariDriver } from "../../testing/page-runner/safari-driver.js";
+import type { SuiteAdapter, SuiteResult } from "../../testing/page-runner/suite-host.js";
 
 export const lateConsoleModes = [
   "page-late-before-cutoff",

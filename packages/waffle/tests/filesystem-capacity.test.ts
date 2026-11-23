@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { SharedFilesystemState } from "../fs/shared";
 import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
-import { statTimes } from "./fixtures/file-times";
+import { statTimes } from "../testing/fixtures/file-times";
 
 test("geometric growth reserves page tables only for storage it can allocate", () => {
   const maxBytes = 1024 * 1024 * 1024;

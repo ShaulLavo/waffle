@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { serializeError } from "./error-serialization.js";
+import { serializeError } from "../testing/error-serialization.js";
 
 test("nested aggregate children, causes, stacks and custom error fields survive JSON", () => {
   const leaf = Object.assign(new TypeError("socket closed"), { code: "EPIPE" });

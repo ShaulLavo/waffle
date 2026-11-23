@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { FixtureOwner } from "./fixture-owner.js";
+import { FixtureOwner } from "../../testing/page-runner/fixture-owner.js";
 
 test("fixture is inert until start and joins actual callback before one close", async () => {
   const events: string[] = [];

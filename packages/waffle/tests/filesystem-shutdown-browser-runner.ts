@@ -1,8 +1,12 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import { resolve } from "node:path";
 import { runNativeDebt } from "./filesystem-shutdown-browser-debt.js";
 import type { Browser, BrowserContext, Page, Worker } from "playwright";
-import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
+import {
+  BrowserRunnerLifecycle,
+  browserBundle,
+  engines,
+} from "../testing/browser-runner-lifecycle.js";
 import {
   before,
   evidenceJson,

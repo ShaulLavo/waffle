@@ -1,7 +1,7 @@
 import {
   navigateTestPage,
   type NavigationPage as TestNavigationPage,
-} from "../browser-navigation.js";
+} from "../../testing/browser-navigation.js";
 import type { Page, Request, Response } from "playwright";
 
 export interface StorageLockNavigationDiagnostic {

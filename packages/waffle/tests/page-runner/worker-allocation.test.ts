@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { Collector, ObservationClosed } from "./collector.js";
-import { serveCollector } from "./suite-host.js";
-import { parseMessage, sameStorageEntry, type Body } from "./protocol.js";
-import type { ServiceWorkerEntry } from "../storage-allocation.js";
+import { Collector, ObservationClosed } from "../../testing/page-runner/collector.js";
+import { serveCollector } from "../../testing/page-runner/suite-host.js";
+import { parseMessage, sameStorageEntry, type Body } from "../../testing/page-runner/protocol.js";
+import type { ServiceWorkerEntry } from "../../testing/storage-allocation.js";
 const entry: ServiceWorkerEntry = {
   kind: "service-worker",
   name: "http://localhost/_waffle_owned/r/",
@@ -117,7 +117,7 @@ test("settlement must repeat the exact admitted metadata and cannot be reported 
 });
 
 test("aggregate page failures preserve primary and cleanup causes", async () => {
-  const { formatHostError } = await import("./protocol.js");
+  const { formatHostError } = await import("../../testing/page-runner/protocol.js");
   const text = formatHostError(
     new AggregateError(
       [

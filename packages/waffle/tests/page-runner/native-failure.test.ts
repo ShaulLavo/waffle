@@ -2,12 +2,19 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { Collector } from "./collector.js";
-import { WebDriverError } from "./driver.js";
-import { SafariDriver, type NativeCommandFailure } from "./safari-driver.js";
-import { probeDocument, runPageSuite, type SuiteAdapter } from "./suite-host.js";
-import { record } from "./protocol.js";
-import type { CommandFailure } from "./framework-types.js";
+import { Collector } from "../../testing/page-runner/collector.js";
+import { WebDriverError } from "../../testing/page-runner/driver.js";
+import {
+  SafariDriver,
+  type NativeCommandFailure,
+} from "../../testing/page-runner/safari-driver.js";
+import {
+  probeDocument,
+  runPageSuite,
+  type SuiteAdapter,
+} from "../../testing/page-runner/suite-host.js";
+import { record } from "../../testing/page-runner/protocol.js";
+import type { CommandFailure } from "../../testing/page-runner/framework-types.js";
 
 const udid = "10128D70-92A7-4626-9CE5-1537CF27BE84";
 const secret = "PRIVATE_PAYLOAD_CANARY";

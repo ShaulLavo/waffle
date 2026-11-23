@@ -47,10 +47,12 @@ export function preparedFixture(scratch: string, name: string) {
 
 function writeArtifacts(packageRoot: string) {
   const recipe = JSON.parse(readFileSync(resolve(packageRoot, "package-artifacts.json"), "utf8"));
-  for (const file of recipe.files as string[]) {
+  const files = recipe.files as string[];
+  for (const file of files) {
     const path = resolve(packageRoot, file);
     mkdirSync(dirname(path), { recursive: true });
-    if (file.endsWith("-program.json")) continue;
+    // Staging writes derivations and declared symbol sidecars beside their guests.
+    if (/-(?:program\.json|symbols\.json|symbols\.ts)$/.test(file)) continue;
     if (!file.endsWith(".wasm")) {
       writeFileSync(path, `stand-in notice for ${file}\n`);
       continue;
@@ -58,7 +60,8 @@ function writeArtifacts(packageRoot: string) {
     const input = resolve(packageRoot, ".build/fixture-input.wasm");
     mkdirSync(dirname(input), { recursive: true });
     writeFileSync(input, cappedWasiFixture);
-    stageProgram(input, path);
+    const emitSymbols = files.includes(file.replace(/\.wasm$/, "-symbols.json"));
+    stageProgram(input, path, {}, undefined, { emitSymbols });
     rmSync(input);
   }
 }

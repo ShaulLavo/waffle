@@ -1,6 +1,6 @@
-import { cleanupStorage } from "./storage-cleanup.js";
-import { Reporter } from "./reporter.js";
-import { withStorageCleanup, type StorageEntry } from "../storage-allocation.js";
+import { cleanupStorage } from "../../testing/page-runner/storage-cleanup.js";
+import { Reporter } from "../../testing/page-runner/reporter.js";
+import { withStorageCleanup, type StorageEntry } from "../../testing/storage-allocation.js";
 declare const PAGE_RUNNER_STORAGE_FAILURE: boolean;
 const config = window.__suiteConfiguration;
 const reporter = new Reporter(config.run);

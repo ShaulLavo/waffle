@@ -26,7 +26,8 @@
   ],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./symbols/echo": "./dist/echo-symbols.ts"
   },
   "scripts": {
     "build": "node scripts/build-coreutils.ts",

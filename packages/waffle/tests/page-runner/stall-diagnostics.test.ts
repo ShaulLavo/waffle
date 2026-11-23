@@ -5,12 +5,12 @@ import {
   bindDiagnostics,
   evaluationOperation,
   evaluationMode,
-} from "./stall-diagnostics.js";
+} from "../../testing/page-runner/stall-diagnostics.js";
 import { crossTabEvaluator } from "./cross-tab-evaluator.js";
 import { encodeCrossTabValue } from "./cross-tab-value.js";
 import { installPublicationCloseBridge } from "./publication-bootstrap.js";
 import { nativeCrossTabLifecycle } from "./publication-cross-tab-host.js";
-import type { HostCase, HostPeer } from "./protocol.js";
+import type { HostCase, HostPeer } from "../../testing/page-runner/protocol.js";
 
 function globals(values: Record<string, unknown>) {
   const previous = Object.keys(values).map((key) => ({

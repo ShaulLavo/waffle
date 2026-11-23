@@ -1,8 +1,8 @@
-import { navigateTestPage } from "./browser-navigation.js";
+import { navigateTestPage } from "../testing/browser-navigation.js";
 import type { Page } from "playwright";
 import { resolve } from "node:path";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
-import { browserBundle } from "./browser-runner-lifecycle.js";
+import { browserBundle } from "../testing/browser-runner-lifecycle.js";
 
 export const bundleQueryNativeControls = [
   "direct",

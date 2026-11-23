@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { storedTimes } from "./fixtures/file-times";
+import { storedTimes } from "../testing/fixtures/file-times";
 import {
   createFilesystemConnection,
   createWorkspaceVfs,

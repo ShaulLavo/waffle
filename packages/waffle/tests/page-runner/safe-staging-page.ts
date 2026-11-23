@@ -1,7 +1,7 @@
 import { safeStagingLabels, safeStagingNative } from "../safe-staging-browser.js";
-import { startPage } from "./page-main.js";
+import { startPage } from "../../testing/page-runner/page-main.js";
 import { stagingDatabaseName } from "./safe-staging-allocation.js";
-import { cleanupStorage } from "./storage-cleanup.js";
+import { cleanupStorage } from "../../testing/page-runner/storage-cleanup.js";
 import type { SafeStagingRequest } from "./safe-staging-suite.js";
 
 startPage<SafeStagingRequest>({

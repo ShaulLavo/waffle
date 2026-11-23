@@ -1,12 +1,12 @@
 import { runPageSuite, type SuiteAdapter } from "@waffle-os/runtime/testing/page-runner";
 import { PlaywrightDriver } from "@waffle-os/runtime/testing/page-runner/playwright";
-import { browserBundle } from "../browser-runner-lifecycle.js";
-import { observeWebKitPage } from "../webkit-diagnostics.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
+import { observeWebKitPage } from "../../testing/webkit-diagnostics.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DriverCleanup } from "./driver.js";
-import { record } from "./protocol.js";
-import type { SuiteResult } from "./suite-host.js";
+import type { DriverCleanup } from "../../testing/page-runner/driver.js";
+import { record } from "../../testing/page-runner/protocol.js";
+import type { SuiteResult } from "../../testing/page-runner/suite-host.js";
 
 export const workerControlModes = [
   "success",

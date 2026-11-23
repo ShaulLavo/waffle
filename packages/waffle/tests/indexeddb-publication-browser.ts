@@ -12,7 +12,7 @@ import {
   type PersistenceBatch,
 } from "../fs/storage.js";
 import { VfsError } from "../fs/vfs.js";
-import { storedTimes } from "./fixtures/file-times.js";
+import { storedTimes } from "../testing/fixtures/file-times.js";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);

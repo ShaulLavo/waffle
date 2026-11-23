@@ -1,5 +1,5 @@
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
-import { storedTimes } from "./fixtures/file-times";
+import { storedTimes } from "../testing/fixtures/file-times";
 import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { afterEach, expect, test } from "bun:test";
 import { FilesystemClient, FilesystemService, createFilesystemConnection } from "../fs";

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { once } from "node:events";
-import { frameworkMiddleware } from "./framework-middleware.js";
+import { frameworkMiddleware } from "../../testing/page-runner/framework-middleware.js";
 async function fixture(
   run: (origin: string, failures: string[], count: () => number) => Promise<void>,
 ) {

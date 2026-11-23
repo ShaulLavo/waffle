@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { gzipSync } from "node:zlib";
-import { browserBundle } from "../../packages/waffle/tests/browser-runner-lifecycle.js";
+import { browserBundle } from "../../packages/waffle/testing/browser-runner-lifecycle.js";
 
 const microsoft = "7585d3902cad4948f2f8852006d3714b2a9afb1f";
 const namespace = "waffle:experiment/window";

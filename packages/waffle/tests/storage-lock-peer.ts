@@ -1,6 +1,6 @@
-import { bounded } from "./page-runner/driver.js";
+import { bounded } from "../testing/page-runner/driver.js";
 import assert from "node:assert/strict";
-import { record, strings, type HostCase, type HostPeer } from "./page-runner/protocol.js";
+import { record, strings, type HostCase, type HostPeer } from "../testing/page-runner/protocol.js";
 import type { lockTest } from "./storage-lock-browser.js";
 import type { StorageLockBackend } from "./storage-lock-cases.js";
 

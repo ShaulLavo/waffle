@@ -8,9 +8,9 @@ import playwright from "playwright/package.json" with { type: "json" };
 import {
   BrowserRunnerLifecycle,
   engines,
-} from "../packages/waffle/tests/browser-runner-lifecycle.ts";
-import { navigateTestPage } from "../packages/waffle/tests/browser-navigation.ts";
-import { bounded } from "../packages/waffle/tests/page-runner/driver.ts";
+} from "../packages/waffle/testing/browser-runner-lifecycle.ts";
+import { navigateTestPage } from "../packages/waffle/testing/browser-navigation.ts";
+import { bounded } from "../packages/waffle/testing/page-runner/driver.ts";
 import { parseModuleMemory } from "../packages/waffle/memory/declarations.ts";
 import { programBytesIdentity } from "./program-derivation.ts";
 

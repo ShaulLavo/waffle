@@ -234,7 +234,7 @@ test("continuation audit rejects storage, fixture, adapter and startup-observer 
     "tooling/vfs-browser.ts",
     "tooling/vfs-guest.ts",
     "tooling/vfs-startup.ts",
-    "tests/browser-runner-lifecycle.ts",
+    "testing/browser-runner-lifecycle.ts",
   ]) {
     const fixture = await repository();
     try {

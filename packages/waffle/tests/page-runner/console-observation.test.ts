@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
-import { consoleMessage, consoleFailure, consoleExpired } from "./safari-console.js";
-import { ConsoleObservation } from "./console-observation.js";
+import {
+  consoleMessage,
+  consoleFailure,
+  consoleExpired,
+} from "../../testing/page-runner/safari-console.js";
+import { ConsoleObservation } from "../../testing/page-runner/console-observation.js";
 
 for (const [source, type, level, failure] of [
   ["javascript", undefined, "error", true],

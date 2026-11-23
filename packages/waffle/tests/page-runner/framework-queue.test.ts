@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { commandPath, FrameworkQueue } from "./framework-queue.js";
-import { HostConsumers } from "./owned-consumers.js";
+import { commandPath, FrameworkQueue } from "../../testing/page-runner/framework-queue.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
 
 function fixture() {
   const consumers = new HostConsumers(),

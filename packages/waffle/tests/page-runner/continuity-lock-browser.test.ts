@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { BrowserRunnerLifecycle, browserBundle } from "../browser-runner-lifecycle.js";
-import { navigateTestPage } from "../browser-navigation.js";
+import { BrowserRunnerLifecycle, browserBundle } from "../../testing/browser-runner-lifecycle.js";
+import { navigateTestPage } from "../../testing/browser-navigation.js";
 
 test.skipIf(process.env.CONTINUITY_LOCK_CONTROLS !== "1")(
   "page continuity observer preserves original guard/helper outcomes in Chromium",

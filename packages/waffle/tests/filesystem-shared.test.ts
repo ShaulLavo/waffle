@@ -3,7 +3,7 @@ import { expect, spyOn, test } from "bun:test";
 import { DEFAULT_SHARED_MAX_BYTES } from "../fs/protocol";
 import { DATA_PAGE_BYTES as PAGE, DATA_PAGES_PER_SEGMENT } from "../fs/storage-geometry";
 import { MemoryBackend, SharedFilesystemState } from "../fs";
-import { ms, statTimes } from "./fixtures/file-times";
+import { ms, statTimes } from "../testing/fixtures/file-times";
 
 test("revoking a killed shared-page writer releases its file lock", () => {
   const state = new SharedFilesystemState();

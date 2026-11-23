@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Collector } from "./collector.js";
+import { Collector } from "../../testing/page-runner/collector.js";
 
 test("peer registration preserves the coordinator and independent ordered streams", () => {
   const collector = new Collector("run", ["case"], ["case"], {
@@ -81,7 +81,7 @@ function peersFixture() {
     "root",
   );
   const sequence = new Map<string, number>();
-  function send(doc: string, body: import("./protocol.js").Body) {
+  function send(doc: string, body: import("../../testing/page-runner/protocol.js").Body) {
     const seq = sequence.get(doc) ?? 0;
     const result = collector.receive({ run: "run", doc, seq, ...body });
     sequence.set(doc, seq + 1);

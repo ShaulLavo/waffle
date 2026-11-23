@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { SafariDriver } from "./safari-driver.js";
+import { SafariDriver } from "../../testing/page-runner/safari-driver.js";
 
 const udid = "10128D70-92A7-4626-9CE5-1537CF27BE84";
 const target = "http://fixture/navigation";

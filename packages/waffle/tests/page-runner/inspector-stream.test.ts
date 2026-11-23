@@ -3,9 +3,13 @@ import { createServer, type Socket } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { frame, Frames, plistLimits } from "./inspector-plist.js";
-import { InspectorStream, inspectorEnvelope, type InspectorEnvelope } from "./inspector-stream.js";
-import { HostConsumers } from "./owned-consumers.js";
+import { frame, Frames, plistLimits } from "../../testing/page-runner/inspector-plist.js";
+import {
+  InspectorStream,
+  inspectorEnvelope,
+  type InspectorEnvelope,
+} from "../../testing/page-runner/inspector-stream.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
 
 const scratchRoot = process.env.STORAGE_SCRATCH_ROOT ?? tmpdir();
 

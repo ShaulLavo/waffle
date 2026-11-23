@@ -1,5 +1,5 @@
 import { OpfsStorage } from "../fs/opfs.js";
-import { storedTimes } from "./fixtures/file-times.js";
+import { storedTimes } from "../testing/fixtures/file-times.js";
 import { encodeSnapshot, type PersistedIndex } from "../fs/storage.js";
 import { OPFS_FORMAT } from "../fs/vfs-format.js";
 

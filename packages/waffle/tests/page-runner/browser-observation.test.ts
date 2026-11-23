@@ -1,6 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
-import { BrowserObservation, requestEvent, workerEvent } from "./browser-observation.js";
-import { HostConsumers } from "./owned-consumers.js";
+import {
+  BrowserObservation,
+  requestEvent,
+  workerEvent,
+} from "../../testing/page-runner/browser-observation.js";
+import { HostConsumers } from "../../testing/page-runner/owned-consumers.js";
 
 test("diagnostic clone failure preserves the exact native worker close receipt", async () => {
   const consumers = new HostConsumers();

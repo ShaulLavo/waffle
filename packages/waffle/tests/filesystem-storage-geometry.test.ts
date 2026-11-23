@@ -8,7 +8,7 @@ import {
 } from "../fs/protocol";
 import { MAX_SHARED_FILE_BYTES } from "../fs/shared-capacity";
 import { TABLE_BLOCKS } from "../fs/storage-geometry";
-import { statTimes } from "./fixtures/file-times";
+import { statTimes } from "../testing/fixtures/file-times";
 
 const storagePage = 4 * 1024;
 const segmentBytes = 16 * 1024 * 1024;

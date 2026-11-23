@@ -1,9 +1,9 @@
 import { checkNotificationResult, notificationSources } from "../notification-command.js";
 import { resolve } from "node:path";
-import { browserBundle } from "../browser-runner-lifecycle.js";
-import { record, strings } from "./protocol.js";
-import type { CollectorPolicy } from "./collector.js";
-import type { SuiteAdapter } from "./suite-host.js";
+import { browserBundle } from "../../testing/browser-runner-lifecycle.js";
+import { record, strings } from "../../testing/page-runner/protocol.js";
+import type { CollectorPolicy } from "../../testing/page-runner/collector.js";
+import type { SuiteAdapter } from "../../testing/page-runner/suite-host.js";
 
 export type CommandRequest = { entry: string; exportName: string; args: readonly string[] };
 export type CommandDescriptor = CommandRequest & { id: string };

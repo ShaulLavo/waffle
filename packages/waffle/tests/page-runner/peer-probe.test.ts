@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bounded } from "./driver.js";
+import { bounded } from "../../testing/page-runner/driver.js";
 import { PeerDriverFixture } from "./peer-driver-fixture.js";
-import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
+import { runPageSuite, type SuiteAdapter } from "../../testing/page-runner/suite-host.js";
 
 const marker = "HELD_PROBE_PREDECESSOR";
 type Hold = "probe" | "predecessor";

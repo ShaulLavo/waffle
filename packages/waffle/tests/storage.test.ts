@@ -10,7 +10,7 @@ import {
   type PersistedIndex,
 } from "../fs/storage";
 import { IndexedDBStorage, recoverIndex, type StorageLockManager } from "../fs/indexeddb";
-import { storedTimes } from "./fixtures/file-times";
+import { storedTimes } from "../testing/fixtures/file-times";
 
 const index = (): PersistedIndex => ({
   version: 1,
