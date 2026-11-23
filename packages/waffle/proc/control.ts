@@ -9,10 +9,15 @@ import {
   atomicsAdd,
   atomicsExchange,
   BigInt64ArrayConstructor,
+  Int32ArrayConstructor,
   typedArrayBuffer,
   typedArrayByteOffset,
   typedArrayLength,
 } from "./intrinsics/core.ts";
+
+/** Index of a tagged word's 32-bit value half within its pair of int32 words. */
+const VALUE_HALF =
+  new Int32ArrayConstructor(new BigInt64ArrayConstructor([1n]).buffer)[0] === 1 ? 0 : 1;
 
 // Executors may replace the global clock with a guest polyfill. Wait deadlines
 // must keep using the host's monotonic clock, independently of guest time.
@@ -45,6 +50,7 @@ export class TaggedCells {
   private readonly expectedIdentity?: bigint;
   private readonly idBits: bigint;
   private readonly prefix: bigint;
+  private values?: Int32Array;
   constructor(cells: BigInt64Array, id: number, validity?: CellValidity) {
     this.cells = cells;
     this.id = id;
@@ -81,6 +87,11 @@ export class TaggedCells {
   load(index = 0): number {
     this.check();
     return this.checked(atomicsLoad(this.cells, index));
+  }
+  /** Unchecked 32-bit value of a cell, for scans that confirm any hit through load(). */
+  peek(index: number): number {
+    this.values ??= new Int32ArrayConstructor(this.buffer, this.byteOffset, this.length * 2);
+    return atomicsLoad(this.values, index * 2 + VALUE_HALF);
   }
   compareExchange(index: number, expected: number, replacement: number): number {
     this.check();

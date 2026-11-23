@@ -1,5 +1,6 @@
 import { allocateSharedControl } from "../memory/control.ts";
 import {
+  atomicsLoad,
   isInstance,
   isSharedArrayBuffer,
   isInt32Array,
@@ -128,11 +129,28 @@ export function publishSignal(
  * Keep the wake hint armed while another authoritative pending bit remains, including for WASI
  * waits that observe the interrupt word rather than the entire signal-state table. */
 export function takeSignal(state: ControlCells, interrupt?: ControlCells): number {
+  // Guests poll this between work steps. With no hint to clear and nothing pending, the full
+  // path below changes nothing, so answer it with one unchecked pass over the cells.
+  if ((!interrupt || controlLoad(interrupt, 0) === 0) && !mayHoldPendingSignal(state)) return 0;
   // A racing publisher must retain either its wake hint or its pending bit.
   if (interrupt) controlExchange(interrupt, 0, 0);
   const taken = takePendingSignal(state);
   if (interrupt) rearmPendingSignal(state, interrupt);
   return taken;
+}
+/** The same predicate as the checked scans, without decoding each tagged word. */
+function mayHoldPendingSignal(state: ControlCells): boolean {
+  const tagged = isInstance(state, TaggedCells) ? state : undefined;
+  tagged?.check();
+  for (let signal = 1; signal <= 64; signal++) {
+    const value = tagged ? tagged.peek(signal) : atomicsLoad(state as Int32Array, signal);
+    if (
+      (value & (DISPOSITION_MASK | SIGNAL_PENDING)) ===
+      (SignalDisposition.HANDLE | SIGNAL_PENDING)
+    )
+      return true;
+  }
+  return false;
 }
 function rearmPendingSignal(state: ControlCells, interrupt: ControlCells): void {
   for (let signal = 1; signal <= 64; signal++) {
