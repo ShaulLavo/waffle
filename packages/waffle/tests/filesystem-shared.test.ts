@@ -174,7 +174,13 @@ test("the registered file count follows registration, release and eviction", () 
     expect(new SharedFilesystemState(state.buffer).resources().files).toBe(files);
   };
   expectCount(0);
-  const file = (ino: number) => ({ kind: "file" as const, ino, nlink: 1, size: 3, ...statTimes(1) });
+  const file = (ino: number) => ({
+    kind: "file" as const,
+    ino,
+    nlink: 1,
+    size: 3,
+    ...statTimes(1),
+  });
   state.register(0, file(1), new Uint8Array(3));
   state.register(1, file(2), new Uint8Array(3));
   state.register(2, { kind: "directory", ino: 3, nlink: 2, size: 0, ...statTimes(1) });
