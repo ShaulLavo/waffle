@@ -145,6 +145,16 @@ function sameInode(fs: FileSystem, a: number, b: number): boolean {
   return a === b || fs.stat(a).ino === fs.stat(b).ino;
 }
 
+/** Whether `handle` is the live filesystem root: as on Linux, the one directory whose rooted `..`
+ * is itself. This is a plain lookup, unlike `preopen("/")`, which over `FilesystemClient` is a
+ * mutation that bumps the shared epoch. A failed lookup (a removed directory, a replaced root, no
+ * search permission) means it is not the root; ordinary resolution then reports its own errno. */
+export function isFilesystemRoot(fs: FileSystem, handle: number): boolean {
+  const parent = fs.resolve(handle, "..", false, true);
+  if (typeof parent === "number" || parent.node === undefined) return false;
+  return sameInode(fs, parent.node, handle);
+}
+
 /** The directories whose entry `name` the virtual namespace replaces. */
 function shadowedParents(name: string): readonly string[] {
   if (name === "null" || name === "stdin" || name === "stdout" || name === "stderr") return ["dev"];
@@ -339,8 +349,7 @@ export function resolveDescriptorPath(
 ): DescriptorPath | number | undefined {
   if (directory.resource.kind !== "directory") return undefined;
   const handle = directory.resource.handle;
-  if (!rooted && directory.preopen !== "/" && fs.stat(handle).ino !== fs.stat(fs.preopen("/")).ino)
-    return undefined;
+  if (!rooted && directory.preopen !== "/" && !isFilesystemRoot(fs, handle)) return undefined;
   let rootCache: number | undefined;
   const root = () => (rootCache ??= rooted ? rootHandle(table, fs, directory) : handle);
   const ordinary = resolveOrdinaryPath(fs, handle, root, path, finalLink, rooted);

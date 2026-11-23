@@ -31,7 +31,12 @@ import {
   RIGHT_SOCK_SHUTDOWN,
   RIGHT_SOCK_ACCEPT,
 } from "./rights.js";
-import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.js";
+import {
+  isFilesystemRoot,
+  resolveDescriptorPath,
+  reopenDescriptor,
+  openInode,
+} from "./fd-reopen.js";
 import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import { withFileOffset } from "./open-file.js";
@@ -275,9 +280,8 @@ export class Wasi {
     if (root?.resource.kind !== "directory") return false;
     const handle = root.resource.handle;
     if (handle === this.literalRoot) return true;
-    // Any other spelling may pass through links, so compare what it actually opened.
-    const fs = this.opts.fs;
-    return fs.stat(handle).ino === fs.stat(fs.preopen("/")).ino;
+    // Any other spelling may pass through links, so check what it actually opened.
+    return isFilesystemRoot(this.opts.fs, handle);
   }
 
   private readStdin(iovecs: readonly Uint8Array[]): number {

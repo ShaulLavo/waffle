@@ -309,49 +309,50 @@ and record before and after numbers in the PR.
 
 ## Non-root openat without a filesystem mutation
 
-Status: Approved follow-up, split out of [PR 600](https://github.com/ShaulLavo/waffle/pull/600)
-after three independent review rounds exposed publication-mode and custom-backend edge cases.
-Owner: Waffle performance / filesystem track.
+Status: Done. Split out of [PR 600](https://github.com/ShaulLavo/waffle/pull/600) after three
+review rounds; landed as its own change.
 
-Today every `path_open` (`openat`) from a non-root directory descriptor calls `fs.preopen("/")`
-inside `resolveDescriptorPath` (`packages/waffle/core/fd-reopen.ts`) to compare the directory's
-inode against the filesystem root. Over `FilesystemClient`, `fs.preopen("/")` is a synchronous
-IPC mutation that takes the global mutation lock and bumps the shared `epoch`, invalidating every
-client read, stat, path, and readdir cache on every subdirectory open.
+Every `path_open` (`openat`) from a non-root directory descriptor of a non-rooted guest (one whose
+`/` is not the filesystem root, or that has no `/` binding) used to call `fs.preopen("/")` inside
+`resolveDescriptorPath` (`packages/waffle/core/fd-reopen.ts`) to compare the directory's inode
+against the filesystem root. Over `FilesystemClient` that is a synchronous IPC mutation that takes
+the global mutation lock and bumps the shared `epoch`, invalidating every client cache on every
+subdirectory open. Rooted guests skip the check since PR 604. `Wasi.rootNamespace` made the same
+call once per guest start.
 
-PR 600 initially tried adding a read-only `FileSystem.isRoot?(handle)` query across `MemFS`,
-`MemoryBackend`, `FilesystemService`, and `FilesystemClient` (and earlier tried `table.rootPreopen()`
-with a per-description inode `WeakMap` and reading `stat.mode` instead of `fs.permissions`). That
-work was reverted out of PR 600 so the safe single-stat and WASI hot-path wins could ship. Any
-future design that removes the `fs.preopen("/")` mutation on non-root `openat` must satisfy all
-seven constraints surfaced in PR 600 review rounds 1 to 3:
+Both now use `isFilesystemRoot`: as on Linux, the root is the one directory whose `..` is itself,
+asked with the existing rooted `fs.resolve(handle, "..", false, true)` (the `FileSystem.resolve`
+contract already says rooted `..` stops at the root) and an inode comparison. It adds no
+filesystem operation and caches nothing. `tests/wasi-root-identity.test.ts` covers it over MemFS
+and over a real `FilesystemClient`, with and without publication; all seven cases fail on the old
+check. One `fs.preopen("/")` call remains in `rootHandle`, for a rooted guest that has closed its
+`/` preopen, which is rare and outside the per-open path.
+
+PR 600 had tried a new `FileSystem.isRoot?(handle)` query and, before that, cached inodes. Its
+review rounds set seven constraints; here is how the `..` probe meets each:
 
 1. **Retained root aliases after closing the `/` preopen.** Opening `.` from the `/` preopen,
    closing the `/` preopen, and then opening `dev/fd/0`, `proc/self/fd/0`, or `dev/null` through
    the retained directory must still resolve those virtual aliases (while regular-file reopen still
-   checks the live root preopen for rights).
+   checks the live root preopen for rights). Met: the probe asks the tree, not the preopen; rooted
+   guests (the PR 604 path) keep their own handling.
 2. **Subdirectory mapped as the `/` preopen.** With `preopens: { "/": "/volume" }`, opening `.`
    and then `dev/fd/0` through that new descriptor must open the real `/volume/dev/fd/0` file
-   rather than shadowing it with stdin.
-3. **No stale root cache.** Caching directory inodes in a `WeakMap` or shortcutting on handle
-   equality against the preopen keeps aliases active after the backing root inode or `preopen("/")`
-   handle changes; root identity must track the live root or invalidate on every root change.
-4. **Effective permissions vs `stat.mode`.** `openInode` must keep consulting `fs.permissions`
-   because adapters can report effective access and supported-bit masks that disagree with raw
-   `stat.mode` bits.
-5. **Publication-mode lock and epoch.** In publication mode, `executePublication` wraps requests in
-   `beginServiceMutation` / `endServiceMutation`, which takes the global mutation lock and advances
-   the epoch by two on every read-only check. The root check must run as a plain read everywhere,
-   including publication mode, with no mutation lock and no epoch bump, while still applying
-   publication's session, handle and activation authorization checks.
-6. **Resident-grant exclusion (`EBUSY`) after rename.** Bypassing `beginServiceMutation` in
-   publication mode also bypasses `assertCurrent()`. After a service rename changes a directory's
-   `ctime`, `MemoryBackend.check` -> `sync` -> `shared.register` can take the global lock without
-   checking an outstanding resident grant, returning `false` where `stat` returns `EBUSY`. The
-   serial read path must keep the explicit `assertCurrent()` check and inspect the live directory
-   node directly.
-7. **Errno preservation for backends without the query.** `FilesystemService` accepts custom
-   backends that only implement the existing operation set. Calling an unimplemented query
-   unconditionally from `FilesystemClient` turns a subdirectory `ENOENT` (44) into `ENOSYS` (52).
-   Carry optional capability discovery across the service boundary or fall back to the existing
-   inode comparison without hiding errors from a supported query.
+   rather than shadowing it with stdin. Met: `/volume`'s `..` is the real root, so it is not the
+   root.
+3. **No stale root cache.** Root identity must track the live root. Met: nothing is cached; each
+   probe is a lookup in the live tree, and a directory that is no longer the root answers `..`
+   with its parent or an error.
+4. **Effective permissions vs `stat.mode`.** Met: `openInode` is unchanged and still consults
+   `fs.permissions`.
+5. **Publication-mode lock and epoch.** Met outside publication: the probe is a cached read and the
+   epoch does not move (tested). In publication mode `executePublication` takes the global lock and
+   advances the epoch for every request, reads included, so the probe costs what one `resolve`
+   costs there, under the same session, handle and activation checks. It is no longer a
+   publication mutation intent needing an admission, as `preopen` was. Publication mode disables
+   client caches, so the epoch step invalidates nothing.
+6. **Resident-grant exclusion (`EBUSY`) after rename.** Met: the probe goes through the ordinary
+   `resolve` path with its `assertCurrent()` check; nothing bypasses `beginServiceMutation`.
+7. **Errno preservation for backends without the query.** Met: no new operation. A custom backend
+   that ignores `rooted` answers the root's `..` with an error, so an opened copy of the root
+   (not the `/` binding itself) loses aliases there, as it would for rooted lookups already.
