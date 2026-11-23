@@ -81,6 +81,9 @@ export default {
         "tests/fixtures/wait-async-{waiter,notifier}.ts",
         // Process start states test (scripts/test-browser.ts). Its runner bundles the page.
         "tests/process-start-browser{,-runner}.ts",
+        // Wasm trap frame symbol diagnostics browser test (scripts/test-browser.ts).
+        "tests/interrupt-symbols-browser{,-runner}.ts",
+        "tests/fixtures/interrupt-symbols-worker.ts",
         // The packed operation controls bundle a page and two Worker entries by path.
         "tests/operation-diagnostics-browser.ts",
         "tests/fixtures/operation-{fs-worker,observer-worker,page}.ts",
