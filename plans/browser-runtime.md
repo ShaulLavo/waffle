@@ -386,3 +386,22 @@ across the service boundary (no handle returned, no mutation lock, and publicati
 handle, activation and resident-grant checks kept) with capability discovery for custom backends.
 That is the `isRoot` direction PR 600 tried. The PR 606 branch `lane/loose-ends-openat` and its
 worker test (`tests/wasi-root-identity.test.ts`) are kept for reuse.
+
+## Publication code in every eager graph (owner decision)
+
+The publication domain (`fs/publication.ts`, `publication-attachment.ts`, `publication-grant.ts`,
+`publication-memory-budget.ts`) is in the eager graph of the page, the filesystem worker and every
+process worker, though only `workspace: true` runtimes and resident publication use the domain.
+Measured on main 14a85d8a with `bun build --minify --splitting --metafile`: about 43 KB of the
+262 KB raw eager JavaScript of a minimal app that only calls `createRuntime`, and about 45 KB of the
+255 KB raw eager graph of `browser/worker.ts`, which every process start parses. The workspace
+projection (`fs/workspace.ts`, `workspace-protocol.ts`, `namespace-projection-*`) adds about 31 KB
+more to the page for the same reason.
+
+The blockers are synchronous: `createRuntime` builds publication buffers in `SharedFilesystem`'s
+constructor when `workspace` is set, `SharedFilesystemState`'s constructor builds a
+`PublicationDomain`, `fs/protocol.ts` builds one to fork and retire sessions, and `FilesystemClient`
+and `MemoryBackend.execute` call `mutationIntent` on every request. A split would move the
+request-shape helpers (`mutationIntent`, `mutationValue`, buffer plans) into a small module and load
+the domain at the existing asynchronous points (filesystem worker start, process bootstrap) only
+when the connection carries publication buffers. This is a size rewrite, so it waits for the owner.
