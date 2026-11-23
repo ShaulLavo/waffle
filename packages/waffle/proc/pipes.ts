@@ -823,6 +823,10 @@ export class PipePublicationRegistry {
       atomicsLoad(this.cells, (ref & CELL_INDEX) * 4) >>> CELL_TAG_SHIFT === ref >>> CELL_TAG_SHIFT
     );
   }
+  /** Epoch and owner words of every cell; rings validate unheld loads against them. */
+  get cellWords(): Int32Array {
+    return this.cells;
+  }
   /** Raw cursor view of a cell. Callers act on it only while holding the reference. */
   canonical(ref: number): BigInt64Array {
     const index = ref & CELL_INDEX;
@@ -910,6 +914,8 @@ class Ring {
   private publicationCell?: BigInt64Array;
   private consumptionMapped = 0;
   private consumptionCell?: BigInt64Array;
+  /** The registry's cell words, for validating loads without a call into the registry. */
+  private readonly cellWords?: Int32Array;
   readonly epoch: Int32Array;
   readonly capacity: number;
   private readonly recordCapacity: number;
@@ -935,6 +941,7 @@ class Ring {
     this.mapping = new Int32ArrayConstructor(buffer, offset + 24, 2);
     this.demand = new Int32ArrayConstructor(buffer, offset + 32, 1);
     this.epoch = new Int32ArrayConstructor(buffer, offset + 36, 1);
+    this.cellWords = registry?.cellWords;
     this.capacity = space.capacity;
     this.recordCapacity = records(space.capacity);
     this.writer = writerSlot >= 0;
@@ -1050,8 +1057,15 @@ class Ring {
   load(at: 0 | 1): bigint {
     for (;;) {
       const mapped = atomicsLoad(this.mapping, at);
+      if (mapped <= 0) return atomicsLoad(at ? this.localConsumed : this.localPublished, 0);
       const value = atomicsLoad(this.cursor(at, mapped), 0);
-      if (mapped <= 0 || this.registry!.current(mapped - 1)) return value;
+      // The cell's epoch word still carries the reference's tag (registry.current, inlined).
+      const ref = mapped - 1;
+      if (
+        atomicsLoad(this.cellWords!, (ref & CELL_INDEX) * 4) >>> CELL_TAG_SHIFT ===
+        ref >>> CELL_TAG_SHIFT
+      )
+        return value;
       // The mapping moves on before its hold drops, so a released cell means a new mapping,
       // unless a corrupted mapping names a released cell: then report a stopped cursor.
       if (atomicsLoad(this.mapping, at) === mapped) return value | STOP;
