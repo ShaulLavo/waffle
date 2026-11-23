@@ -72,6 +72,9 @@ const RETIRED_PAGE = -1;
 // Header words 5 and 6 belong to connection owner allocation and attachment probing.
 const FREED_REVISION_LOW = 7;
 const FREED_REVISION_HIGH = 8;
+// Slots with a nonzero kind word, maintained under the global lock, so a resource check does
+// not scan the whole identity table.
+const REGISTERED_SLOTS = 9;
 // Global-lock accelerators. Nothing below a hint is free; ownership stays authoritative.
 const PHYSICAL_HINT = 27;
 const TABLE_HINT = 28;
@@ -945,11 +948,12 @@ export class SharedFilesystemState {
           this.allocate(slot, Math.ceil(Math.max(data?.length ?? 0, stat.size) / DATA_PAGE_BYTES));
           if (data?.length) this.copyInto(slot, data, 0);
         }
-        Atomics.store(
+        const previousKind = Atomics.exchange(
           this.slots,
           this.at(slot, 0),
           stat.kind === "file" ? 1 : stat.kind === "symlink" ? 3 : stat.kind === "socket" ? 4 : 2,
         );
+        if (!previousKind) Atomics.add(this.cells, REGISTERED_SLOTS, 1);
         Atomics.store(this.slots, this.at(slot, FILE_SIZE), stat.size);
         Atomics.store(this.slots, this.at(slot, INO), stat.ino);
         Atomics.store(this.slots, this.at(slot, NLINK), stat.nlink);
@@ -2358,6 +2362,7 @@ export class SharedFilesystemState {
       this.cells[FREED_REVISION_LOW] = revision >>> 0;
       this.cells[FREED_REVISION_HIGH] = Math.floor(revision / 0x100000000);
     }
+    if (Atomics.load(this.slots, this.at(slot, 0))) Atomics.sub(this.cells, REGISTERED_SLOTS, 1);
     for (let field = 0; field < HANDLE; field++)
       if (field !== FILE_LOCK) Atomics.store(this.slots, this.at(slot, field), 0);
     this.slots[this.at(slot, REVISION_STATE)]! &= ~RESIDENT;
@@ -2415,9 +2420,7 @@ export class SharedFilesystemState {
     maxBytes: number;
     files: number;
   } {
-    let files = 0;
-    for (let slot = 1; slot < MAX_FILES; slot++)
-      if (Atomics.load(this.slots, this.at(slot, 0))) files++;
+    const files = Atomics.load(this.cells, REGISTERED_SLOTS);
     const usedBytes = Atomics.load(this.cells, USED_PAGES) * DATA_PAGE_BYTES;
     const poolBytes = this.segments
       .slice(1)
