@@ -1,5 +1,9 @@
 import { describeWorkerError } from "../browser/worker.js";
-import { CacheStorageAdmittedStore } from "../interrupt/admitted-store.js";
+import {
+  CacheStorageAdmittedStore,
+  sha256Hex,
+  type AdmittedModuleStore,
+} from "../interrupt/admitted-store.js";
 import { admittedModuleDiagnostics, InterruptModuleCache } from "../interrupt/loader.js";
 import { prepareLinkPlan } from "../link/index.js";
 import {
@@ -23,12 +27,14 @@ interface SidecarManifestEntry {
 
 export interface BrowserSidecarManifest {
   readonly guestA: SidecarManifestEntry;
+  readonly guestAGzip: SidecarManifestEntry;
   readonly guestB: SidecarManifestEntry;
   readonly supervised: SidecarManifestEntry;
   readonly wrongSource: SidecarManifestEntry;
   readonly malformed: SidecarManifestEntry;
   readonly emptyName: SidecarManifestEntry;
   readonly missing: SidecarManifestEntry;
+  readonly stalled: SidecarManifestEntry;
   readonly disabledSentinel: SidecarManifestEntry;
   readonly echoSized: SidecarManifestEntry;
 }
@@ -37,6 +43,9 @@ export interface BrowserSymbolsReport {
   readonly userAgent: string;
   readonly namedAfterMiss: number;
   readonly namedAfterCacheHit: number;
+  readonly namedAfterGzip: number;
+  readonly cacheHitVerified: boolean;
+  readonly storedCacheUnnamed: boolean;
   readonly cacheHitReusedDistinctNonce: boolean;
   readonly supervisedNamed: number;
   readonly wrongDigestAnnotated: number;
@@ -45,6 +54,7 @@ export interface BrowserSymbolsReport {
   readonly malformedJsonAnnotated: number;
   readonly emptyNameAnnotated: number;
   readonly missingSidecarAnnotated: number;
+  readonly stalledSidecarAnnotated: number;
   readonly disabledFetches: number;
   readonly disabledAnnotated: number;
   readonly multiModuleHelperAnnotated: number;
@@ -110,13 +120,43 @@ export async function runInterruptSymbolsBrowser(
   const sourceB = trapGuestModule(2);
   const supSource = supervisedTrapGuestModule();
   const echoFixture = echoSizedGuestFixture();
-  const store = new CacheStorageAdmittedStore(caches, location.origin);
+  const sourceASha = await sha256Hex(sourceA);
+  const backing = new CacheStorageAdmittedStore(caches, location.origin);
+  const firstPutDone = Promise.withResolvers<void>();
+  let putsForA = 0;
+  let openHitsForA = 0;
+  const store: AdmittedModuleStore = {
+    async open(hash, profile) {
+      const entry = await backing.open(hash, profile);
+      if (entry && hash === sourceASha && profile === "ordinary") openHitsForA++;
+      return entry;
+    },
+    async put(hash, admitted, profile) {
+      await backing.put(hash, admitted, profile);
+      if (hash === sourceASha && profile === "ordinary") {
+        putsForA++;
+        firstPutDone.resolve();
+      }
+    },
+    evict: (hash, profile) => backing.evict(hash, profile),
+  };
 
   try {
     // 1. Diagnostics disabled first: populates canonical CacheStorage and fetches nothing.
     const disabledMissCache = new InterruptModuleCache(16, store);
     const disabledMod = await disabledMissCache.compile(sourceA, "ordinary");
+    await firstPutDone.promise;
+    check(putsForA === 1, `expected 1 CacheStorage put for sourceA, got ${putsForA}`);
     check(admittedModuleDiagnostics(disabledMod) === undefined, "disabled miss recorded facts");
+
+    // Verify stored canonical CacheStorage bytes carry no diagnostic name custom section.
+    const storedEntry = await backing.open(sourceASha, "ordinary");
+    check(storedEntry !== undefined, "canonical CacheStorage entry missing after put");
+    const storedBytes = new Uint8Array(await storedEntry.response.arrayBuffer());
+    const storedModule = await WebAssembly.compile(storedBytes);
+    const storedCacheUnnamed = WebAssembly.Module.customSections(storedModule, "name").length === 0;
+    check(storedCacheUnnamed, "stored CacheStorage bytes contained a diagnostic name section");
+
     const disabledTrap = await trapInWorker({
       mode: "direct",
       module: disabledMod,
@@ -144,9 +184,21 @@ export async function runInterruptSymbolsBrowser(
     check(disabledRes.stack === disabledTrap.rawStack, "disabled annotateError mutated stack");
     check(disabledRes.annotatedFrames === 0, "disabled annotateError annotated frames");
 
-    // 2. Opt-in diagnostics enabled: miss and CacheStorage hit both name frames cleanly.
+    // 2. Opt-in diagnostics enabled: prove true CacheStorage hit (no admit, no second put, store-verify hit).
+    performance.clearMeasures();
     const diagCacheA = new InterruptModuleCache(16, store, {}, { symbolDiagnostics: true });
     const modAHit = await diagCacheA.compile(sourceA, "ordinary");
+    const admitMeasures = performance.getEntriesByName("waffle:program:admit");
+    const verifyMeasures = performance.getEntriesByName("waffle:program:store-verify") as Array<
+      PerformanceEntry & { detail?: { result?: string } }
+    >;
+    const verifiedStoreHit = verifyMeasures.some((entry) => entry.detail?.result === "hit");
+    const cacheHitVerified =
+      openHitsForA === 1 && putsForA === 1 && admitMeasures.length === 0 && verifiedStoreHit;
+    check(
+      cacheHitVerified,
+      `diagnostic compile did not hit CacheStorage (openHits=${openHitsForA}, puts=${putsForA}, admits=${admitMeasures.length}, storeVerifyHit=${verifiedStoreHit})`,
+    );
     const factsAHit = admittedModuleDiagnostics(modAHit);
     check(factsAHit !== undefined, "diagnostic CacheStorage hit missing facts");
 
@@ -167,6 +219,18 @@ export async function runInterruptSymbolsBrowser(
     for (const symbol of ["inner_trap", "outer", "_start"]) {
       check(resMiss.stack.includes(symbol), `miss stack missing ${symbol}: ${resMiss.stack}`);
     }
+
+    // Gzip-encoded sidecar response with compressed Content-Length succeeds in real browser Fetch.
+    const resGzip = await annotateError(fakeErrorFromTrap(trapMiss), [
+      { module: modAMiss, sidecar: manifest.guestAGzip },
+    ]);
+    check(
+      resGzip.annotatedFrames === 3 &&
+        resGzip.stack.includes("inner_trap") &&
+        resGzip.stack.includes("outer") &&
+        resGzip.stack.includes("_start"),
+      `gzip sidecar failed to name frames: ${resGzip.stack}`,
+    );
 
     // CacheStorage hit trap annotation
     const trapHit = await trapInWorker({ mode: "direct", module: modAHit, action: "start" });
@@ -203,13 +267,18 @@ export async function runInterruptSymbolsBrowser(
       `supervised stack missing expected names: ${supRes.stack}`,
     );
 
-    // 3. Failure paths: wrong digest, wrong bytes, wrong source hash, malformed JSON, empty name, missing sidecar.
+    // 3. Failure paths: wrong digest, wrong bytes, wrong source hash, malformed JSON, empty name, missing, stalled body.
     const checkFailClosed = async (
       label: string,
       sidecar: { readonly url: string; readonly bytes?: number; readonly sha256: string },
+      timeoutMs?: number,
     ) => {
       const err = fakeErrorFromTrap(trapMiss);
-      const res = await annotateError(err, [{ module: modAMiss, sidecar }]);
+      const res = await annotateError(
+        err,
+        [{ module: modAMiss, sidecar }],
+        timeoutMs === undefined ? undefined : { timeoutMs },
+      );
       check(res.error === err, `${label}: replaced original error`);
       check(res.stack === trapMiss.rawStack, `${label}: altered raw stack`);
       check(res.annotatedFrames === 0, `${label}: annotated ${res.annotatedFrames} frames`);
@@ -230,6 +299,7 @@ export async function runInterruptSymbolsBrowser(
     const malformedJsonAnnotated = await checkFailClosed("malformed-json", manifest.malformed);
     const emptyNameAnnotated = await checkFailClosed("empty-name", manifest.emptyName);
     const missingSidecarAnnotated = await checkFailClosed("missing-sidecar", manifest.missing);
+    const stalledSidecarAnnotated = await checkFailClosed("stalled-sidecar", manifest.stalled, 150);
 
     // 4. Multi-module stacks: helper, streaming named helper, two admitted modules, linked 3-module group.
     const helperMod = await WebAssembly.compile(helperGuestModule(102));
@@ -374,6 +444,9 @@ export async function runInterruptSymbolsBrowser(
       userAgent: navigator.userAgent,
       namedAfterMiss: resMiss.annotatedFrames,
       namedAfterCacheHit: resHit.annotatedFrames,
+      namedAfterGzip: resGzip.annotatedFrames,
+      cacheHitVerified,
+      storedCacheUnnamed,
       cacheHitReusedDistinctNonce,
       supervisedNamed: supRes.annotatedFrames,
       wrongDigestAnnotated,
@@ -382,6 +455,7 @@ export async function runInterruptSymbolsBrowser(
       malformedJsonAnnotated,
       emptyNameAnnotated,
       missingSidecarAnnotated,
+      stalledSidecarAnnotated,
       disabledFetches,
       disabledAnnotated: disabledRes.annotatedFrames,
       multiModuleHelperAnnotated: bridgeHelperRes.annotatedFrames,

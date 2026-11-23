@@ -59,8 +59,15 @@ const emptyNameBytes = new Uint8Array(
 );
 const emptyNameSha = await sha256Hex(emptyNameBytes);
 
+const guestAGzip = Bun.gzipSync(guestA.bytes);
+
 const manifest: BrowserSidecarManifest = {
   guestA: { url: "/sidecars/guest-a.json", bytes: guestA.bytes.byteLength, sha256: guestA.sha256 },
+  guestAGzip: {
+    url: "/sidecars/guest-a-gzip.json",
+    bytes: guestA.bytes.byteLength,
+    sha256: guestA.sha256,
+  },
   guestB: { url: "/sidecars/guest-b.json", bytes: guestB.bytes.byteLength, sha256: guestB.sha256 },
   supervised: {
     url: "/sidecars/supervised.json",
@@ -84,6 +91,11 @@ const manifest: BrowserSidecarManifest = {
   },
   missing: {
     url: "/sidecars/missing.json",
+    bytes: guestA.bytes.byteLength,
+    sha256: guestA.sha256,
+  },
+  stalled: {
+    url: "/sidecars/stalled.json",
     bytes: guestA.bytes.byteLength,
     sha256: guestA.sha256,
   },
@@ -111,6 +123,16 @@ const sidecarPayloads = new Map<string, Uint8Array<ArrayBuffer>>([
 ]);
 
 let disabledSentinelHits = 0;
+const stalledControllers = new Set<ReadableStreamDefaultController<Uint8Array>>();
+
+function closeStalledStreams(): void {
+  for (const controller of stalledControllers) {
+    try {
+      controller.close();
+    } catch {}
+  }
+  stalledControllers.clear();
+}
 
 await runIsolatedPages({
   label: "interrupt-symbols-browser",
@@ -127,6 +149,32 @@ await runIsolatedPages({
         headers: { ...headers, "Content-Type": "application/wasm" },
       });
     }
+    if (path === manifest.guestAGzip.url) {
+      return new Response(guestAGzip, {
+        headers: {
+          ...headers,
+          "Content-Type": "application/json",
+          "Content-Encoding": "gzip",
+          "Content-Length": String(guestAGzip.byteLength),
+        },
+      });
+    }
+    if (path === manifest.stalled.url) {
+      let ownedController: ReadableStreamDefaultController<Uint8Array> | undefined;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          ownedController = controller;
+          stalledControllers.add(controller);
+          controller.enqueue(utf8.encode('{"version":1,'));
+        },
+        cancel() {
+          if (ownedController) stalledControllers.delete(ownedController);
+        },
+      });
+      return new Response(body, {
+        headers: { ...headers, "Content-Type": "application/json" },
+      });
+    }
     if (path === manifest.disabledSentinel.url) disabledSentinelHits++;
     const payload = sidecarPayloads.get(path);
     if (!payload) return undefined;
@@ -138,6 +186,7 @@ await runIsolatedPages({
       },
     });
   },
+  dispose: async () => closeStalledStreams(),
   names: process.argv.length > 2 ? process.argv.slice(2) : Object.keys(engines),
   async evaluate(page): Promise<BrowserSymbolsReport> {
     const beforeHits = disabledSentinelHits;
