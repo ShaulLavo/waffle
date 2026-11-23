@@ -289,23 +289,81 @@ test("a declared sidecar must ship, match its receipt and reference, and never s
   writeFileSync(`${sidecar}.br`, brotliCompressSync(bytes));
   assert.ok(admitProgramPackage(root).includes("dist/echo-symbols.json.br"));
   rmSync(`${sidecar}.br`);
+  const listedGzip = opted.concat(["dist/echo-symbols.json.gz"]);
+  symbolPackage(root, listedGzip);
+  writeFileSync(`${sidecar}.gz`, gzipSync(other));
+  assert.throws(() => admitProgramPackage(root), /differs from final bytes/, "declared gzip");
+  writeFileSync(`${sidecar}.gz`, gzipSync(bytes));
+  assert.deepEqual(
+    admitProgramPackage(root),
+    listedGzip.concat(["dist/echo.wasm.gz", "dist/echo.wasm.br"]),
+  );
+  rmSync(`${sidecar}.gz`);
   symbolPackage(root, opted.concat(["dist/other-symbols.json"]));
   writeFileSync(resolve(root, "dist/other-symbols.json"), bytes);
   assert.throws(() => admitProgramPackage(root), /not declared: dist\/other-symbols\.json/);
+  symbolPackage(root, opted);
+  assert.throws(() => admitProgramPackage(root), /not declared: dist\/other-symbols\.json/);
+  rmSync(resolve(root, "dist/other-symbols.json"));
+  writeFileSync(`${reference}.gz`, gzipSync(module));
+  assert.throws(() => admitProgramPackage(root), /not declared: dist\/echo-symbols\.ts\.gz/);
+  rmSync(`${reference}.gz`);
 
   stageProgram(input, output);
   writeFileSync(sidecar, bytes);
   writeFileSync(reference, module);
   symbolPackage(root, opted);
-  assert.throws(() => admitProgramPackage(root), /not declared by the derivation/);
+  assert.throws(() => admitProgramPackage(root), /not declared: dist\/echo-symbols\.json/);
   symbolPackage(root, declared);
-  assert.throws(() => admitProgramPackage(root), /not declared by the derivation/);
+  assert.throws(() => admitProgramPackage(root), /not declared: dist\/echo-symbols\.json/);
   rmSync(sidecar);
   rmSync(reference);
+  for (const suffix of [".gz", ".br"]) {
+    const companion = `dist/echo-symbols.json${suffix}`;
+    writeFileSync(resolve(root, companion), gzipSync(bytes));
+    symbolPackage(root, declared);
+    assert.throws(() => admitProgramPackage(root), /not declared/, `unlisted ${suffix}`);
+    symbolPackage(root, declared.concat([companion]));
+    assert.throws(() => admitProgramPackage(root), /not declared/, `listed ${suffix}`);
+    rmSync(resolve(root, companion));
+  }
+  symbolPackage(root, declared);
   assert.deepEqual(
     admitProgramPackage(root),
     declared.concat(["dist/echo.wasm.gz", "dist/echo.wasm.br"]),
   );
+});
+
+test("a packed archive carries no symbol file that admission did not bind", (context) => {
+  const parent = resolve(import.meta.dirname, "../.build");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(resolve(parent, "symbols-archive-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(resolve(root, "dist"));
+  mkdirSync(resolve(root, "extra"));
+  const input = resolve(root, "input.wasm");
+  writeFileSync(input, namedWasiFixture(["_start", "outer"]));
+  stageProgram(input, resolve(root, "dist/echo.wasm"), {}, undefined, { emitSymbols: true });
+  writeFileSync(
+    resolve(root, "package.json"),
+    JSON.stringify({
+      name: "fixture",
+      version: "0.0.0",
+      waffleHostInterface: 1,
+      peerDependencies: { "@waffle-os/runtime": "*" },
+      files: ["dist", "extra"],
+    }),
+  );
+  symbolPackage(root, [
+    "dist/echo.wasm",
+    "dist/echo-program.json",
+    "dist/echo-symbols.json",
+    "dist/echo-symbols.ts",
+  ]);
+  const archive = packProgramPackage(root);
+  verifyProgramTarball(root, archive);
+  writeFileSync(resolve(root, "extra/stale-symbols.json"), "{}");
+  assert.throws(() => packProgramPackage(root), /not declared: extra\/stale-symbols\.json/);
 });
 
 test("Coreutils echo is the one program that declares a sidecar and its subpath export", () => {

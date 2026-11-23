@@ -420,11 +420,7 @@ describe("program peer rebind", () => {
     const baseJson = JSON.parse(
       execFileSync(
         "tar",
-        [
-          "-xzOf",
-          resolve(fixture.out, "assets/waffle-os-base-0.0.14.tgz"),
-          "package/package.json",
-        ],
+        ["-xzOf", resolve(fixture.out, "assets/waffle-os-base-0.0.14.tgz"), "package/package.json"],
         { encoding: "utf8" },
       ),
     );
@@ -989,6 +985,20 @@ describe("program peer rebind", () => {
     expect(result.packages.map((item) => item.guests)).toEqual(
       normal.packages.map((item) => item.guests),
     );
+    type Artifacts = { readonly path: string; readonly bytes: number; readonly sha256: string };
+    type Manifest = {
+      readonly packages: readonly { readonly name: string; readonly artifacts: Artifacts[] }[];
+    };
+    const symbolArtifacts = (manifest: Manifest) =>
+      manifest.packages
+        .find((item) => item.name === "@waffle-os/coreutils")
+        ?.artifacts.filter((artifact) => artifact.path.includes("-symbols."));
+    const opted = symbolArtifacts(normal);
+    expect(opted?.map((artifact) => artifact.path)).toEqual([
+      "dist/echo-symbols.json",
+      "dist/echo-symbols.ts",
+    ]);
+    expect(symbolArtifacts(result)).toEqual(opted);
     expect(result.schema).toBe("waffle-program-release/2");
     expect(result.installCheck.runtimeRoots).toBe(1);
     expect(result.runtime.version).toBe(nextVersion);
@@ -1002,7 +1012,9 @@ describe("program peer rebind", () => {
     scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const consumer = resolve(scratch, "consumer");
     mkdirSync(resolve(consumer, "node_modules/@waffle-os/runtime"), { recursive: true });
-    mkdirSync(resolve(consumer, "node_modules/child/node_modules/@waffle-os/runtime"), { recursive: true });
+    mkdirSync(resolve(consumer, "node_modules/child/node_modules/@waffle-os/runtime"), {
+      recursive: true,
+    });
     const packageJson = JSON.stringify({ name: "waffle", version: "0.0.106" });
     writeFileSync(resolve(consumer, "node_modules/@waffle-os/runtime/package.json"), packageJson);
     writeFileSync(

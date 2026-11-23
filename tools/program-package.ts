@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -95,20 +96,31 @@ function admitProgramCompanions(root: string, name: string, raw: Buffer) {
   return admitted;
 }
 
-const symbolFiles = /-symbols\.(?:json|ts)$/;
+/** Any symbol sidecar, reference module or compressed copy of either. */
+const symbolFiles = /-symbols\.[^/]*$/;
 
-function assertNoSymbols(root: string, files: readonly string[], names: readonly string[]) {
-  for (const name of names) {
-    assert.ok(
-      !files.includes(name) && optionalCompanion(root, name) === undefined,
-      `Program symbols are not declared by the derivation: ${name}`,
-    );
-  }
+/** Symbol files on disk beside the listed guests; Coreutils packs its whole `dist`. */
+function symbolFilesBesideGuests(root: string, files: readonly string[]) {
+  const directories = new Set(files.filter((name) => name.endsWith(".wasm")).map(dirname));
+  return Array.from(directories).flatMap((directory) =>
+    readdirSync(resolve(root, directory))
+      .filter((name) => symbolFiles.test(name))
+      .map((name) => (directory === "." ? name : `${directory}/${name}`)),
+  );
+}
+
+/** Every symbol file listed, staged or packed must be one a receipt binds. */
+function assertSymbolsBound(candidates: readonly string[], bound: ReadonlySet<string>) {
+  const unbound = Array.from(new Set(candidates)).filter(
+    (name) => symbolFiles.test(name) && !bound.has(name),
+  );
+  assert.equal(unbound.length, 0, `Program symbols are not declared: ${unbound.join(" ")}`);
 }
 
 /**
- * A declared sidecar ships with its reference module; an undeclared one never ships. `validate`
- * binds the sidecar to the derivation before its reference module is compared.
+ * A declared sidecar ships with its reference module and validated companions; anything else
+ * named like a sidecar is refused by the caller. `validate` binds the sidecar to the derivation
+ * before its reference module is compared.
  */
 function admitProgramSymbols(
   root: string,
@@ -121,7 +133,6 @@ function admitProgramSymbols(
   const sidecar = `${base}-symbols.json`;
   const reference = `${base}-symbols.ts`;
   if (receipt.symbols === undefined) {
-    assertNoSymbols(root, files, [sidecar, reference]);
     validate();
     return { names: [], companions: [] };
   }
@@ -160,12 +171,11 @@ export function admitProgramPackage(root: string): string[] {
     const symbols = admitProgramSymbols(root, files, name, receipt, (symbolBytes) =>
       validateProgramDerivation(receipt, bytes, producer, symbolBytes),
     );
-    for (const symbol of symbols.names) boundSymbols.add(symbol);
+    for (const symbol of symbols.names.concat(symbols.companions)) boundSymbols.add(symbol);
     const discovered = admitProgramCompanions(root, name, bytes).concat(symbols.companions);
     companions.push(...discovered.filter((companion) => !files.includes(companion)));
   }
-  const unbound = files.filter((name) => symbolFiles.test(name) && !boundSymbols.has(name));
-  assert.equal(unbound.length, 0, `Program symbols are not declared: ${unbound.join(" ")}`);
+  assertSymbolsBound(files.concat(symbolFilesBesideGuests(root, files)), boundSymbols);
   if (recipe.dependencies !== undefined) {
     assert.ok(Array.isArray(recipe.dependencies));
     for (const name of recipe.dependencies) {
@@ -182,6 +192,11 @@ export function admitProgramPackage(root: string): string[] {
 export function verifyProgramTarball(root: string, archive: string): void {
   const files = admitProgramPackage(root);
   if (!files.length) return;
+  const members = execFileSync("tar", ["-tf", archive], { encoding: "utf8", stdio: "pipe" })
+    .split("\n")
+    .filter((member) => member.startsWith("package/"))
+    .map((member) => member.slice("package/".length));
+  assertSymbolsBound(members, new Set(files.filter((name) => symbolFiles.test(name))));
   const parent = resolve(root, ".build");
   mkdirSync(parent, { recursive: true });
   const scratch = mkdtempSync(resolve(parent, "pack-readback-"));

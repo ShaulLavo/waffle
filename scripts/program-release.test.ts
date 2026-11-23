@@ -394,7 +394,7 @@ describe("refusals", () => {
     const sidecar = readFileSync(resolve(dist, "echo-symbols.json"));
     writeFileSync(resolve(dist, "ls-symbols.json"), sidecar);
     const release = buildRelease(await fixtureOptions(root, "undeclared-symbols"));
-    await expect(release).rejects.toThrow(/not declared by the derivation: dist\/ls-symbols\.json/);
+    await expect(release).rejects.toThrow(/not declared: dist\/ls-symbols\.json/);
   }, 60_000);
 
   test("dirty sources and wrong runtime bytes", async () => {
