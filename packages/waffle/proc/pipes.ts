@@ -30,6 +30,7 @@ import {
 } from "./intrinsics.ts";
 import type { Readiness, Stream } from "../core/descriptors.js";
 import { ProcessError } from "./types.js";
+import { yieldTask } from "./yield-task.js";
 
 export const PipeErrno = objectFreeze({ AGAIN: 6, BADF: 8, INVAL: 28, NFILE: 41, PIPE: 64 });
 export type PipeMode = "read" | "write";
@@ -2354,7 +2355,10 @@ export class PipeController {
       // Registry revocation has no pipe address, so registry-backed relays use the service word.
       if (atomicsLoad(signal, 0) !== observed) {
         // A microtask-only loop starves kill/exit MessagePort tasks under continuous traffic.
-        await new Promise<void>((resolve) => scheduleTimeout(resolve, 0));
+        // Yield one real task, not setTimeout(0): browsers clamp nested zero-delay timers to
+        // 4 ms, and a relay delivers one write per reader request, so every line a program
+        // wrote into a pipeline cost at least 4 ms.
+        await yieldTask();
         continue;
       }
       await waitChanged(signal, observed);

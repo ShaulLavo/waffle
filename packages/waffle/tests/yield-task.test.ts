@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { yieldTask } from "../browser/yield-task.js";
+import { yieldTask } from "../proc/yield-task.js";
 
 test("yieldTask resumes waiters in order after pending microtasks", async () => {
   const order: string[] = [];
@@ -11,7 +11,7 @@ test("yieldTask resumes waiters in order after pending microtasks", async () => 
 });
 
 test("a pending yield keeps Node alive and an idle one does not", async () => {
-  const module = new URL("../browser/yield-task.ts", import.meta.url).href;
+  const module = new URL("../proc/yield-task.ts", import.meta.url).href;
   const child = Bun.spawn(
     [
       "node",

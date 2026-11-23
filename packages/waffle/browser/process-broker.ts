@@ -542,9 +542,6 @@ export class BrowserProcessBroker {
     },
   });
   private timer: ReturnType<typeof setTimeout> | null = null;
-  /** Root directories whose shared wake word a task is following. */
-  private readonly wakeWatches = new Set<SharedArrayBuffer>();
-  private pumpQueued = false;
   private readonly transport: WorkerProcessBroker;
   constructor(private readonly options: BrowserProcessBrokerOptions) {
     this.pipes = new WorkerPipeBroker({
@@ -3704,7 +3701,6 @@ export class BrowserProcessBroker {
     this.retireRoots();
   }
   private watch(): void {
-    this.followRootWakes();
     if (this.timer !== null || this.suspended) return;
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -3715,49 +3711,6 @@ export class BrowserProcessBroker {
       }
       if (this.children.size) this.watch();
     }, 4);
-  }
-  /** A relay pipe moves one write per reader request, and every pipe change and process exit
-   * adds to its root directory's wake word. Pump as soon as that word moves, so a program
-   * writing line by line into a pipe is not paced by the poll (at least 4 ms per write).
-   * The poll stays as the fallback for anything that changes without a wake. */
-  private followRootWakes(): void {
-    if (this.suspended) return;
-    for (const transport of this.roots.values()) {
-      if (this.wakeWatches.has(transport.directory)) continue;
-      this.wakeWatches.add(transport.directory);
-      void this.followWake(transport.directory);
-    }
-  }
-  private async followWake(directory: SharedArrayBuffer): Promise<void> {
-    const wake = new Int32Array(directory, 4, 1);
-    try {
-      while (!this.suspended && this.children.size && this.hasRootDirectory(directory)) {
-        const seen = Atomics.load(wake, 0);
-        // The timeout only bounds how long a retired root's follower lingers.
-        const waiting = atomicsWaitAsync(wake, 0, seen, 1000);
-        if (waiting.async) await waiting.value;
-        if (Atomics.load(wake, 0) !== seen) this.schedulePump();
-      }
-    } finally {
-      this.wakeWatches.delete(directory);
-    }
-  }
-  private hasRootDirectory(directory: SharedArrayBuffer): boolean {
-    for (const transport of this.roots.values()) if (transport.directory === directory) return true;
-    return false;
-  }
-  private schedulePump(): void {
-    if (this.pumpQueued || this.suspended) return;
-    this.pumpQueued = true;
-    queueMicrotask(() => {
-      this.pumpQueued = false;
-      if (this.suspended) return;
-      try {
-        this.transport.pump();
-      } catch (error) {
-        this.report(error);
-      }
-    });
   }
   suspend(): void {
     if (this.suspended) return;

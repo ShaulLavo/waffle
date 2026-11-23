@@ -1,6 +1,6 @@
 import { PipeErrno, type PipeEndpoint } from "../proc/pipes.js";
 import { ProcessError } from "../proc/types.js";
-import { yieldTask } from "./yield-task.js";
+import { yieldTask } from "../proc/yield-task.js";
 
 const BATCH = 32;
 

@@ -23,7 +23,7 @@ import {
 import type { BrowserProcessBroker } from "./process-broker.js";
 import { createRuntimeTerminalCodec } from "./runtime-terminals.js";
 import { CommandInput } from "./command-input.js";
-import { yieldTask } from "./yield-task.js";
+import { yieldTask } from "../proc/yield-task.js";
 
 const READ = 1n << 1n;
 const WRITE = 1n << 6n;
