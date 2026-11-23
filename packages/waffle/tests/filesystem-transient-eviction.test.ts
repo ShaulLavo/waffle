@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { FilesystemClient, FilesystemService, MemoryBackend, type FilesystemBackend } from "../fs";
 import {
+  CAPABILITY_HEADER,
+  CAPABILITY_LENGTH,
+  CAPABILITY_WORDS,
   TRANSIENT_HANDLES,
   connectFilesystemIdentity,
   createFilesystemIdentity,
@@ -86,6 +89,118 @@ test("a custom backend's evictions inside a creating request keep the epoch odd 
     // One mutation: odd for the whole request, even again after it.
     expect(new Set(releasedAt)).toEqual(new Set([before + 1]));
     expect(Atomics.load(epoch, 0)).toBe(before + 2);
+  } finally {
+    client.dispose();
+    await service.drainForOwner();
+    service.dispose();
+    pair.client.port.close();
+    pair.server.port.close();
+  }
+});
+
+function trackedBackend() {
+  const memory = new MemoryBackend();
+  const state = { epoch: undefined as Int32Array | undefined, releasedAt: [] as number[] };
+  const backend: FilesystemBackend = {
+    execute: memory.execute.bind(memory),
+    retain: memory.retain.bind(memory),
+    release(handle) {
+      if (state.epoch) state.releasedAt.push(Atomics.load(state.epoch, 0));
+      memory.release(handle);
+    },
+  };
+  return { backend, state };
+}
+
+test("a peer's evictions join the open mutation through a cloned view of the same epoch", async () => {
+  const { backend, state } = trackedBackend();
+  const service = new FilesystemService(backend);
+  const identity = createFilesystemIdentity(undefined, 16 * 1024 * 1024);
+  const pair = connectFilesystemIdentity(identity);
+  service.connect(pair.server);
+  const client = new FilesystemClient(pair.client);
+  // A peer sharing the tree's epoch memory through a distinct structured-cloned wrapper.
+  const peerIdentity = createFilesystemIdentity(identity);
+  peerIdentity.epoch = structuredClone(peerIdentity.epoch);
+  expect(peerIdentity.epoch).not.toBe(identity.epoch);
+  const peerPair = connectFilesystemIdentity(peerIdentity);
+  service.connect(peerPair.server);
+  const peer = new FilesystemClient(peerPair.client);
+  try {
+    const count = TRANSIENT_HANDLES + 44;
+    await client.asyncCall("mkdirp", ["/many"]);
+    for (let index = 0; index < count; index++)
+      await client.asyncCall("writeFile", [`/many/${index}`], new Uint8Array([index & 255]));
+    const root = await peer.asyncCall("preopen", ["/"]);
+    const held = new Set<number>();
+    for (let index = 0; index < count; index++) {
+      const node: number = (await peer.asyncCall("resolve", [root, `many/${index}`])).node;
+      peer.retain(node);
+      held.add(node);
+    }
+    // A discarded response trims its session, so let every discard arrive first.
+    for (let wait = 0; service.resources().responses && wait < 500; wait++)
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    expect(service.resources().responses).toBe(0);
+    // Drop the peer's references directly, as a guest's release would, before its own trim
+    // hint arrives. Only the next mutation's trim of every session can now evict them.
+    const entries = new Int32Array(peerPair.client.capabilities, 0, CAPABILITY_LENGTH);
+    for (let key = CAPABILITY_HEADER; key < entries.length; key += CAPABILITY_WORDS)
+      if (held.has(Atomics.load(entries, key)) && Atomics.load(entries, key + 1) === 1)
+        Atomics.store(entries, key + 1, 0);
+    state.epoch = new Int32Array(pair.client.epoch);
+    const before = Atomics.load(state.epoch, 0);
+    expect(before & 1).toBe(0);
+    await client.asyncCall("mkdirp", ["/other"]);
+    expect(state.releasedAt.length).toBeGreaterThan(TRANSIENT_HANDLES / 2);
+    // Every peer eviction ran inside the request's one odd epoch, the only mutation.
+    expect(new Set(state.releasedAt)).toEqual(new Set([before + 1]));
+    expect(Atomics.load(state.epoch, 0)).toBe(before + 2);
+  } finally {
+    peer.dispose();
+    client.dispose();
+    await service.drainForOwner();
+    service.dispose();
+    for (const port of [
+      pair.client.port,
+      pair.server.port,
+      peerPair.client.port,
+      peerPair.server.port,
+    ])
+      port.close();
+  }
+});
+
+test("a failed segment offer after a mutation fails the request and closes its epoch", async () => {
+  const { backend } = trackedBackend();
+  // Each request offers segments twice; fail only the offer in its final cleanup.
+  let calls = 0,
+    failAt = 0;
+  backend.takeSharedSegments = () => {
+    calls++;
+    if (calls === failAt) throw new Error("segment offer failed");
+    return [];
+  };
+  const service = new FilesystemService(backend);
+  const pair = connectFilesystemIdentity(createFilesystemIdentity(undefined, 16 * 1024 * 1024));
+  service.connect(pair.server);
+  const client = new FilesystemClient(pair.client);
+  const epoch = new Int32Array(pair.client.epoch);
+  try {
+    await client.asyncCall("mkdirp", ["/first"]);
+    const before = Atomics.load(epoch, 0);
+    failAt = calls + 2;
+    const outcome = await client.asyncCall("mkdirp", ["/second"]).then(
+      () => "completed",
+      (error) => String(error),
+    );
+    expect(outcome).not.toBe("completed");
+    expect(calls).toBe(failAt);
+    expect(Atomics.load(epoch, 0)).toBe(before + 2);
+    // The next mutation opens and closes normally.
+    await client.asyncCall("mkdirp", ["/third"]);
+    expect(Atomics.load(epoch, 0)).toBe(before + 4);
+    expect(await client.asyncCall("lookup", ["/third"])).toMatchObject({ kind: "dir" });
   } finally {
     client.dispose();
     await service.drainForOwner();
