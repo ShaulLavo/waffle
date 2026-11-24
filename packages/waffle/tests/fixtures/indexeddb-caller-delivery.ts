@@ -69,15 +69,14 @@ export function indexeddbCallerDelivery(
       return undefined;
     },
     request(name, _options, callback) {
+      const coordination = name.includes("maintenance") || name.includes("indexeddb-arb");
       const result = Promise.resolve()
         .then(() => callback({}))
         .then((value) => {
-          events.push(
-            name.includes("maintenance") ? "maintenance-request-done" : "writer-request-done",
-          );
+          events.push(coordination ? "maintenance-request-done" : "writer-request-done");
           return value;
         });
-      return name.includes("maintenance") ? result : Promise.race([result, loss.promise]);
+      return coordination ? result : Promise.race([result, loss.promise]);
     },
   };
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: { locks } });

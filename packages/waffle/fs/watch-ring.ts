@@ -36,9 +36,12 @@ export function validWatchName(name: string, maximum = WATCH_NAME_BYTES): boolea
   return true;
 }
 
-export function wakeFilesystemWatch(buffer: SharedArrayBuffer): void {
+export function wakeFilesystemWatch(buffer: SharedArrayBuffer, advance = false): void {
   const offset = Atomics.load(new Int32Array(buffer, POINTER * 4, 1), 0);
-  if (offset) Atomics.notify(new Int32Array(buffer, offset, 4), 3);
+  if (!offset) return;
+  const cells = new Int32Array(buffer, offset, 4);
+  if (advance) Atomics.add(cells, 3, 1);
+  Atomics.notify(cells, 3);
 }
 
 /** Appends and reads own the filesystem's global mutation lock. Waiting never does. */

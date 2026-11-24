@@ -28,6 +28,7 @@ test("filesystem worker backend imports its connection root without a provisiona
   const allocation = spyOn(SharedFilesystemState, "createBuffer");
   try {
     const backend = await openFilesystemBackend({ mode: "memory", connect: connection }, lifecycle);
+    if (!(backend instanceof MemoryBackend)) throw new Error("expected MemoryBackend");
     expect(allocation).toHaveBeenCalledTimes(0);
     expect(backend.shared.buffer === connection.shared).toBe(true);
     expect(backend.shared.publication).toBeUndefined();

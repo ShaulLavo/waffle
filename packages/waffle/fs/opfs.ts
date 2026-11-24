@@ -173,6 +173,7 @@ export class OpfsStorage implements StorageBackend {
   private handles = new Map<string, SyncAccess>();
   private owned = new Map<SyncAccess, AccessOwnership>();
   private failedClose?: FailedClose;
+  private terminalFailureListener?: (reason: unknown) => void;
   private peakHandles = 0;
   private garbage = new Set<string>();
   private needsOrphanSweep = true;
@@ -581,6 +582,20 @@ export class OpfsStorage implements StorageBackend {
     const result = this.closeResult(access);
     if (result.kind === "failed-close") throw result.reason;
   }
+  isTerminallyFailed(): boolean {
+    return this.failedClose !== undefined;
+  }
+  terminalFailureReason(): unknown {
+    return this.failedClose?.reason;
+  }
+  setTerminalFailureListener(listener: (reason: unknown) => void): void {
+    this.terminalFailureListener = listener;
+    if (this.failedClose !== undefined) {
+      try {
+        listener(this.failedClose.reason);
+      } catch {}
+    }
+  }
   private closeResult(access: SyncAccess): CloseOutcome {
     const previous = this.owned.get(access);
     if (previous?.kind === "failed-close") return previous;
@@ -589,8 +604,14 @@ export class OpfsStorage implements StorageBackend {
     } catch (reason) {
       const failure: FailedClose = { kind: "failed-close", reason };
       this.owned.set(access, failure);
+      const first = this.failedClose === undefined;
       this.failedClose ??= failure;
       this.closed = true;
+      if (first) {
+        try {
+          this.terminalFailureListener?.(reason);
+        } catch {}
+      }
       return failure;
     }
     this.owned.delete(access);

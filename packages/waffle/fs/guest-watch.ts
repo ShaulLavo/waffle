@@ -59,6 +59,7 @@ function failure(errno: number): GuestWatchRead {
 export class GuestWatchTable implements GuestWatchReadiness {
   private watches = new MapConstructor<number, Watch>();
   private nextId = 1;
+  private revocationNotified = false;
 
   constructor(private readonly fs: WatchFileSystem) {}
 
@@ -75,7 +76,8 @@ export class GuestWatchTable implements GuestWatchReadiness {
   }
 
   pending(): boolean {
-    return !this.fs.revoked && this.hasPending(false);
+    if (this.fs.revoked) return !!this.fs.remote && !this.revocationNotified && this.active;
+    return this.hasPending(false);
   }
 
   /** A read may return records, end or an error; never consumes watch state. */
@@ -146,9 +148,12 @@ export class GuestWatchTable implements GuestWatchReadiness {
   }
 
   private refill(watch: Watch): GuestWatchRead | undefined {
-    if (this.fs.revoked) return failure(ECANCELED);
+    if (this.fs.revoked) {
+      if (this.fs.remote) this.revocationNotified = true;
+      return failure(ECANCELED);
+    }
     const generation = atomicsLoad(this.fs.cells, 3);
-    if (generation === watch.observed) return failure(EAGAIN);
+    if (!this.fs.remote && generation === watch.observed) return failure(EAGAIN);
     // Set before the call: a commit after the service drains moves the counter again. A failed
     // call drained nothing, so the watch stays pending for the retry.
     const previous = watch.observed;

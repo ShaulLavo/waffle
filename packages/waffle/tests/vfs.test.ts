@@ -51,13 +51,30 @@ test("descriptors report actual ACKs, loss boundary, ownership, format and lifec
     fsync: "targeted-file-checkpoint",
     targetedFlush: "selected-payloads-and-namespace",
   });
+  expect(idb.supportedWhenBusy).toEqual(["takeover", "wait", "attach"]);
   expect(idb.requirements).toContain("IndexedDB");
   expect(idb.lifecycle).toEqual(["opening", "waiting", "ready", "failed", "disposed"]);
+  const idbAttach = resolveVfs({ mode: "fast", whenBusy: "attach" });
+  expect(idbAttach.whenBusy).toBe("attach");
+  expect(idbAttach.descriptor).not.toBe(idb);
+  expect(idbAttach.descriptor).toMatchObject({
+    mode: "fast",
+    implementation: "indexeddb",
+    persistent: true,
+    mutationAcknowledgement: "memory",
+    multiTab: "shared-host",
+    directSharedMemory: { reads: false, mutations: false },
+  });
+  expect(idbAttach.descriptor.requirements).toContain("BroadcastChannel");
   const opfs = resolveVfs({ mode: "fast" }, "opfs-memory").descriptor;
   expect(opfs.format?.id).toBe("waffle-opfs-snapshots-v1");
-  expect(opfs.supportedWhenBusy).toEqual(["wait"]);
+  expect(opfs.supportedWhenBusy).toEqual(["wait", "attach"]);
   expect(opfs.unsupportedSettings).toEqual(["whenBusy:takeover"]);
   expect(opfs.requirements).toContain("sync-access-handles");
+  const opfsAttach = resolveVfs({ mode: "fast", whenBusy: "attach" }, "opfs-memory");
+  expect(opfsAttach.descriptor.multiTab).toBe("shared-host");
+  expect(opfsAttach.descriptor.directSharedMemory).toEqual({ reads: false, mutations: false });
+  expect(opfsAttach.descriptor.requirements).toContain("BroadcastChannel");
   const memory = getVfsDescriptor("memory");
   expect(memory.persistent).toBe(false);
   expect(memory.format).toBeNull();
@@ -65,7 +82,7 @@ test("descriptors report actual ACKs, loss boundary, ownership, format and lifec
   expect(memory.durabilityPoint).toBe("none");
   expect(memory.lossBound).toBe("all-changes");
   expect(memory.durability.flush).toBe("volatile-ordering-only");
-  for (const descriptor of [idb, opfs, memory]) {
+  for (const descriptor of [idb, idbAttach.descriptor, opfs, opfsAttach.descriptor, memory]) {
     expect(Object.isFrozen(descriptor)).toBe(true);
     const objects = Object.values(descriptor).filter((value) => value && typeof value === "object");
     expect(objects.every(Object.isFrozen)).toBe(true);
@@ -100,6 +117,8 @@ for (const options of [
   { whenBusy: "invalid" },
   { mode: "memory", whenBusy: "wait" },
   { mode: "memory", whenBusy: "takeover" },
+  { mode: "memory", whenBusy: "attach" },
+  { mode: "fast", whenBusy: "attach", workspace: true },
 ])
   test(`invalid settings reject before worker allocation: ${JSON.stringify(options)}`, () => {
     expect(caught(() => new SharedFilesystem(options as VfsSelection))).toMatchObject({

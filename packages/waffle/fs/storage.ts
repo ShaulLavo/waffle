@@ -108,6 +108,9 @@ export interface StorageBackend {
   /** Make the selected immutable payloads durable; omitted means all outstanding payloads. */
   flush(keys?: readonly string[]): Promise<void>;
   close(): Promise<void>;
+  isTerminallyFailed?(): boolean;
+  terminalFailureReason?(): unknown;
+  setTerminalFailureListener?(listener: (reason: unknown) => void): void;
 }
 
 export interface ChecksummedRecord {

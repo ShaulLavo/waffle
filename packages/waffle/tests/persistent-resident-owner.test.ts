@@ -309,7 +309,10 @@ function pendingNativeClaim(closeFailure?: { value: unknown }, setupFailure?: Er
   const locks = {
     query: () => Promise.resolve(undefined),
     request(name: string, options: LockOptions, callback: LockGrantedCallback<unknown>) {
-      if (name.startsWith("bun-wasm:filesystem:indexeddb-maintenance:"))
+      if (
+        name.startsWith("bun-wasm:filesystem:indexeddb-maintenance:") ||
+        name.startsWith("bun-wasm:filesystem:indexeddb-arb:")
+      )
         return Promise.resolve(callback({ name, mode: "shared" }));
       if (!name.startsWith("bun-wasm:filesystem:indexeddb:"))
         return Promise.resolve(callback({ name, mode: "exclusive" })).then(() => {

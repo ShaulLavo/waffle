@@ -5,7 +5,11 @@ export function withUncontendedMaintenance(writer: StorageLockManager): StorageL
   return {
     query: () => writer.query(),
     request(name, options, callback) {
-      if (name.startsWith("bun-wasm:filesystem:indexeddb-maintenance:")) return callback({});
+      if (
+        name.startsWith("bun-wasm:filesystem:indexeddb-maintenance:") ||
+        name.startsWith("bun-wasm:filesystem:indexeddb-arb:")
+      )
+        return callback({});
       return writer.request(name, options, callback);
     },
   };

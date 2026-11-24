@@ -355,12 +355,27 @@ export class MemFS implements FileSystem {
     if (node) pages.set({ name, ino: node.ino, kind: nodeKind(node) });
     else pages.delete(name);
   }
-  readdirPage(handle: FileHandle, cookie: bigint, byteLength: number): Uint8Array {
+  readdirPage(
+    handle: FileHandle,
+    cookie: bigint,
+    byteLength: number,
+    cookieTag?: bigint,
+    maxBytes?: number,
+    hardCapBytes?: number,
+  ): Uint8Array {
     checkDirectoryPage(cookie, byteLength);
     const node = this.directory(handle);
     this.require(node, 4);
     const parent = this.directoryParents.get(node) ?? node;
-    return this.directoryPages(node).page(cookie, byteLength, node.ino, parent.ino);
+    return this.directoryPages(node).page(
+      cookie,
+      byteLength,
+      node.ino,
+      parent.ino,
+      cookieTag,
+      maxBytes,
+      hardCapBytes,
+    );
   }
   private linkCounts = new WeakMap<Node, number>();
 
@@ -637,18 +652,23 @@ export class MemFS implements FileSystem {
     this.changed(node);
     return 0;
   }
-  readdir(handle: FileHandle): DirectoryEntry[] {
+  forEachDirEntry(handle: FileHandle, visit: (entry: DirectoryEntry) => void): void {
     const node = this.directory(handle);
     this.require(node, 4);
     const parent = this.directoryParents.get(node) ?? node;
-    const entry = (name: string, node: Node): DirectoryEntry => ({
+    const entry = (name: string, item: Node): DirectoryEntry => ({
       name,
-      ino: node.ino,
-      kind: nodeKind(node),
+      ino: item.ino,
+      kind: nodeKind(item),
     });
-    const list = [entry(".", node), entry("..", parent)];
+    visit(entry(".", node));
+    visit(entry("..", parent));
+    for (const [name, child] of node.children) visit(entry(name, child));
+  }
+  readdir(handle: FileHandle): DirectoryEntry[] {
+    const list: DirectoryEntry[] = [];
     // One list per call, not one list per entry or cookie. No file buffers cross the boundary.
-    for (const [name, child] of node.children) list.push(entry(name, child));
+    this.forEachDirEntry(handle, (entry) => list.push(entry));
     return list;
   }
   private parentOf(path: ResolvedPath): DirNode | number {
@@ -1261,10 +1281,11 @@ export class MemFS implements FileSystem {
   }
 
   /** Every regular file under `dir`, as absolute paths, sorted. */
-  listFiles(dir = "/"): string[] {
+  collectBoundedFilePaths(dir = "/", onFile?: (path: string) => void): string[] {
     const out: string[] = [];
     const walk = (node: Node, path: string) => {
       if (node.kind === "file") {
+        onFile?.(path);
         out.push(path);
         return;
       }
@@ -1280,6 +1301,9 @@ export class MemFS implements FileSystem {
     }
     if (start.node !== undefined) walk(this.nodeForHandle(start.node), start.canonicalPath);
     return out.sort();
+  }
+  listFiles(dir = "/"): string[] {
+    return this.collectBoundedFilePaths(dir);
   }
 }
 

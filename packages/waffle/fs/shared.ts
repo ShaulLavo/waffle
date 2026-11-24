@@ -80,6 +80,9 @@ const REGISTERED_SLOTS = 11;
 const PHYSICAL_HINT = 27;
 const TABLE_HINT = 28;
 const PINNED_PAGES = 29;
+export const CLIENT_MODE = 30;
+export const CLIENT_MODE_NO_DIRECT_IO = 1;
+export const CLIENT_MODE_NO_CLIENT_CACHE = 2;
 const MODE = 12;
 const FILE_SIZE = 1;
 // File times are unsigned 64-bit nanoseconds in two words each, starting on an even word.
@@ -281,6 +284,48 @@ export class SharedFilesystemState {
   }
   readerPinBytes(): number {
     return this.pageReaders ? this.cells[PINNED_PAGES]! * DATA_PAGE_BYTES : 0;
+  }
+  setClientMode(mode: number): void {
+    Atomics.store(this.cells, CLIENT_MODE, mode | 0);
+  }
+  isDirectDisabled(): boolean {
+    return (Atomics.load(this.cells, CLIENT_MODE) & CLIENT_MODE_NO_DIRECT_IO) !== 0;
+  }
+  isClientCacheDisabled(): boolean {
+    return (Atomics.load(this.cells, CLIENT_MODE) & CLIENT_MODE_NO_CLIENT_CACHE) !== 0;
+  }
+  /** Reset all per-mount filesystem state in place across Host remount/demotion while preserving
+   * tab-lifetime header invariants (`MAGIC`, `maxSegments`, owner/probe words, `WATCH_OFFSET`,
+   * `watch.cells[3]`, `CLIENT_MODE`) and reusing tab-lifetime segments at their exact indexes. */
+  resetForRemount(retainedSegments: readonly (SharedArrayBuffer | undefined)[] = []): void {
+    Atomics.store(this.cells, GLOBAL_LOCK, 0);
+    Atomics.store(this.cells, USED_PAGES, 0);
+    for (let i = 7; i <= 25; i++) Atomics.store(this.cells, i, 0);
+    Atomics.store(this.cells, PHYSICAL_HINT, 0);
+    Atomics.store(this.cells, TABLE_HINT, 0);
+    Atomics.store(this.cells, PINNED_PAGES, 0);
+    for (let i = 32; i < HEADER_WORDS; i++) Atomics.store(this.cells, i, 0);
+    this.owners.fill(0);
+    this.slots.fill(0);
+    this.tableOwners.fill(0);
+    this.pages.fill(0);
+    this.firstBytes.fill(0);
+    this.pageViews.length = 0;
+    this.pendingSegments.length = 0;
+    this.staged.clear();
+    this.serviceMutation = false;
+    this.globalOwner = undefined;
+    this.globalDepth = 0;
+    this.fileOwnsGlobal.clear();
+    this.currentOwner = undefined;
+    this.segments.length = 1;
+    this.segments[0] = this.buffer;
+    for (let i = 0; i < retainedSegments.length; i++) {
+      const seg = retainedSegments[i];
+      if (!seg) continue;
+      new Uint8Array(seg).fill(0);
+      this.segments[i + 1] = seg;
+    }
   }
   private releaseVersionPages(pages: Uint32Array): void {
     this.globalLock(undefined, this.lockOwner, false, "release");

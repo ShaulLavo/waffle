@@ -1,15 +1,19 @@
-import { MemoryBackend, type MemoryBackendSharedRoot } from "../fs/backend.js";
+import {
+  MemoryBackend,
+  type FilesystemBackend,
+  type MemoryBackendSharedRoot,
+} from "../fs/backend.js";
 import type { MemoryBudget } from "../fs/memory-budget.js";
 import { PersistentBackend } from "../fs/persistent.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { OpfsStorage } from "../fs/opfs.js";
 import type { StorageBackend } from "../fs/storage.js";
 import type { RuntimeStartupObserver } from "../fs/startup.js";
-import { resolveVfs, requireVfsCapabilities } from "../fs/vfs.js";
+import { resolveVfs, requireVfsCapabilities, type VfsWhenBusy } from "../fs/vfs.js";
 
 export interface FilesystemBackendOptions {
   readonly mode?: "fast" | "safe" | "memory";
-  readonly whenBusy?: "wait" | "takeover";
+  readonly whenBusy?: VfsWhenBusy;
   readonly name?: string;
   readonly implementation?: "indexeddb" | "opfs-memory" | "memory";
   readonly startupRoot?: MemoryBudget;
@@ -20,18 +24,35 @@ export interface FilesystemBackendLifecycle {
   readonly onStartupStage?: RuntimeStartupObserver;
   readonly signal?: AbortSignal;
   readonly onWaiting?: () => void;
+  readonly onState?: (status: "waiting" | "ready") => void;
   readonly onOwnershipLost: () => void;
+  readonly onFatalError?: (error: unknown, released: boolean) => void;
   readonly retainStorage: (storage: StorageBackend) => void;
 }
 /** The caller owns failed-open cleanup, including any failed native close. */
 export async function openFilesystemBackend(
   options: FilesystemBackendOptions,
   lifecycle: FilesystemBackendLifecycle,
-): Promise<MemoryBackend | PersistentBackend> {
+): Promise<FilesystemBackend> {
   const { descriptor, whenBusy } = resolveVfs(options, options.implementation);
-  requireVfsCapabilities(descriptor.implementation);
+  requireVfsCapabilities(descriptor.implementation, whenBusy);
   if (descriptor.implementation === "memory")
     return new MemoryBackend(undefined, undefined, options.startupRoot, undefined, options.connect);
+  if (whenBusy === "attach") {
+    const { MultiTabBackend } = await import("../fs/multitab-backend.js");
+    return MultiTabBackend.open({
+      implementation: descriptor.implementation,
+      name: options.name ?? "waffle-workspace",
+      startupRoot: options.startupRoot,
+      sharedRoot: options.connect,
+      onStartupStage: lifecycle.onStartupStage,
+      signal: lifecycle.signal,
+      onWaiting: lifecycle.onWaiting,
+      onState: lifecycle.onState,
+      onOwnershipLost: lifecycle.onOwnershipLost,
+      onFatalError: lifecycle.onFatalError,
+    });
+  }
   let backend: PersistentBackend | undefined = undefined;
   let ownershipLost = false;
   const storage =

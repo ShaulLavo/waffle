@@ -1,8 +1,8 @@
 import { atomicsWaitAsync } from "./intrinsics.js";
 import type { DescriptorTable, Resource } from "../core/descriptors.js";
-import { withFileOffset, shareFileResource } from "../core/open-file.js";
+import { claimFileOffset, withFileOffset, shareFileResource } from "../core/open-file.js";
 import { FilesystemClient } from "../fs/client.js";
-import type { FilesystemConnection } from "../fs/protocol.js";
+import { errno, type FilesystemConnection } from "../fs/protocol.js";
 import { CommandStdioError, type CommandInput, type CommandOutput } from "./command.js";
 
 const READ = 1n << 1n;
@@ -96,6 +96,9 @@ export class CommandStdio {
   private async transfer(fd: number, bytes: Uint8Array, writing: boolean): Promise<number> {
     for (;;) {
       const resource = this.resource(fd, writing ? WRITE : READ);
+      if (resource.kind === "file" && this.filesystem?.shared.isDirectDisabled()) {
+        return await this.transferAsyncFile(resource, bytes, writing);
+      }
       const words = this.notifications(resource);
       const observed = words.map((word) => Atomics.load(word, 0));
       const count =
@@ -110,6 +113,73 @@ export class CommandStdio {
       if (count !== -6) throw stdioError(count);
       if (!words.length) throw new CommandStdioError("EIO", "I/O has no readiness notification");
       await this.wait(words, observed);
+    }
+  }
+
+  private async runAsyncFileLease(
+    filesystem: FilesystemClient,
+    resource: Extract<Resource, { kind: "file" }>,
+    lease: { readonly position: number; readonly append: boolean; commit(next: number): void },
+    bytes: Uint8Array,
+    writing: boolean,
+  ): Promise<number> {
+    if (writing && lease.append) {
+      const result: { written: number; offset: number } = await filesystem.asyncCall(
+        "append",
+        [resource.handle],
+        bytes,
+      );
+      lease.commit(result.offset);
+      this.check();
+      return result.written;
+    }
+    if (writing) {
+      const written: number = await filesystem.asyncCall(
+        "write",
+        [resource.handle, lease.position],
+        bytes,
+      );
+      if (written > 0) lease.commit(lease.position + written);
+      this.check();
+      return written;
+    }
+    const read: Uint8Array = await filesystem.asyncCall("read", [
+      resource.handle,
+      bytes.length,
+      lease.position,
+    ]);
+    bytes.set(read, 0);
+    if (read.length > 0) lease.commit(lease.position + read.length);
+    this.check();
+    return read.length;
+  }
+
+  private async transferAsyncFile(
+    resource: Extract<Resource, { kind: "file" }>,
+    bytes: Uint8Array,
+    writing: boolean,
+  ): Promise<number> {
+    const filesystem = this.filesystem;
+    if (!filesystem)
+      throw new CommandStdioError("EBADF", "File descriptor has no filesystem connection");
+    shareFileResource(resource, filesystem.connection);
+    for (;;) {
+      this.check();
+      const claim = claimFileOffset(resource);
+      if (claim.kind === "failed") throw stdioError(-claim.errno);
+      if (claim.kind === "busy") {
+        await this.wait([claim.word], [claim.observed]);
+        continue;
+      }
+      const { lease } = claim;
+      try {
+        return await this.runAsyncFileLease(filesystem, resource, lease, bytes, writing);
+      } catch (error) {
+        if (error instanceof CommandStdioError) throw error;
+        throw stdioError(-errno(error));
+      } finally {
+        lease.release();
+      }
     }
   }
 

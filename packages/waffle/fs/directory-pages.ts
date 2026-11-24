@@ -93,13 +93,27 @@ function entryBytes(entry: Entry): Uint8Array {
   return (entry.bytes ??= encoder.encode(entry.name));
 }
 
-function encodeEntry(output: Uint8Array, view: DataView, offset: number, entry: Entry): number {
+const MAX_TAGGED_RAW_COOKIE = (1n << 48n) - 1n;
+
+function encodeEntry(
+  output: Uint8Array,
+  view: DataView,
+  offset: number,
+  entry: Entry,
+  cookieTag?: bigint,
+): number {
   const bytes = entryBytes(entry);
   const remaining = output.length - offset;
   const header = remaining < 24 ? new Uint8Array(24) : output;
   const headerView = remaining < 24 ? new DataView(header.buffer) : view;
   const start = remaining < 24 ? 0 : offset;
-  headerView.setBigUint64(start, entry.cookie, true);
+  let wireCookie = entry.cookie;
+  if (cookieTag && entry.cookie >= 3n) {
+    if (entry.cookie > MAX_TAGGED_RAW_COOKIE)
+      throw new FilesystemError(61, "directory cookies exhausted");
+    wireCookie = (cookieTag << 48n) | entry.cookie;
+  }
+  headerView.setBigUint64(start, wireCookie, true);
   headerView.setBigUint64(start + 8, BigInt(entry.ino), true);
   headerView.setUint32(start + 16, bytes.length, true);
   headerView.setUint8(
@@ -177,8 +191,17 @@ export class DirectoryPages {
     }
     return size;
   }
-  page(cookie: bigint, byteLength: number, ino: number, parent: number): Uint8Array {
+  page(
+    cookie: bigint,
+    byteLength: number,
+    ino: number,
+    parent: number,
+    cookieTag?: bigint,
+    maxBytes?: number,
+    hardCapBytes?: number,
+  ): Uint8Array {
     if (!byteLength) return new Uint8Array();
+    const limit = maxBytes !== undefined ? Math.min(byteLength, maxBytes) : byteLength;
     const entries: Entry[] = [];
     let size = 0;
     const append = (entry: Entry) => {
@@ -195,11 +218,22 @@ export class DirectoryPages {
         cookie: 2n,
         bytes: new Uint8Array([46, 46]),
       });
-    if (size < byteLength) size = this.appendEntries(entries, cookie, byteLength, size);
-    const output = new Uint8Array(Math.min(byteLength, size));
+    if (size < byteLength) {
+      const scanLimit = maxBytes !== undefined ? limit + 1 : byteLength;
+      size = this.appendEntries(entries, cookie, scanLimit, size);
+    }
+    const actual = Math.min(byteLength, size);
+    if (maxBytes !== undefined && actual > maxBytes) {
+      const overHardCap = hardCapBytes !== undefined && actual > hardCapBytes;
+      throw new FilesystemError(
+        overHardCap ? 22 : 6,
+        overHardCap ? "directory page exceeds maximum transfer size" : "download budget exhausted",
+      );
+    }
+    const output = new Uint8Array(actual);
     const view = new DataView(output.buffer);
     let used = 0;
-    for (const entry of entries) used = encodeEntry(output, view, used, entry);
+    for (const entry of entries) used = encodeEntry(output, view, used, entry, cookieTag);
     return output;
   }
 }

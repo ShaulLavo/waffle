@@ -143,7 +143,8 @@ export class SharedFilesystem {
   private readonly requestPool: FilesystemRequestPool;
   private clientStopped = false;
   private disposal?: Promise<void>;
-  private finishDisposal?: (error?: Error) => void;
+  private finishDisposal?: (error?: Error, released?: boolean) => void;
+  private _ownershipRetained = false;
   ownershipLost = false;
   onOwnershipLost?: () => void;
   onStateChange?: SharedFilesystemStateObserver;
@@ -158,6 +159,12 @@ export class SharedFilesystem {
     if (projectionBudget !== undefined && options.workspace !== true)
       throw new TypeError("localMemory requires workspace: true");
     const selection = resolveVfs(options, Reflect.get(options, vfsImplementation));
+    if (options.workspace === true && selection.whenBusy === "attach")
+      throw new VfsError(
+        "INVALID_VFS_SETTINGS",
+        selection.descriptor.implementation,
+        'workspace: true cannot be combined with whenBusy: "attach"',
+      );
     this.vfs = selection.descriptor;
     this.onStateChange = options.onStateChange;
     this.cancellableStartup = this.vfs.persistent;
@@ -229,7 +236,7 @@ export class SharedFilesystem {
         name?: string;
         mode: VfsDescriptor["mode"];
         implementation: VfsDescriptor["implementation"];
-        whenBusy?: "takeover" | "wait";
+        whenBusy?: "takeover" | "wait" | "attach";
         observeStartup?: true;
       } = {
         connect: connection.server,
@@ -295,12 +302,27 @@ export class SharedFilesystem {
   get state(): SharedFilesystemState {
     return this._state;
   }
+  /** True when the filesystem worker/storage ownership could not be confirmed released. */
+  ownershipRetained(): boolean {
+    return this._ownershipRetained;
+  }
+  /** Latch disposal in a shared-host worker before Runtime.dispose() awaits filesystem.drain(). */
+  beginRuntimeDispose(): void {
+    if (this.stopped || this.vfs.multiTab !== "shared-host") return;
+    try {
+      this.worker.postMessage({ beginDispose: true });
+    } catch {
+      /* worker already terminated */
+    }
+  }
   private receiveMessage(event: MessageEvent, onStartupStage?: RuntimeStartupObserver): void {
     if (event.data?.type === "filesystem-disposed") {
       if (this.joinedReady() && "error" in event.data && typeof event.data.error !== "string")
         return;
+      const released = typeof event.data.released === "boolean" ? event.data.released : undefined;
       this.finishDisposal?.(
         typeof event.data.error === "string" ? new Error(event.data.error) : undefined,
+        released,
       );
       return;
     }
@@ -313,7 +335,8 @@ export class SharedFilesystem {
     }
     const error = workerError(event.data);
     if (error) {
-      this.fail(error);
+      const released = typeof event.data?.released === "boolean" ? event.data.released : undefined;
+      this.fail(error, released);
       return;
     }
     if (this.disposal) return;
@@ -340,11 +363,23 @@ export class SharedFilesystem {
       /* State observers cannot own filesystem startup or teardown. */
     }
   }
-  private fail(error: Error): void {
+  private fail(error: Error, released?: boolean): void {
     for (const cancel of this.socketAttachments) cancel(error);
     if (this.stopped) return;
+    if (released === false) {
+      this._ownershipRetained = true;
+      this.fatal ??= error;
+      if (this.disposal) {
+        this.finishDisposal?.(error, false);
+        return;
+      }
+      revokeFilesystemService(this.client.connection);
+      this.stopClient();
+      this.setState("failed", this.fatal);
+      return;
+    }
     if (this.disposal && this.joinedReady()) {
-      this.finishDisposal?.(error);
+      this.finishDisposal?.(error, released);
       return;
     }
     this.fatal ??= error;
@@ -668,6 +703,7 @@ export class SharedFilesystem {
       reject = failed;
     }).then(
       () => {
+        this._ownershipRetained = false;
         this.stop();
         this.requestPool.releaseRetired();
         this.setState("disposed");
@@ -682,22 +718,49 @@ export class SharedFilesystem {
     void this.disposal.catch(() => {});
     revokeFilesystemService(this.client.connection);
     const quiescence = waitForFilesystemQuiescence(this.client.connection);
-    void quiescence.catch(reject);
-    this.finishDisposal = (error) => {
+    void quiescence.catch((reason) => {
+      this._ownershipRetained = true;
+      reject(reason);
+    });
+    this.finishDisposal = (error, released) => {
       if (error) {
+        if (released === true) {
+          void quiescence.then(
+            () => {
+              this._ownershipRetained = false;
+              this.stop();
+              this.requestPool.releaseRetired();
+              reject(error);
+            },
+            (fenceError) => {
+              this._ownershipRetained = true;
+              reject(fenceError);
+            },
+          );
+          return;
+        }
+        this._ownershipRetained = true;
         reject(error);
         return;
       }
       // Do not adopt a pending fence: a later failure must still reject this owner.
-      void quiescence.then(() => resolve(), reject);
+      void quiescence.then(
+        () => resolve(),
+        (fenceError) => {
+          this._ownershipRetained = true;
+          reject(fenceError);
+        },
+      );
     };
     if (failure) {
+      this._ownershipRetained = true;
       reject(failure);
       return this.disposal;
     }
     try {
       this.worker.postMessage({ dispose: true });
     } catch (error) {
+      this._ownershipRetained = true;
       reject(error);
     }
     return this.disposal;
@@ -707,12 +770,32 @@ export class SharedFilesystem {
   dispose(): Promise<void> {
     for (const cancel of this.socketAttachments) cancel(new FilesystemError(11));
     if (this.disposal) return this.disposal;
+    if (this._ownershipRetained) {
+      revokeFilesystemService(this.client.connection);
+      this.stopClient();
+      const error = this.fatal ?? new Error("Filesystem storage ownership is retained");
+      this.disposal = Promise.reject(error);
+      void this.disposal.catch(() => {});
+      return this.disposal;
+    }
     if (this.joinedReady() && !this.stopped) return this.disposeReady(this.fatal);
-    let finish!: (error?: Error) => void;
+    let finish!: (error?: Error, released?: boolean) => void;
     this.disposal = new Promise<void>((resolve, reject) => {
-      finish = (error) => {
+      finish = (error, released) => {
+        if (released === false) {
+          this._ownershipRetained = true;
+          this.stopClient();
+          const failure = error ?? new Error("Filesystem storage ownership is retained");
+          this.fatal ??= failure;
+          this.setState("failed", this.fatal);
+          reject(failure);
+          return;
+        }
+        this._ownershipRetained = false;
         this.stop();
         if (error) {
+          this.fatal ??= error;
+          this.setState("failed", this.fatal);
           reject(error);
           return;
         }

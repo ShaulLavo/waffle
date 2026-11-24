@@ -30,6 +30,42 @@ export interface FilesystemBackend {
   revokeOwner?(owner: number, epoch?: Int32Array): void;
   takeSharedSegments?(): SharedSegment[];
   sharedSegments?(): SharedSegment[];
+  /** Called by FilesystemService when attaching a connection's shared root buffer. */
+  attachShared?(shared: SharedArrayBuffer): void;
+  /** Version tag checked on cold-read preparation re-entry alongside the session epoch. */
+  readVersion?(): string;
+  /** Current dirty-admission change counter for backpressure waits on non-MemoryBackend owners. */
+  dirtyChange?(): number | undefined;
+  /** Backend-owned watch hooks (used by MultiTabBackend). */
+  watchOpen?(
+    owner: number,
+    handle: FileHandle,
+    recursive: boolean,
+    cancelled: () => boolean,
+  ): number | Promise<number>;
+  watchRead?(
+    owner: number,
+    watchId: number,
+    cancelled: () => boolean,
+  ):
+    | import("./watch-subscriptions.js").HeldWatchBatch
+    | Promise<import("./watch-subscriptions.js").HeldWatchBatch>;
+  watchClose?(owner: number, watchId: number): void;
+  closeWatchOwner?(owner: number): void;
+  /** Called in FilesystemService.request() finally after finishResult() to settle provisional pins. */
+  settleResult?(operation: string, value: unknown): void;
+  /** Latched disposal notification posted before Runtime.dispose() awaits filesystem.drain(). */
+  beginDispose?(): void;
+  /** Synchronous shutdown hook called by FilesystemService.shutdown() before draining work. */
+  beginShutdown?(): void;
+  /** Whether this backend supports Unix domain socket scope attachment (defaults to true for MemoryBackend). */
+  readonly supportsSockets?: boolean;
+  /** Whether async execute/flush/watch rejections are handled client results rather than fatal service shutdown failures. */
+  readonly asyncErrorsAreClientResults?: boolean;
+  /** Re-verify lease / terminal state before publishing a prepared cold descriptor read. */
+  isPreparedReadValid?(): boolean;
+  /** Whether a handle is unlinked (used by service capability trimming when not MemoryBackend). */
+  isUnlinked?(handle: FileHandle): boolean;
   /** Select a bounded cold descriptor range before asynchronous storage work. */
   prepareDescriptorRead?(
     handle: FileHandle,

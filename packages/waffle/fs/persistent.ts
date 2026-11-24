@@ -56,6 +56,10 @@ function copyTimes(node: Node, stat: FileStat): void {
 export class PersistentBackend extends MemoryBackend {
   private readonly pressure: CheckpointPressure;
   private nodes = new Map<number, Node>();
+  private byFileId = new Map<bigint, Node>();
+  private readonly initialWorkspaceId: string;
+  private readonly initialEra: bigint;
+  private readonly loadedIndex: boolean;
   private detached = new WeakSet<Node>();
   private links = new Map<number, number>();
   private removed = new Set<number>();
@@ -91,11 +95,15 @@ export class PersistentBackend extends MemoryBackend {
     sharedRoot?: MemoryBackendSharedRoot,
   ) {
     super(fs, reservation, startupRoot, undefined, sharedRoot);
+    this.initialWorkspaceId = reservation.workspace;
+    this.initialEra = reservation.era;
+    this.loadedIndex = index !== undefined;
     this.pressure = new CheckpointPressure(checkpointLimits);
     const visit = (node: Node) => {
       this.links.set(node.ino, (this.links.get(node.ino) ?? 0) + 1);
       if (this.nodes.has(node.ino)) return;
       this.nodes.set(node.ino, node);
+      if (node.identity) this.byFileId.set(node.identity.id, node);
       if (node.kind === "dir") for (const child of node.children.values()) visit(child);
     };
     visit(fs.root);
@@ -112,10 +120,45 @@ export class PersistentBackend extends MemoryBackend {
     fs.onChange = (node) => {
       if (!this.detached.has(node)) {
         this.nodes.set(node.ino, node);
+        if (node.identity) this.byFileId.set(node.identity.id, node);
         this.dirty.add(node);
       }
     };
     this.startTimer(intervalMs);
+  }
+  get initialReservationEra(): bigint {
+    return this.initialEra;
+  }
+  get hasLoadedIndex(): boolean {
+    return this.loadedIndex;
+  }
+  async verifyStorageEpoch(signal?: AbortSignal): Promise<boolean> {
+    if ("verifyEpoch" in this.storage && typeof this.storage.verifyEpoch === "function") {
+      return (this.storage as { verifyEpoch(s?: AbortSignal): Promise<boolean> }).verifyEpoch(
+        signal,
+      );
+    }
+    return true;
+  }
+  nodeByFileId(fileId: bigint): Node | undefined {
+    const node = this.byFileId.get(fileId);
+    if (node && node.identity?.id === fileId) return node;
+    return undefined;
+  }
+  resolveNodePublic(path: string): Node | undefined {
+    return this.resolveNode(path);
+  }
+  ensureLoadedHandle(handle: FileHandle): void | Promise<void> {
+    return this.ensureLoaded(handle);
+  }
+  isTerminallyFailed(): boolean {
+    return this.storage.isTerminallyFailed?.() ?? false;
+  }
+  terminalFailureReason(): unknown {
+    return this.storage.terminalFailureReason?.();
+  }
+  setTerminalFailureListener(listener: (reason: unknown) => void): void {
+    this.storage.setTerminalFailureListener?.(listener);
   }
   private startTimer(intervalMs: number): void {
     if (intervalMs > 0)
@@ -131,11 +174,15 @@ export class PersistentBackend extends MemoryBackend {
       dirtyLimits?: Partial<DirtyLimits> | false;
       startupRoot?: MemoryBudget;
       sharedRoot?: MemoryBackendSharedRoot;
+      signal?: AbortSignal;
     } = {},
   ): Promise<PersistentBackend> {
+    options.signal?.throwIfAborted();
     const index = await storage.load();
+    options.signal?.throwIfAborted();
     if (index) validatePersistedIndex(index);
     const reservation = await storage.reserveIdentity(index?.nodes[0]?.identity?.workspace);
+    options.signal?.throwIfAborted();
     validateReservation(index, reservation);
     if (!index)
       return new PersistentBackend(
@@ -166,9 +213,11 @@ export class PersistentBackend extends MemoryBackend {
     try {
       if (!index.nodes[0]?.identity) {
         await storage.flush();
+        options.signal?.throwIfAborted();
         for (const node of backend.nodes.values()) backend.dirty.add(node);
-        await backend.flush();
+        await backend.flush(undefined, options.signal);
       }
+      options.signal?.throwIfAborted();
       backend.startTimer(options.intervalMs ?? 50);
       return backend;
     } catch (error) {
@@ -183,6 +232,7 @@ export class PersistentBackend extends MemoryBackend {
     else this.links.delete(node.ino);
     if (delta === 1 && previous === 0) {
       this.nodes.set(node.ino, node);
+      if (node.identity) this.byFileId.set(node.identity.id, node);
       this.detached.delete(node);
       const key = this.detachedKeys.get(node.ino);
       if (key) {
@@ -207,6 +257,7 @@ export class PersistentBackend extends MemoryBackend {
     }
   }
   protected identityChanged(node: Node): void {
+    if (node.identity) this.byFileId.set(node.identity.id, node);
     if (this.isLinked(node)) this.dirty.add(node);
   }
   protected isLinked(node: Node): boolean {
@@ -944,6 +995,24 @@ export class PersistentBackend extends MemoryBackend {
       // A failed close keeps `closing`, so nothing reads the cache again; free it either way.
       this.coldReads.clear();
     }
+  }
+  /** Retire persistence without attempting a final checkpoint, joining all admitted work and
+   * closing storage + watch account cleanly before any shared-memory remount reset. */
+  async retireFenced(options: { throwOnStorageCloseError?: boolean } = {}): Promise<void> {
+    this.stopPersistence();
+    const work = Array.from(
+      new Set(Array.from(this.admittedWork).concat([this.lastCommit, this.tail])),
+    );
+    await Promise.allSettled(work);
+    this.coldReads.clear();
+    let closeFailure: { failed: true; reason: unknown } | undefined;
+    try {
+      await this.storage.close();
+    } catch (reason) {
+      if (options.throwOnStorageCloseError) closeFailure = { failed: true, reason };
+    }
+    this.watchAccount.close();
+    if (closeFailure) throw closeFailure.reason;
   }
   close(): Promise<void> {
     if (this.closing) return this.closing;

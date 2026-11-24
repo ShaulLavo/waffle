@@ -61,6 +61,31 @@ import {
 
 export const OWNERSHIP_LOST_MESSAGE =
   "This workspace was opened in another tab. Reload to continue here.";
+export const INDEXEDDB_ARB_LOCK_PREFIX = "bun-wasm:filesystem:indexeddb-arb:";
+
+export class ExpectedEpochMismatchError extends Error {
+  override readonly name = "ExpectedEpochMismatchError";
+  constructor(
+    readonly expectedEpoch: number,
+    readonly actualEpoch: number,
+  ) {
+    super(`Expected IndexedDB epoch ${expectedEpoch}, found ${actualEpoch}`);
+  }
+}
+
+export class StealTargetMismatchError extends Error {
+  override readonly name = "StealTargetMismatchError";
+  constructor(message = "IndexedDB steal target verification failed") {
+    super(message);
+  }
+}
+
+export class IndexedDBStorageBusyError extends Error {
+  override readonly name = "IndexedDBStorageBusyError";
+  constructor(message = "IndexedDB storage lock is currently held") {
+    super(message);
+  }
+}
 
 export interface IndexedDBStorageOptions {
   readonly retainOpeningDebt?: (debt: Promise<void>) => void;
@@ -71,8 +96,16 @@ export interface IndexedDBStorageOptions {
   onOwnershipLost?: () => void;
   onStartupStage?: RuntimeStartupObserver;
   signal?: AbortSignal;
+  /** Aborts only pre-steal setup and arbitration; disconnected synchronously when steal submits. */
+  preStealSignal?: AbortSignal;
   onWaiting?: () => void;
-  whenBusy?: "takeover" | "wait";
+  whenBusy?: "takeover" | "wait" | "ifAvailable";
+  /** "exclusive" writes lastExclusiveEpoch; "attach" reads it without overwriting. */
+  epochOwner?: "exclusive" | "attach";
+  /** Atomic CAS check inside allocateEpoch; mismatch aborts with ExpectedEpochMismatchError. */
+  expectedEpoch?: number;
+  /** Verified under exclusive arbLock before submitting steal:true on the writer lock. */
+  verifyStealTarget?: (snapshot: LockManagerSnapshot) => boolean;
 }
 /** Retains physical native completion independently of caller-visible startup rejection. */
 class NativeDatabaseOpening {
@@ -191,14 +224,29 @@ function requestStorageLock<T>(
     return Promise.reject(error);
   }
 }
+interface AllocatedEpoch {
+  readonly epoch: number;
+  readonly lastExclusiveEpoch: number;
+}
+
 function allocateEpoch(
   transaction: IDBTransaction,
   completedEpoch: Promise<void>,
-): Promise<number> {
+  epochOwner: "exclusive" | "attach" = "exclusive",
+  expectedEpoch?: number,
+): Promise<AllocatedEpoch> {
   let epoch = 0;
-  const request = transaction.objectStore("metadata").get("epoch");
-  request.onsuccess = () => {
-    const previous: unknown = request.result;
+  let lastExclusiveEpoch = 0;
+  let mismatch: ExpectedEpochMismatchError | undefined;
+  const store = transaction.objectStore("metadata");
+  const request = store.get("epoch");
+  const exclusiveRequest = store.get("lastExclusiveEpoch");
+  let epochLoaded = false;
+  let exclusiveLoaded = false;
+  let previous: unknown;
+  let previousExclusive: unknown;
+  const finish = () => {
+    if (!epochLoaded || !exclusiveLoaded) return;
     if (
       previous !== undefined &&
       (!validInteger(previous) || previous >= Number.MAX_SAFE_INTEGER)
@@ -206,10 +254,151 @@ function allocateEpoch(
       transaction.abort();
       return;
     }
-    epoch = (typeof previous === "number" ? previous : 0) + 1;
-    transaction.objectStore("metadata").put(epoch, "epoch");
+    if (
+      previousExclusive !== undefined &&
+      (!validInteger(previousExclusive) || previousExclusive >= Number.MAX_SAFE_INTEGER)
+    ) {
+      transaction.abort();
+      return;
+    }
+    const prevNumber = typeof previous === "number" ? previous : 0;
+    if (expectedEpoch !== undefined && prevNumber !== expectedEpoch) {
+      mismatch = new ExpectedEpochMismatchError(expectedEpoch, prevNumber);
+      transaction.abort();
+      return;
+    }
+    epoch = prevNumber + 1;
+    store.put(epoch, "epoch");
+    if (epochOwner === "exclusive") {
+      lastExclusiveEpoch = epoch;
+      store.put(lastExclusiveEpoch, "lastExclusiveEpoch");
+    } else {
+      lastExclusiveEpoch = typeof previousExclusive === "number" ? previousExclusive : 0;
+    }
   };
-  return completedEpoch.then(() => epoch);
+  request.onsuccess = () => {
+    previous = request.result;
+    epochLoaded = true;
+    finish();
+  };
+  exclusiveRequest.onsuccess = () => {
+    previousExclusive = exclusiveRequest.result;
+    exclusiveLoaded = true;
+    finish();
+  };
+  return completedEpoch.then(
+    () => ({ epoch, lastExclusiveEpoch }),
+    (error) => {
+      if (mismatch) throw mismatch;
+      throw error;
+    },
+  );
+}
+
+/** Bounded, cancellable readonly read of IndexedDB epoch and lastExclusiveEpoch metadata. */
+export async function readIndexedDBEpochMetadata(
+  name: string,
+  options: { indexedDB?: IDBFactory; signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<{ epoch: number; lastExclusiveEpoch: number } | undefined> {
+  const factory = options.indexedDB ?? globalThis.indexedDB;
+  if (!factory) return undefined;
+  const controller = new AbortController();
+  const timer =
+    options.timeoutMs !== undefined
+      ? setTimeout(
+          () => controller.abort(new Error("IndexedDB epoch check timed out")),
+          options.timeoutMs,
+        )
+      : undefined;
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, controller.signal])
+    : controller.signal;
+  signal.throwIfAborted();
+  let db: IDBDatabase | undefined;
+  let tx: IDBTransaction | undefined;
+  const onAbort = () => {
+    try {
+      tx?.abort();
+    } catch {}
+    try {
+      db?.close();
+    } catch {}
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const openReq = factory.open(name, 1);
+      let settled = false;
+      const rejectAbort = () => {
+        if (settled) return;
+        settled = true;
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", rejectAbort, { once: true });
+      openReq.onupgradeneeded = () => {
+        try {
+          openReq.transaction?.abort();
+        } catch {}
+      };
+      openReq.onsuccess = () => {
+        signal.removeEventListener("abort", rejectAbort);
+        const opened = openReq.result;
+        if (settled || signal.aborted) {
+          try {
+            opened.close();
+          } catch {}
+          return;
+        }
+        settled = true;
+        resolve(opened);
+      };
+      openReq.onerror = () => {
+        signal.removeEventListener("abort", rejectAbort);
+        if (settled) return;
+        settled = true;
+        reject(openReq.error ?? new Error("Failed to open IndexedDB for epoch metadata"));
+      };
+      openReq.onblocked = () => {
+        signal.removeEventListener("abort", rejectAbort);
+        if (settled) return;
+        settled = true;
+        reject(new Error("IndexedDB blocked during epoch check"));
+      };
+    });
+    if (signal.aborted) throw signal.reason;
+    if (!db.objectStoreNames.contains("metadata")) return undefined;
+    tx = db.transaction("metadata", "readonly");
+    const store = tx.objectStore("metadata");
+    const result = await new Promise<{ epoch: number; lastExclusiveEpoch: number }>(
+      (resolve, reject) => {
+        let epochVal = 0;
+        let exclusiveVal = 0;
+        const g1 = store.get("epoch");
+        const g2 = store.get("lastExclusiveEpoch");
+        g1.onsuccess = () => {
+          if (typeof g1.result === "number" && validInteger(g1.result)) epochVal = g1.result;
+        };
+        g2.onsuccess = () => {
+          if (typeof g2.result === "number" && validInteger(g2.result)) exclusiveVal = g2.result;
+        };
+        tx!.oncomplete = () => resolve({ epoch: epochVal, lastExclusiveEpoch: exclusiveVal });
+        tx!.onerror = () => reject(tx!.error ?? new Error("Epoch metadata transaction failed"));
+        tx!.onabort = () =>
+          reject(
+            signal.aborted
+              ? signal.reason
+              : (tx!.error ?? new Error("Epoch metadata transaction aborted")),
+          );
+      },
+    );
+    return result;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+    try {
+      db?.close();
+    } catch {}
+  }
 }
 interface Journal {
   version: 1;
@@ -251,7 +440,7 @@ function validateDatabaseLayout(
   const empty =
     committed &&
     !keys.includes("format") &&
-    keys.every((key) => key === "epoch") &&
+    keys.every((key) => key === "epoch" || key === "lastExclusiveEpoch") &&
     !journalKeys.length &&
     !dataKeys.length;
   if (committed && !empty && format !== STAGED_FORMAT) invalidCommit();
@@ -266,7 +455,15 @@ function validateDatabaseLayout(
       "indexeddb",
       "Incompatible IndexedDB filesystem format identity",
     );
-  const allowed: IDBValidKey[] = [0, 1, "epoch", "active", "format", "identity"];
+  const allowed: IDBValidKey[] = [
+    0,
+    1,
+    "epoch",
+    "lastExclusiveEpoch",
+    "active",
+    "format",
+    "identity",
+  ];
   if (committed) allowed.push("commit");
   if (keys.some((key) => !allowed.includes(key)))
     throw new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Incompatible IndexedDB metadata layout");
@@ -611,11 +808,49 @@ export class IndexedDBStorage implements StorageBackend {
     private readonly committedMode = false,
     private readonly readOnly = false,
     private readonly retireMaintenance: () => Promise<void> = () => Promise.resolve(),
+    private readonly initialLastExclusiveEpoch = 0,
   ) {
     db.onversionchange = () => {
       if (this.readOnly) this.loseOwnership();
       void this.close().catch(() => {});
     };
+  }
+
+  get currentEpoch(): number {
+    return this.epoch;
+  }
+
+  get lastExclusiveEpoch(): number {
+    return this.initialLastExclusiveEpoch;
+  }
+
+  /** Readonly IndexedDB check verifying this connection still owns the latest epoch. */
+  async verifyEpoch(signal?: AbortSignal): Promise<boolean> {
+    if (this.closed || this.ownershipError) return false;
+    signal?.throwIfAborted();
+    let tx: IDBTransaction | undefined;
+    const onAbort = () => {
+      try {
+        tx?.abort();
+      } catch {}
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      tx = this.db.transaction("metadata", "readonly");
+      const current = await new Promise<unknown>((resolve, reject) => {
+        const req = tx!.objectStore("metadata").get("epoch");
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+        tx!.onabort = () => reject(signal?.aborted ? signal.reason : tx!.error);
+      });
+      if (signal?.aborted) throw signal.reason;
+      return current === this.epoch && !this.closed && !this.ownershipError;
+    } catch (_error) {
+      if (signal?.aborted) throw signal.reason;
+      return false;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   static open(name: string, options: IndexedDBStorageOptions = {}): Promise<IndexedDBStorage> {
@@ -658,13 +893,11 @@ export class IndexedDBStorage implements StorageBackend {
   ): Promise<IndexedDBStorage> {
     const locks = options.locks ?? globalThis.navigator?.locks;
     if (!locks) throw new Error("IndexedDB storage requires IndexedDB and Web Locks");
-    const maintenance = await maintenanceLock(
-      locks,
-      name,
-      "shared",
-      options.signal,
-      options.onWaiting,
-    );
+    const preSignal =
+      options.preStealSignal && options.signal
+        ? AbortSignal.any([options.preStealSignal, options.signal])
+        : (options.preStealSignal ?? options.signal);
+    const maintenance = await maintenanceLock(locks, name, "shared", preSignal, options.onWaiting);
     if (maintenance === "busy") throw new Error("Unexpected shared maintenance lock refusal");
     const debts: Promise<void>[] = [];
     try {
@@ -702,17 +935,27 @@ export class IndexedDBStorage implements StorageBackend {
     // Open before requesting the lock so its callback starts epoch allocation without
     // awaiting another task. Losing a grant aborts allocation as well as later commits.
     const versionChangeAbort = options.whenBusy === "wait" ? new AbortController() : undefined;
-    const signal = versionChangeAbort
+    const postStealSignal = versionChangeAbort
       ? options.signal
         ? AbortSignal.any([options.signal, versionChangeAbort.signal])
         : versionChangeAbort.signal
       : options.signal;
-    const opening = new NativeDatabaseOpening(factory, name, signal, versionChangeAbort, options);
+    const preSignal =
+      options.preStealSignal && postStealSignal
+        ? AbortSignal.any([options.preStealSignal, postStealSignal])
+        : (options.preStealSignal ?? postStealSignal);
+    const opening = new NativeDatabaseOpening(
+      factory,
+      name,
+      preSignal,
+      versionChangeAbort,
+      options,
+    );
     const db = await opening.ready;
     reportRuntimeStartup(options.onStartupStage, "indexeddb-open-resolved");
-    if (signal?.aborted) {
+    if (preSignal?.aborted) {
       await opening.retire();
-      throw signal.reason;
+      throw preSignal.reason;
     }
     try {
       validateSchema(db);
@@ -733,6 +976,10 @@ export class IndexedDBStorage implements StorageBackend {
     let allocationDone: Promise<void> | undefined;
     let lost = false;
     let granted = false;
+    let grantedResolve: (() => void) | undefined;
+    const grantedPromise = new Promise<void>((resolve) => {
+      grantedResolve = resolve;
+    });
     // Once granted, Web Locks no longer observes abort. Retire an in-flight epoch
     // transaction through its normal completion/abort event before closing ownership.
     const abortAllocation = () => {
@@ -742,52 +989,133 @@ export class IndexedDBStorage implements StorageBackend {
         /* Completion already won. */
       }
     };
-    signal?.addEventListener("abort", abortAllocation, { once: true });
-    reportRuntimeStartup(options.onStartupStage, "filesystem-lock-requested");
+    postStealSignal?.addEventListener("abort", abortAllocation, { once: true });
+    const storageLockName = `bun-wasm:filesystem:indexeddb:${name}`;
+    const arbLockName = `${INDEXEDDB_ARB_LOCK_PREFIX}${name}`;
     const lockOptions =
       options.whenBusy === "wait"
-        ? { mode: "exclusive" as const, signal }
-        : { mode: "exclusive" as const, steal: true as const };
-    const lifetime = requestStorageLock(
-      locks,
-      `bun-wasm:filesystem:indexeddb:${name}`,
-      lockOptions,
-      async () => {
-        granted = true;
-        if (lost) return;
-        if (signal?.aborted) {
-          refused(signal.reason);
-          return;
+        ? { mode: "exclusive" as const, signal: postStealSignal }
+        : options.whenBusy === "ifAvailable"
+          ? { mode: "exclusive" as const, ifAvailable: true as const }
+          : { mode: "exclusive" as const, steal: true as const };
+    const startStorageRequest = () => {
+      const lifetimePromise = requestStorageLock(
+        locks,
+        storageLockName,
+        lockOptions,
+        async (lock) => {
+          if (lock === null) {
+            grantedResolve?.();
+            refused(new IndexedDBStorageBusyError());
+            return;
+          }
+          granted = true;
+          grantedResolve?.();
+          if (lost) return;
+          if (postStealSignal?.aborted) {
+            refused(postStealSignal.reason);
+            return;
+          }
+          reportRuntimeStartup(options.onStartupStage, "filesystem-lock-acquired");
+          reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-requested");
+          if (postStealSignal?.aborted) throw postStealSignal.reason;
+          allocation = db.transaction("metadata", "readwrite", { durability: "strict" });
+          allocationDone = completed(allocation);
+          const allocated = await allocateEpoch(
+            allocation,
+            allocationDone,
+            options.epochOwner ?? "exclusive",
+            options.expectedEpoch,
+          );
+          reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-resolved");
+          allocation = undefined;
+          if (lost) return;
+          if (postStealSignal?.aborted) throw postStealSignal.reason;
+          owner = new IndexedDBStorage(
+            db,
+            async () => {
+              release();
+              await lifetimePromise.catch(() => {});
+            },
+            compactEvery,
+            allocated.epoch,
+            options.onOwnershipLost,
+            committedMode,
+            false,
+            retireMaintenance,
+            allocated.lastExclusiveEpoch,
+          );
+          acquired(owner);
+          await held;
+        },
+      );
+      reportRuntimeStartup(options.onStartupStage, "filesystem-lock-requested");
+      void lifetimePromise.catch((error) => {
+        lost = true;
+        grantedResolve?.();
+        try {
+          allocation?.abort();
+        } catch {
+          /* A completed allocation is already durable. */
         }
-        reportRuntimeStartup(options.onStartupStage, "filesystem-lock-acquired");
-        reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-requested");
-        if (signal?.aborted) throw signal.reason;
-        allocation = db.transaction("metadata", "readwrite", { durability: "strict" });
-        allocationDone = completed(allocation);
-        const value = await allocateEpoch(allocation, allocationDone);
-        reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-resolved");
-        allocation = undefined;
-        if (lost) return;
-        if (signal?.aborted) throw signal.reason;
-        owner = new IndexedDBStorage(
-          db,
+        owner?.loseOwnership();
+        const stolen =
+          !postStealSignal?.aborted && error instanceof DOMException && error.name === "AbortError";
+        refused(owner?.ownershipError ?? (stolen ? new Error(OWNERSHIP_LOST_MESSAGE) : error));
+        if (stolen && !owner) options.onOwnershipLost?.();
+      });
+      return lifetimePromise;
+    };
+    let lifetime: Promise<void> | undefined;
+    try {
+      if (options.verifyStealTarget) {
+        // Attach recovery: acquire exclusive arbitration lock, verify exact target under broker
+        // snapshot, and synchronously submit steal:true before releasing arbLock.
+        await requestStorageLock(
+          locks,
+          arbLockName,
+          { mode: "exclusive", signal: preSignal },
           async () => {
-            release();
-            await lifetime.catch(() => {});
+            if (preSignal?.aborted) throw preSignal.reason;
+            const snapshot = (await locks.query?.()) as LockManagerSnapshot | undefined;
+            if (preSignal?.aborted) throw preSignal.reason;
+            if (!snapshot || !options.verifyStealTarget!(snapshot)) {
+              throw new StealTargetMismatchError();
+            }
+            // Synchronous steal submission boundary: from here on preStealSignal is disconnected;
+            // only postStealSignal (dispose) can abort allocateEpoch.
+            lifetime = startStorageRequest();
+            await grantedPromise;
           },
-          compactEvery,
-          value,
-          options.onOwnershipLost,
-          committedMode,
-          false,
-          retireMaintenance,
         );
-        acquired(owner);
-        await held;
-      },
-    );
+      } else {
+        // Normal legacy writers & attach non-queuing startup: submit storageLock under shared
+        // arbitration lock and confirm broker visibility before releasing arbLock.
+        await requestStorageLock(
+          locks,
+          arbLockName,
+          { mode: "shared", signal: preSignal },
+          async () => {
+            if (preSignal?.aborted) throw preSignal.reason;
+            lifetime = startStorageRequest();
+            if (options.whenBusy === "wait") {
+              await Promise.race([grantedPromise, Promise.resolve().then(() => locks.query?.())]);
+            } else {
+              await grantedPromise;
+            }
+          },
+        );
+      }
+    } catch (error) {
+      release();
+      await allocationDone?.catch(() => {});
+      await lifetime?.catch(() => {});
+      await opening.retire();
+      postStealSignal?.removeEventListener("abort", abortAllocation);
+      throw preSignal?.aborted && !lifetime ? preSignal.reason : error;
+    }
     queueMicrotask(() => {
-      if (options.whenBusy === "wait" && !granted && !lost && !signal?.aborted) {
+      if (options.whenBusy === "wait" && !granted && !lost && !postStealSignal?.aborted) {
         try {
           options.onWaiting?.();
         } catch {
@@ -795,32 +1123,19 @@ export class IndexedDBStorage implements StorageBackend {
         }
       }
     });
-    void lifetime.catch((error) => {
-      lost = true;
-      try {
-        allocation?.abort();
-      } catch {
-        /* A completed allocation is already durable. */
-      }
-      owner?.loseOwnership();
-      const stolen =
-        !signal?.aborted && error instanceof DOMException && error.name === "AbortError";
-      refused(owner?.ownershipError ?? (stolen ? new Error(OWNERSHIP_LOST_MESSAGE) : error));
-      if (stolen && !owner) options.onOwnershipLost?.();
-    });
     try {
       const storage = await ready;
-      if (signal?.aborted) throw signal.reason;
+      if (postStealSignal?.aborted) throw postStealSignal.reason;
       opening.transfer();
       return storage;
     } catch (error) {
       release();
       await allocationDone?.catch(() => {});
-      await lifetime.catch(() => {});
+      await lifetime?.catch(() => {});
       await opening.retire();
-      throw signal?.aborted ? signal.reason : error;
+      throw postStealSignal?.aborted ? postStealSignal.reason : error;
     } finally {
-      signal?.removeEventListener("abort", abortAllocation);
+      postStealSignal?.removeEventListener("abort", abortAllocation);
     }
   }
 
@@ -1295,7 +1610,10 @@ export class IndexedDBStorage implements StorageBackend {
       !newest &&
       (metadataKeys.filter(
         (key) =>
-          key !== "format" && key !== "identity" && (!this.committedMode || key !== "commit"),
+          key !== "format" &&
+          key !== "identity" &&
+          key !== "lastExclusiveEpoch" &&
+          (!this.committedMode || key !== "commit"),
       ).length > 1 ||
         journalKeys.length > 0 ||
         dataKeys.length > 0)
