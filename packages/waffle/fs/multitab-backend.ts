@@ -2076,16 +2076,8 @@ export class MultiTabBackend implements FilesystemBackend {
     this.role = "failover";
     this.phase = "opening";
 
-    if (observedHostReady && !this.disposing) {
-      try {
-        await this.attachToHostReady(observedHostReady, this.disposeAbort.signal);
-        return;
-      } catch {
-        /* fall through to failover loop */
-      }
-    }
     if (!this.disposing) {
-      this.startTrackedFailoverLoop();
+      this.startTrackedFailoverLoop(observedHostReady);
     }
   }
 
@@ -2465,7 +2457,7 @@ export class MultiTabBackend implements FilesystemBackend {
       const outcome = await attachedGate.promise;
       if (signal.aborted || this.disposing) throw abortError();
       if (outcome === "failed" || outcome === "rejected" || newerHostReady) {
-        this.closePeerChannelOnly();
+        if (this.peerSessionId === sessionId) this.closePeerChannelOnly();
         return false;
       }
 
@@ -2494,10 +2486,12 @@ export class MultiTabBackend implements FilesystemBackend {
         await this.rebindPeerHandles(term, sessionId);
       } catch (error) {
         if (signal.aborted || this.disposing || this.ownershipLost) throw error;
-        this.stopPeerTimers();
-        this.closePeerChannelOnly();
-        this.peerAttached = false;
-        this.role = "failover";
+        if (this.peerSessionId === sessionId) {
+          this.stopPeerTimers();
+          this.closePeerChannelOnly();
+          this.peerAttached = false;
+          this.role = "failover";
+        }
         return false;
       }
       if (this.peerSessionId !== sessionId || !this.peerAttached) return false;
@@ -6206,17 +6200,21 @@ export class MultiTabBackend implements FilesystemBackend {
     );
   }
 
+  private async runFailoverStep(signal: AbortSignal): Promise<void> {
+    const direct = this.pendingDirectHostReady;
+    this.pendingDirectHostReady = undefined;
+    if (direct) {
+      await this.tryAttachToHostReady(direct, signal);
+      return;
+    }
+    await this.runRecoveryProbeAndDispatch(signal);
+  }
+
   private async runFailoverLoop(): Promise<void> {
     const signal = this.disposeAbort.signal;
     try {
       while (!signal.aborted && !this.disposing && !this.ownershipLost && !this.terminalFailure) {
-        const direct = this.pendingDirectHostReady;
-        this.pendingDirectHostReady = undefined;
-        if (direct) {
-          await this.tryAttachToHostReady(direct, signal);
-        } else {
-          await this.runRecoveryProbeAndDispatch(signal);
-        }
+        await this.runFailoverStep(signal);
         if (this.isFailoverLoopDone()) return;
       }
     } catch (error) {

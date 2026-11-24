@@ -3088,6 +3088,10 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
         },
       },
     });
+    const probeCh = hub.create(
+      `waffle:multitab:v1:ctrl:${multitabScope("opfs-memory", name)}`,
+      "external-opfs",
+    );
     try {
       await tabA.client.asyncCall(
         "writeFile",
@@ -3097,10 +3101,6 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
       expect(rootA).toBeGreaterThan(0);
 
-      const probeCh = hub.create(
-        `waffle:multitab:v1:ctrl:${multitabScope("opfs-memory", name)}`,
-        "external-opfs",
-      );
       probeCh.postMessage({
         kind: "cooperative-step-down",
         targetAttemptId: tabA.backend.attemptId!,
@@ -3113,13 +3113,93 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       expect(new TextDecoder().decode(out)).toBe("recovered-after-two-drops");
       expect(tabA.backend.currentRole).toBe("peer");
       expect(tabB.backend.currentRole).toBe("host");
-      probeCh.close();
     } finally {
+      probeCh.close();
       await tabB.close();
       tabA.client.dispose();
       await tabA.service.shutdown().catch(() => {});
       tabA.conn.client.port.close();
       tabA.conn.server.port.close();
+    }
+  });
+
+  test("thawed IndexedDB fence-loss demotion recovers across two lost __rebind replies in exactly 3 sessions", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-idb-fenceloss-rebind-${crypto.randomUUID()}`;
+
+    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    const rebindReqIds = new Set<number>();
+    const attachSessions = new Set<string>();
+    let droppedRebinds = 0;
+
+    const tabB = await openTab(broker, hub, store, {
+      clientId: "tab-B",
+      name,
+      hooks: {
+        beforeHostReplyPublish(op, reqId) {
+          if (op === "__rebind" && reqId !== undefined && droppedRebinds < 2) {
+            droppedRebinds++;
+            rebindReqIds.add(reqId);
+          }
+        },
+        onPeerSend(_peerId, msg) {
+          if (msg.kind === "attached") {
+            attachSessions.add(msg.sessionId);
+          }
+          if (msg.kind === "res" && rebindReqIds.delete(msg.reqId)) {
+            return false; // drop first two __rebind replies while heartbeats keep working!
+          }
+        },
+      },
+    });
+    try {
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/fence-rebind.txt", false, false],
+        new TextEncoder().encode("idb-fence-recovered"),
+      );
+      await tabA.client.asyncCall("flush", []);
+      const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
+      expect(rootA).toBeGreaterThan(0);
+
+      // Mute Host A's outbound broadcasts so Peer B steals IndexedDB and promotes to Host, then unmute A!
+      let muteA = true;
+      hub.interceptor = (_ch, sender) => !(muteA && sender.ownerTag === "tab-A");
+      await waitUntil(() => tabB.backend.currentRole === "host", 4000, "tabB promoted");
+
+      // Unmute Host A and deliver replacement Host B's host-ready to trigger executeFenceLoss(observedHostReady)!
+      muteA = false;
+      hub.interceptor = undefined;
+      const ctrl = hub.create(
+        `waffle:multitab:v1:ctrl:${multitabScope("indexeddb", name)}`,
+        "thaw",
+      );
+      try {
+        ctrl.postMessage({
+          kind: "host-ready",
+          attemptId: tabB.backend.attemptId!,
+          clientId: "tab-B",
+          hostTerm: tabB.backend.currentHostTerm.toString(16),
+          workspaceId: tabB.backend.workspaceId!,
+          storageEpoch: store.epoch,
+          lastExclusiveEpoch: store.lastExclusiveEpoch,
+        } satisfies ControlMessage);
+
+        await waitUntil(() => droppedRebinds === 2, 4000, "two fence-loss __rebind drops");
+        const out: Uint8Array = await tabA.client.asyncCall("readFile", ["/fence-rebind.txt"]);
+        expect(new TextDecoder().decode(out)).toBe("idb-fence-recovered");
+        expect(tabA.backend.currentRole).toBe("peer");
+        expect(tabB.backend.currentRole).toBe("host");
+        expect(attachSessions.size).toBe(3);
+      } finally {
+        ctrl.close();
+      }
+    } finally {
+      hub.interceptor = undefined;
+      await tabA.close();
+      await tabB.close();
     }
   });
 
