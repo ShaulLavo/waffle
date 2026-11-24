@@ -264,6 +264,7 @@ interface PendingRpc {
   sentBeforePingId?: number;
   readonly isWatchRead?: boolean;
   readonly localWatchId?: number;
+  readonly replayOnSessionBreak?: boolean;
   readonly resolve: (value: any) => void;
   readonly reject: (error: unknown) => void;
 }
@@ -275,6 +276,7 @@ interface QueuedPeerOp {
   readonly responseCookieTag?: bigint;
   readonly isWatchRead?: boolean;
   readonly localWatchId?: number;
+  readonly replayOnSessionBreak?: boolean;
   readonly resolve: (value: any) => void;
   readonly reject: (error: unknown) => void;
 }
@@ -1175,7 +1177,7 @@ export class MultiTabBackend implements FilesystemBackend {
       linked.cleanup();
     }
 
-    // If storage actually opened right as host-ready or abort raced: close it cleanly first if abort won!
+    // If storage actually opened right as host-ready or abort raced: close it cleanly first!
     if (storage && (discoveredHostReady || signal.aborted)) {
       let closeErr: { failed: true; reason: unknown } | undefined;
       try {
@@ -1183,7 +1185,7 @@ export class MultiTabBackend implements FilesystemBackend {
       } catch (error) {
         closeErr = { failed: true, reason: error };
       }
-      if (closeErr || storage.isTerminallyFailed?.()) {
+      if (closeErr || storage.isTerminallyFailed?.() || (await this.isStorageLockHeldBySelf())) {
         // Pre-ready native handle close failure: RETAIN attempt locks & propagate released:false!
         const reason = closeErr ? closeErr.reason : storage.terminalFailureReason?.();
         this.terminalFailure = { reason };
@@ -1192,13 +1194,20 @@ export class MultiTabBackend implements FilesystemBackend {
         throw wrapReleaseError(reason, false);
       }
       storage = undefined;
+      await this.releaseAttemptAndElectionLocks();
+      if (signal.aborted) throw wrapReleaseError(abortError(), true);
+      if (discoveredHostReady) {
+        await this.attachToHostReady(discoveredHostReady, signal);
+        return;
+      }
+      await this.inspectBrokerAfterBusy(signal);
+      return;
     }
 
     if (openError) {
       const reason = openError.reason;
       // Distinguish terminal native handle close failure vs clean abort!
-      if (!isAbortLike(reason) && !discoveredHostReady) {
-        // Check if broker still holds storageLock for us (native handle close failure!)
+      if (!isAbortLike(reason)) {
         const heldStill = await this.isStorageLockHeldBySelf();
         if (heldStill) {
           this.terminalFailure = { reason };
@@ -1206,7 +1215,7 @@ export class MultiTabBackend implements FilesystemBackend {
           this.role = "failed";
           throw wrapReleaseError(reason, false);
         }
-        throw reason;
+        if (!discoveredHostReady) throw reason;
       }
 
       // Clean abort: verify broker has cleared any transient grant/request for selfClientId!
@@ -2185,7 +2194,7 @@ export class MultiTabBackend implements FilesystemBackend {
         const attached = await this.tryAttachToHostReady(received, signal);
         if (attached) return;
         await this.runRecoveryProbeAndDispatch(signal);
-        if (this.role === "host" || this.role === "peer") return;
+        if (this.role === "host" || (this.role === "peer" && this.peerAttached)) return;
         continue;
       }
 
@@ -2200,12 +2209,12 @@ export class MultiTabBackend implements FilesystemBackend {
         const candidateAlive = await this.monitorCandidateStatus(received, signal);
         if (candidateAlive === "attached") return;
         await this.runRecoveryProbeAndDispatch(signal);
-        if (this.role === "host" || this.role === "peer") return;
+        if (this.role === "host" || (this.role === "peer" && this.peerAttached)) return;
         continue;
       }
 
       await this.runRecoveryProbeAndDispatch(signal);
-      if (this.role === "host" || this.role === "peer") return;
+      if (this.role === "host" || (this.role === "peer" && this.peerAttached)) return;
     }
     throw abortError();
   }
@@ -2400,7 +2409,15 @@ export class MultiTabBackend implements FilesystemBackend {
       this.notifyState("ready");
 
       // Rebind live handles by fileId on the new Host/session, then drain retry & failover queues!
-      await this.rebindPeerHandles(term, sessionId);
+      try {
+        await this.rebindPeerHandles(term, sessionId);
+      } catch (error) {
+        if (signal.aborted || this.disposing || this.ownershipLost) throw error;
+        this.stopPeerTimers();
+        this.closePeerChannelOnly();
+        this.role = "failover";
+        return false;
+      }
       this.drainPeerRetryQueue();
       this.drainPeerFailoverQueue();
       return true;
@@ -3697,15 +3714,27 @@ export class MultiTabBackend implements FilesystemBackend {
     }
   }
 
+  private discardHostStagedUpload(session: HostPeerSession, uploadId: string): void {
+    const existing = session.uploads.get(uploadId);
+    if (!existing) return;
+    session.uploads.delete(uploadId);
+    this.hostUsedUploadBytes = Math.max(0, this.hostUsedUploadBytes - existing.totalBytes);
+  }
+
   private applyHostChunkPut(
     session: HostPeerSession,
     msg: Extract<PeerMessage, { kind: "chunk-put" }>,
   ): { ok: boolean; errNo?: number; errMsg?: string; retry?: true } {
     if (this.terminalFailure || this.persistent?.isTerminallyFailed()) {
+      this.discardHostStagedUpload(session, msg.uploadId);
       return { ok: false, errNo: 29, errMsg: "host terminally failed" };
     }
-    if (this.steppingDown) return { ok: false, retry: true };
+    if (this.steppingDown) {
+      this.discardHostStagedUpload(session, msg.uploadId);
+      return { ok: false, retry: true };
+    }
     if (msg.totalBytes > MAX_STAGED_UPLOAD_BYTES || msg.totalBytes < 0) {
+      this.discardHostStagedUpload(session, msg.uploadId);
       return { ok: false, errNo: 22, errMsg: "upload exceeds 32 MiB cap" };
     }
     let upload = session.uploads.get(msg.uploadId);
@@ -3725,7 +3754,12 @@ export class MultiTabBackend implements FilesystemBackend {
       };
       session.uploads.set(msg.uploadId, upload);
     }
-    if (msg.offset < 0 || msg.offset + msg.chunk.byteLength > upload.totalBytes) {
+    if (
+      msg.totalBytes !== upload.totalBytes ||
+      msg.offset !== upload.receivedBytes ||
+      msg.offset + msg.chunk.byteLength > upload.totalBytes
+    ) {
+      this.discardHostStagedUpload(session, msg.uploadId);
       return { ok: false, errNo: 28, errMsg: "invalid upload chunk bounds" };
     }
     upload.buffer.set(msg.chunk, msg.offset);
@@ -3752,6 +3786,19 @@ export class MultiTabBackend implements FilesystemBackend {
           reqId: msg.reqId,
           ok: false,
           errno: 11,
+          creditFrames: 1,
+          creditBytes: 0,
+        });
+        return;
+      }
+      if (msg.offset < 0 || msg.offset >= dl.bytes.byteLength || msg.length <= 0) {
+        this.sendPeerFrame(session.peerId, session.channel, {
+          kind: "res",
+          hostTerm: formatTerm(session.hostTerm),
+          sessionId: session.sessionId,
+          reqId: msg.reqId,
+          ok: false,
+          errno: 28,
           creditFrames: 1,
           creditBytes: 0,
         });
@@ -3861,6 +3908,7 @@ export class MultiTabBackend implements FilesystemBackend {
         });
       }
     } finally {
+      if (msg.uploadId) this.discardHostStagedUpload(session, msg.uploadId);
       session.activeReqs.delete(msg.reqId);
       this.settleHostInFlightCredit(session, 1, payloadBytes);
     }
@@ -4085,7 +4133,7 @@ export class MultiTabBackend implements FilesystemBackend {
       reply({ ok: true, value: batch, ...(ackId !== undefined ? { ackId } : {}) });
       return;
     }
-    const staged = this.stageHostDownload(session, encoded, encoded.byteLength, ackId);
+    const staged = this.stageHostDownload(session, encoded, 0, ackId);
     if (!staged) {
       this.rollbackHeldWatchAck(session, ackId);
       throw new FilesystemError(6, "staged download pool exhausted");
@@ -4138,18 +4186,18 @@ export class MultiTabBackend implements FilesystemBackend {
         this.hostUsedDownloadBytes += reserved;
       }
     });
-    await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
-    if (
-      session.revoked ||
-      this.terminalFailure ||
-      !this.isLeaseValid() ||
-      this.hostTerm !== admittedTerm
-    ) {
-      if (reserved > 0)
-        this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - reserved);
+    try {
+      await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
       this.assertHostOpStillValid(session, admittedTerm);
+      const transferReserved = reserved;
+      reserved = 0;
+      this.replyWithBytes(session, bytes, transferReserved, true, false, reply);
+    } catch (error) {
+      if (reserved > 0) {
+        this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - reserved);
+      }
+      throw error;
     }
-    this.replyWithBytes(session, bytes, reserved, true, false, reply);
   }
 
   private async handleHostPeerRead(
@@ -4469,7 +4517,11 @@ export class MultiTabBackend implements FilesystemBackend {
           }
           if (currentSize > reservedBytes && currentSize > MAX_FRAME_BYTES) {
             const delta = currentSize - reservedBytes;
-            if (this.hostUsedDownloadBytes + delta > MAX_STAGED_DOWNLOAD_BYTES) {
+            if (
+              (reservedBytes === 0 &&
+                session.downloads.size >= MAX_CONCURRENT_DOWNLOADS_PER_PEER) ||
+              this.hostUsedDownloadBytes + delta > MAX_STAGED_DOWNLOAD_BYTES
+            ) {
               throw new FilesystemError(6, "staged download pool exhausted");
             }
             this.hostUsedDownloadBytes += delta;
@@ -4597,35 +4649,33 @@ export class MultiTabBackend implements FilesystemBackend {
       }
     });
 
-    await this.hooks.beforeHostReplyPublish?.(op, reqId);
-    if (
-      session.revoked ||
-      this.terminalFailure ||
-      !this.isLeaseValid() ||
-      this.hostTerm !== admittedTerm
-    ) {
-      if (built.reservedBytes > 0) {
-        this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - built.reservedBytes);
-      }
+    let remainingReserved = built.reservedBytes;
+    try {
+      await this.hooks.beforeHostReplyPublish?.(op, reqId);
       this.assertHostOpStillValid(session, admittedTerm);
-    }
 
-    if (built.bytes.byteLength <= MAX_FRAME_BYTES) {
-      if (built.reservedBytes > 0) {
-        this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - built.reservedBytes);
+      if (built.bytes.byteLength <= MAX_FRAME_BYTES) {
+        if (remainingReserved > 0) {
+          this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - remainingReserved);
+          remainingReserved = 0;
+        }
+        reply({ ok: true, data: unsharedBytes(built.bytes), packed: true });
+        return;
       }
-      reply({ ok: true, data: unsharedBytes(built.bytes), packed: true });
-      return;
-    }
 
-    if (session.downloads.size >= MAX_CONCURRENT_DOWNLOADS_PER_PEER) {
-      if (built.reservedBytes > 0) {
-        this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - built.reservedBytes);
+      if (session.downloads.size >= MAX_CONCURRENT_DOWNLOADS_PER_PEER) {
+        throw new FilesystemError(6, "staged download pool exhausted");
       }
-      throw new FilesystemError(6, "staged download pool exhausted");
-    }
 
-    this.replyWithBytes(session, built.bytes, built.reservedBytes, false, true, reply);
+      const transferReserved = remainingReserved;
+      remainingReserved = 0;
+      this.replyWithBytes(session, built.bytes, transferReserved, false, true, reply);
+    } catch (error) {
+      if (remainingReserved > 0) {
+        this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - remainingReserved);
+      }
+      throw error;
+    }
   }
 
   private encodeBoundedWireOp(
@@ -5351,10 +5401,10 @@ export class MultiTabBackend implements FilesystemBackend {
     const remoteArgs = this.translateArgsToPeer(operation, args, term, sessionId);
     if (!remoteArgs) throw new FilesystemError(8);
 
-    let res: Extract<PeerMessage, { kind: "res" }>;
+    let finalValue: unknown;
     try {
       const { uploadId, inlineData } = await this.uploadPeerDataIfChunked(sessionId, term, data);
-      res = await this.sendPeerReq(
+      const res = await this.sendPeerReq(
         sessionId,
         term,
         operation,
@@ -5365,6 +5415,12 @@ export class MultiTabBackend implements FilesystemBackend {
         data.byteLength > MAX_FRAME_BYTES ? data.byteLength : undefined,
         responseCookieTag,
       );
+      finalValue = await this.decodePeerResponseValue(
+        sessionId,
+        term,
+        res,
+        isReplayableRead(operation, args),
+      );
     } catch (error) {
       if (error instanceof RetryOnHostReadyError || error instanceof FailoverReplayError) {
         const queue =
@@ -5374,7 +5430,6 @@ export class MultiTabBackend implements FilesystemBackend {
       throw error;
     }
 
-    const finalValue = await this.decodePeerResponseValue(sessionId, term, res);
     return this.mapPeerReturnedHandles(operation, term, sessionId, finalValue);
   }
 
@@ -5428,6 +5483,7 @@ export class MultiTabBackend implements FilesystemBackend {
     sessionId: string,
     term: bigint,
     res: Extract<PeerMessage, { kind: "res" }>,
+    replayOnSessionBreak = false,
   ): Promise<unknown> {
     if (res.chunkedId && res.totalBytes !== undefined && res.firstChunk) {
       const assembled = await this.fetchPeerChunkedDownload(
@@ -5436,6 +5492,7 @@ export class MultiTabBackend implements FilesystemBackend {
         res.chunkedId,
         res.totalBytes,
         res.firstChunk,
+        replayOnSessionBreak,
       );
       return res.packed ? unpack(assembled) : assembled;
     }
@@ -5549,6 +5606,7 @@ export class MultiTabBackend implements FilesystemBackend {
     downloadId: string,
     totalBytes: number,
     firstChunk: Uint8Array,
+    replayOnSessionBreak = false,
   ): Promise<Uint8Array> {
     const out = new Uint8Array(totalBytes);
     out.set(firstChunk, 0);
@@ -5563,6 +5621,7 @@ export class MultiTabBackend implements FilesystemBackend {
           localArgs: [],
           payloadBytes: 0,
           sent: true,
+          replayOnSessionBreak,
           resolve,
           reject,
         });
@@ -5780,6 +5839,19 @@ export class MultiTabBackend implements FilesystemBackend {
   // Peer Session Reset, Rebind, & Failover Loop (Rev 24 §4.3, §5.4, §8.1–8.3)
   // ---------------------------------------------------------------------------
 
+  private resetPeerSessionForFailover(): void {
+    this.stopPeerTimers();
+    this.advanceDirEpoch();
+    this.peerPendingUnpins.clear();
+    this.peerPendingWatchAcks.clear();
+    this.peerPendingWatchCloses.clear();
+    this.settleInFlightOnSessionBreak();
+    this.markLocalWatchesOverflow();
+    this.detachHandlesForRemount();
+    this.closePeerChannelOnly();
+    this.role = "failover";
+  }
+
   private triggerPeerSessionReset(_reason: string): void {
     if (this.peerSessionResetting || this.role !== "peer" || this.disposing) return;
     this.peerSessionResetting = true;
@@ -5799,14 +5871,7 @@ export class MultiTabBackend implements FilesystemBackend {
           }
         : undefined;
 
-    this.advanceDirEpoch();
-    this.peerPendingUnpins.clear();
-    this.peerPendingWatchAcks.clear();
-    this.peerPendingWatchCloses.clear();
-    this.settleInFlightOnSessionBreak();
-    this.markLocalWatchesOverflow();
-    this.detachHandlesForRemount();
-    this.closePeerChannelOnly();
+    this.resetPeerSessionForFailover();
 
     void (async () => {
       try {
@@ -5831,16 +5896,7 @@ export class MultiTabBackend implements FilesystemBackend {
     if (this.disposing || this.ownershipLost || this.terminalFailure) return;
     if (this.peerFailoverInFlight) return;
 
-    this.stopPeerTimers();
-    this.advanceDirEpoch();
-    this.peerPendingUnpins.clear();
-    this.peerPendingWatchAcks.clear();
-    this.peerPendingWatchCloses.clear();
-    this.settleInFlightOnSessionBreak();
-    this.markLocalWatchesOverflow();
-    this.detachHandlesForRemount();
-    this.closePeerChannelOnly();
-    this.role = "failover";
+    this.resetPeerSessionForFailover();
 
     this.peerFailoverInFlight = this.runFailoverLoop(directHostReady).finally(() => {
       this.peerFailoverInFlight = undefined;
@@ -5853,6 +5909,10 @@ export class MultiTabBackend implements FilesystemBackend {
       this.peerInFlightRpcs.delete(reqId);
       if (rpc.isWatchRead) {
         this.resolveWatchOverflow(rpc.localWatchId, rpc.resolve);
+        continue;
+      }
+      if (rpc.op === "chunk-get" && rpc.replayOnSessionBreak) {
+        rpc.reject(new FailoverReplayError());
         continue;
       }
       if (rpc.op === "chunk-put" || rpc.op === "chunk-get" || rpc.op === "__rebind") {
@@ -5887,7 +5947,7 @@ export class MultiTabBackend implements FilesystemBackend {
       }
       while (!signal.aborted && !this.disposing && !this.ownershipLost && !this.terminalFailure) {
         await this.runRecoveryProbeAndDispatch(signal);
-        if (this.role === "host" || this.role === "peer") return;
+        if (this.role === "host" || (this.role === "peer" && this.peerAttached)) return;
       }
     } catch (error) {
       if (!this.disposing && !this.ownershipLost && !this.terminalFailure) {
@@ -5968,7 +6028,7 @@ export class MultiTabBackend implements FilesystemBackend {
         op.op,
         op.args,
         op.data ?? new Uint8Array(),
-        op.responseCookieTag,
+        op.op === "readdirPage" ? this.dirEpoch : op.responseCookieTag,
       ).then(op.resolve, op.reject);
     }
   }

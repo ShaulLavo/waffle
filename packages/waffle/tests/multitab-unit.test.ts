@@ -2059,4 +2059,195 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       }
     }
   });
+
+  test("OPFS startup racing storage open with host-ready closes storage cleanly and attaches as Peer", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-opfs-race-${crypto.randomUUID()}`;
+
+    const enteredOpen = Promise.withResolvers<void>();
+    let closedRacedStorage = false;
+    let tabA: TestTab | undefined;
+    try {
+      // Drop Tab B's host-status so Tab A does not wait for Tab B and mounts as Host immediately.
+      hub.interceptor = (_ch, _sender, msg) => {
+        if (msg && typeof msg === "object" && Reflect.get(msg, "kind") === "host-status") {
+          return false;
+        }
+      };
+      const openingB = MultiTabBackend.open({
+        implementation: "opfs-memory",
+        name,
+        locks: broker.forClient("tab-B"),
+        createChannel: (ch) => hub.create(ch, "tab-B"),
+        timings: FAST_TIMINGS,
+        openStorage: async (_impl, _n, opts) => {
+          enteredOpen.resolve();
+          await new Promise<void>((resolve) => {
+            if (opts.signal?.aborted) resolve();
+            else opts.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          // Simulate a racing storage handle that resolved right as host-ready fired
+          return {
+            load: async () => undefined,
+            read: async () => new Uint8Array(),
+            readRange: async () => new Uint8Array(),
+            retainPayload: () => ({ release() {} }),
+            checkPayload: () => {},
+            persist: async () => {},
+            flush: async () => {},
+            reserveIdentity: async () => ({ workspace: crypto.randomUUID(), era: 1n }),
+            async close() {
+              closedRacedStorage = true;
+            },
+          };
+        },
+      });
+      await enteredOpen.promise;
+      // Tab A sees free storageLock, mounts as Host, and broadcasts host-ready!
+      tabA = await openTab(broker, hub, store, {
+        clientId: "tab-A",
+        name,
+        implementation: "opfs-memory",
+      });
+      const backendB = await openingB;
+      try {
+        expect(closedRacedStorage).toBe(true);
+        expect(backendB.currentRole).toBe("peer");
+      } finally {
+        await backendB.close();
+      }
+    } finally {
+      hub.interceptor = undefined;
+      if (tabA) await tabA.close();
+    }
+  });
+
+  test("chunked upload interrupted by stepping-down refunds hostUsedUploadBytes and succeeds on retry", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-upload-accounting-${crypto.randomUUID()}`;
+    const flushGate = Promise.withResolvers<void>();
+    let triggered = false;
+
+    const tabA = await openTab(broker, hub, store, {
+      clientId: "tab-A",
+      name,
+      implementation: "opfs-memory",
+      hooks: {
+        async beforeCooperativeFlush() {
+          await flushGate.promise;
+        },
+      },
+    });
+    const tabB = await openTab(broker, hub, store, {
+      clientId: "tab-B",
+      name,
+      implementation: "opfs-memory",
+    });
+    try {
+      store.flushFault = { failOnce: new Error("transient cooperative flush failure") };
+      // Intercept the second chunk-put to trigger cooperative step-down mid-upload!
+      hub.interceptor = (_ch, _sender, msg) => {
+        if (
+          !triggered &&
+          msg &&
+          typeof msg === "object" &&
+          Reflect.get(msg, "kind") === "chunk-put" &&
+          Reflect.get(msg, "offset") === 1024 * 1024
+        ) {
+          triggered = true;
+          const ctrl = hub.create(
+            `waffle:multitab:v1:ctrl:${multitabScope("opfs-memory", name)}`,
+            "trigger",
+          );
+          ctrl.postMessage({
+            kind: "cooperative-step-down",
+            targetAttemptId: tabA.backend.attemptId!,
+            targetTerm: tabA.backend.currentHostTerm.toString(16),
+          } satisfies ControlMessage);
+          ctrl.close();
+          setTimeout(() => flushGate.resolve(), 25);
+        }
+      };
+
+      const big = new Uint8Array(1536 * 1024);
+      big[0] = 42;
+      big[big.length - 1] = 99;
+      await tabB.client.asyncCall("writeFile", ["/retried-big.bin", false, false], big);
+      const readBack: Uint8Array = await tabA.client.asyncCall("readFile", ["/retried-big.bin"]);
+      expect(readBack.byteLength).toBe(big.byteLength);
+      expect(readBack[0]).toBe(42);
+      expect(readBack[readBack.length - 1]).toBe(99);
+      expect(tabA.backend.resources().multitabHostUsedUploadBytes).toBe(0);
+    } finally {
+      hub.interceptor = undefined;
+      flushGate.resolve();
+      await tabB.close();
+      await tabA.close();
+    }
+  });
+
+  test("session reset with Host death falls through to failover and replayed readdirPage tags fresh dirEpoch", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-reset-failover-${crypto.randomUUID()}`;
+
+    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    const tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+    try {
+      for (let i = 0; i < 6; i++) {
+        await tabA.client.asyncCall(
+          "writeFile",
+          [`/entry-${i}.txt`, false, false],
+          new Uint8Array([i]),
+        );
+      }
+      await tabA.client.asyncCall("flush", []);
+
+      const rootB: number = await tabB.client.asyncCall("preopen", ["/"]);
+      // Drop the first readdirPage reply AND kill Host A right when reset starts!
+      let dropped = false;
+      hub.interceptor = (_ch, _sender, msg) => {
+        if (!dropped && msg && typeof msg === "object" && Reflect.get(msg, "kind") === "res") {
+          dropped = true;
+          setTimeout(() => {
+            hub.killOwner("tab-A");
+            broker.crashClient("tab-A");
+          }, 10);
+          return false;
+        }
+      };
+
+      const page1: Uint8Array = await tabB.client.asyncCall("readdirPage", [rootB, 0n, 96]);
+      expect(page1.byteLength).toBeGreaterThan(0);
+      // Extract next cookie from page1 and verify continuation succeeds on fresh dirEpoch!
+      const view = new DataView(page1.buffer, page1.byteOffset, page1.byteLength);
+      let cursor = 0;
+      let nextCookie = 0n;
+      while (cursor + 24 <= page1.byteLength) {
+        nextCookie = view.getBigUint64(cursor, true);
+        const nameLen = view.getUint32(cursor + 16, true);
+        cursor += 24 + nameLen;
+      }
+      if (nextCookie >= 3n) {
+        const page2: Uint8Array = await tabB.client.asyncCall("readdirPage", [
+          rootB,
+          nextCookie,
+          4096,
+        ]);
+        expect(page2).toBeInstanceOf(Uint8Array);
+      }
+      expect(tabB.backend.currentRole).toBe("host");
+    } finally {
+      hub.interceptor = undefined;
+      await tabB.close();
+      tabA.client.dispose();
+      tabA.connection.client.port.close();
+      tabA.connection.server.port.close();
+    }
+  });
 });
