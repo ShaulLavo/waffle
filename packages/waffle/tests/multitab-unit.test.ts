@@ -3483,28 +3483,143 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     }
   });
 
-  test("disposal settles operations awaiting in-flight fence-loss immediately with ECANCELED without stalling drain", async () => {
-    const f = await setupPausedFenceLossFixture("ws-fence-dispose-drain");
+  test("disposal settles operations and flush awaiting in-flight fence-loss immediately with ECANCELED without stalling drain", async () => {
+    // 1. In-flight readFile awaiting fence-loss via FilesystemService
+    const f1 = await setupPausedFenceLossFixture("ws-fence-dispose-read");
     try {
-      await f.promoteBAndPauseFenceLoss();
-
-      const readEntered = f.waitForBackendExecute("readFile");
-      const readPromise = f.clientA.asyncCall("readFile", ["/missing.txt"]).then(
+      await f1.promoteBAndPauseFenceLoss();
+      const readEntered = f1.waitForBackendExecute("readFile");
+      const readPromise = f1.clientA.asyncCall("readFile", ["/missing.txt"]).then(
         () => undefined,
         (e) => e,
       );
       await readEntered;
 
-      // Begin disposal while fenceLossInFlight is STILL paused -> readPromise must reject IMMEDIATELY with ECANCELED!
-      f.serviceA.beginDispose();
-      const shutdownPromise = f.serviceA.shutdown();
+      f1.serviceA.beginDispose();
+      const shutdown1 = f1.serviceA.shutdown();
       expect(await readPromise).toMatchObject({ errno: 11 });
-
-      // Now let executeFenceLoss finish retirement so shutdown joins cleanly.
-      f.epochGate.resolve();
-      await shutdownPromise;
+      f1.epochGate.resolve();
+      await shutdown1;
     } finally {
-      await f.cleanup();
+      await f1.cleanup();
+    }
+
+    // 2. In-flight flush awaiting fence-loss via FilesystemService (must NOT poison shutdown!)
+    const f2 = await setupPausedFenceLossFixture("ws-fence-dispose-flush");
+    try {
+      await f2.promoteBAndPauseFenceLoss();
+      const flushEntered = Promise.withResolvers<void>();
+      const origFlush = f2.backendA.flush.bind(f2.backendA);
+      f2.backendA.flush = ((target?: number | string) => {
+        flushEntered.resolve();
+        return origFlush(target);
+      }) as typeof f2.backendA.flush;
+      const flushPromise = f2.clientA.asyncCall("flush", []).then(
+        () => undefined,
+        (e) => e,
+      );
+      await flushEntered.promise;
+
+      f2.serviceA.beginDispose();
+      const shutdown2 = f2.serviceA.shutdown();
+      expect(await flushPromise).toMatchObject({ errno: 11 });
+      f2.epochGate.resolve();
+      await shutdown2;
+    } finally {
+      await f2.cleanup();
+    }
+  });
+
+  test("watchOpen waiting in failover wakes and rejects with EIO on host-failed; expired-lease watchRead aborts immediately on dispose", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-watch-hostfailed-and-renew-abort-${crypto.randomUUID()}`;
+
+    const leasePause = Promise.withResolvers<void>();
+    const leasePaused = Promise.withResolvers<void>();
+    let pauseNextLeaseCheck = false;
+
+    const tabA = await openTab(broker, hub, store, {
+      clientId: "tab-A",
+      name,
+      implementation: "opfs-memory",
+      timings: { leaseDurationMs: 250, leaseRenewMs: 60_000 },
+      hooks: {
+        async beforeLeaseCheck() {
+          if (pauseNextLeaseCheck) {
+            pauseNextLeaseCheck = false;
+            leasePaused.resolve();
+            await leasePause.promise;
+          }
+        },
+      },
+    });
+    const tabB = await openTab(broker, hub, store, {
+      clientId: "tab-B",
+      name,
+      implementation: "opfs-memory",
+    });
+
+    try {
+      const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
+      const rootB: number = await tabB.client.asyncCall("preopen", ["/"]);
+      const watchIdA: number = await tabA.client.asyncCall("watchOpen", [rootA, false]);
+
+      // 1. Peer B enters failover and starts watchOpen while disconnected -> Host A fails terminally -> watchOpen rejects with EIO (29)!
+      let dropPeerTraffic = true;
+      hub.interceptor = (ch) => {
+        if (dropPeerTraffic && ch.includes(":peer:")) return false;
+      };
+      await waitUntil(() => tabB.backend.currentRole === "failover", 4000, "tabB entered failover");
+      const watchOpenOnB = Promise.resolve(
+        tabB.backend.watchOpen(99, rootB, false, () => false),
+      ).then(
+        () => undefined,
+        (e) => e,
+      );
+      dropPeerTraffic = false;
+      hub.interceptor = undefined;
+
+      // Broadcast host-failed to wake B's waiting watchOpen immediately with EIO (29) without spinning!
+      const ctrl = hub.create(
+        `waffle:multitab:v1:ctrl:${multitabScope("opfs-memory", name)}`,
+        "fault",
+      );
+      try {
+        ctrl.postMessage({
+          kind: "host-failed",
+          attemptId: tabA.backend.attemptId!,
+          clientId: "tab-A",
+          hostTerm: tabA.backend.currentHostTerm.toString(16),
+          workspaceId: tabA.backend.workspaceId!,
+          message: "injected terminal failure",
+        } satisfies ControlMessage);
+      } finally {
+        ctrl.close();
+      }
+      expect(await watchOpenOnB).toMatchObject({ errno: 29 });
+
+      // 2. Expired-lease watchRead on Host A paused in renewLeaseNow must abort immediately on beginDispose() without stalling shutdown!
+      await new Promise((r) => setTimeout(r, 300));
+      expect(tabA.backend.isLeaseValid()).toBe(false);
+      pauseNextLeaseCheck = true;
+      const watchReadA = tabA.client.asyncCall("watchRead", [watchIdA]).then(
+        () => undefined,
+        (e) => e,
+      );
+      await leasePaused.promise;
+
+      tabA.service.beginDispose();
+      const shutdownA = tabA.service.shutdown();
+      expect(await watchReadA).toMatchObject({ errno: 11 });
+      leasePause.resolve();
+      await shutdownA;
+    } finally {
+      hub.interceptor = undefined;
+      leasePause.resolve();
+      await tabB.close();
+      await tabA.close();
     }
   });
 

@@ -1157,7 +1157,7 @@ export class FilesystemService {
       const flushing = this.backend.flush?.(
         operation === "sync" ? a : typeof a === "string" ? a : undefined,
       );
-      return this.trackWork(session, Promise.resolve(flushing)).then(() =>
+      return Promise.resolve(flushing).then(() =>
         this.finishResult(session, id, operation, operation === "sync" ? 0 : undefined),
       );
     }

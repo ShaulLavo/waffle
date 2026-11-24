@@ -313,30 +313,38 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+function waitForAbortOrCancel(
+  signal: AbortSignal,
+  cancelled?: () => boolean,
+): { promise: Promise<void>; cleanup: () => void } {
+  let onAbort: (() => void) | undefined;
+  let poll: ReturnType<typeof setInterval> | undefined;
+  const promise = new Promise<void>((resolve) => {
+    onAbort = () => resolve();
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (!cancelled) return;
+    poll = setInterval(() => {
+      if (cancelled()) resolve();
+    }, 20);
+  });
+  const cleanup = () => {
+    if (poll) clearInterval(poll);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  };
+  return { promise, cleanup };
+}
+
 async function raceWithAbort(
   promise: Promise<unknown>,
   signal: AbortSignal,
   cancelled?: () => boolean,
 ): Promise<void> {
   if (signal.aborted || cancelled?.()) return;
-  let onAbort: (() => void) | undefined;
-  let poll: ReturnType<typeof setInterval> | undefined;
+  const waiter = waitForAbortOrCancel(signal, cancelled);
   try {
-    await Promise.race([
-      promise.catch(() => {}),
-      new Promise<void>((resolve) => {
-        onAbort = () => resolve();
-        signal.addEventListener("abort", onAbort, { once: true });
-        if (cancelled) {
-          poll = setInterval(() => {
-            if (cancelled()) resolve();
-          }, 20);
-        }
-      }),
-    ]);
+    await Promise.race([promise.catch(() => {}), waiter.promise]);
   } finally {
-    if (poll) clearInterval(poll);
-    if (onAbort) signal.removeEventListener("abort", onAbort);
+    waiter.cleanup();
   }
 }
 
@@ -982,7 +990,12 @@ export class MultiTabBackend implements FilesystemBackend {
     recursive: boolean,
     cancelled: () => boolean,
   ): number | Promise<number> {
-    if (this.terminalFailure) throw new FilesystemError(29);
+    if (this.terminalFailure || this.peerObservedHostFailed) {
+      throw new FilesystemError(
+        29,
+        this.peerObservedHostFailed ?? describeReason(this.terminalFailure?.reason),
+      );
+    }
     if (this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified) {
       return this.watchOpenAfterFenceLoss(owner, handle, recursive, cancelled);
     }
@@ -1081,8 +1094,16 @@ export class MultiTabBackend implements FilesystemBackend {
     watch: LocalWatchEntry,
     cancelled: () => boolean,
   ): Promise<HeldWatchBatch> {
-    const ok = await this.renewLeaseNow();
-    if (cancelled()) throw new FilesystemError(11);
+    if (this.disposing || cancelled()) throw new FilesystemError(11);
+    let ok = false;
+    await raceWithAbort(
+      this.renewLeaseNow().then((renewed) => {
+        ok = renewed;
+      }),
+      this.disposeAbort.signal,
+      cancelled,
+    );
+    if (this.disposing || cancelled()) throw new FilesystemError(11);
     if (!ok || watch.overflowed || watch.hostTerm !== this.hostTerm || !this.watchService) {
       watch.overflowed = true;
       return { batch: { kind: "overflow", events: [] }, release() {}, rollback() {} };
@@ -3405,6 +3426,7 @@ export class MultiTabBackend implements FilesystemBackend {
     drainQueue(this.peerRetryQueue);
     drainQueue(this.peerFailoverQueue);
     this.wakePeerCreditWaiters();
+    this.notifyFailoverReadyWaiters();
     this.markLocalWatchesOverflow();
   }
 
