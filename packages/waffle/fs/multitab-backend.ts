@@ -1104,7 +1104,13 @@ export class MultiTabBackend implements FilesystemBackend {
       cancelled,
     );
     if (this.disposing || cancelled()) throw new FilesystemError(11);
-    if (!ok || watch.overflowed || watch.hostTerm !== this.hostTerm || !this.watchService) {
+    if (
+      !ok ||
+      !this.isLeaseValid() ||
+      watch.overflowed ||
+      watch.hostTerm !== this.hostTerm ||
+      !this.watchService
+    ) {
       watch.overflowed = true;
       return { batch: { kind: "overflow", events: [] }, release() {}, rollback() {} };
     }
