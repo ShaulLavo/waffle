@@ -482,6 +482,7 @@ export class MultiTabBackend implements FilesystemBackend {
   private readonly disposeAbort = new AbortController();
   private disposeHostTerm?: bigint;
   private ownershipLost = false;
+  private externalOwnershipLostNotified = false;
   private terminalFailure?: { readonly reason: unknown };
   private disposedReleaseError?: MultiTabReleaseError;
   private teardownPromise?: Promise<void>;
@@ -1786,9 +1787,8 @@ export class MultiTabBackend implements FilesystemBackend {
       if (handled) return;
     }
 
-    const effectiveDispose = trigger === "dispose" || this.disposing;
     await this.broadcastDrainAndStepDown(attemptId, term, closeFailure);
-    await this.closeHostStorageAndFinalize(effectiveDispose, persistent, closeFailure);
+    await this.closeHostStorageAndFinalize(trigger, persistent, closeFailure);
   }
 
   private failIfHostTerminal(
@@ -1884,7 +1884,7 @@ export class MultiTabBackend implements FilesystemBackend {
   }
 
   private async closeHostStorageAndFinalize(
-    effectiveDispose: boolean,
+    trigger: "dispose" | "cooperative",
     persistent: PersistentBackend,
     initialFailure: { readonly failed: true; readonly reason: unknown } | undefined,
   ): Promise<void> {
@@ -1923,7 +1923,7 @@ export class MultiTabBackend implements FilesystemBackend {
         closeFailure?.reason ??
         new Error("Storage lock remained held after close");
       this.enterTerminalStorageFailure(reason);
-      if (effectiveDispose) throw wrapReleaseError(reason, false);
+      if (trigger === "dispose" || this.disposing) throw wrapReleaseError(reason, false);
       return;
     }
 
@@ -1933,7 +1933,7 @@ export class MultiTabBackend implements FilesystemBackend {
     if (this.sharedBuffer) persistent.shared.resetForRemount(this.retainedSegments);
     await this.releaseAttemptAndElectionLocks();
 
-    if (effectiveDispose) {
+    if (trigger === "dispose" || this.disposing) {
       await this.cleanupPeerAndControlChannels(true);
       await this.releasePeerAliveLock();
       this.role = "closed";
@@ -2103,6 +2103,8 @@ export class MultiTabBackend implements FilesystemBackend {
   }
 
   private triggerExternalOwnershipLost(): void {
+    if (this.externalOwnershipLostNotified) return;
+    this.externalOwnershipLostNotified = true;
     this.ownershipLost = true;
     this.role = "failed";
     this.phase = "failed";
@@ -2494,9 +2496,11 @@ export class MultiTabBackend implements FilesystemBackend {
         if (signal.aborted || this.disposing || this.ownershipLost) throw error;
         this.stopPeerTimers();
         this.closePeerChannelOnly();
+        this.peerAttached = false;
         this.role = "failover";
         return false;
       }
+      if (this.peerSessionId !== sessionId || !this.peerAttached) return false;
       this.drainPeerRetryQueue();
       this.drainPeerFailoverQueue();
       return true;
@@ -3932,7 +3936,17 @@ export class MultiTabBackend implements FilesystemBackend {
     }
     session.activeReqs.add(msg.reqId);
     const admittedTerm = session.hostTerm;
+    const reclaimDownload = () => {
+      const existing = session.downloads.get(msg.downloadId);
+      if (existing && session.downloads.delete(msg.downloadId)) {
+        this.hostUsedDownloadBytes = Math.max(
+          0,
+          this.hostUsedDownloadBytes - existing.reservedBytes,
+        );
+      }
+    };
     const replyErr = (errno: number, message?: string) => {
+      reclaimDownload();
       if (session.revoked) return;
       this.sendPeerFrame(session.peerId, session.channel, {
         kind: "res",
@@ -3973,8 +3987,7 @@ export class MultiTabBackend implements FilesystemBackend {
         // Revalidate lease, term, and terminal state immediately before settling & publishing!
         if (!this.validateChunkGetState(session, admittedTerm, replyErr, true)) return;
         if (end >= dl.bytes.byteLength) {
-          session.downloads.delete(msg.downloadId);
-          this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - dl.reservedBytes);
+          reclaimDownload();
         }
         this.sendPeerFrame(session.peerId, session.channel, {
           kind: "res",
@@ -5591,7 +5604,14 @@ export class MultiTabBackend implements FilesystemBackend {
     responseCookieTag?: bigint,
   ): Promise<unknown> {
     if (this.disposing || this.ownershipLost) return Promise.reject(new FilesystemError(11));
-    if (this.terminalFailure) return Promise.reject(new FilesystemError(29));
+    if (this.terminalFailure || this.peerObservedHostFailed) {
+      return Promise.reject(
+        new FilesystemError(
+          29,
+          this.peerObservedHostFailed ?? describeReason(this.terminalFailure?.reason),
+        ),
+      );
+    }
 
     if (
       this.role === "failover" ||
@@ -5599,16 +5619,7 @@ export class MultiTabBackend implements FilesystemBackend {
       !this.peerAttached ||
       this.peerRebinding
     ) {
-      return new Promise((resolve, reject) => {
-        this.peerFailoverQueue.push({
-          op: operation,
-          args,
-          data: data.byteLength ? unsharedBytes(data) : undefined,
-          responseCookieTag,
-          resolve,
-          reject,
-        });
-      });
+      return this.enqueuePeerOp(this.peerFailoverQueue, operation, args, data, responseCookieTag);
     }
 
     return this.dispatchPeerOperation(operation, args, data, responseCookieTag);
@@ -6128,7 +6139,8 @@ export class MultiTabBackend implements FilesystemBackend {
             const ok = await this.tryAttachToHostReady(hostReadySnapshot, this.disposeAbort.signal);
             if (ok) return;
           }
-          await this.runFailoverLoop();
+          this.startTrackedFailoverLoop();
+          if (this.peerFailoverInFlight) await this.peerFailoverInFlight;
         } catch {
           /* dispose or fatal */
         } finally {
@@ -6155,7 +6167,6 @@ export class MultiTabBackend implements FilesystemBackend {
     directHostReady?: Extract<ControlMessage, { kind: "host-ready" }>,
   ): void {
     if (this.disposing || this.ownershipLost || this.terminalFailure) return;
-    if (this.peerFailoverInFlight) return;
 
     this.resetPeerSessionForFailover();
     this.startTrackedFailoverLoop(directHostReady);

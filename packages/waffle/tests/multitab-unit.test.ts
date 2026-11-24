@@ -2593,6 +2593,19 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       gate.resolve();
 
       expect(await parkedOutcome).toMatchObject({ errno: 29 });
+      // A fresh write issued while Peer is in failover after host-failed must also reject with EIO (29)!
+      const lateWrite = Promise.resolve(
+        tabB.backend.execute(
+          "writeFile",
+          ["/after-host-failed.txt", false, false],
+          new TextEncoder().encode("late"),
+        ),
+      );
+      const lateErr = await lateWrite.then(
+        () => undefined,
+        (err) => err,
+      );
+      expect(lateErr).toMatchObject({ errno: 29 });
       await Promise.all(reads);
     } finally {
       gate.resolve();
@@ -2739,6 +2752,100 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     }
   });
 
+  async function openCustomOpfsTab(
+    broker: MockLockBroker,
+    hub: MockBroadcastHub,
+    name: string,
+    openStorage: ReturnType<MockSharedStore["createOpener"]>,
+  ) {
+    const conn = createFilesystemConnection();
+    const backend = await MultiTabBackend.open({
+      implementation: "opfs-memory",
+      name,
+      sharedRoot: {
+        shared: conn.server.shared,
+        maxBytes: conn.server.maxBytes,
+        segments: conn.server.segments,
+      },
+      locks: broker.forClient("tab-A"),
+      createChannel: (chName) => hub.create(chName, "tab-A"),
+      openStorage,
+      timings: FAST_TIMINGS,
+    });
+    const service = new FilesystemService(backend);
+    service.connect(conn.server);
+    const client = new FilesystemClient(conn.client);
+    return { conn, backend, service, client };
+  }
+
+  test("shutdown joining cooperative step-down final close checkpoint preserves error with released: true", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-coop-final-close-ckpt-${crypto.randomUUID()}`;
+
+    const closeFlushEntered = Promise.withResolvers<void>();
+    const releaseCloseFlush = Promise.withResolvers<void>();
+    const baseOpener = store.createOpener(broker, "tab-A", "opfs-memory");
+    let flushCalls = 0;
+
+    const wrapFlush = (storage: StorageBackend) => {
+      const origFlush = storage.flush.bind(storage);
+      storage.flush = async (keys) => {
+        flushCalls++;
+        if (flushCalls === 3) {
+          closeFlushEntered.resolve();
+          await releaseCloseFlush.promise;
+          throw new Error("final cooperative checkpoint failure");
+        }
+        return origFlush(keys);
+      };
+      return storage;
+    };
+
+    const tab = await openCustomOpfsTab(broker, hub, name, async (impl, wsName, opts) =>
+      wrapFlush(await baseOpener(impl, wsName, opts)),
+    );
+    try {
+      await tab.client.asyncCall(
+        "writeFile",
+        ["/dirty.txt", false, false],
+        new TextEncoder().encode("pending-final-close"),
+      );
+      const probeCh = hub.create(
+        `waffle:multitab:v1:ctrl:${multitabScope("opfs-memory", name)}`,
+        "external-opfs",
+      );
+      probeCh.postMessage({
+        kind: "cooperative-step-down",
+        targetAttemptId: tab.backend.attemptId!,
+        targetTerm: tab.backend.currentHostTerm.toString(16),
+      } satisfies ControlMessage);
+      await closeFlushEntered.promise;
+
+      // Start shutdown AFTER effectiveDispose was initially false (inside final persistent.close()!)
+      tab.client.dispose();
+      const shutdownPromise = tab.service.shutdown();
+      releaseCloseFlush.resolve();
+
+      const caught = await shutdownPromise.then(
+        () => undefined,
+        (err) => err,
+      );
+      expect(caught).toBeDefined();
+      expect(caught.released).toBe(true);
+      expect(String(caught.message)).toContain("final cooperative checkpoint failure");
+      expect(broker.heldNames()).toEqual([]);
+      probeCh.close();
+    } finally {
+      releaseCloseFlush.resolve();
+      tab.client.dispose();
+      await tab.service.shutdown().catch(() => {});
+      tab.conn.client.port.close();
+      tab.conn.server.port.close();
+    }
+  });
+
   test("shutdown joins former OPFS Host remount paused after reacquiring storage before activation", async () => {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();
@@ -2747,21 +2854,18 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
 
     const remountPaused = Promise.withResolvers<void>();
     const releaseRemount = Promise.withResolvers<void>();
-    let cutoverCalls = 0;
+    const baseOpener = store.createOpener(broker, "tab-A", "opfs-memory");
+    let openCalls = 0;
 
-    const tabA = await openTab(broker, hub, store, {
-      clientId: "tab-A",
-      name,
-      implementation: "opfs-memory",
-      hooks: {
-        async beforeCutoverBarrier() {
-          cutoverCalls++;
-          if (cutoverCalls === 2) {
-            remountPaused.resolve();
-            await releaseRemount.promise;
-          }
-        },
-      },
+    const tab = await openCustomOpfsTab(broker, hub, name, async (impl, wsName, opts) => {
+      const storage = await baseOpener(impl, wsName, opts);
+      openCalls++;
+      if (openCalls === 2) {
+        // Pause AFTER reacquiring OPFS storage and STRICTLY BEFORE activateMountedHost is entered!
+        remountPaused.resolve();
+        await releaseRemount.promise;
+      }
+      return storage;
     });
     try {
       // Trigger cooperative-step-down -> Host A releases OPFS, transitions to failover, and remounts!
@@ -2771,15 +2875,15 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       );
       probeCh.postMessage({
         kind: "cooperative-step-down",
-        targetAttemptId: tabA.backend.attemptId!,
-        targetTerm: tabA.backend.currentHostTerm.toString(16),
+        targetAttemptId: tab.backend.attemptId!,
+        targetTerm: tab.backend.currentHostTerm.toString(16),
       } satisfies ControlMessage);
       await remountPaused.promise;
       expect(broker.hasLock(storageLockNameFor("opfs-memory", name))).toBe(true);
 
       let shutdownDone = false;
-      tabA.client.dispose();
-      const shutdownPromise = tabA.service.shutdown().then(() => {
+      tab.client.dispose();
+      const shutdownPromise = tab.service.shutdown().then(() => {
         shutdownDone = true;
       });
       await new Promise((r) => setTimeout(r, 30));
@@ -2793,13 +2897,14 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       probeCh.close();
     } finally {
       releaseRemount.resolve();
-      tabA.client.dispose();
-      tabA.connection.client.port.close();
-      tabA.connection.server.port.close();
+      tab.client.dispose();
+      await tab.service.shutdown().catch(() => {});
+      tab.conn.client.port.close();
+      tab.conn.server.port.close();
     }
   });
 
-  test("chunk-get rejects without publishing or settling download when lease expires before reply", async () => {
+  test("chunk-get rejects without publishing and reclaims download reservation when lease expires before reply", async () => {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();
     const store = new MockSharedStore();
@@ -2839,17 +2944,112 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       expect(tabA.backend.isLeaseValid()).toBe(false);
       releaseChunk.resolve();
 
-      // Host A must NOT publish the chunk on expired lease and must NOT settle its download entry!
+      // Host A must reject the stale chunk AND reclaim its 1,048,577-byte download reservation!
       expect(await readOutcome).toMatchObject({ errno: 11 });
-      expect(tabA.backend.resources().multitabHostUsedDownloadBytes).toBe(payload.byteLength);
-      await tabA.close();
-      await waitUntil(() => tabB.backend.currentRole === "host", 3000, "tabB promoted");
-      const readOut: Uint8Array = await tabB.client.asyncCall("readFile", ["/big.bin"]);
-      expect(readOut.byteLength).toBe(payload.byteLength);
+      expect(tabA.backend.resources().multitabHostUsedDownloadBytes).toBe(0);
+
+      // A retry on the same Host session (after automatic lease renewal) must succeed with 0 leaked bytes!
+      const retryOut: Uint8Array = await tabB.client.asyncCall("readFile", ["/big.bin"]);
+      expect(retryOut.byteLength).toBe(payload.byteLength);
+      expect(tabA.backend.resources().multitabHostUsedDownloadBytes).toBe(0);
     } finally {
       releaseChunk.resolve();
       await tabB.close();
       await tabA.close();
+    }
+  });
+
+  test("former Host recovers cleanly when replacement Host dies mid-rebind", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-rebind-death-${crypto.randomUUID()}`;
+
+    const rebindEntered = Promise.withResolvers<void>();
+    const holdRebind = Promise.withResolvers<void>();
+    let sawRebind = false;
+    let tabAOpenCalls = 0;
+    const baseOpenerA = store.createOpener(broker, "tab-A", "opfs-memory");
+
+    const waitUntilAborted = (sig?: AbortSignal) =>
+      new Promise<never>((_resolve, reject) => {
+        if (sig?.aborted) {
+          reject(sig.reason ?? new DOMException("aborted", "AbortError"));
+          return;
+        }
+        sig?.addEventListener(
+          "abort",
+          () => reject(sig.reason ?? new DOMException("aborted", "AbortError")),
+          { once: true },
+        );
+      });
+
+    const tabA = await openCustomOpfsTab(broker, hub, name, async (impl, wsName, opts) => {
+      tabAOpenCalls++;
+      // On remount #2, yield OPFS so Tab B deterministically becomes replacement Host and Tab A attaches & sends __rebind!
+      if (tabAOpenCalls === 2) {
+        await waitUntilAborted(opts.signal);
+      }
+      return baseOpenerA(impl, wsName, opts);
+    });
+    const tabB = await openTab(broker, hub, store, {
+      clientId: "tab-B",
+      name,
+      implementation: "opfs-memory",
+      hooks: {
+        async beforeHostReplyPublish(op) {
+          if (op === "__rebind" && !sawRebind) {
+            sawRebind = true;
+            rebindEntered.resolve();
+            await holdRebind.promise;
+          }
+        },
+      },
+    });
+    try {
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/keep.txt", false, false],
+        new TextEncoder().encode("alive"),
+      );
+      // Open a live handle on Host A so remounting onto replacement Host B executes __rebind!
+      const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
+      expect(rootA).toBeGreaterThan(0);
+
+      // Step down Host A cooperatively -> Tab B becomes replacement Host -> Tab A attaches & sends __rebind!
+      const probeCh = hub.create(
+        `waffle:multitab:v1:ctrl:${multitabScope("opfs-memory", name)}`,
+        "external-opfs",
+      );
+      probeCh.postMessage({
+        kind: "cooperative-step-down",
+        targetAttemptId: tabA.backend.attemptId!,
+        targetTerm: tabA.backend.currentHostTerm.toString(16),
+      } satisfies ControlMessage);
+      await rebindEntered.promise;
+
+      // Kill replacement Host B while Tab A's failover loop is blocked awaiting __rebind!
+      hub.killOwner("tab-B");
+      broker.crashClient("tab-B");
+
+      // Tab A must invalidate the dead session, resume its existing failover loop, and promote to Host!
+      await waitUntil(
+        () => tabA.backend.currentRole === "host",
+        4000,
+        "tabA recovered after replacement Host died mid-rebind",
+      );
+      const out: Uint8Array = await tabA.client.asyncCall("readFile", ["/keep.txt"]);
+      expect(new TextDecoder().decode(out)).toBe("alive");
+      probeCh.close();
+    } finally {
+      holdRebind.resolve();
+      tabA.client.dispose();
+      await tabA.service.shutdown().catch(() => {});
+      tabA.conn.client.port.close();
+      tabA.conn.server.port.close();
+      tabB.client.dispose();
+      tabB.connection.client.port.close();
+      tabB.connection.server.port.close();
     }
   });
 
