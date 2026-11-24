@@ -58,6 +58,10 @@ export interface FilesystemBackend {
   beginDispose?(): void;
   /** Synchronous shutdown hook called by FilesystemService.shutdown() before draining work. */
   beginShutdown?(): void;
+  /** Whether this backend supports Unix domain socket scope attachment (defaults to true for MemoryBackend). */
+  readonly supportsSockets?: boolean;
+  /** Re-verify lease / terminal state before publishing a prepared cold descriptor read. */
+  isPreparedReadValid?(): boolean;
   /** Whether a handle is unlinked (used by service capability trimming when not MemoryBackend). */
   isUnlinked?(handle: FileHandle): boolean;
   /** Select a bounded cold descriptor range before asynchronous storage work. */

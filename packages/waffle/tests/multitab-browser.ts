@@ -45,6 +45,7 @@ const api = {
     whenBusy?: VfsWhenBusy;
     implementation?: "indexeddb" | "opfs-memory";
     waitReady?: boolean;
+    workerURL?: string;
   }) {
     const id = nextTabId++;
     const states: string[] = [];
@@ -52,7 +53,7 @@ const api = {
       mode: "fast" as const,
       name: options.name,
       whenBusy: options.whenBusy ?? ("attach" as const),
-      workerURL: "/fs-worker.js",
+      workerURL: options.workerURL ?? "/fs-worker.js",
       onStateChange: (s: { status: string }) => {
         states.push(s.status);
       },

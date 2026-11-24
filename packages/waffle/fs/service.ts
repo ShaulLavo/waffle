@@ -227,6 +227,7 @@ export class FilesystemService {
     if (sessionRevoked(source)) throw new FilesystemError(11);
     if (!source.handles.has(directory)) throw new FilesystemError(76);
     this.check(source, directory);
+    if (this.backend.supportsSockets === false) throw new FilesystemError(58);
     if (
       !(this.backend instanceof MemoryBackend) ||
       this.backend.fs.stat(directory).kind !== "directory"
@@ -863,11 +864,10 @@ export class FilesystemService {
       ].includes(operation)
     )
       throw new FilesystemError(76);
-    if (
-      ["bindSocket", "bindSocketPath", "unbindSocket", "connectSocket"].includes(operation) &&
-      !scope
-    )
-      throw new FilesystemError(76);
+    if (["bindSocket", "bindSocketPath", "unbindSocket", "connectSocket"].includes(operation)) {
+      if (this.backend.supportsSockets === false) throw new FilesystemError(58);
+      if (!scope) throw new FilesystemError(76);
+    }
     if (
       scope &&
       (operation === "resolve" ||
@@ -1333,8 +1333,12 @@ export class FilesystemService {
         else opened = this.beginEpochMutation(epoch);
       }
       const payload = bytes.subarray(inputLength, inputLength + dataLength);
-      const value = prepared?.read
-        ? this.finishResult(session, id, operation, prepared.read.value)
+      const preparedRead =
+        prepared?.read && (!this.backend.isPreparedReadValid || this.backend.isPreparedReadValid())
+          ? prepared.read
+          : undefined;
+      const value = preparedRead
+        ? this.finishResult(session, id, operation, preparedRead.value)
         : local && operation !== "flush" && operation !== "sync"
           ? this.executePublication(session, id, operation, args, payload, admission)
           : await this.execute(session, id, operation, args, payload);

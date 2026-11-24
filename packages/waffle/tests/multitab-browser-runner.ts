@@ -279,6 +279,78 @@ async function runIndexedDBSuite(
       await Promise.allSettled([pA.close(), pB.close(), pLegacy.close()]);
     }
   }
+
+  // 3. Real Host worker freeze & thaw: Peer steals IndexedDB via verified broker steal,
+  //    thawed Host demotes cleanly to Peer (NOT ownershipLost!) and reads new Host's writes!
+  {
+    const name = `mt-idb-freeze-${engine}-${crypto.randomUUID()}`;
+    const freezeKey = crypto.randomUUID();
+    const [pA, pB] = await Promise.all([
+      openTabPage(context, origin),
+      openTabPage(context, origin),
+    ]);
+    try {
+      const a = await pA.evaluate(
+        ({ n, fk }) =>
+          (globalThis as any).multitabTest.open({
+            name: n,
+            workerURL: `/freeze-fs-worker.js?freezeKey=${fk}`,
+          }),
+        { n: name, fk: freezeKey },
+      );
+      const b = await pB.evaluate((n) => (globalThis as any).multitabTest.open({ name: n }), name);
+      await pA.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.writeFile(id, "/pre-freeze.txt", "before"),
+        a,
+      );
+      await pA.evaluate(({ id }) => (globalThis as any).multitabTest.flush(id), a);
+
+      // Freeze Host A's worker thread synchronously via Atomics.wait for 4200ms!
+      const thawedPromise = pA.evaluate((fk) => {
+        return new Promise<boolean>((resolve) => {
+          const ch = new BroadcastChannel(`multitab-test-freeze:${fk}`);
+          ch.onmessage = (e) => {
+            if (e.data?.thawed) {
+              ch.close();
+              resolve(true);
+            }
+          };
+          ch.postMessage({ ms: 4200 });
+        });
+      }, freezeKey);
+
+      // While Host A is frozen, Peer B detects heartbeat timeout, verifies steal, promotes, and reads+writes!
+      const readOnB = await pB.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.readFileText(id, "/pre-freeze.txt"),
+        b,
+      );
+      assert(readOnB === "before", `${engine}: Peer B failed read after frozen Host steal`);
+      await pB.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.writeFile(id, "/during-freeze.txt", "after"),
+        b,
+      );
+
+      // Wait for Host A to thaw; it MUST demote to Peer (NO ownershipLost!) and read /during-freeze.txt!
+      await thawedPromise;
+      const onThawedA = await pA.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.readFileText(id, "/during-freeze.txt"),
+        a,
+      );
+      assert(
+        onThawedA === "after",
+        `${engine}: thawed Host A failed to demote and read: ${onThawedA}`,
+      );
+      const stateA = await pA.evaluate((id) => (globalThis as any).multitabTest.state(id), a.id);
+      assert(
+        stateA.ownershipLost === false && stateA.status === "ready",
+        `${engine}: thawed Host A should demote cleanly, got ${JSON.stringify(stateA)}`,
+      );
+      await pA.evaluate(({ id }) => (globalThis as any).multitabTest.dispose(id), a);
+      await pB.evaluate(({ id }) => (globalThis as any).multitabTest.dispose(id), b);
+    } finally {
+      await Promise.allSettled([pA.close(), pB.close()]);
+    }
+  }
 }
 
 async function runOpfsSuite(
@@ -412,6 +484,9 @@ async function main(): Promise<void> {
         "/": '<!doctype html><meta charset="utf-8"><script type="module" src="/multitab.js"></script>',
         "/multitab.js": await browserBundle(resolve(import.meta.dir, "multitab-browser.ts")),
         "/fs-worker.js": await browserBundle(resolve(import.meta.dir, "../browser/fs-worker.ts")),
+        "/freeze-fs-worker.js": await browserBundle(
+          resolve(import.meta.dir, "multitab-freeze-worker.ts"),
+        ),
       },
       Number(process.env.MULTITAB_TEST_PORT ?? 0),
     );

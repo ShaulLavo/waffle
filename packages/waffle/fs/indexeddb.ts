@@ -328,7 +328,12 @@ export async function readIndexedDBEpochMetadata(
   try {
     db = await new Promise<IDBDatabase>((resolve, reject) => {
       const openReq = factory.open(name, 1);
-      const rejectAbort = () => reject(signal.reason);
+      let settled = false;
+      const rejectAbort = () => {
+        if (settled) return;
+        settled = true;
+        reject(signal.reason);
+      };
       signal.addEventListener("abort", rejectAbort, { once: true });
       openReq.onupgradeneeded = () => {
         try {
@@ -337,14 +342,26 @@ export async function readIndexedDBEpochMetadata(
       };
       openReq.onsuccess = () => {
         signal.removeEventListener("abort", rejectAbort);
-        resolve(openReq.result);
+        const opened = openReq.result;
+        if (settled || signal.aborted) {
+          try {
+            opened.close();
+          } catch {}
+          return;
+        }
+        settled = true;
+        resolve(opened);
       };
       openReq.onerror = () => {
         signal.removeEventListener("abort", rejectAbort);
+        if (settled) return;
+        settled = true;
         reject(openReq.error ?? new Error("Failed to open IndexedDB for epoch metadata"));
       };
       openReq.onblocked = () => {
         signal.removeEventListener("abort", rejectAbort);
+        if (settled) return;
+        settled = true;
         reject(new Error("IndexedDB blocked during epoch check"));
       };
     });
@@ -1081,7 +1098,11 @@ export class IndexedDBStorage implements StorageBackend {
           async () => {
             if (preSignal?.aborted) throw preSignal.reason;
             lifetime = startStorageRequest();
-            if (options.whenBusy === "ifAvailable") await grantedPromise;
+            if (options.whenBusy === "wait") {
+              await Promise.race([grantedPromise, Promise.resolve().then(() => locks.query?.())]);
+            } else {
+              await grantedPromise;
+            }
           },
         );
       }

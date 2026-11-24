@@ -29,6 +29,7 @@ import {
   createFilesystemConnection,
   revokeFilesystemService,
 } from "../fs/protocol.js";
+import { readIndexedDBEpochMetadata } from "../fs/indexeddb.js";
 import type { PersistenceBatch, PersistedIndex, StorageBackend } from "../fs/storage.js";
 import { NetHost } from "../browser/net/host.js";
 import { createRing } from "../browser/net/ring.js";
@@ -2248,6 +2249,419 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       tabA.client.dispose();
       tabA.connection.client.port.close();
       tabA.connection.server.port.close();
+    }
+  });
+
+  test("disposal joins in-flight Peer promotion paused before cutover barrier before releasing locks", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-dispose-promote-${crypto.randomUUID()}`;
+    const cutoverEntered = Promise.withResolvers<void>();
+    const releaseCutover = Promise.withResolvers<void>();
+
+    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    const tabB = await openTab(broker, hub, store, {
+      clientId: "tab-B",
+      name,
+      hooks: {
+        async beforeCutoverBarrier() {
+          cutoverEntered.resolve();
+          await releaseCutover.promise;
+        },
+      },
+    });
+    try {
+      hub.killOwner("tab-A");
+      broker.crashClient("tab-A");
+      await cutoverEntered.promise;
+      // Peer B now holds the IndexedDB writer lock mid-promotion (before cutover barrier)!
+      expect(broker.hasLock(`bun-wasm:filesystem:indexeddb:${name}`)).toBe(true);
+
+      let shutdownResolved = false;
+      const shutdownPromise = tabB.service.shutdown().then(() => {
+        shutdownResolved = true;
+      });
+      await new Promise((r) => setTimeout(r, 30));
+      // Shutdown MUST NOT resolve while promotion still holds storageLock!
+      expect(shutdownResolved).toBe(false);
+      expect(broker.hasLock(`bun-wasm:filesystem:indexeddb:${name}`)).toBe(true);
+
+      releaseCutover.resolve();
+      await shutdownPromise;
+      expect(shutdownResolved).toBe(true);
+      expect(broker.hasLock(`bun-wasm:filesystem:indexeddb:${name}`)).toBe(false);
+      expect(broker.heldNames()).toEqual([]);
+    } finally {
+      releaseCutover.resolve();
+      tabB.client.dispose();
+      tabB.connection.client.port.close();
+      tabB.connection.server.port.close();
+      tabA.client.dispose();
+      tabA.connection.client.port.close();
+      tabA.connection.server.port.close();
+    }
+  });
+
+  test("Host-local cold descriptor read and chunk-get enforce lease and terminal state at reply time", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-lease-read-${crypto.randomUUID()}`;
+
+    const seed = await openTab(broker, hub, store, { clientId: "seed", name });
+    await seed.client.asyncCall(
+      "writeFile",
+      ["/cold.txt", false, false],
+      new TextEncoder().encode("secret-cold"),
+    );
+    await seed.client.asyncCall("flush", []);
+    await seed.close();
+
+    const readEntered = Promise.withResolvers<void>();
+    const releaseRead = Promise.withResolvers<void>();
+    store.beforeRead = async () => {
+      readEntered.resolve();
+      await releaseRead.promise;
+    };
+
+    const tabA = await openTab(broker, hub, store, {
+      clientId: "tab-A",
+      name,
+      timings: { leaseDurationMs: 80, leaseRenewMs: 5000 },
+    });
+    try {
+      const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
+      const resolved = await tabA.client.asyncCall("resolve", [rootA, "cold.txt", true]);
+      const pendingRead = tabA.client.asyncCall("read", [resolved.node, 32, 0]);
+      await readEntered.promise;
+      // Expire lease AND latch beginDispose() so renewal cannot extend it!
+      await new Promise((r) => setTimeout(r, 110));
+      expect(tabA.backend.isLeaseValid()).toBe(false);
+      tabA.backend.beginDispose();
+      releaseRead.resolve();
+
+      await expect(pendingRead).rejects.toMatchObject({ errno: 11 });
+    } finally {
+      store.beforeRead = undefined;
+      releaseRead.resolve();
+      await tabA.close();
+    }
+  });
+
+  test("Peer lookup enforces directory read permissions (0o100 -> EACCES)", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-lookup-perm-${crypto.randomUUID()}`;
+
+    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    const tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+    try {
+      await tabA.client.asyncCall("mkdirp", ["/restricted"]);
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/restricted/secret.txt", false, false],
+        new TextEncoder().encode("hi"),
+      );
+      const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
+      const dir = await tabA.client.asyncCall("resolve", [rootA, "restricted", true]);
+      await tabA.client.asyncCall("setMode", [dir.node, 0o100, BigInt(Date.now()) * 1_000_000n]);
+
+      const errA = await tabA.client.asyncCall("lookup", ["/restricted"]).then(
+        () => undefined,
+        (e) => e,
+      );
+      expect(errA).toMatchObject({ errno: 2 });
+      const errB = await tabB.client.asyncCall("lookup", ["/restricted"]).then(
+        () => undefined,
+        (e) => e,
+      );
+      expect(errB).toMatchObject({ errno: 2 });
+    } finally {
+      await tabB.close();
+      await tabA.close();
+    }
+  });
+
+  test("frozen recoverLock contender is broken after recoverTimeoutMs so another Peer recovers", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-recover-steal-${crypto.randomUUID()}`;
+
+    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    const tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+    try {
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/data.txt", false, false],
+        new TextEncoder().encode("ok"),
+      );
+      await tabA.client.asyncCall("flush", []);
+
+      // Hold recoverLock with a frozen third client!
+      const scope = multitabScope("indexeddb", name);
+      const recoverName = `waffle:multitab:v1:recover:${scope}`;
+      const frozenLocks = broker.forClient("frozen-contender");
+      const holdForever = Promise.withResolvers<void>();
+      void frozenLocks
+        .request(recoverName, { mode: "exclusive" }, () => holdForever.promise)
+        .catch(() => {});
+      await waitUntil(() => broker.hasLock(recoverName), 1000, "recoverLock held");
+
+      // Freeze Host A (keep its storageLock + attach-claim held in broker, stop its broadcasts!)
+      hub.killOwner("tab-A");
+      // Peer B must break the frozen recoverLock after recoverTimeoutMs and promote to Host!
+      await waitUntil(
+        () => tabB.backend.currentRole === "host",
+        4000,
+        "tabB broke frozen recoverLock",
+      );
+      const out: Uint8Array = await tabB.client.asyncCall("readFile", ["/data.txt"]);
+      expect(new TextDecoder().decode(out)).toBe("ok");
+      holdForever.resolve();
+    } finally {
+      await tabB.close();
+      tabA.client.dispose();
+      tabA.connection.client.port.close();
+      tabA.connection.server.port.close();
+    }
+  });
+
+  test("cancelled readIndexedDBEpochMetadata closes late-arriving IDBDatabase connection", async () => {
+    const controller = new AbortController();
+    let closeCount = 0;
+    const req: {
+      result?: IDBDatabase;
+      onsuccess?: () => void;
+      onerror?: () => void;
+      onupgradeneeded?: () => void;
+      onblocked?: () => void;
+    } = {};
+    const fakeFactory = {
+      open: () => req,
+    } as unknown as IDBFactory;
+
+    const pending = readIndexedDBEpochMetadata("late-close-db", {
+      indexedDB: fakeFactory,
+      signal: controller.signal,
+    });
+    controller.abort(new DOMException("aborted", "AbortError"));
+    await expect(pending).rejects.toThrow();
+
+    // Deliver late onsuccess AFTER abort -> must immediately close the database!
+    req.result = {
+      close() {
+        closeCount++;
+      },
+    } as unknown as IDBDatabase;
+    req.onsuccess?.();
+    expect(closeCount).toBe(1);
+  });
+
+  test("credit-waiter unsent write resumes on session reset and rejects with EIO on terminal Host failure", async () => {
+    // Part A: session reset replays unsent credit-waiter write cleanly!
+    {
+      const broker = new MockLockBroker();
+      const hub = new MockBroadcastHub();
+      const store = new MockSharedStore();
+      const name = `ws-credit-reset-${crypto.randomUUID()}`;
+      const gate = Promise.withResolvers<void>();
+      let paused = 0;
+
+      const tabA = await openTab(broker, hub, store, {
+        clientId: "tab-A",
+        name,
+        hooks: {
+          async beforeHostReplyPublish(op) {
+            if (op === "readFile" && paused < 4) {
+              paused++;
+              await gate.promise;
+            }
+          },
+        },
+      });
+      const tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+      try {
+        await tabA.client.asyncCall(
+          "writeFile",
+          ["/seed.txt", false, false],
+          new TextEncoder().encode("s"),
+        );
+        // Saturate all 4 peer frame credits with paused concurrent readFile calls!
+        const reads = Array.from({ length: 4 }, () =>
+          Promise.resolve(tabB.backend.execute("readFile", ["/seed.txt"], new Uint8Array())),
+        );
+        await waitUntil(() => paused === 4, 2000, "4 credits saturated");
+
+        // 5th operation (unsent writeFile) parks in reservePeerCredits!
+        const parkedWrite = Promise.resolve(
+          tabB.backend.execute(
+            "writeFile",
+            ["/from-credit-waiter.txt", false, false],
+            new TextEncoder().encode("resumed"),
+          ),
+        );
+        // Let parkedWrite reach reservePeerCredits before closing Host A!
+        await new Promise((r) => setTimeout(r, 20));
+        // Trigger graceful Host close -> failover -> unsent parked write resumes and succeeds!
+        gate.resolve();
+        await tabA.close();
+        await Promise.all(reads);
+        await parkedWrite;
+        const text = new TextDecoder().decode(
+          await tabB.client.asyncCall("readFile", ["/from-credit-waiter.txt"]),
+        );
+        expect(text).toBe("resumed");
+      } finally {
+        gate.resolve();
+        await tabB.close();
+        await tabA.close();
+      }
+    }
+
+    // Part B: terminal Host failure rejects parked credit-waiter with EIO (29)!
+    {
+      const broker = new MockLockBroker();
+      const hub = new MockBroadcastHub();
+      const store = new MockSharedStore();
+      const name = `ws-credit-eio-${crypto.randomUUID()}`;
+      const gate = Promise.withResolvers<void>();
+      let paused = 0;
+
+      const tabA = await openTab(broker, hub, store, {
+        clientId: "tab-A",
+        name,
+        implementation: "opfs-memory",
+        hooks: {
+          async beforeHostReplyPublish(op) {
+            if (op === "readFile" && paused < 4) {
+              paused++;
+              await gate.promise;
+            }
+          },
+        },
+      });
+      const tabB = await openTab(broker, hub, store, {
+        clientId: "tab-B",
+        name,
+        implementation: "opfs-memory",
+      });
+      try {
+        await tabA.client.asyncCall(
+          "writeFile",
+          ["/seed.txt", false, false],
+          new TextEncoder().encode("s"),
+        );
+        const reads: Promise<unknown>[] = [];
+        for (let i = 0; i < 4; i++) {
+          reads.push(
+            Promise.resolve(
+              tabB.backend.execute("readFile", ["/seed.txt"], new Uint8Array()),
+            ).catch((e) => e),
+          );
+        }
+        await waitUntil(() => paused === 4, 2000, "4 credits saturated");
+
+        const parkedWrite = Promise.resolve(
+          tabB.backend.execute(
+            "writeFile",
+            ["/parked-fail.txt", false, false],
+            new TextEncoder().encode("x"),
+          ),
+        );
+        const parkedOutcome = parkedWrite.then(
+          () => ({ ok: true }),
+          (err) => err,
+        );
+        await new Promise((r) => setTimeout(r, 20));
+        store.flushFault = { terminal: new Error("terminal opfs fail") };
+        await expect(tabA.client.asyncCall("flush", [])).rejects.toThrow();
+        gate.resolve();
+
+        expect(await parkedOutcome).toMatchObject({ errno: 29 });
+        await Promise.all(reads);
+      } finally {
+        gate.resolve();
+        await tabB.close();
+        tabA.client.dispose();
+        tabA.connection.client.port.close();
+        tabA.connection.server.port.close();
+        hub.killOwner("tab-A");
+      }
+    }
+  });
+
+  test("attachSocketScope and bindSocket return ENOTSUP (58) on attach backend", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-sockets-enotsup-${crypto.randomUUID()}`;
+
+    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    const extraConn = createFilesystemConnection();
+    try {
+      const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
+      expect(() =>
+        tabA.service.attachSocketScope(tabA.connection.client, rootA, extraConn.server),
+      ).toThrow(/58/);
+      const bindErr = await tabA.client.asyncCall("bindSocket", [rootA, "s"]).then(
+        () => undefined,
+        (e) => e,
+      );
+      expect(bindErr).toMatchObject({ errno: 58 });
+    } finally {
+      extraConn.client.port.close();
+      extraConn.server.port.close();
+      await tabA.close();
+    }
+  });
+
+  test("chunked upload keeps hostUsedUploadBytes accounted across Host prepare() and execute()", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-upload-live-budget-${crypto.randomUUID()}`;
+
+    const seed = await openTab(broker, hub, store, { clientId: "seed", name });
+    await seed.client.asyncCall(
+      "writeFile",
+      ["/target.bin", false, false],
+      new TextEncoder().encode("initial-cold"),
+    );
+    await seed.client.asyncCall("flush", []);
+    await seed.close();
+
+    const readEntered = Promise.withResolvers<void>();
+    const releaseRead = Promise.withResolvers<void>();
+    store.beforeRead = async () => {
+      readEntered.resolve();
+      await releaseRead.promise;
+    };
+
+    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    const tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+    try {
+      const payload = new Uint8Array(1_200_000);
+      payload.fill(0x5a);
+      // Append to a cold file so Host's persistent.prepare("writeFile", ...) hydrates asynchronously!
+      const writePromise = tabB.client.asyncCall(
+        "writeFile",
+        ["/target.bin", true, false],
+        payload,
+      );
+      await readEntered.promise;
+      // While Host is paused inside prepare(), the 1.2 MiB upload buffer is STILL live and MUST stay charged!
+      expect(tabA.backend.resources().multitabHostUsedUploadBytes).toBe(payload.byteLength);
+      releaseRead.resolve();
+      await writePromise;
+      expect(tabA.backend.resources().multitabHostUsedUploadBytes).toBe(0);
+    } finally {
+      store.beforeRead = undefined;
+      releaseRead.resolve();
+      await tabB.close();
+      await tabA.close();
     }
   });
 });
