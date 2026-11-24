@@ -3338,4 +3338,98 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       tabA.connection.server.port.close();
     }
   });
+
+  test("operations arriving during in-flight fence-loss demotion wait and route to replacement Host", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-fence-inflight-read-${crypto.randomUUID()}`;
+
+    const epochGate = Promise.withResolvers<void>();
+    const epochCheckEntered = Promise.withResolvers<void>();
+    let gateEpochRead = false;
+
+    const connA = createFilesystemConnection();
+    let ownershipLostA = false;
+    const baseOpener = store.createOpener(broker, "tab-A", "indexeddb");
+    const backendA = await MultiTabBackend.open({
+      implementation: "indexeddb",
+      name,
+      sharedRoot: {
+        shared: connA.server.shared,
+        maxBytes: connA.server.maxBytes,
+        segments: connA.server.segments,
+      },
+      locks: broker.forClient("tab-A"),
+      createChannel: (chName) => hub.create(chName, "tab-A"),
+      openStorage: baseOpener,
+      readEpochMetadata: async () => {
+        if (gateEpochRead) {
+          gateEpochRead = false;
+          epochCheckEntered.resolve();
+          await epochGate.promise;
+        }
+        return { epoch: store.epoch, lastExclusiveEpoch: store.lastExclusiveEpoch };
+      },
+      timings: { ...FAST_TIMINGS, leaseDurationMs: 60_000, leaseRenewMs: 60_000 },
+      onOwnershipLost: () => {
+        ownershipLostA = true;
+      },
+    });
+    const serviceA = new FilesystemService(backendA);
+    serviceA.connect(connA.server);
+    const clientA = new FilesystemClient(connA.client);
+
+    const tabB = await openTab(broker, hub, store, {
+      clientId: "tab-B",
+      name,
+      implementation: "indexeddb",
+    });
+
+    try {
+      // Mute Host A so Peer B steals IndexedDB and promotes to Host, while A stays in host role until triggered.
+      let muteA = true;
+      hub.interceptor = (_ch, sender, msg) => {
+        if (!muteA) return;
+        if (sender.ownerTag === "tab-A") return false;
+        if (msg && typeof msg === "object" && Reflect.get(msg, "kind") === "host-ready") {
+          return false;
+        }
+      };
+      await waitUntil(() => tabB.backend.currentRole === "host", 4000, "tabB promoted to host");
+      expect(backendA.currentRole).toBe("host");
+      await tabB.client.asyncCall(
+        "writeFile",
+        ["/after-steal.txt", false, false],
+        new TextEncoder().encode("from-B"),
+      );
+
+      // Pause A's executeFenceLoss inside readEpochMetadata so fenceLossInFlight stays pending!
+      gateEpochRead = true;
+      muteA = false;
+      hub.interceptor = undefined;
+      void backendA.renewLeaseNow();
+      await epochCheckEntered.promise;
+
+      // Issue readFile on A WHILE fenceLossInFlight is still resolving!
+      const readDuringDemotion = clientA.asyncCall("readFile", ["/after-steal.txt"]);
+
+      // Release executeFenceLoss so A demotes cleanly to Peer and attaches to B.
+      epochGate.resolve();
+
+      const data: Uint8Array = await readDuringDemotion;
+      expect(new TextDecoder().decode(data)).toBe("from-B");
+      expect(ownershipLostA).toBe(false);
+      expect(backendA.currentRole).toBe("peer");
+      expect(tabB.backend.currentRole).toBe("host");
+    } finally {
+      hub.interceptor = undefined;
+      epochGate.resolve();
+      clientA.dispose();
+      await serviceA.shutdown().catch(() => {});
+      connA.client.port.close();
+      connA.server.port.close();
+      await tabB.close();
+    }
+  });
 });

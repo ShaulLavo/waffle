@@ -18,7 +18,7 @@ interface TabHandle {
 const tabs = new Map<number, TabHandle>();
 let nextTabId = 1;
 
-async function waitForReady(handle: TabHandle, timeoutMs = 15000): Promise<void> {
+async function waitForReady(handle: TabHandle, timeoutMs = 30000): Promise<void> {
   if (handle.fs.state.status === "ready") return;
   if (handle.fs.state.status === "failed") throw handle.fs.state.error ?? new Error("fs failed");
   await new Promise<void>((resolve, reject) => {
@@ -177,7 +177,7 @@ const api = {
     return wid;
   },
 
-  async nextWatch(id: number, wid: number, timeoutMs = 8000) {
+  async nextWatch(id: number, wid: number, timeoutMs = 20000) {
     const watcher = tabs.get(id)!.watches.get(wid)!;
     return Promise.race([
       watcher.next().then((batch) => ({

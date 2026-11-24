@@ -793,6 +793,9 @@ export class MultiTabBackend implements FilesystemBackend {
     }
     if (this.terminalFailure)
       throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
+    if (this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified) {
+      return this.executeAfterFenceLoss(operation, args, data);
+    }
     if (this.ownershipLost) throw new FilesystemError(11, "filesystem ownership lost");
     if (this.disposing) {
       // Allow queued local Host work on disposeHostTerm ONLY while lease is valid.
@@ -828,7 +831,30 @@ export class MultiTabBackend implements FilesystemBackend {
     throw new FilesystemError(11, "filesystem backend is closed");
   }
 
+  private async awaitPendingFenceLoss(): Promise<void> {
+    while (
+      this.fenceLossInFlight &&
+      !this.disposing &&
+      !this.externalOwnershipLostNotified &&
+      !this.terminalFailure
+    ) {
+      await this.fenceLossInFlight.catch(() => {});
+    }
+  }
+
+  private async executeAfterFenceLoss(
+    operation: string,
+    args: any[],
+    data: Uint8Array,
+  ): Promise<unknown> {
+    await this.awaitPendingFenceLoss();
+    return this.execute(operation, args, data);
+  }
+
   async flush(target?: FileHandle | string): Promise<void> {
+    if (this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified) {
+      await this.awaitPendingFenceLoss();
+    }
     if (this.terminalFailure)
       throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
     if (this.ownershipLost) throw new FilesystemError(11, "filesystem ownership lost");
@@ -880,6 +906,9 @@ export class MultiTabBackend implements FilesystemBackend {
     cancelled: () => boolean,
   ): number | Promise<number> {
     if (this.terminalFailure) throw new FilesystemError(29);
+    if (this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified) {
+      return this.watchOpenAfterFenceLoss(owner, handle, recursive, cancelled);
+    }
     if (this.ownershipLost || this.disposing) throw new FilesystemError(11);
     const entry = this.byLocalHandle.get(handle);
     if (!entry || entry.stale) throw new FilesystemError(8);
@@ -906,6 +935,17 @@ export class MultiTabBackend implements FilesystemBackend {
       return this.openPeerWatch(owner, entry, recursive, cancelled);
     }
     throw new FilesystemError(11);
+  }
+
+  private async watchOpenAfterFenceLoss(
+    owner: number,
+    handle: FileHandle,
+    recursive: boolean,
+    cancelled: () => boolean,
+  ): Promise<number> {
+    await this.awaitPendingFenceLoss();
+    if (cancelled()) throw new FilesystemError(11);
+    return this.watchOpen(owner, handle, recursive, cancelled);
   }
 
   watchRead(
@@ -5120,10 +5160,16 @@ export class MultiTabBackend implements FilesystemBackend {
       if (this.disposing) throw new FilesystemError(11, "host lease expired during dispose");
       const ok = await this.renewLeaseNow(this.currentAttemptId);
       if (!ok || !this.isLeaseValid()) {
-        if (this.role === "peer" || this.role === "failover") {
+        await this.awaitPendingFenceLoss();
+        if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
+        if (this.terminalFailure) {
+          throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
+        }
+        if (this.ownershipLost) throw new FilesystemError(11, "filesystem ownership lost");
+        if (this.role === "peer" || this.role === "failover" || this.role === "waiting") {
           return this.executeOnPeer(operation, args, data, responseCookieTag);
         }
-        throw new FilesystemError(this.terminalFailure ? 29 : 11, "host lease expired");
+        throw new FilesystemError(11, "host lease expired");
       }
     }
 

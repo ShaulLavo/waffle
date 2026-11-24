@@ -7,6 +7,7 @@ if (key) {
   channel.onmessage = (event) => {
     const ms = typeof event.data?.ms === "number" ? event.data.ms : 0;
     if (ms > 0) {
+      channel.postMessage({ freezing: true });
       Atomics.wait(cell, 0, 0, ms);
       channel.postMessage({ thawed: true });
     }

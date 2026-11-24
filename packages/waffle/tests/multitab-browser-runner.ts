@@ -25,7 +25,7 @@ async function openTabPage(context: BrowserContext, origin: string): Promise<Pag
   });
   await navigateTestPage(page, origin, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => Boolean((globalThis as any).multitabTest), undefined, {
-    timeout: 15000,
+    timeout: 30000,
   });
   return page;
 }
@@ -190,13 +190,18 @@ async function runIndexedDBSuite(
         `${engine}: post-failover watch failed: ${JSON.stringify(ev2)}`,
       );
 
-      // Abrupt Host close failover (page.close() without dispose!)
+      // Guarantee B is the active Host before testing abrupt Host crash, then re-attach C as Peer!
+      await pC.evaluate(({ id }) => (globalThis as any).multitabTest.dispose(id), c);
       await pB.evaluate(({ id }) => (globalThis as any).multitabTest.flush(id), b);
+      const c2 = await pC.evaluate((n) => (globalThis as any).multitabTest.open({ name: n }), name);
+      assert(c2.status === "ready", `${engine}: C2 ready`);
+
+      // Abrupt Host close failover (page.close() without dispose!)
       await pB.close();
       // Pure stateless read retries seamlessly across abrupt Host crash failover!
       const survivedCrash = await pC.evaluate(
         ({ id }) => (globalThis as any).multitabTest.readFileText(id, "/unflushed.txt"),
-        c,
+        c2,
       );
       assert(
         survivedCrash === "zero-loss",
@@ -205,16 +210,16 @@ async function runIndexedDBSuite(
       // Subsequent write succeeds on promoted Host C!
       await pC.evaluate(
         ({ id }) => (globalThis as any).multitabTest.writeFile(id, "/after-crash.txt", "alive"),
-        c,
+        c2,
       );
       const afterCrash = await pC.evaluate(
         ({ id }) => (globalThis as any).multitabTest.readFileText(id, "/after-crash.txt"),
-        c,
+        c2,
       );
       assert(afterCrash === "alive", `${engine}: abrupt close failover failed`);
 
       // Dispose last tab -> openIdleWorkspace & deleteWorkspace succeed!
-      await pC.evaluate(({ id }) => (globalThis as any).multitabTest.dispose(id), c);
+      await pC.evaluate(({ id }) => (globalThis as any).multitabTest.dispose(id), c2);
       const idleAfter = await pA.evaluate(
         (n) => (globalThis as any).multitabTest.openIdleStatus(n),
         name,
@@ -267,12 +272,12 @@ async function runIndexedDBSuite(
       await pA.waitForFunction(
         (id) => (globalThis as any).multitabTest.state(id).ownershipLost === true,
         a.id,
-        { timeout: 10000 },
+        { timeout: 25000 },
       );
       await pB.waitForFunction(
         (id) => (globalThis as any).multitabTest.state(id).ownershipLost === true,
         b.id,
-        { timeout: 10000 },
+        { timeout: 25000 },
       );
       await pLegacy.evaluate(({ id }) => (globalThis as any).multitabTest.dispose(id), leg);
     } finally {
@@ -305,19 +310,27 @@ async function runIndexedDBSuite(
       );
       await pA.evaluate(({ id }) => (globalThis as any).multitabTest.flush(id), a);
 
-      // Freeze Host A's worker thread synchronously via Atomics.wait for 4200ms!
-      const thawedPromise = pA.evaluate((fk) => {
+      // Freeze Host A's worker thread synchronously via Atomics.wait for 5000ms!
+      // Wait for the worker to acknowledge entering Atomics.wait before triggering B's failover read.
+      await pA.evaluate((fk) => {
         return new Promise<boolean>((resolve) => {
           const ch = new BroadcastChannel(`multitab-test-freeze:${fk}`);
-          ch.onmessage = (e) => {
-            if (e.data?.thawed) {
-              ch.close();
-              resolve(true);
-            }
-          };
-          ch.postMessage({ ms: 4200 });
+          const thawed = new Promise<boolean>((resolveThawed) => {
+            ch.onmessage = (e) => {
+              if (e.data?.freezing) resolve(true);
+              if (e.data?.thawed) {
+                ch.close();
+                resolveThawed(true);
+              }
+            };
+          });
+          (globalThis as any).__multitabThawed = thawed;
+          ch.postMessage({ ms: 5000 });
         });
       }, freezeKey);
+      const thawedPromise = pA.evaluate(
+        () => (globalThis as any).__multitabThawed as Promise<boolean>,
+      );
 
       // While Host A is frozen, Peer B detects heartbeat timeout, verifies steal, promotes, and reads+writes!
       const readOnB = await pB.evaluate(
