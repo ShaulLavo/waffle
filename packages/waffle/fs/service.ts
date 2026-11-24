@@ -986,9 +986,7 @@ export class FilesystemService {
           return id;
         };
         const opening = this.backend.watchOpen(session.connection.owner, a, b, cancelled);
-        return opening instanceof Promise
-          ? this.trackWork(session, opening).then(register)
-          : register(opening);
+        return opening instanceof Promise ? opening.then(register) : register(opening);
       }
       if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
       this.watchService ??= new WatchService(this.backend);
@@ -1015,9 +1013,7 @@ export class FilesystemService {
           return held.batch;
         };
         const reading = this.backend.watchRead(session.connection.owner, a, cancelled);
-        return reading instanceof Promise
-          ? this.trackWork(session, reading).then(register)
-          : register(reading);
+        return reading instanceof Promise ? reading.then(register) : register(reading);
       }
       if (!this.watchService) throw new FilesystemError(8);
       const held = this.watchService.readHeld(session.connection.owner, a);
@@ -1171,9 +1167,7 @@ export class FilesystemService {
     }
     const result = this.backend.execute(operation, args, data);
     if (result instanceof Promise)
-      return this.trackWork(session, result).then((value) =>
-        this.finishResult(session, id, operation, value, args),
-      );
+      return result.then((value) => this.finishResult(session, id, operation, value, args));
     return this.finishResult(session, id, operation, result, args);
   }
   private finishResult(

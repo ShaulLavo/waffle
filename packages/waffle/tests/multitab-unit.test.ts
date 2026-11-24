@@ -3339,19 +3339,17 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     }
   });
 
-  test("operations arriving during in-flight fence-loss demotion wait and route to replacement Host", async () => {
+  async function setupPausedFenceLossFixture(namePrefix: string) {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();
     const store = new MockSharedStore();
-    const name = `ws-fence-inflight-read-${crypto.randomUUID()}`;
-
+    const name = `${namePrefix}-${crypto.randomUUID()}`;
     const epochGate = Promise.withResolvers<void>();
     const epochCheckEntered = Promise.withResolvers<void>();
     let gateEpochRead = false;
+    let ownershipLostA = false;
 
     const connA = createFilesystemConnection();
-    let ownershipLostA = false;
-    const baseOpener = store.createOpener(broker, "tab-A", "indexeddb");
     const backendA = await MultiTabBackend.open({
       implementation: "indexeddb",
       name,
@@ -3362,7 +3360,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       },
       locks: broker.forClient("tab-A"),
       createChannel: (chName) => hub.create(chName, "tab-A"),
-      openStorage: baseOpener,
+      openStorage: store.createOpener(broker, "tab-A", "indexeddb"),
       readEpochMetadata: async () => {
         if (gateEpochRead) {
           gateEpochRead = false;
@@ -3379,15 +3377,13 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     const serviceA = new FilesystemService(backendA);
     serviceA.connect(connA.server);
     const clientA = new FilesystemClient(connA.client);
-
     const tabB = await openTab(broker, hub, store, {
       clientId: "tab-B",
       name,
       implementation: "indexeddb",
     });
 
-    try {
-      // Mute Host A so Peer B steals IndexedDB and promotes to Host, while A stays in host role until triggered.
+    const promoteBAndPauseFenceLoss = async (onBPromoted?: () => Promise<void>) => {
       let muteA = true;
       hub.interceptor = (_ch, sender, msg) => {
         if (!muteA) return;
@@ -3398,31 +3394,25 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       };
       await waitUntil(() => tabB.backend.currentRole === "host", 4000, "tabB promoted to host");
       expect(backendA.currentRole).toBe("host");
-      await tabB.client.asyncCall(
-        "writeFile",
-        ["/after-steal.txt", false, false],
-        new TextEncoder().encode("from-B"),
-      );
-
-      // Pause A's executeFenceLoss inside readEpochMetadata so fenceLossInFlight stays pending!
+      await onBPromoted?.();
       gateEpochRead = true;
       muteA = false;
       hub.interceptor = undefined;
       void backendA.renewLeaseNow();
       await epochCheckEntered.promise;
+    };
 
-      // Issue readFile on A WHILE fenceLossInFlight is still resolving!
-      const readDuringDemotion = clientA.asyncCall("readFile", ["/after-steal.txt"]);
+    const waitForBackendExecute = (targetOp: string) => {
+      const entered = Promise.withResolvers<void>();
+      const origExecute = backendA.execute.bind(backendA);
+      backendA.execute = ((op: string, args: any[], data: Uint8Array) => {
+        if (op === targetOp) entered.resolve();
+        return origExecute(op, args, data);
+      }) as typeof backendA.execute;
+      return entered.promise;
+    };
 
-      // Release executeFenceLoss so A demotes cleanly to Peer and attaches to B.
-      epochGate.resolve();
-
-      const data: Uint8Array = await readDuringDemotion;
-      expect(new TextDecoder().decode(data)).toBe("from-B");
-      expect(ownershipLostA).toBe(false);
-      expect(backendA.currentRole).toBe("peer");
-      expect(tabB.backend.currentRole).toBe("host");
-    } finally {
+    const cleanup = async () => {
       hub.interceptor = undefined;
       epochGate.resolve();
       clientA.dispose();
@@ -3430,6 +3420,177 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       connA.client.port.close();
       connA.server.port.close();
       await tabB.close();
+    };
+
+    return {
+      backendA,
+      serviceA,
+      clientA,
+      tabB,
+      epochGate,
+      hasOwnershipLostA: () => ownershipLostA,
+      promoteBAndPauseFenceLoss,
+      waitForBackendExecute,
+      cleanup,
+    };
+  }
+
+  test("operations and watchOpen arriving during in-flight fence-loss demotion wait, rebind, and route to replacement Host", async () => {
+    const f = await setupPausedFenceLossFixture("ws-fence-inflight-read");
+    try {
+      const rootA: number = await f.clientA.asyncCall("preopen", ["/"]);
+      expect(rootA).toBeGreaterThan(0);
+
+      await f.promoteBAndPauseFenceLoss(async () => {
+        await f.tabB.client.asyncCall(
+          "writeFile",
+          ["/after-steal.txt", false, false],
+          new TextEncoder().encode("from-B"),
+        );
+      });
+
+      const readEntered = f.waitForBackendExecute("readFile");
+      const readDuringDemotion = f.clientA.asyncCall("readFile", ["/after-steal.txt"]);
+      await readEntered;
+
+      // Also call watchOpen directly on A's live root handle during paused fenceLossInFlight (one live, one cancelled)!
+      let watchCancelled = false;
+      const cancelledWatch = Promise.resolve(
+        f.backendA.watchOpen(77, rootA, false, () => watchCancelled),
+      ).then(
+        () => undefined,
+        (e) => e,
+      );
+      const liveWatchPromise = Promise.resolve(f.backendA.watchOpen(88, rootA, false, () => false));
+
+      // Cancel the first watch BEFORE releasing epochGate -> must reject promptly with ECANCELED (11)!
+      watchCancelled = true;
+      expect(await cancelledWatch).toMatchObject({ errno: 11 });
+
+      // Release executeFenceLoss so A demotes cleanly to Peer, attaches to B, and rebinds rootA!
+      f.epochGate.resolve();
+
+      const data: Uint8Array = await readDuringDemotion;
+      expect(new TextDecoder().decode(data)).toBe("from-B");
+      const watchId = await liveWatchPromise;
+      expect(watchId).toBeGreaterThan(0);
+      f.backendA.watchClose(88, watchId);
+      expect(f.hasOwnershipLostA()).toBe(false);
+      expect(f.backendA.currentRole).toBe("peer");
+      expect(f.tabB.backend.currentRole).toBe("host");
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("disposal settles operations awaiting in-flight fence-loss immediately with ECANCELED without stalling drain", async () => {
+    const f = await setupPausedFenceLossFixture("ws-fence-dispose-drain");
+    try {
+      await f.promoteBAndPauseFenceLoss();
+
+      const readEntered = f.waitForBackendExecute("readFile");
+      const readPromise = f.clientA.asyncCall("readFile", ["/missing.txt"]).then(
+        () => undefined,
+        (e) => e,
+      );
+      await readEntered;
+
+      // Begin disposal while fenceLossInFlight is STILL paused -> readPromise must reject IMMEDIATELY with ECANCELED!
+      f.serviceA.beginDispose();
+      const shutdownPromise = f.serviceA.shutdown();
+      expect(await readPromise).toMatchObject({ errno: 11 });
+
+      // Now let executeFenceLoss finish retirement so shutdown joins cleanly.
+      f.epochGate.resolve();
+      await shutdownPromise;
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("expired-lease readdirPage with continuation cookie rejects with EBADF across fence-loss failover", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-fence-stale-cookie-${crypto.randomUUID()}`;
+
+    const leasePause = Promise.withResolvers<void>();
+    const leasePaused = Promise.withResolvers<void>();
+    let pauseNextLeaseCheck = false;
+
+    const tabA = await openTab(broker, hub, store, {
+      clientId: "tab-A",
+      name,
+      timings: { leaseDurationMs: 250, leaseRenewMs: 60_000 },
+      hooks: {
+        async beforeLeaseCheck() {
+          if (pauseNextLeaseCheck) {
+            pauseNextLeaseCheck = false;
+            leasePaused.resolve();
+            await leasePause.promise;
+          }
+        },
+      },
+    });
+    const tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+
+    try {
+      for (let i = 0; i < 6; i++) {
+        await tabA.client.asyncCall(
+          "writeFile",
+          [`/f${i}.txt`, false, false],
+          new TextEncoder().encode(`v${i}`),
+        );
+      }
+      await tabA.client.asyncCall("flush", []);
+
+      const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
+      const page1: Uint8Array = await tabA.client.asyncCall("readdirPage", [rootA, 0n, 160]);
+      // Walk WASI dirent headers in page 1 to extract a real tagged continuation cookie (>= 3n in low 48 bits)!
+      const view = new DataView(page1.buffer, page1.byteOffset, page1.byteLength);
+      let cursor = 0;
+      let continuationCookie = 0n;
+      while (cursor + 24 <= page1.byteLength) {
+        const nextCookie = view.getBigUint64(cursor, true);
+        const nameLen = view.getUint32(cursor + 16, true);
+        if (cursor + 24 + nameLen > page1.byteLength) break;
+        continuationCookie = nextCookie;
+        cursor += 24 + nameLen;
+      }
+      expect(continuationCookie & ((1n << 48n) - 1n)).toBeGreaterThanOrEqual(3n);
+
+      // Let Host A's lease expire, then pause its next lease renewal while Peer B steals and becomes Host!
+      await new Promise((r) => setTimeout(r, 300));
+      expect(tabA.backend.isLeaseValid()).toBe(false);
+      pauseNextLeaseCheck = true;
+
+      // Issue continuation readdirPage on expired-lease Host A -> enters renewLeaseNow and pauses!
+      const page2Promise = tabA.client
+        .asyncCall("readdirPage", [rootA, continuationCookie, 80])
+        .then(
+          () => undefined,
+          (e) => e,
+        );
+      await leasePaused.promise;
+
+      // Mute Host A so Peer B steals IndexedDB and promotes, then deliver B's host-ready so A attaches as Peer!
+      let muteA = true;
+      hub.interceptor = (_ch, sender) => {
+        if (muteA && sender.ownerTag === "tab-A") return false;
+      };
+      await waitUntil(() => tabB.backend.currentRole === "host", 4000, "tabB promoted");
+      muteA = false;
+      hub.interceptor = undefined;
+
+      // Release A's paused lease check -> A demotes, attaches to B, and MUST reject stale cookie with EBADF (8)!
+      leasePause.resolve();
+      const err = await page2Promise;
+      expect(err).toMatchObject({ errno: 8 });
+    } finally {
+      hub.interceptor = undefined;
+      leasePause.resolve();
+      await tabB.close();
+      await tabA.close();
     }
   });
 });

@@ -313,6 +313,33 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+async function raceWithAbort(
+  promise: Promise<unknown>,
+  signal: AbortSignal,
+  cancelled?: () => boolean,
+): Promise<void> {
+  if (signal.aborted || cancelled?.()) return;
+  let onAbort: (() => void) | undefined;
+  let poll: ReturnType<typeof setInterval> | undefined;
+  try {
+    await Promise.race([
+      promise.catch(() => {}),
+      new Promise<void>((resolve) => {
+        onAbort = () => resolve();
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (cancelled) {
+          poll = setInterval(() => {
+            if (cancelled()) resolve();
+          }, 20);
+        }
+      }),
+    ]);
+  } finally {
+    if (poll) clearInterval(poll);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
 function linkAbortSignals(...signals: (AbortSignal | undefined)[]): {
   signal: AbortSignal;
   cleanup: () => void;
@@ -546,6 +573,7 @@ export class MultiTabBackend implements FilesystemBackend {
   private peerInFlightRpcs = new Map<number, PendingRpc>();
   private peerRetryQueue: QueuedPeerOp[] = [];
   private peerFailoverQueue: QueuedPeerOp[] = [];
+  private readonly failoverReadyWaiters = new Set<() => void>();
   private peerPendingUnpins = new Set<number>();
   private peerPendingWatchAcks = new Map<number, boolean>();
   private peerPendingWatchCloses = new Set<number>();
@@ -831,14 +859,63 @@ export class MultiTabBackend implements FilesystemBackend {
     throw new FilesystemError(11, "filesystem backend is closed");
   }
 
-  private async awaitPendingFenceLoss(): Promise<void> {
+  private async awaitPendingFenceLoss(cancelled?: () => boolean): Promise<void> {
+    const signal = this.disposeAbort.signal;
     while (
       this.fenceLossInFlight &&
       !this.disposing &&
+      !signal.aborted &&
+      !cancelled?.() &&
       !this.externalOwnershipLostNotified &&
       !this.terminalFailure
     ) {
-      await this.fenceLossInFlight.catch(() => {});
+      await raceWithAbort(this.fenceLossInFlight, signal, cancelled);
+    }
+  }
+
+  private needsFailoverWait(): boolean {
+    return (
+      this.role === "failover" ||
+      this.role === "waiting" ||
+      (this.role === "peer" && (!this.peerAttached || this.peerRebinding))
+    );
+  }
+
+  private notifyFailoverReadyWaiters(): void {
+    for (const wake of Array.from(this.failoverReadyWaiters)) wake();
+  }
+
+  private awaitNextFailoverWake(signal: AbortSignal, cancelled: () => boolean): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearInterval(poll);
+        signal.removeEventListener("abort", done);
+        this.failoverReadyWaiters.delete(done);
+        resolve();
+      };
+      this.failoverReadyWaiters.add(done);
+      signal.addEventListener("abort", done, { once: true });
+      const poll = setInterval(() => {
+        if (cancelled()) done();
+      }, 20);
+    });
+  }
+
+  private async waitForFailoverReady(cancelled: () => boolean): Promise<void> {
+    const signal = this.disposeAbort.signal;
+    while (
+      this.needsFailoverWait() &&
+      !cancelled() &&
+      !this.disposing &&
+      !signal.aborted &&
+      !this.ownershipLost &&
+      !this.terminalFailure &&
+      !this.peerObservedHostFailed
+    ) {
+      await this.awaitNextFailoverWake(signal, cancelled);
     }
   }
 
@@ -931,7 +1008,10 @@ export class MultiTabBackend implements FilesystemBackend {
       });
       return localWatchId;
     }
-    if (this.role === "peer" || this.role === "failover" || this.role === "waiting") {
+    if (this.needsFailoverWait()) {
+      return this.watchOpenAfterFenceLoss(owner, handle, recursive, cancelled);
+    }
+    if (this.role === "peer") {
       return this.openPeerWatch(owner, entry, recursive, cancelled);
     }
     throw new FilesystemError(11);
@@ -943,7 +1023,9 @@ export class MultiTabBackend implements FilesystemBackend {
     recursive: boolean,
     cancelled: () => boolean,
   ): Promise<number> {
-    await this.awaitPendingFenceLoss();
+    await this.awaitPendingFenceLoss(cancelled);
+    if (cancelled()) throw new FilesystemError(11);
+    await this.waitForFailoverReady(cancelled);
     if (cancelled()) throw new FilesystemError(11);
     return this.watchOpen(owner, handle, recursive, cancelled);
   }
@@ -1987,6 +2069,7 @@ export class MultiTabBackend implements FilesystemBackend {
       return;
     }
 
+    this.advanceDirEpoch();
     this.markLocalWatchesOverflow();
     this.detachHandlesForRemount();
     this.role = "failover";
@@ -2111,6 +2194,7 @@ export class MultiTabBackend implements FilesystemBackend {
 
     this.ownershipLost = false;
     this.steppingDown = false;
+    this.advanceDirEpoch();
     this.markLocalWatchesOverflow();
     this.detachHandlesForRemount();
     this.role = "failover";
@@ -5158,7 +5242,14 @@ export class MultiTabBackend implements FilesystemBackend {
     // If lease expired before execution: renew first (or fail ECANCELED if disposing!)
     if (!this.isLeaseValid()) {
       if (this.disposing) throw new FilesystemError(11, "host lease expired during dispose");
-      const ok = await this.renewLeaseNow(this.currentAttemptId);
+      let ok = false;
+      await raceWithAbort(
+        this.renewLeaseNow(this.currentAttemptId).then((renewed) => {
+          ok = renewed;
+        }),
+        this.disposeAbort.signal,
+      );
+      if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
       if (!ok || !this.isLeaseValid()) {
         await this.awaitPendingFenceLoss();
         if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
@@ -5167,7 +5258,12 @@ export class MultiTabBackend implements FilesystemBackend {
         }
         if (this.ownershipLost) throw new FilesystemError(11, "filesystem ownership lost");
         if (this.role === "peer" || this.role === "failover" || this.role === "waiting") {
-          return this.executeOnPeer(operation, args, data, responseCookieTag);
+          const nextCookieTag = this.revalidateCookieForPeerForward(
+            operation,
+            args,
+            responseCookieTag,
+          );
+          return this.executeOnPeer(operation, args, data, nextCookieTag);
         }
         throw new FilesystemError(11, "host lease expired");
       }
@@ -5661,7 +5757,30 @@ export class MultiTabBackend implements FilesystemBackend {
       return this.enqueuePeerOp(this.peerFailoverQueue, operation, args, data, responseCookieTag);
     }
 
-    return this.dispatchPeerOperation(operation, args, data, responseCookieTag);
+    let effectiveCookieTag = responseCookieTag;
+    try {
+      effectiveCookieTag = this.revalidateCookieForPeerForward(operation, args, responseCookieTag);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.dispatchPeerOperation(operation, args, data, effectiveCookieTag);
+  }
+
+  private revalidateCookieForPeerForward(
+    operation: string,
+    args: unknown[],
+    responseCookieTag?: bigint,
+  ): bigint | undefined {
+    if (operation !== "readdirPage" || responseCookieTag === undefined) return responseCookieTag;
+    if (responseCookieTag === this.dirEpoch) return responseCookieTag;
+    const cookie = args[1];
+    if (typeof cookie === "bigint" && cookie >= 3n) {
+      throw new FilesystemError(8, "stale directory cookie across failover");
+    }
+    if (this.dirEpoch >= DIR_EPOCH_MAX) {
+      throw new FilesystemError(61, "directory epoch exhausted");
+    }
+    return this.dirEpoch;
   }
 
   private async dispatchPeerOperation(
@@ -6266,6 +6385,8 @@ export class MultiTabBackend implements FilesystemBackend {
       if (!this.disposing && !this.ownershipLost && !this.terminalFailure) {
         this.failAllPeerWork(error);
       }
+    } finally {
+      this.notifyFailoverReadyWaiters();
     }
   }
 
@@ -6352,6 +6473,7 @@ export class MultiTabBackend implements FilesystemBackend {
 
   private drainPeerFailoverQueue(): void {
     this.drainPeerQueue(this.peerFailoverQueue);
+    this.notifyFailoverReadyWaiters();
   }
 
   private drainQueuedPeerOpsOnNewHost(): void {
@@ -6368,6 +6490,7 @@ export class MultiTabBackend implements FilesystemBackend {
         op.op === "readdirPage" ? this.dirEpoch : undefined,
       ).then(op.resolve, op.reject);
     }
+    this.notifyFailoverReadyWaiters();
   }
 
   private failAllPeerWork(error: unknown): void {
@@ -6378,6 +6501,7 @@ export class MultiTabBackend implements FilesystemBackend {
     for (const op of this.peerRetryQueue.splice(0)) op.reject(error);
     for (const op of this.peerFailoverQueue.splice(0)) op.reject(error);
     this.wakePeerCreditWaiters();
+    this.notifyFailoverReadyWaiters();
   }
 
   // ---------------------------------------------------------------------------
