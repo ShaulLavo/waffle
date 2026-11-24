@@ -2959,6 +2959,20 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     }
   });
 
+  function waitUntilSignalAborted(sig?: AbortSignal): Promise<never> {
+    return new Promise<never>((_resolve, reject) => {
+      if (sig?.aborted) {
+        reject(sig.reason ?? new DOMException("aborted", "AbortError"));
+        return;
+      }
+      sig?.addEventListener(
+        "abort",
+        () => reject(sig.reason ?? new DOMException("aborted", "AbortError")),
+        { once: true },
+      );
+    });
+  }
+
   test("former Host recovers cleanly when replacement Host dies mid-rebind", async () => {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();
@@ -2971,24 +2985,11 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     let tabAOpenCalls = 0;
     const baseOpenerA = store.createOpener(broker, "tab-A", "opfs-memory");
 
-    const waitUntilAborted = (sig?: AbortSignal) =>
-      new Promise<never>((_resolve, reject) => {
-        if (sig?.aborted) {
-          reject(sig.reason ?? new DOMException("aborted", "AbortError"));
-          return;
-        }
-        sig?.addEventListener(
-          "abort",
-          () => reject(sig.reason ?? new DOMException("aborted", "AbortError")),
-          { once: true },
-        );
-      });
-
     const tabA = await openCustomOpfsTab(broker, hub, name, async (impl, wsName, opts) => {
       tabAOpenCalls++;
       // On remount #2, yield OPFS so Tab B deterministically becomes replacement Host and Tab A attaches & sends __rebind!
       if (tabAOpenCalls === 2) {
-        await waitUntilAborted(opts.signal);
+        await waitUntilSignalAborted(opts.signal);
       }
       return baseOpenerA(impl, wsName, opts);
     });
@@ -3050,6 +3051,75 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       tabB.client.dispose();
       tabB.connection.client.port.close();
       tabB.connection.server.port.close();
+    }
+  });
+
+  test("two consecutive lost __rebind replies recover on third session and drain queued work", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-two-lost-rebinds-${crypto.randomUUID()}`;
+
+    let tabAOpenCalls = 0;
+    let rebindCount = 0;
+    const baseOpenerA = store.createOpener(broker, "tab-A", "opfs-memory");
+
+    const tabA = await openCustomOpfsTab(broker, hub, name, async (impl, wsName, opts) => {
+      tabAOpenCalls++;
+      if (tabAOpenCalls === 2) await waitUntilSignalAborted(opts.signal);
+      return baseOpenerA(impl, wsName, opts);
+    });
+    const rebindReqIds = new Set<number>();
+    const tabB = await openTab(broker, hub, store, {
+      clientId: "tab-B",
+      name,
+      implementation: "opfs-memory",
+      hooks: {
+        beforeHostReplyPublish(op, reqId) {
+          if (op === "__rebind" && reqId !== undefined && rebindCount < 2) {
+            rebindCount++;
+            rebindReqIds.add(reqId);
+          }
+        },
+        onPeerSend(_peerId, msg) {
+          if (msg.kind === "res" && rebindReqIds.delete(msg.reqId)) {
+            return false; // drop the first two __rebind replies while heartbeats keep working!
+          }
+        },
+      },
+    });
+    try {
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/rebind-data.txt", false, false],
+        new TextEncoder().encode("recovered-after-two-drops"),
+      );
+      const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
+      expect(rootA).toBeGreaterThan(0);
+
+      const probeCh = hub.create(
+        `waffle:multitab:v1:ctrl:${multitabScope("opfs-memory", name)}`,
+        "external-opfs",
+      );
+      probeCh.postMessage({
+        kind: "cooperative-step-down",
+        targetAttemptId: tabA.backend.attemptId!,
+        targetTerm: tabA.backend.currentHostTerm.toString(16),
+      } satisfies ControlMessage);
+
+      await waitUntil(() => rebindCount === 2, 3000, "two __rebind replies dropped");
+      // Queued filesystem work on former Host A must resume cleanly once 3rd rebind succeeds!
+      const out: Uint8Array = await tabA.client.asyncCall("readFile", ["/rebind-data.txt"]);
+      expect(new TextDecoder().decode(out)).toBe("recovered-after-two-drops");
+      expect(tabA.backend.currentRole).toBe("peer");
+      expect(tabB.backend.currentRole).toBe("host");
+      probeCh.close();
+    } finally {
+      await tabB.close();
+      tabA.client.dispose();
+      await tabA.service.shutdown().catch(() => {});
+      tabA.conn.client.port.close();
+      tabA.conn.server.port.close();
     }
   });
 

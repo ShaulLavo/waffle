@@ -551,7 +551,7 @@ export class MultiTabBackend implements FilesystemBackend {
   private peerPendingWatchCloses = new Set<number>();
   readonly supportsSockets = false;
   private peerFailoverInFlight?: Promise<void>;
-  private peerSessionResetting = false;
+  private pendingDirectHostReady?: Extract<ControlMessage, { kind: "host-ready" }>;
   private peerRebinding = false;
   private peerObservedHostFailed?: string;
   private activeBackgroundTasks = new Set<Promise<void>>();
@@ -6111,8 +6111,9 @@ export class MultiTabBackend implements FilesystemBackend {
   }
 
   private triggerPeerSessionReset(_reason: string): void {
-    if (this.peerSessionResetting || this.role !== "peer" || this.disposing) return;
-    this.peerSessionResetting = true;
+    if (this.role !== "peer" || this.disposing || this.ownershipLost || this.terminalFailure) {
+      return;
+    }
     const hostReadySnapshot: Extract<ControlMessage, { kind: "host-ready" }> | undefined =
       this.peerHostAttemptId &&
       this.peerHostClientId &&
@@ -6129,37 +6130,30 @@ export class MultiTabBackend implements FilesystemBackend {
           }
         : undefined;
 
-    this.resetPeerSessionForFailover();
-
-    void this.trackBackgroundTask(
-      (async () => {
-        try {
-          if (this.disposing || this.ownershipLost) return;
-          if (hostReadySnapshot) {
-            const ok = await this.tryAttachToHostReady(hostReadySnapshot, this.disposeAbort.signal);
-            if (ok) return;
-          }
-          this.startTrackedFailoverLoop();
-          if (this.peerFailoverInFlight) await this.peerFailoverInFlight;
-        } catch {
-          /* dispose or fatal */
-        } finally {
-          this.peerSessionResetting = false;
-        }
-      })(),
-    );
+    this.beginPeerFailover("session-reset", hostReadySnapshot);
   }
 
   private startTrackedFailoverLoop(
     directHostReady?: Extract<ControlMessage, { kind: "host-ready" }>,
   ): void {
     if (this.disposing || this.ownershipLost || this.terminalFailure) return;
+    if (directHostReady) this.pendingDirectHostReady = directHostReady;
     if (this.peerFailoverInFlight) return;
-    this.peerFailoverInFlight = this.trackBackgroundTask(
-      this.runFailoverLoop(directHostReady).finally(() => {
-        this.peerFailoverInFlight = undefined;
+    const loop = this.trackBackgroundTask(
+      this.runFailoverLoop().finally(() => {
+        if (this.peerFailoverInFlight === loop) this.peerFailoverInFlight = undefined;
+        if (
+          this.pendingDirectHostReady &&
+          this.role === "failover" &&
+          !this.disposing &&
+          !this.ownershipLost &&
+          !this.terminalFailure
+        ) {
+          this.startTrackedFailoverLoop();
+        }
       }),
     );
+    this.peerFailoverInFlight = loop;
   }
 
   private beginPeerFailover(
@@ -6205,18 +6199,25 @@ export class MultiTabBackend implements FilesystemBackend {
     this.wakePeerCreditWaiters();
   }
 
-  private async runFailoverLoop(
-    directHostReady?: Extract<ControlMessage, { kind: "host-ready" }>,
-  ): Promise<void> {
+  private isFailoverLoopDone(): boolean {
+    return (
+      (this.role === "host" || (this.role === "peer" && this.peerAttached)) &&
+      !this.pendingDirectHostReady
+    );
+  }
+
+  private async runFailoverLoop(): Promise<void> {
     const signal = this.disposeAbort.signal;
     try {
-      if (directHostReady && !signal.aborted) {
-        const ok = await this.tryAttachToHostReady(directHostReady, signal);
-        if (ok) return;
-      }
       while (!signal.aborted && !this.disposing && !this.ownershipLost && !this.terminalFailure) {
-        await this.runRecoveryProbeAndDispatch(signal);
-        if (this.role === "host" || (this.role === "peer" && this.peerAttached)) return;
+        const direct = this.pendingDirectHostReady;
+        this.pendingDirectHostReady = undefined;
+        if (direct) {
+          await this.tryAttachToHostReady(direct, signal);
+        } else {
+          await this.runRecoveryProbeAndDispatch(signal);
+        }
+        if (this.isFailoverLoopDone()) return;
       }
     } catch (error) {
       if (!this.disposing && !this.ownershipLost && !this.terminalFailure) {
