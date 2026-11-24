@@ -406,7 +406,7 @@ export function createFilesystemConnection(
 /** The service lifetime is shared even by processes with independent parent lifetimes. */
 export function revokeFilesystemService(connection: FilesystemIdentity): void {
   Atomics.store(new Int32Array(connection.ownerStates), 0, 1);
-  wakeFilesystemWatch(connection.shared);
+  wakeFilesystemWatch(connection.shared, true);
   wake(connection);
 }
 export function revokeFilesystem(connection: FilesystemIdentity): void {

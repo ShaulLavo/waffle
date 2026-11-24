@@ -103,7 +103,12 @@ export interface RuntimeConsumer {
 /** Filesystem authority is borrowed. Only the page runtime can close its service. */
 export type RuntimeFilesystem = Omit<
   SharedFilesystem,
-  "client" | "dispose" | "attachSocketScope" | "connectObserved"
+  | "client"
+  | "dispose"
+  | "attachSocketScope"
+  | "connectObserved"
+  | "beginRuntimeDispose"
+  | "ownershipRetained"
 >;
 export type RuntimeSupervisor = Omit<
   ProcessSupervisor,
@@ -946,7 +951,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         // A controller may be awaiting an adapter's launch handle when suspension wins.
         // Its late handle and asynchronous stop still belong to this page, not the next owner.
         while (launching.size) await Promise.allSettled(Array.from(launching));
-        if (!pendingStartup) await attempt(() => filesystem.drain());
+        if (!pendingStartup) {
+          filesystem.beginRuntimeDispose();
+          await attempt(() => filesystem.drain());
+        }
         // Keep the backend and relays alive while every admitted filesystem request fences.
         const failuresBeforeFences = failures.length;
         await Promise.all(
@@ -992,7 +1000,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         consumers.clear();
         const failuresBeforeFilesystemClose = failures.length;
         await attempt(() => filesystem.dispose());
-        if (failures.length !== failuresBeforeFilesystemClose) throwFailures();
+        if (failures.length !== failuresBeforeFilesystemClose && filesystem.ownershipRetained())
+          throwFailures();
         reservations.dispose();
         restoreControlAllocator();
         adapters.clear();

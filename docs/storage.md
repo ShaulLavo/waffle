@@ -6,10 +6,16 @@ reserved and rejects with typed `UNSUPPORTED_VFS` until its durable-ACK engine l
 Backend names are diagnostics and internal test controls, not public product choices.
 See [vfs.md](vfs.md) for immutable descriptors, limitations and format identities.
 
-The current IndexedDB implementation defaults to `"takeover"`; `"wait"` queues instead.
+The current IndexedDB implementation defaults to `"takeover"`; `"wait"` queues instead,
+and `"attach"` shares one live Host across same-origin tabs over `BroadcastChannel`.
 Takeover uses lock stealing and epoch fencing. The internal OPFS checkpoint implementation
-supports only wait: stealing a Web Lock cannot displace another worker's exclusive
-sync-access handles. Both are exclusive-owner implementations, not a coherent multi-writer engine.
+defaults to `"wait"` and also supports `"attach"`: stealing a Web Lock cannot displace
+another worker's exclusive sync-access handles, so OPFS uses cooperative step-down for
+responsive Hosts and cancellable waiting while a hard-frozen Host holds native handles.
+With `"takeover"` or `"wait"`, both are exclusive-owner implementations; with `"attach"`,
+one elected Host serves all attached tabs with linearizable live state within each Host
+term while preserving FAST's memory-acknowledgement durability contract (`flush()` / `sync()`
+required for durability across abrupt failover).
 
 A wait-policy instance queues one exclusive Web Lock request, with no stealing or repeated
 attempts. `runtime.filesystem.state.status` is `"opening"`, `"waiting"`, `"ready"`, `"failed"`

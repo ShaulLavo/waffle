@@ -89,6 +89,7 @@ export async function isWorkspace(database: IDBDatabase): Promise<boolean> {
         key === 0 ||
         key === 1 ||
         key === "epoch" ||
+        key === "lastExclusiveEpoch" ||
         key === "active" ||
         key === "identity" ||
         key === "format",

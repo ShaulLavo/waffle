@@ -1319,7 +1319,11 @@ It must query again on later turns, including after reentrant callbacks or write
 
 There is no watch poll subscription and no timer. `Wasi.filesystemWatches` exposes the process's
 `GuestWatchReadiness`: `pending()` is true while a watch has local records, or its `observed`
-differs from the counter and it hasn't ended. It is false after revocation.
+differs from the counter and it hasn't ended. Under exclusive-owner modes (`!remote`), it is
+false after revocation. Under shared-host `whenBusy: "attach"` mode (`remote: true`),
+`pending()` remains true once after revocation while a watch is open so a blocking poll wakes
+and observes `ECANCELED` on `watch_read`, after which `pending()` returns false so later polls
+do not spin.
 
 - A blocking guest arms its [mixed notification set](#mixed-notification-waits) with its
   `NetHost`, then calls `NetHost.attachNotifications(set, () => wasi.filesystemWatches)`. `poll`

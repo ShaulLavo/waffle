@@ -355,12 +355,27 @@ export class MemFS implements FileSystem {
     if (node) pages.set({ name, ino: node.ino, kind: nodeKind(node) });
     else pages.delete(name);
   }
-  readdirPage(handle: FileHandle, cookie: bigint, byteLength: number): Uint8Array {
+  readdirPage(
+    handle: FileHandle,
+    cookie: bigint,
+    byteLength: number,
+    cookieTag?: bigint,
+    maxBytes?: number,
+    hardCapBytes?: number,
+  ): Uint8Array {
     checkDirectoryPage(cookie, byteLength);
     const node = this.directory(handle);
     this.require(node, 4);
     const parent = this.directoryParents.get(node) ?? node;
-    return this.directoryPages(node).page(cookie, byteLength, node.ino, parent.ino);
+    return this.directoryPages(node).page(
+      cookie,
+      byteLength,
+      node.ino,
+      parent.ino,
+      cookieTag,
+      maxBytes,
+      hardCapBytes,
+    );
   }
   private linkCounts = new WeakMap<Node, number>();
 

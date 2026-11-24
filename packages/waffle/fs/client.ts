@@ -399,6 +399,7 @@ function preparationFailed(completion: FilesystemCompletion | undefined): boolea
 function clientWatches(
   cells: () => Int32Array,
   revoked: () => boolean,
+  remote: () => boolean,
   call: (operation: string, args: unknown[]) => any,
 ): WatchFileSystem {
   return {
@@ -407,6 +408,9 @@ function clientWatches(
     },
     get revoked() {
       return revoked();
+    },
+    get remote() {
+      return remote();
     },
     open: (handle, recursive) => call("watchOpen", [handle, recursive]),
     read: (id) => call("watchRead", [id]),
@@ -539,6 +543,7 @@ export class FilesystemClient implements FileSystem {
     this.watches = clientWatches(
       () => this.shared.watch.cells,
       this.revoked,
+      () => this.shared.isDirectDisabled(),
       (operation, args) => this.call(operation, args),
     );
     connection.port.onmessage = ({ data }) => {
@@ -944,7 +949,8 @@ export class FilesystemClient implements FileSystem {
       if (
         count === 1 &&
         !this.revoked() &&
-        ((!this.resident && this.shared.isUnlinked(atomicsLoad(this.capabilities, key))) ||
+        (this.shared.isDirectDisabled() ||
+          (!this.resident && this.shared.isUnlinked(atomicsLoad(this.capabilities, key))) ||
           atomicsLoad(this.capabilities, 0) > TRANSIENT_HANDLES)
       )
         this.connection.port.postMessage({ trim: true });
@@ -1024,6 +1030,7 @@ export class FilesystemClient implements FileSystem {
   }
   /** The shared slot of a regular file this connection holds open, or 0. */
   private directSlot(handle: FileHandle): number {
+    if (this.shared.isDirectDisabled()) return 0;
     const cached = mapGet(this.fileSlots, handle);
     if (cached !== undefined) return cached;
     if (!mapHas(this.openHandles, handle)) return 0;
@@ -1280,6 +1287,7 @@ export class FilesystemClient implements FileSystem {
   }
   /** Nonblocking runtime_proc I/O. Never retain an iovec across an EAGAIN boundary. */
   tryRead(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.shared.isDirectDisabled()) return -58;
     if (this.resident)
       return this.residentIO(() => this.resident?.client?.tryRead(handle, chunks, offset) ?? -6);
     if (!(offset >= 0)) return -28;
@@ -1315,6 +1323,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   tryWrite(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.shared.isDirectDisabled()) return -58;
     if (this.resident)
       return this.residentIO(() => this.resident?.client?.tryWrite(handle, chunks, offset) ?? -6);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, true);
@@ -1367,6 +1376,7 @@ export class FilesystemClient implements FileSystem {
     handle: FileHandle,
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number {
+    if (this.shared.isDirectDisabled()) return -58;
     if (this.resident)
       return this.residentIO(() => this.resident?.client?.tryAppend(handle, chunks) ?? -6);
     if (this.shared.publication) return this.publishedAppend(handle, chunks, true);
@@ -1609,6 +1619,8 @@ export class FilesystemClient implements FileSystem {
     // A failed preparation is ready too: retrying the syscall delivers its errno, rather than
     // leaving poll asleep forever. Preserve that completion until the syscall consumes it.
     if (this.revoked()) return { readable: true, writable: true, hangup: true };
+    if (this.shared.isDirectDisabled())
+      return { readable: !writing, writable: writing, hangup: false };
     if (pending?.kind === "read")
       return { readable: pending.completion.ready, writable: false, hangup: false };
     if ((pending && !pending.completion.ready) || (stage && !stage.completion.ready))
@@ -1679,8 +1691,10 @@ export class FilesystemClient implements FileSystem {
     try {
       const epoch = this.version();
       const key = `${directory}\0${Number(followFinal) | (Number(rooted) << 1)}\0${path}`;
-      const cached = this.paths.get(key, epoch);
-      if (!this.resident && !this.shared.publication && !(epoch & 1) && cached !== undefined)
+      const cacheable =
+        !this.resident && !this.shared.publication && !this.shared.isClientCacheDisabled();
+      const cached = cacheable ? this.paths.get(key, epoch) : undefined;
+      if (cacheable && !(epoch & 1) && cached !== undefined)
         return typeof cached === "number" ? cached : { ...cached };
       return this.#resolveCold(key, [directory, path, followFinal, rooted]);
     } catch (error) {
@@ -1701,23 +1715,27 @@ export class FilesystemClient implements FileSystem {
     epoch: number,
     resolved: ResolvedPath | number,
   ): ResolvedPath | number {
-    this.paths.set(key, resolved, epoch);
+    if (!this.shared.isClientCacheDisabled()) this.paths.set(key, resolved, epoch);
     return typeof resolved === "number" ? resolved : { ...resolved };
   }
   stat(handle: FileHandle): FileStat {
     // Keep the capability's backend pin alive while reading its shared metadata slot.
     this.retain(handle);
     try {
-      const direct = this.resident ? undefined : this.shared.stat(handle, this.revoked);
+      const direct =
+        this.resident || this.shared.isDirectDisabled()
+          ? undefined
+          : this.shared.stat(handle, this.revoked);
       if (direct) return direct;
       const epoch = this.version();
-      const cached = this.stats.get(handle, epoch);
-      if (!this.resident && !this.shared.publication && !(epoch & 1) && cached)
-        return { ...cached };
+      const cacheable =
+        !this.resident && !this.shared.publication && !this.shared.isClientCacheDisabled();
+      const cached = cacheable ? this.stats.get(handle, epoch) : undefined;
+      if (cacheable && !(epoch & 1) && cached) return { ...cached };
       const completion = this.submit("stat", [handle]);
       try {
         const stat = completion.wait();
-        this.stats.set(handle, stat, completion.epoch);
+        if (cacheable) this.stats.set(handle, stat, completion.epoch);
         return { ...stat };
       } finally {
         completion.release();
@@ -1739,10 +1757,11 @@ export class FilesystemClient implements FileSystem {
   }
   private cachedRead(handle: FileHandle, position: number) {
     const epoch = this.version();
-    let cached = this.reads.get(handle);
+    const cacheable =
+      !this.resident && !this.shared.publication && !this.shared.isClientCacheDisabled();
+    let cached = cacheable ? this.reads.get(handle) : undefined;
     if (
-      this.resident ||
-      this.shared.publication ||
+      !cacheable ||
       epoch & 1 ||
       cached?.epoch !== epoch ||
       position < cached.offset ||
@@ -1751,8 +1770,10 @@ export class FilesystemClient implements FileSystem {
       const completion = this.submit("read", [handle, PAGE, position]);
       try {
         cached = { offset: position, bytes: completion.wait(), epoch: completion.epoch };
-        if (this.reads.size >= 16) this.reads.clear();
-        this.reads.set(handle, cached);
+        if (cacheable) {
+          if (this.reads.size >= 16) this.reads.clear();
+          this.reads.set(handle, cached);
+        }
       } finally {
         completion.release();
       }
@@ -1815,6 +1836,7 @@ export class FilesystemClient implements FileSystem {
       return this.tryRead(handle, chunks, offset);
     if (this.resident) return this.workspaceRead(handle, chunks, offset);
     if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
+    if (this.shared.isDirectDisabled()) return this.readUnloaded(handle, chunks, offset);
     const slot = this.directSlot(handle);
     if (slot) {
       try {
@@ -1863,6 +1885,24 @@ export class FilesystemClient implements FileSystem {
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, false);
     if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
     chunks = fixedWriteSources(chunks);
+    if (this.shared.isDirectDisabled()) {
+      try {
+        let total = 0;
+        for (let i = 0; i < chunks.length; i++) total += chunks[i]!.length;
+        const limit = Math.min(total, 1024 * 1024);
+        const data = new Uint8ArrayConstructor(limit);
+        let at = 0;
+        for (let i = 0; i < chunks.length && at < limit; i++) {
+          const chunk = chunks[i]!;
+          const count = Math.min(chunk.length, limit - at);
+          if (count > 0) typedArraySet(data, chunk.subarray(0, count), at);
+          at += count;
+        }
+        return this.call("write", [handle, offset], data);
+      } catch (error) {
+        return -errno(error);
+      }
+    }
     const slot = this.directSlot(handle);
     if (slot) {
       let total = 0;
@@ -1942,6 +1982,22 @@ export class FilesystemClient implements FileSystem {
     chunks = fixedWriteSources(chunks);
     let total = 0;
     for (let i = 0; i < chunks.length; i++) total += chunks[i]!.length;
+    if (this.shared.isDirectDisabled()) {
+      try {
+        const limit = Math.min(total, 1024 * 1024);
+        const data = new Uint8ArrayConstructor(limit);
+        let at = 0;
+        for (let i = 0; i < chunks.length && at < limit; i++) {
+          const chunk = chunks[i]!;
+          const count = Math.min(chunk.length, limit - at);
+          if (count > 0) typedArraySet(data, chunk.subarray(0, count), at);
+          at += count;
+        }
+        return this.call("append", [handle], data);
+      } catch (error) {
+        return -errno(error);
+      }
+    }
     const fallback = () => {
       const data = new Uint8ArrayConstructor(total);
       let at = 0;
@@ -2083,6 +2139,7 @@ export class FilesystemClient implements FileSystem {
       return this.publishedMetadata({ kind: "resize", handle, size, truncate });
     if (
       !this.shared.publication &&
+      !this.shared.isDirectDisabled() &&
       mapHas(this.openHandles, handle) &&
       this.shared.hasFile(handle)
     ) {
@@ -2120,6 +2177,7 @@ export class FilesystemClient implements FileSystem {
       return this.publishedMetadata({ kind: "setTimes", handle, atime, mtime });
     if (
       !this.shared.publication &&
+      !this.shared.isDirectDisabled() &&
       mapHas(this.openHandles, handle) &&
       this.shared.hasFile(handle)
     ) {
@@ -2186,13 +2244,14 @@ export class FilesystemClient implements FileSystem {
   }
   readdir(handle: FileHandle): DirectoryEntry[] {
     const epoch = this.version();
-    const cached = this.readdirs.get(handle, epoch);
-    if (!this.resident && !this.shared.publication && !(epoch & 1) && cached)
-      return cached.map((entry) => ({ ...entry }));
+    const cacheable =
+      !this.resident && !this.shared.publication && !this.shared.isClientCacheDisabled();
+    const cached = cacheable ? this.readdirs.get(handle, epoch) : undefined;
+    if (cacheable && !(epoch & 1) && cached) return cached.map((entry) => ({ ...entry }));
     const completion = this.submit("readdir", [handle]);
     try {
       const entries = completion.wait() as DirectoryEntry[];
-      this.readdirs.set(handle, entries, completion.epoch);
+      if (cacheable) this.readdirs.set(handle, entries, completion.epoch);
       return entries.map((entry) => ({ ...entry }));
     } finally {
       completion.release();
@@ -2219,7 +2278,10 @@ export class FilesystemClient implements FileSystem {
   readlink(handle: FileHandle): string {
     this.retain(handle);
     try {
-      const direct = this.resident ? undefined : this.shared.stat(handle, this.revoked);
+      const direct =
+        this.resident || this.shared.isDirectDisabled()
+          ? undefined
+          : this.shared.stat(handle, this.revoked);
       if (direct && direct.kind !== "symlink") throw new FilesystemError(28);
       return this.call("readlink", [handle]);
     } finally {

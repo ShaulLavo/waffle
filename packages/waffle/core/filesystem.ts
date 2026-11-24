@@ -155,6 +155,8 @@ export interface WatchFileSystem {
   /** The root's watch cells. Index 3 counts committed watch records. */
   readonly cells: Int32Array;
   readonly revoked: boolean;
+  /** True when watches are served remotely (attach mode); disables local-generation short-circuit. */
+  readonly remote?: boolean;
   /** Throws FilesystemError. */
   open(handle: FileHandle, recursive: boolean): number;
   read(id: number): WatchBatch;

@@ -3,7 +3,7 @@ import type { VfsImplementation } from "./vfs-internal.js";
 
 /** @public Product guarantees, independent of the browser's physical storage adapter. */
 export type VfsMode = "fast" | "safe" | "memory";
-export type VfsWhenBusy = "takeover" | "wait";
+export type VfsWhenBusy = "takeover" | "wait" | "attach";
 export type VfsSelection =
   | { mode?: "fast" | "safe"; whenBusy?: VfsWhenBusy }
   | { mode: "memory"; whenBusy?: never };
@@ -42,13 +42,13 @@ export interface VfsDescriptor {
     readonly fsync: "targeted-file-checkpoint" | "volatile-ordering-only";
     readonly targetedFlush: "selected-payloads-and-namespace" | "volatile-ordering-only";
   };
-  readonly multiTab: "exclusive-owner" | "isolated";
+  readonly multiTab: "exclusive-owner" | "shared-host" | "isolated";
   readonly supportedWhenBusy: readonly VfsWhenBusy[];
   readonly defaultWhenBusy?: VfsWhenBusy;
   readonly requirements: readonly string[];
   readonly worker: "dedicated";
   readonly serviceMayAwait: true;
-  readonly directSharedMemory: { readonly reads: true; readonly mutations: true };
+  readonly directSharedMemory: { readonly reads: boolean; readonly mutations: boolean };
   readonly format: { readonly id: string; readonly location: string } | null;
   readonly unsupportedSettings: readonly string[];
   readonly lifecycle: readonly ("opening" | "waiting" | "ready" | "failed" | "disposed")[];
@@ -79,7 +79,7 @@ const descriptors: Record<VfsImplementation, VfsDescriptor> = {
     ...persistent,
     implementation: "indexeddb",
     displayName: "FAST (IndexedDB checkpoints)",
-    supportedWhenBusy: Object.freeze(["takeover", "wait"] as const),
+    supportedWhenBusy: Object.freeze(["takeover", "wait", "attach"] as const),
     defaultWhenBusy: "takeover",
     requirements: Object.freeze(requirements.concat(["IndexedDB", "Web Locks"])),
     format: Object.freeze({
@@ -92,7 +92,7 @@ const descriptors: Record<VfsImplementation, VfsDescriptor> = {
     ...persistent,
     implementation: "opfs-memory",
     displayName: "FAST (OPFS checkpoints)",
-    supportedWhenBusy: Object.freeze(["wait"] as const),
+    supportedWhenBusy: Object.freeze(["wait", "attach"] as const),
     defaultWhenBusy: "wait",
     requirements: Object.freeze(requirements.concat(["OPFS", "sync-access-handles", "Web Locks"])),
     format: Object.freeze({
@@ -124,6 +124,24 @@ const descriptors: Record<VfsImplementation, VfsDescriptor> = {
   }),
 };
 
+const attachDirectSharedMemory = Object.freeze({ reads: false, mutations: false });
+const attachDescriptors: Partial<Record<VfsImplementation, VfsDescriptor>> = {
+  indexeddb: Object.freeze({
+    ...descriptors.indexeddb,
+    multiTab: "shared-host",
+    directSharedMemory: attachDirectSharedMemory,
+    requirements: Object.freeze(descriptors.indexeddb.requirements.concat(["BroadcastChannel"])),
+  }),
+  "opfs-memory": Object.freeze({
+    ...descriptors["opfs-memory"],
+    multiTab: "shared-host",
+    directSharedMemory: attachDirectSharedMemory,
+    requirements: Object.freeze(
+      descriptors["opfs-memory"].requirements.concat(["BroadcastChannel"]),
+    ),
+  }),
+};
+
 /** FAST preserves the existing IndexedDB workspace in every browser until a migration wins. */
 export function getVfsDescriptor(mode: string = "fast"): VfsDescriptor {
   if (mode === "fast") return descriptors.indexeddb;
@@ -147,10 +165,15 @@ export function resolveVfs(
   const whenBusy = options.whenBusy;
   if (whenBusy === undefined) return { descriptor, whenBusy: descriptor.defaultWhenBusy };
   if (
-    (whenBusy === "wait" || whenBusy === "takeover") &&
+    (whenBusy === "wait" || whenBusy === "takeover" || whenBusy === "attach") &&
     descriptor.supportedWhenBusy.includes(whenBusy)
-  )
-    return { descriptor, whenBusy };
+  ) {
+    const resolved =
+      whenBusy === "attach"
+        ? (attachDescriptors[descriptor.implementation] ?? descriptor)
+        : descriptor;
+    return { descriptor: resolved, whenBusy };
+  }
   throw new VfsError(
     "INVALID_VFS_SETTINGS",
     descriptor.implementation,
@@ -181,16 +204,22 @@ function overrideDescriptor(selected: VfsDescriptor, implementation: unknown): V
 }
 
 /** No probe or storage mutation: only verify the APIs needed by the existing implementation. */
-export function requireVfsCapabilities(name: VfsImplementation): void {
+export function requireVfsCapabilities(name: VfsImplementation, whenBusy?: VfsWhenBusy): void {
   if (name === "memory") return;
   const locks = globalThis.navigator?.locks;
   const hasStorage = name === "indexeddb" ? !!globalThis.indexedDB : hasOpfs();
-  if (locks && hasStorage) return;
-  throw new VfsError(
-    "UNSUPPORTED_VFS_CAPABILITY",
-    name,
-    `${name} requires ${name === "indexeddb" ? "IndexedDB" : "OPFS sync access handles"} and Web Locks in a dedicated worker`,
-  );
+  if (!locks || !hasStorage)
+    throw new VfsError(
+      "UNSUPPORTED_VFS_CAPABILITY",
+      name,
+      `${name} requires ${name === "indexeddb" ? "IndexedDB" : "OPFS sync access handles"} and Web Locks in a dedicated worker`,
+    );
+  if (whenBusy === "attach" && typeof globalThis.BroadcastChannel !== "function")
+    throw new VfsError(
+      "UNSUPPORTED_VFS_CAPABILITY",
+      name,
+      `${name} with whenBusy: "attach" requires BroadcastChannel in a dedicated worker`,
+    );
 }
 function hasOpfs(): boolean {
   return (

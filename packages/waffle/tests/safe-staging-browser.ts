@@ -885,7 +885,15 @@ async function publicationRoundtrip(
   );
   await raw(name, async (db) => {
     const keys = await idbRequest(db.transaction("metadata").objectStore("metadata").getAllKeys());
-    const allowed = new Set<IDBValidKey>([0, 1, "epoch", "format", "commit", "active"]);
+    const allowed = new Set<IDBValidKey>([
+      0,
+      1,
+      "epoch",
+      "lastExclusiveEpoch",
+      "format",
+      "commit",
+      "active",
+    ]);
     assert(
       keys.every((key) => allowed.has(key)),
       "no independent publication metadata store",

@@ -182,11 +182,36 @@ async function requestIdleWriter(
   name: string,
   callback: (lock: unknown | null) => Promise<void>,
 ): Promise<void> {
-  return locks.request(
-    `bun-wasm:filesystem:indexeddb:${name}`,
-    { mode: "exclusive", ifAvailable: true },
-    callback,
+  let writerLifetime: Promise<void> | undefined;
+  let requestError: { readonly value: unknown } | undefined;
+  await locks.request(
+    `bun-wasm:filesystem:indexeddb-arb:${name}`,
+    { mode: "shared", ifAvailable: true },
+    async (arb) => {
+      if (!arb) {
+        await callback(null);
+        return;
+      }
+      const entered = Promise.withResolvers<void>();
+      try {
+        writerLifetime = locks.request(
+          `bun-wasm:filesystem:indexeddb:${name}`,
+          { mode: "exclusive", ifAvailable: true },
+          async (lock) => {
+            entered.resolve();
+            await callback(lock);
+          },
+        );
+      } catch (value) {
+        requestError = { value };
+        return;
+      }
+      void writerLifetime.catch(() => entered.resolve());
+      await entered.promise;
+    },
   );
+  if (requestError) throw requestError.value;
+  if (writerLifetime) await writerLifetime;
 }
 
 /** Claims a workspace database for deletion without reading its records, so an unreadable
@@ -201,23 +226,34 @@ export async function claimIdleDeletion(
   const locks = navigator.locks;
   const maintenance = await maintenanceLock(locks, name, "exclusive", signal);
   if (maintenance === "busy") return "busy";
-  const writer = await holdLock(
-    locks,
-    `bun-wasm:filesystem:indexeddb:${name}`,
-    { mode: "exclusive", ifAvailable: true },
-    signal,
-  ).catch(async (error: unknown) => {
+  let writer: Awaited<ReturnType<typeof holdLock>> | "busy" = "busy";
+  try {
+    writer = await locks.request(
+      `bun-wasm:filesystem:indexeddb-arb:${name}`,
+      { mode: "shared", ifAvailable: true },
+      async (arb) => {
+        if (!arb) return "busy" as const;
+        return holdLock(
+          locks,
+          `bun-wasm:filesystem:indexeddb:${name}`,
+          { mode: "exclusive", ifAvailable: true },
+          signal,
+        );
+      },
+    );
+  } catch (error) {
     await maintenance.release();
     throw error;
-  });
+  }
   if (writer === "busy") {
     await maintenance.release();
     return "busy";
   }
+  const ownedWriter = writer;
   return {
     remove: () => deleteOwnedDatabase(name, signal),
     async release() {
-      await writer.release();
+      await ownedWriter.release();
       await maintenance.release();
     },
   };

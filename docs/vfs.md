@@ -27,11 +27,15 @@ are rejected, not translated. Backend names are not accepted modes.
 | Memory | Isolated volatile tree; flush is ordering only.                                                                                                                                                                  | Yes, for tests and explicitly nonpersistent uses.                                                    |
 
 The checkpoint engine does not yet provide bounded pending data with backpressure,
-coherent multi-tab writers, above-RAM workloads, or a combined memory budget. Opt-in
+above-RAM workloads, or a combined memory budget. Opt-in
 [WorkspaceVfs](workspace-vfs.md) supports bounded current and leased-version ranges
-without whole-file hydration. The checkpoint engine
-descriptors truthfully report `pendingDataBound: "not-yet-enforced"` and
-`multiTab: "exclusive-owner"`. The API/identity step does not certify a new engine.
+without whole-file hydration. With `whenBusy: "takeover"` or `"wait"`, the checkpoint
+engine descriptors truthfully report `pendingDataBound: "not-yet-enforced"` and
+`multiTab: "exclusive-owner"`. Opt-in `whenBusy: "attach"` selects a shared-host
+multi-tab mode (`multiTab: "shared-host"`, `directSharedMemory: { reads: false, mutations: false }`,
+requiring `BroadcastChannel`) where one elected Host tab owns storage and Peer tabs
+proxy live reads, writes, and watches over term-keyed channels with automatic failover.
+The API/identity step does not certify a new engine.
 
 IndexedDB is the default FAST backend. The browser must provide the APIs listed
 in the mode descriptor and allow access to IndexedDB in the current context.
@@ -65,10 +69,13 @@ is not a physical power-cut measurement.
 
 Current implementations require a dedicated worker, SharedArrayBuffer and cross-origin
 isolation. Persistent implementations additionally require Web Locks and their storage
-API. IndexedDB defaults to takeover (epoch fencing), with wait supported. Internal
-OPFS supports wait only. Neither provides simultaneous coherent writers today. A
-frozen owner can retain its lock indefinitely; see [storage.md](storage.md) for
-waiting, ownership loss, cancellation and asynchronous disposal.
+API; `whenBusy: "attach"` additionally requires `BroadcastChannel` and cannot be
+combined with `workspace: true` or `mode: "memory"`. IndexedDB defaults to takeover
+(epoch fencing), with `wait` and `attach` supported. Internal OPFS supports `wait`
+and `attach`. Under exclusive-owner policies (`takeover`/`wait`), a frozen owner can
+retain its lock indefinitely; under `attach`, IndexedDB supports broker-arbitrated
+failover and OPFS supports cooperative step-down plus crash failover. See
+[storage.md](storage.md) for waiting, ownership loss, cancellation and asynchronous disposal.
 
 ## Persisted identity and startup errors
 

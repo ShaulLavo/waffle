@@ -119,9 +119,13 @@ interface SessionStage {
 }
 /** Largest request, in encoded bytes, whose decoded form stays with it while it is queued. */
 const RETAINED_DECODE_BYTES = 512;
+interface WatchResponseSettlement {
+  readonly cancel: () => void;
+  readonly release: (() => void) | undefined;
+}
 interface Session {
   watchTransactions: Map<number, WatchTransaction>;
-  watchResponses: Map<number, () => void>;
+  watchResponses: Map<number, WatchResponseSettlement>;
   walks?: WalkTable;
   walkTransactions: Map<number, WalkTransaction>;
   walkResponses: Map<number, () => void>;
@@ -186,7 +190,7 @@ interface ShutdownOwner {
 interface PreparedRequest {
   handles: number[];
   failure?: { error: unknown };
-  read?: { value: unknown };
+  read?: { value: unknown; startEpoch?: number; startVersion?: string };
 }
 /** One serial owner of the tree. No request ever waits for a guest acknowledgment. */
 export class FilesystemService {
@@ -263,6 +267,8 @@ export class FilesystemService {
         connection.publication?.buffers,
       );
       this.backend.shared.onContention = () => this.sweep();
+    } else {
+      this.backend.attachShared?.(connection.shared);
     }
     if (this.requestBudget) assertRequestBudget(this.requestBudget, connection.requestBudget);
     else this.requestBudget = connection.requestBudget;
@@ -675,7 +681,15 @@ export class FilesystemService {
     const watch = session.watchResponses.get(id);
     session.watchResponses.delete(id);
     const request = session.retainedRequests.get(id);
-    if (request && requestCancelled(request)) watch?.();
+    if (watch) {
+      if (
+        sessionRevoked(session) ||
+        !this.sessions.has(session) ||
+        (request && requestCancelled(request))
+      )
+        watch.cancel();
+      else watch.release?.();
+    }
     this.releaseResponseMemory(session, id);
     const retained = session.retainedRequests.get(id);
     const cancelledWalk = retained && requestCancelled(retained);
@@ -742,13 +756,15 @@ export class FilesystemService {
     let idle = 0,
       detached = false;
     const shared = this.backend instanceof MemoryBackend ? this.backend.shared : undefined;
+    const isUnlinked = (handle: number) =>
+      shared ? shared.isUnlinked(handle) : (this.backend.isUnlinked?.(handle) ?? false);
     const responseHeld = this.responseReferenceCounts(session);
     for (const handle of session.transient.keys()) {
       const references = Atomics.load(session.capabilities, session.handles.get(handle)! + 1);
       if (session.preparingHandles.has(handle) || references !== (responseHeld.get(handle) ?? 0))
         continue;
       idle++;
-      if (references === 0 && shared?.isUnlinked(handle)) detached = true;
+      if (references === 0 && isUnlinked(handle)) detached = true;
     }
     if (idle <= TRANSIENT_HANDLES && !detached) return;
     // Over the bound, evict the least recently used down to half of it. Each eviction bumps the
@@ -766,7 +782,7 @@ export class FilesystemService {
     try {
       for (const handle of session.transient.keys()) {
         if (session.preparingHandles.has(handle)) continue;
-        if (idle <= keep && !shared?.isUnlinked(handle)) continue;
+        if (idle <= keep && !isUnlinked(handle)) continue;
         const key = session.handles.get(handle)!;
         // A local retain racing this CAS either owns a live pin or sees a revoked entry.
         if (Atomics.compareExchange(session.capabilities, key + 1, 0, -1) !== 0) continue;
@@ -950,20 +966,33 @@ export class FilesystemService {
     args: any[],
   ): unknown {
     const [a, b] = args;
+    const request = session.pending.get(requestId);
+    const cancelled = () =>
+      sessionRevoked(session) ||
+      !this.sessions.has(session) ||
+      !request ||
+      requestCancelled(request);
     if (operation === "watchOpen") {
+      if (this.backend.watchOpen) {
+        const register = (id: number) => {
+          if (cancelled()) {
+            this.backend.watchClose?.(session.connection.owner, id);
+            throw new FilesystemError(11);
+          }
+          session.watchTransactions.set(requestId, {
+            cancel: () => this.backend.watchClose?.(session.connection.owner, id),
+            release: undefined,
+          });
+          return id;
+        };
+        const opening = this.backend.watchOpen(session.connection.owner, a, b, cancelled);
+        return opening instanceof Promise
+          ? this.trackWork(session, opening).then(register)
+          : register(opening);
+      }
       if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
       this.watchService ??= new WatchService(this.backend);
-      const request = session.pending.get(requestId);
-      const id = this.watchService.open(
-        session.connection.owner,
-        a,
-        b,
-        () =>
-          sessionRevoked(session) ||
-          !this.sessions.has(session) ||
-          !request ||
-          requestCancelled(request),
-      );
+      const id = this.watchService.open(session.connection.owner, a, b, cancelled);
       session.watchTransactions.set(requestId, {
         cancel: () => this.watchService?.close(session.connection.owner, id),
         release: undefined,
@@ -971,6 +1000,25 @@ export class FilesystemService {
       return id;
     }
     if (operation === "watchRead") {
+      if (this.backend.watchRead) {
+        const register = (held: import("./watch-subscriptions.js").HeldWatchBatch) => {
+          if (cancelled()) {
+            held.rollback();
+            throw new FilesystemError(11);
+          }
+          if (held.batch.events.length)
+            session.watchTransactions.set(requestId, {
+              cancel: held.rollback,
+              release: held.release,
+            });
+          else held.release();
+          return held.batch;
+        };
+        const reading = this.backend.watchRead(session.connection.owner, a, cancelled);
+        return reading instanceof Promise
+          ? this.trackWork(session, reading).then(register)
+          : register(reading);
+      }
       if (!this.watchService) throw new FilesystemError(8);
       const held = this.watchService.readHeld(session.connection.owner, a);
       if (held.batch.events.length)
@@ -979,6 +1027,10 @@ export class FilesystemService {
       return held.batch;
     }
     if (operation === "watchClose") {
+      if (this.backend.watchClose) {
+        this.backend.watchClose(session.connection.owner, a);
+        return;
+      }
       this.watchService?.close(session.connection.owner, a);
       return;
     }
@@ -1038,6 +1090,23 @@ export class FilesystemService {
       session.walkResponses.set(id, transaction.cancel);
     } else transaction.rollback();
   }
+  private takeResponseChunk(session: Session, a: number, b: number, c: number): Uint8Array {
+    const response = session.responses.get(a);
+    const bytes =
+      response?.kind === "bytes"
+        ? response.bytes
+        : response?.payload.kind === "overflow"
+          ? response.payload.bytes
+          : undefined;
+    if (!bytes) throw new FilesystemError(11);
+    const part = bytes.slice(b, b + c);
+    if (b + c < bytes.length) return part;
+    this.releaseResponseMemory(session, a);
+    if (response?.kind === "resolve") response.payload = { kind: "inline" };
+    else if (session.watchResponses.has(a)) session.responses.delete(a);
+    else this.discardResponse(session, a);
+    return part;
+  }
   private execute(
     session: Session,
     id: number,
@@ -1050,22 +1119,7 @@ export class FilesystemService {
     if (operation.startsWith("walk")) return this.walkRequest(session, id, operation, args);
     if (operation.startsWith("watch")) return this.watchRequest(session, id, operation, args);
     if (operation === "stageWrite") return this.stageWrite(session, id, a, b, c, data);
-    if (operation === "take") {
-      const response = session.responses.get(a);
-      const bytes =
-        response?.kind === "bytes"
-          ? response.bytes
-          : response?.payload.kind === "overflow"
-            ? response.payload.bytes
-            : undefined;
-      if (!bytes) throw new FilesystemError(11);
-      const part = bytes.slice(b, b + c);
-      if (b + c < bytes.length) return part;
-      this.releaseResponseMemory(session, a);
-      if (response?.kind === "resolve") response.payload = { kind: "inline" };
-      else this.discardResponse(session, a);
-      return part;
-    }
+    if (operation === "take") return this.takeResponseChunk(session, a, b, c);
     if (operation === "retain") {
       const key = session.handles.get(a)!;
       for (;;) {
@@ -1129,25 +1183,29 @@ export class FilesystemService {
     result: any,
     args: any[] = [],
   ): unknown {
-    this.finishSocketOperation(session, operation, result, args);
-    const pending = session.pending.get(id);
-    if (
-      sessionRevoked(session) ||
-      !this.sessions.has(session) ||
-      !pending ||
-      requestCancelled(pending)
-    )
-      throw new FilesystemError(11);
-    if (operation === "preopen" || (operation === "create" && typeof result === "number"))
-      this.pin(session, result, operation === "preopen");
-    // Touch every returned identity before choosing an eviction victim: a new parent may point
-    // to a hard-linked node that was previously the oldest transient capability.
-    if (operation === "resolve" && typeof result !== "number")
-      this.holdResolvedResponse(session, id, result);
-    if (mutations.has(operation)) {
-      for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
-    } else this.trim(session);
-    return result;
+    try {
+      this.finishSocketOperation(session, operation, result, args);
+      const pending = session.pending.get(id);
+      if (
+        sessionRevoked(session) ||
+        !this.sessions.has(session) ||
+        !pending ||
+        requestCancelled(pending)
+      )
+        throw new FilesystemError(11);
+      if (operation === "preopen" || (operation === "create" && typeof result === "number"))
+        this.pin(session, result, operation === "preopen");
+      // Touch every returned identity before choosing an eviction victim: a new parent may point
+      // to a hard-linked node that was previously the oldest transient capability.
+      if (operation === "resolve" && typeof result !== "number")
+        this.holdResolvedResponse(session, id, result);
+      if (mutations.has(operation)) {
+        for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
+      } else this.trim(session);
+      return result;
+    } finally {
+      this.backend.settleResult?.(operation, result);
+    }
   }
   private checkSocketTree(session: Session, operation: string, args: any[]): void {
     if (
@@ -1187,6 +1245,35 @@ export class FilesystemService {
     this.backend.release(owned.binding.node);
     this.backend.release(owned.binding.parent);
   }
+  private preparedReadInvalidated(
+    prepared: PreparedRequest | undefined,
+    epoch: Int32Array,
+  ): boolean {
+    const read = prepared?.read;
+    if (!read) return false;
+    if (read.startEpoch !== undefined && Atomics.load(epoch, 0) !== read.startEpoch) return true;
+    return read.startVersion !== undefined && this.backend.readVersion?.() !== read.startVersion;
+  }
+  private dirtyRetryChange(error: unknown): number | undefined {
+    if (
+      !(error instanceof DirtyCapacityError) ||
+      error.permanent ||
+      !this.backend.waitForDirtyCapacity
+    )
+      return undefined;
+    return (
+      this.backend.dirtyChange?.() ??
+      (this.backend instanceof MemoryBackend
+        ? this.backend.shared.dirtyAdmission.change
+        : undefined)
+    );
+  }
+  private cancelSessionWatchResponses(session: Session): void {
+    for (const [id, watch] of session.watchResponses) {
+      session.watchResponses.delete(id);
+      watch.cancel();
+    }
+  }
   private assertBackendAccess(): void {
     if (this.backend instanceof MemoryBackend) this.backend.shared.publication?.assertAccess();
   }
@@ -1218,6 +1305,10 @@ export class FilesystemService {
         admission = publicationAdmission(input.publication);
       this.checkRequest(session, operation, args);
       if (prepared?.failure) throw prepared.failure.error;
+      if (this.preparedReadInvalidated(prepared, epoch)) {
+        this.releasePrepared(session, prepared);
+        prepared = undefined;
+      }
       this.assertBackendAccess();
       const continuation = this.prepareRequest(
         session,
@@ -1252,13 +1343,9 @@ export class FilesystemService {
       staging = operation === "stageWrite";
     } catch (error) {
       this.discardResponse(session, id);
-      if (
-        error instanceof DirtyCapacityError &&
-        !error.permanent &&
-        this.backend.waitForDirtyCapacity &&
-        this.backend instanceof MemoryBackend
-      ) {
-        dirtyRetry = this.backend.shared.dirtyAdmission.change;
+      const dirtyChange = this.dirtyRetryChange(error);
+      if (dirtyChange !== undefined) {
+        dirtyRetry = dirtyChange;
         prepared ??= { handles: [] };
         const input = unpack(bytes.subarray(0, cells[1]!));
         this.checkRequest(session, input.operation, input.args, prepared.handles);
@@ -1324,8 +1411,10 @@ export class FilesystemService {
       transaction.cancel();
       return;
     }
-    session.watchResponses.set(id, transaction.cancel);
-    if (transaction.release) this.holdResponseMemory(session, id, transaction.release);
+    session.watchResponses.set(id, {
+      cancel: transaction.cancel,
+      release: transaction.release,
+    });
   }
   private retainRequestReply(session: Session, id: number, buffer: FilesystemRequestBuffer): void {
     if (
@@ -1441,10 +1530,12 @@ export class FilesystemService {
     args: unknown[],
     read: Promise<Uint8Array>,
   ): PreparedRequest {
+    const startEpoch = Atomics.load(session.epoch, 0);
+    const startVersion = this.backend.readVersion?.();
     const continuation: PreparedRequest = { handles: [] };
     this.checkRequest(session, operation, args, continuation.handles);
     const capture = read.then((value) => {
-      continuation.read = { value };
+      continuation.read = { value, startEpoch, startVersion };
     });
     this.joinPreparation(session, id, buffer, continuation, capture);
     return continuation;
@@ -1778,8 +1869,38 @@ export class FilesystemService {
       );
     }
   }
+  private clearSessionHandlesAndBuffers(session: Session): void {
+    for (const key of session.handles.values()) Atomics.store(session.capabilities, key + 1, -1);
+    for (const handle of Array.from(session.handles.keys())) {
+      if (Atomics.load(session.capabilities, session.handles.get(handle)! + 2) > 0) continue;
+      this.backend.release(handle);
+      session.handles.delete(handle);
+    }
+    Atomics.store(session.capabilities, 0, 0);
+    for (const lease of session.socketScope?.leases.values() ?? []) {
+      this.backend.release(lease.binding.node);
+      this.backend.release(lease.binding.parent);
+    }
+    session.socketScope?.leases.clear();
+    session.preopens.clear();
+    session.transient.clear();
+    session.references.clear();
+    for (const retained of session.retainedRequests.values())
+      releaseRequestBuffer(retained, REQUEST_SERVICE);
+    session.retainedRequests.clear();
+    for (const release of session.responseMemory.values()) release();
+    session.responseMemory.clear();
+    session.responses.clear();
+    session.preparingHandles.clear();
+    if (this.backend instanceof MemoryBackend)
+      for (const id of session.publicationPins ?? [])
+        this.backend.shared.publication?.releasePin(id);
+    session.publicationPins?.clear();
+  }
   private releaseSessionPins(session: Session): void {
+    this.cancelSessionWatchResponses(session);
     this.watchService?.closeOwner(session.connection.owner);
+    this.backend.closeWatchOwner?.(session.connection.owner);
     session.namespace?.close();
     this.stopSessionReader(session);
     if (!session.transportFailed) revokeFilesystem(session.connection);
@@ -1829,33 +1950,9 @@ export class FilesystemService {
     session.walks?.dispose();
     session.walkResponses.clear();
     for (const id of session.watchTransactions.keys()) this.settleWatch(session, id, false);
+    this.cancelSessionWatchResponses(session);
     session.watchResponses.clear();
-    for (const key of session.handles.values()) Atomics.store(session.capabilities, key + 1, -1);
-    for (const handle of Array.from(session.handles.keys())) {
-      if (Atomics.load(session.capabilities, session.handles.get(handle)! + 2) > 0) continue;
-      this.backend.release(handle);
-      session.handles.delete(handle);
-    }
-    Atomics.store(session.capabilities, 0, 0);
-    for (const lease of session.socketScope?.leases.values() ?? []) {
-      this.backend.release(lease.binding.node);
-      this.backend.release(lease.binding.parent);
-    }
-    session.socketScope?.leases.clear();
-    session.preopens.clear();
-    session.transient.clear();
-    session.references.clear();
-    for (const retained of session.retainedRequests.values())
-      releaseRequestBuffer(retained, REQUEST_SERVICE);
-    session.retainedRequests.clear();
-    for (const release of session.responseMemory.values()) release();
-    session.responseMemory.clear();
-    session.responses.clear();
-    session.preparingHandles.clear();
-    if (this.backend instanceof MemoryBackend)
-      for (const id of session.publicationPins ?? [])
-        this.backend.shared.publication?.releasePin(id);
-    session.publicationPins?.clear();
+    this.clearSessionHandlesAndBuffers(session);
     session.connection.port.close();
     session.closed = true;
     this.retireTransport(session);
@@ -1977,6 +2074,9 @@ export class FilesystemService {
     if (this.disposingWatches && !this.sessions.size && this.backend instanceof MemoryBackend)
       this.backend.watchAccount.close();
   }
+  beginDispose(): void {
+    this.backend.beginDispose?.();
+  }
   dispose(): void {
     if (this.shutdownOwner) return;
     this.disposingWatches = true;
@@ -2003,6 +2103,7 @@ export class FilesystemService {
     const owner = { done, sessions };
     this.shutdownOwner = owner;
     this.ownerStopping = true;
+    this.backend.beginShutdown?.();
     for (const session of sessions) this.stopSessionReader(session);
     const fences = sessions.map((session) => this.shutdownFence(session));
     void this.drainShutdown(owner, fences).then(resolve, reject);
@@ -2136,7 +2237,14 @@ function failureDiagnostic(error: unknown) {
     vfs: diagnosticField(error, "vfs"),
   };
   if (detail.name === "VfsError") message = diagnosticField(error, "message") ?? message;
-  return { type: "filesystem-error", message, stack, ...detail };
+  const released = diagnosticReleased(error);
+  return {
+    type: "filesystem-error",
+    message,
+    stack,
+    ...detail,
+    ...(released !== undefined ? { released } : {}),
+  };
 }
 function diagnosticField(error: unknown, key: string): string | undefined {
   try {
@@ -2147,6 +2255,26 @@ function diagnosticField(error: unknown, key: string): string | undefined {
     /* Diagnostics must survive hostile property getters. */
     return;
   }
+}
+function diagnosticReleased(error: unknown): boolean | undefined {
+  try {
+    if (!error || typeof error !== "object") return undefined;
+    const value: unknown = Reflect.get(error, "released");
+    return typeof value === "boolean" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function isCancellationError(error: unknown): boolean {
+  if (error instanceof FilesystemError && error.errno === 11) return true;
+  const name = diagnosticField(error, "name");
+  return name === "AbortError";
+}
+
+export interface FilesystemWorkerCallbacks {
+  readonly onState?: (status: "waiting" | "ready") => void;
+  readonly onOwnershipLost?: () => void;
+  readonly onFatalError?: (error: unknown, released: boolean) => void;
 }
 
 async function prepareAcceptance(binding: OperationBinding) {
@@ -2176,32 +2304,89 @@ export function installFilesystemWorker(
     onStartupStage?: RuntimeStartupObserver,
     signal?: AbortSignal,
     onWaiting?: () => void,
+    callbacks?: FilesystemWorkerCallbacks,
   ) => FilesystemBackend | Promise<FilesystemBackend> = (options) =>
     new MemoryBackend(undefined, undefined, undefined, undefined, options.connect),
 ): void {
   // Selection belongs to the controller, never to guest filesystem requests.
   let service: Promise<FilesystemService> | undefined;
+  let resolvedService: FilesystemService | undefined;
   let errorReported = false;
   let onStartupStage: RuntimeStartupObserver | undefined;
   const startupAbort = new AbortController();
   let disposing = false;
+  let beginDisposeRequested = false;
+  const callbacks: FilesystemWorkerCallbacks = {
+    onState(status) {
+      if (!disposing) scope.postMessage({ type: "filesystem-state", status });
+    },
+    onOwnershipLost() {
+      scope.postMessage({ type: "filesystem-ownership-lost" });
+    },
+    onFatalError(error, released) {
+      if (disposing || errorReported) return;
+      errorReported = true;
+      try {
+        scope.postMessage({ ...failureDiagnostic(error), released });
+      } catch {
+        /* Diagnostic delivery failure is non-fatal when retaining locks. */
+      }
+    },
+  };
   scope.onmessage = ({ data }) => {
+    if (data?.beginDispose === true) {
+      beginDisposeRequested = true;
+      if (resolvedService) resolvedService.beginDispose();
+      else
+        void service?.then(
+          (owner) => owner.beginDispose(),
+          () => {},
+        );
+      return;
+    }
     if (data?.dispose === true) {
       if (disposing) return;
       disposing = true;
       startupAbort.abort();
       void (service ?? Promise.resolve(undefined))
         .then(
-          (owner) => owner?.shutdown(),
-          () => {},
+          (owner) =>
+            owner
+              ? owner
+                  .shutdown()
+                  .then(() => ({ released: true as boolean, error: undefined as unknown }))
+              : { released: true as boolean, error: undefined as unknown },
+          (error) => {
+            const released = diagnosticReleased(error);
+            if (released === false) return { released: false, error };
+            if (released === true) {
+              return isCancellationError(error)
+                ? { released: true, error: undefined }
+                : { released: true, error };
+            }
+            return { released: true, error: undefined };
+          },
         )
         .then(
-          () => scope.postMessage({ type: "filesystem-disposed" }),
-          (error) =>
+          ({ released, error }) => {
+            if (error !== undefined) {
+              scope.postMessage({
+                type: "filesystem-disposed",
+                error: failureDiagnostic(error).message,
+                released,
+              });
+            } else {
+              scope.postMessage({ type: "filesystem-disposed", released });
+            }
+          },
+          (error) => {
+            const released = diagnosticReleased(error);
             scope.postMessage({
               type: "filesystem-disposed",
               error: failureDiagnostic(error).message,
-            }),
+              ...(released !== undefined ? { released } : {}),
+            });
+          },
         );
       return;
     }
@@ -2216,11 +2401,22 @@ export function installFilesystemWorker(
             scope.postMessage({ type: "filesystem-startup", stage, timestamp });
           reportRuntimeStartup(onStartupStage, "filesystem-connected");
         }
-        return backendFactory(backendOptions(data), onStartupStage, startupAbort.signal, () => {
-          if (!disposing) scope.postMessage({ type: "filesystem-state", status: "waiting" });
-        });
+        return backendFactory(
+          backendOptions(data),
+          onStartupStage,
+          startupAbort.signal,
+          () => {
+            if (!disposing) scope.postMessage({ type: "filesystem-state", status: "waiting" });
+          },
+          callbacks,
+        );
       })
-      .then((backend) => new FilesystemService(backend));
+      .then((backend) => {
+        const owner = new FilesystemService(backend);
+        resolvedService = owner;
+        if (beginDisposeRequested) owner.beginDispose();
+        return owner;
+      });
     void service
       .then(async (owner) => {
         if (disposing) {
@@ -2254,9 +2450,11 @@ export function installFilesystemWorker(
           /* The worker error below also covers a failed diagnostic transfer. */
         } finally {
           // A rejected async message handler alone does not dispatch a worker error event.
-          setTimeout(() => {
-            throw error;
-          }, 0);
+          if (diagnosticReleased(error) !== false) {
+            setTimeout(() => {
+              throw error;
+            }, 0);
+          }
         }
       });
   };

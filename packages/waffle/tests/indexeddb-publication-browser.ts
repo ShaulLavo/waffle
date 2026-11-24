@@ -183,7 +183,15 @@ async function roundtrip(owned: DatabaseFixture): Promise<void> {
   const keys = await owned.raw((db) =>
     request(db.transaction("metadata").objectStore("metadata").getAllKeys()),
   );
-  const allowed = new Set<IDBValidKey>([0, 1, "epoch", "active", "format", "identity"]);
+  const allowed = new Set<IDBValidKey>([
+    0,
+    1,
+    "epoch",
+    "lastExclusiveEpoch",
+    "active",
+    "format",
+    "identity",
+  ]);
   assert(
     keys.every((key) => allowed.has(key)),
     "no parallel publication store",

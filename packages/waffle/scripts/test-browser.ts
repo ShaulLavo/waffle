@@ -23,6 +23,7 @@ const runners = [
   "tests/link-browser-runner.ts",
   "tests/safe-staging-browser-runner.ts",
   "tests/storage-lock-browser-runner.ts",
+  "tests/multitab-browser-runner.ts",
   "tests/search-executor-browser-runner.ts",
   "tests/guest-watch-browser-runner.ts",
   "tests/filesystem-transport-browser-runner.ts",

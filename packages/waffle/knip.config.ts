@@ -147,6 +147,7 @@ export default {
         "testing/storage-browser-runner.ts",
         "testing/page-runner/storage-page.ts",
         "tests/memory-group-browser{,-runner}.ts",
+        "tests/multitab-browser{,-runner}.ts",
         "tests/fixtures/memory-group-worker.ts",
       ],
       project: [
