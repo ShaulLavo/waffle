@@ -3129,7 +3129,12 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     const store = new MockSharedStore();
     const name = `ws-idb-fenceloss-rebind-${crypto.randomUUID()}`;
 
-    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    // Long lease timer on A so A remains in role==="host" until replacement Host B's host-ready arrives!
+    const tabA = await openTab(broker, hub, store, {
+      clientId: "tab-A",
+      name,
+      timings: { leaseDurationMs: 60_000, leaseRenewMs: 60_000 },
+    });
     const rebindReqIds = new Set<number>();
     const attachSessions = new Set<string>();
     let droppedRebinds = 0;
@@ -3164,10 +3169,18 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
       expect(rootA).toBeGreaterThan(0);
 
-      // Mute Host A's outbound broadcasts so Peer B steals IndexedDB and promotes to Host, then unmute A!
+      // Mute Host A's outbound broadcasts AND hold B's automatic host-ready until we inject it!
       let muteA = true;
-      hub.interceptor = (_ch, sender) => !(muteA && sender.ownerTag === "tab-A");
+      hub.interceptor = (_ch, sender, msg) => {
+        if (!muteA) return;
+        if (sender.ownerTag === "tab-A") return false;
+        if (msg && typeof msg === "object" && Reflect.get(msg, "kind") === "host-ready") {
+          return false;
+        }
+      };
       await waitUntil(() => tabB.backend.currentRole === "host", 4000, "tabB promoted");
+      // Confirm A has NOT yet detected fence loss via lease check; injected host-ready triggers it!
+      expect(tabA.backend.currentRole).toBe("host");
 
       // Unmute Host A and deliver replacement Host B's host-ready to trigger executeFenceLoss(observedHostReady)!
       muteA = false;

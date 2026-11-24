@@ -2486,12 +2486,11 @@ export class MultiTabBackend implements FilesystemBackend {
         await this.rebindPeerHandles(term, sessionId);
       } catch (error) {
         if (signal.aborted || this.disposing || this.ownershipLost) throw error;
-        if (this.peerSessionId === sessionId) {
-          this.stopPeerTimers();
-          this.closePeerChannelOnly();
-          this.peerAttached = false;
-          this.role = "failover";
-        }
+        if (this.peerSessionId !== sessionId) return false;
+        this.stopPeerTimers();
+        this.closePeerChannelOnly();
+        this.peerAttached = false;
+        this.role = "failover";
         return false;
       }
       if (this.peerSessionId !== sessionId || !this.peerAttached) return false;
