@@ -198,3 +198,8 @@ export function checkedSignal(signal: number): ProcessSignal {
   }
   return signal;
 }
+/** Signal 0 is valid only for existence/permission probes on kill and killJob, never delivery. */
+export function checkedKillSignal(signal: number): number {
+  if (signal === 0) return 0;
+  return checkedSignal(signal);
+}

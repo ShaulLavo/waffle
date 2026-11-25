@@ -56,6 +56,7 @@ import {
   ProcessError,
   Signal,
   checkedJobLifetime,
+  checkedKillSignal,
   checkedProcessCwd,
   checkedProcessKind,
   snapshotLogicalProcessIdentity,
@@ -265,13 +266,16 @@ export class ProcessABI {
       wait_job: (job, flags, ptr) => this.result(() => this.waitJob(job!, flags!, ptr!)),
       kill: (pid, signal) =>
         this.result(() => {
-          if (options.service.canSignal?.(options.pid, pid!) === false) return -63;
+          checkedKillSignal(signal!);
+          if (options.service.canSignal?.(options.pid, pid!) === false) return -ProcessErrno.PERM;
           options.service.kill(pid!, signal!);
           return 0;
         }),
       kill_job: (job, signal) =>
         this.result(() => {
-          if (options.service.canSignalJob?.(options.pid, job!) === false) return -63;
+          checkedKillSignal(signal!);
+          if (options.service.canSignalJob?.(options.pid, job!) === false)
+            return -ProcessErrno.PERM;
           options.service.killJob(job!, signal!);
           return 0;
         }),

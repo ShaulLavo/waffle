@@ -84,6 +84,7 @@ import {
   directoryProcesses,
   directoryAdmissionVersion,
   commitDirectoryAdmission,
+  findDirectoryJob,
   isCollectedProcess,
   wakeDirectory,
 } from "../proc/directory.js";
@@ -106,6 +107,7 @@ import {
   type ProcessExit,
   type CommandProcessContext,
   type ProcessHandle,
+  checkedKillSignal,
   checkedSignal,
   checkedProcessCwd,
   snapshotLogicalProcessIdentity,
@@ -3569,8 +3571,31 @@ export class BrowserProcessBroker {
       Array.from(directoryProcesses(root.directory)),
     );
   }
+  private hasProcess(pid: number): boolean {
+    return (
+      this.states().some((state) => state.pid === pid) ||
+      this.options.table.get(pid) !== undefined ||
+      this.reservedRoots.has(pid)
+    );
+  }
+  private hasJob(
+    job: number,
+    reserved: readonly { pid: number; signals: SignalTransport }[],
+  ): boolean {
+    if (reserved.length > 0 || this.options.table.job(job) !== undefined) return true;
+    for (const root of this.roots.values()) if (findDirectoryJob(root.directory, job)) return true;
+    for (const root of this.reservedRoots.values()) if (root.job === job) return true;
+    return false;
+  }
   async kill(pid: number, signal: number): Promise<void> {
-    const sig = checkedSignal(signal);
+    const sig = checkedKillSignal(signal);
+    if (sig === 0) {
+      if (this.hasProcess(pid)) return;
+      const supervisor = await this.ready();
+      if (this.suspended) return;
+      supervisor.kill(pid, 0);
+      return;
+    }
     const found = this.publishProcessSignal(pid, sig);
     const supervisor = await this.ready();
     if (this.suspended) return;
@@ -3624,8 +3649,15 @@ export class BrowserProcessBroker {
     signal: number,
     reserved: readonly { pid: number; signals: SignalTransport }[] = [],
   ): Promise<void> {
-    const sig = checkedSignal(signal),
-      states = this.states().filter((state) => state.job === job);
+    const sig = checkedKillSignal(signal);
+    if (sig === 0) {
+      if (this.hasJob(job, reserved)) return;
+      const supervisor = await this.ready();
+      if (this.suspended) return;
+      supervisor.killJob(job, 0);
+      return;
+    }
+    const states = this.states().filter((state) => state.job === job);
     const seen = new Set(states.map((state) => state.pid));
     const records = Array.from(this.options.table.values()).filter(
       (record) => record.job === job && !seen.has(record.pid),

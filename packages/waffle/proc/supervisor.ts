@@ -56,7 +56,7 @@ import {
   ProcessErrno,
   ProcessError,
   Signal,
-  checkedSignal,
+  checkedKillSignal,
   checkedJobLifetime,
   checkedProcessCwd,
   snapshotSpawnWorker,
@@ -1213,9 +1213,9 @@ export class ProcessSupervisor {
   }
   /** Default signals terminate immediately; registered handlers receive shared pending delivery. */
   kill(pid: number, signal: number): void {
-    const sig = checkedSignal(signal),
+    const sig = checkedKillSignal(signal),
       record = this.table.require(pid);
-    if (record.result) return;
+    if (sig === 0 || record.result) return;
     this.recordSignal(record, sig);
     if (record.signal === Signal.SIGKILL || readOutcome(record.outcome))
       this.finish(pid, { kind: "signaled", code: Signal.SIGKILL });
@@ -1267,9 +1267,10 @@ export class ProcessSupervisor {
     this.finish(pid, winner);
   }
   killJob(jobId: number, signal: number): void {
-    const sig = checkedSignal(signal);
+    const sig = checkedKillSignal(signal);
     const job = this.table.job(jobId);
     if (!job) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
+    if (sig === 0) return;
     // New background jobs are independent, even when their parent belongs to this job.
     const targets = Array.from(job.members, (pid) => this.table.require(pid));
     // Record every target before callbacks: a dying process cannot spawn through an as-yet

@@ -72,6 +72,7 @@ import {
   ProcessErrno,
   ProcessError,
   checkedSignal,
+  checkedKillSignal,
   checkedJobLifetime,
   type JobLifetime,
   checkedProcessCwd,
@@ -909,6 +910,7 @@ export class WorkerProcessClient {
   }
   canSignal(callerPid: number, pid: number): boolean {
     if (callerPid !== this.pid) return false;
+    this.admit();
     const target = this.find(pid);
     return directoryControls(
       this.options.transport.directory,
@@ -931,18 +933,22 @@ export class WorkerProcessClient {
         true,
       );
     } catch (error) {
-      if (error instanceof ProcessError && error.errno === 63) return false;
+      if (error instanceof ProcessError && error.errno === ProcessErrno.PERM) return false;
       throw error;
     }
   }
   kill(pid: number, signal: number): void {
+    const sig = checkedKillSignal(signal);
     if (!this.canSignal(this.pid, pid))
-      throw new ProcessError(63, "process is outside the caller's ancestry");
-    this.deliver([this.find(pid)], checkedSignal(signal));
+      throw new ProcessError(ProcessErrno.PERM, "process is outside the caller's ancestry");
+    if (sig === 0) return;
+    this.deliver([this.find(pid)], sig);
   }
   killJob(job: number, signal: number): void {
+    const sig = checkedKillSignal(signal);
     if (!this.canSignalJob(this.pid, job))
-      throw new ProcessError(63, "job is not owned by the caller");
+      throw new ProcessError(ProcessErrno.PERM, "job is not owned by the caller");
+    if (sig === 0) return;
     const directory = this.options.transport.directory;
     const slots = directorySlots(directory);
     const targets: ReturnType<typeof directoryState>[] = [];
@@ -957,7 +963,7 @@ export class WorkerProcessClient {
         if (!isCollectedProcess(error)) throw error;
       }
     }
-    this.deliver(targets, checkedSignal(signal), true);
+    this.deliver(targets, sig, true);
   }
   private deliver(
     targets: { slot: number; pid: number; parentPid: number; signals: SignalTransport }[],

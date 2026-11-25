@@ -151,11 +151,17 @@ for (const [signal, errno] of [
     try {
       fails(() => checkedSignal(signal!));
       fails(() => requestSignal(f.record, signal!));
-      fails(() => f.supervisor.kill(f.pid, signal!));
+      if (signal === 0) {
+        f.supervisor.kill(f.pid, 0);
+        client.kill(client.pid, 0);
+        expect(f.abi.imports.kill!(f.pid, 0)).toBe(0);
+      } else {
+        fails(() => f.supervisor.kill(f.pid, signal!));
+        fails(() => client.kill(client.pid, signal!));
+        expect(f.abi.imports.kill!(f.pid, signal!)).toBe(-errno!);
+      }
       fails(() => f.supervisor.defaultSignal(f.pid, signal!));
-      fails(() => client.kill(client.pid, signal!));
       fails(() => client.defaultSignal(client.pid, signal!));
-      expect(f.abi.imports.kill!(f.pid, signal!)).toBe(-errno!);
       expect(f.abi.imports.default_signal!(signal!)).toBe(-errno!);
       for (const mode of [0, 1, 2, 3])
         expect(f.abi.imports.signal!(signal!, mode)).toBe(signal === 0 && mode === 0 ? 0 : -errno!);
