@@ -15,7 +15,7 @@ import {
   type FileId,
   type FileVersion,
 } from "./file-identity.js";
-import { atomicsLoad, typedArraySet } from "../proc/intrinsics.js";
+import { Int32ArrayConstructor, atomicsLoad, typedArraySet } from "../proc/intrinsics.js";
 import {
   PublicationDomain,
   type PublicationAdmission,
@@ -2491,13 +2491,13 @@ export function sharedRevoked(connection: {
   ownerStates: SharedArrayBuffer;
   publication?: PublicationConnection;
 }): () => boolean {
-  const words = [new Int32Array(connection.ownerStates, 0, 1)].concat(
-    connection.revocations.map((buffer) => new Int32Array(buffer)),
+  const words = [new Int32ArrayConstructor(connection.ownerStates, 0, 1)].concat(
+    connection.revocations.map((buffer) => new Int32ArrayConstructor(buffer)),
   );
   if (connection.publication)
-    words.push(new Int32Array(connection.publication.buffers.control, 0, 1));
+    words.push(new Int32ArrayConstructor(connection.publication.buffers.control, 0, 1));
   return () => {
-    for (let i = 0; i < words.length; i++) if (Atomics.load(words[i]!, 0) !== 0) return true;
+    for (let i = 0; i < words.length; i++) if (atomicsLoad(words[i]!, 0) !== 0) return true;
     return false;
   };
 }

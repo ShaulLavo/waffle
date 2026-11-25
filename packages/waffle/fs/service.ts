@@ -148,6 +148,8 @@ interface Session {
   stages: Map<number, SessionStage>;
   retainedRequests: Map<number, FilesystemRequestBuffer>;
   pending: Map<number, FilesystemRequestBuffer>;
+  /** Scalar write/append requests already dispatched to backend execution. */
+  inFlightWrites: Set<number>;
   /** Transferred inputs by request id. Removed only when that request's work settles. */
   privateInputs: Map<number, Uint8Array>;
   preparingHandles: Map<number, number>;
@@ -300,6 +302,7 @@ export class FilesystemService {
       stages: new Map(),
       retainedRequests: new Map(),
       pending: new Map(),
+      inFlightWrites: new Set(),
       privateInputs: new Map(),
       preparingHandles: new Map(),
       preparations: new Set(),
@@ -1345,6 +1348,7 @@ export class FilesystemService {
         prepared?.read && (!this.backend.isPreparedReadValid || this.backend.isPreparedReadValid())
           ? prepared.read
           : undefined;
+      if (operation === "write" || operation === "append") session.inFlightWrites.add(id);
       const value = preparedRead
         ? this.finishResult(session, id, operation, preparedRead.value)
         : local && operation !== "flush" && operation !== "sync"
@@ -1385,11 +1389,14 @@ export class FilesystemService {
         Atomics.store(cells, 0, state);
         Atomics.notify(cells, 0);
         wake(session.connection);
+        session.inFlightWrites.delete(id);
         session.pending.delete(id);
         session.privateInputs.delete(id);
         this.retainRequestReply(session, id, buffer);
         session.connection.port.postMessage({ completed: id });
         this.sweep();
+      } else {
+        session.inFlightWrites.delete(id);
       }
     }
     if (dirtyRetry !== undefined && prepared) {
@@ -1959,6 +1966,9 @@ export class FilesystemService {
       );
       return;
     }
+    // Keep the session open until every already-dispatched write/append publishes its
+    // authoritative commit or abort state; request()'s finally calls sweep() on completion.
+    if (session.inFlightWrites.size) return;
     if (ownRevocation === 2) this.backend.revokeOwner?.(session.connection.owner, session.epoch);
     // A discard can be lost when a port closes. Retirement settles what remains, before this
     // session's file pins and request blocks go: a committed write is applied, never dropped.

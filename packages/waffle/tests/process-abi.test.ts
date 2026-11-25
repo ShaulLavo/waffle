@@ -1855,6 +1855,9 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
       f2.bytes().set(new TextEncoder().encode("NEXT"), 1024);
       expect(() => abi2.imports.write!(fd2, 1024, 4)).toThrow(ProcessSignalExit);
       await mutated.promise;
+      // Triggering service.sweep() while the write is still paused must NOT discard the
+      // pending write or clear session.pending while the offset lease + section are held.
+      service.sweep();
       expect(claimFileOffset(resource).kind).toBe("busy");
       const teardown2 = client2.settleDeferredWrites(2_000);
       releaseAfterMutate();

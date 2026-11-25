@@ -572,7 +572,11 @@ function runSharedOffsetWrite(
   }
 }
 
-async function runBootstrapDiagnostic(connection: FilesystemConnection) {
+async function runBootstrapDiagnostic(
+  connection: FilesystemConnection,
+  sharedHandle?: number,
+  sharedOffset?: SharedArrayBuffer,
+) {
   const startModule = new WebAssembly.Module(
     new Uint8Array([
       0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 5, 3, 1, 0, 1, 7, 19, 2, 6, 109,
@@ -590,29 +594,37 @@ async function runBootstrapDiagnostic(connection: FilesystemConnection) {
     },
     {
       beforeBindings({ fs, wasi }) {
-        const root = fs.preopen("/");
-        const created = fs.create(
-          {
-            parent: root,
-            node: undefined,
-            name: "stderr.log",
-            trailingSlash: false,
-            terminalDot: false,
-          },
-          "file",
-          false,
-        );
-        if (typeof created !== "number")
-          throw new Error(`create stderr.log failed: ${created.error}`);
-        fs.retain(created);
+        let handle = sharedHandle;
+        if (handle === undefined) {
+          const root = fs.preopen("/");
+          const created = fs.create(
+            {
+              parent: root,
+              node: undefined,
+              name: "stderr.log",
+              trailingSlash: false,
+              terminalDot: false,
+            },
+            "file",
+            false,
+          );
+          if (typeof created !== "number")
+            throw new Error(`create stderr.log failed: ${created.error}`);
+          handle = created;
+          fs.retain(handle);
+        } else {
+          for (const reservation of connection.reservations) fs.adopt(reservation);
+        }
+        const resource = {
+          kind: "file" as const,
+          handle,
+          offset: 0,
+          append: sharedOffset === undefined,
+          fdflags: sharedOffset === undefined ? FDFLAG_APPEND : 0,
+        };
+        if (sharedOffset) shareFileResource(resource, fs.connection, sharedOffset);
         wasi.descriptors.close(2);
-        wasi.descriptors.openAt(
-          2,
-          { kind: "file", handle: created, offset: 0, append: true, fdflags: FDFLAG_APPEND },
-          ALL_RIGHTS,
-          0n,
-          () => fs.release(created),
-        );
+        wasi.descriptors.openAt(2, resource, ALL_RIGHTS, 0n, () => fs.release(handle!));
       },
       run() {
         throw new Error("boom-from-worker");
@@ -625,7 +637,7 @@ async function runBootstrapDiagnostic(connection: FilesystemConnection) {
       },
     },
   );
-  return { ok: true, postedCount: posted.length };
+  return { ok: true, postedCount: posted.length, posted };
 }
 
 function runLiveDescriptorTransitions(
@@ -697,10 +709,20 @@ function runPoisonedDiagnostic(
   const origMin = Math.min;
   const origIsInt = Number.isInteger;
   const origThen = Promise.prototype.then;
+  const origLoad = Atomics.load;
+  const origStore = Atomics.store;
+  const origCas = Atomics.compareExchange;
+  const origNotify = Atomics.notify;
+  const origInt32 = globalThis.Int32Array;
   const restore = () => {
     Math.min = origMin;
     Number.isInteger = origIsInt;
     Reflect.set(Promise.prototype, "then", origThen);
+    Atomics.load = origLoad;
+    Atomics.store = origStore;
+    Atomics.compareExchange = origCas;
+    Atomics.notify = origNotify;
+    globalThis.Int32Array = origInt32;
   };
   try {
     for (const reservation of connection.reservations) fs.adopt(reservation);
@@ -713,6 +735,21 @@ function runPoisonedDiagnostic(
     Number.isInteger = () => {
       throw new Error("poisoned Number.isInteger");
     };
+    Atomics.load = () => {
+      throw new Error("poisoned Atomics.load");
+    };
+    Atomics.store = () => {
+      throw new Error("poisoned Atomics.store");
+    };
+    Atomics.compareExchange = () => {
+      throw new Error("poisoned Atomics.compareExchange");
+    };
+    Atomics.notify = () => {
+      throw new Error("poisoned Atomics.notify");
+    };
+    globalThis.Int32Array = (() => {
+      throw new Error("poisoned Int32Array");
+    }) as unknown as Int32ArrayConstructor;
     let thenTouched = 0;
     Reflect.set(
       Promise.prototype,
@@ -765,7 +802,7 @@ function runPoisonedDiagnostic(
 
 self.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
   if (data.scenario === "diagnostic") {
-    void runBootstrapDiagnostic(data.connection).then(
+    void runBootstrapDiagnostic(data.connection, data.sharedHandle, data.sharedOffset).then(
       (value) => self.postMessage({ value }),
       (error) =>
         self.postMessage({

@@ -226,11 +226,7 @@ export class FilesystemCompletion {
     );
   }
   get backendSettled(): boolean {
-    return (
-      !!this.client.transportError() ||
-      this.released ||
-      atomicsLoad(this.cells, 0) !== State.Pending
-    );
+    return !!this.client.transportError() || atomicsLoad(this.cells, 0) !== State.Pending;
   }
   get hasBackendWaiters(): boolean {
     return this.backendWaiters.length > 0;
@@ -1476,7 +1472,7 @@ export class FilesystemClient implements FileSystem {
         const committed = completion.tryConsumeCommitted();
         if (committed !== undefined) {
           control.commitWrite?.(committed as { written: number; offset: number } | number);
-        } else if (!completion.backendSettled && control.deferWrite) {
+        } else if (control.deferWrite) {
           handedOff = true;
           control.deferWrite(completion);
         }

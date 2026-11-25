@@ -376,6 +376,39 @@ describe("MultiTabBackend cross-tab live freshness, failover, and diagnostic saf
     }
   });
 
+  function pauseNextWrite(backend: {
+    execute: (op: string, args: unknown[], data: Uint8Array) => unknown;
+  }) {
+    let releaseWrite: (() => void) | undefined;
+    const writePaused = Promise.withResolvers<void>();
+    const origExecute = backend.execute.bind(backend);
+    let armed = true;
+    backend.execute = (op: string, args: unknown[], data: Uint8Array) => {
+      if (op === "write" && armed) {
+        armed = false;
+        const gate = Promise.withResolvers<void>();
+        releaseWrite = () => gate.resolve();
+        writePaused.resolve();
+        return gate.promise.then(() => origExecute(op, args, data));
+      }
+      return origExecute(op, args, data);
+    };
+    return {
+      writePaused: writePaused.promise,
+      release() {
+        const fn = releaseWrite;
+        releaseWrite = undefined;
+        fn?.();
+      },
+      restore() {
+        const fn = releaseWrite;
+        releaseWrite = undefined;
+        fn?.();
+        backend.execute = origExecute;
+      },
+    };
+  }
+
   test("drainAsyncFileDiagnostic holds shared offset until a timed-out write authoritatively settles and resists poisoned globals", async () => {
     const env = await openVfsBackend("multitab-peer");
     try {
@@ -389,43 +422,23 @@ describe("MultiTabBackend cross-tab live freshness, failover, and diagnostic saf
         const sharedOffset = shareFileResource(resource, env.client.connection);
 
         // 1. Pause the Peer->Host write after dispatch and force a short stall timeout.
-        let releaseWrite!: () => void;
-        const writePaused = Promise.withResolvers<void>();
-        const origExecute = env.backend.execute.bind(env.backend);
-        let pauseOnce = true;
-        env.backend.execute = (op: string, args: unknown[], data: Uint8Array) => {
-          if (op === "write" && pauseOnce) {
-            pauseOnce = false;
-            const gate = Promise.withResolvers<void>();
-            releaseWrite = () => gate.resolve();
-            writePaused.resolve();
-            return gate.promise.then(() => origExecute(op, args, data));
-          }
-          return origExecute(op, args, data);
-        };
-
-        let timeoutError: unknown;
+        const paused = pauseNextWrite(env.backend);
         try {
-          await drainAsyncFileDiagnostic(
-            env.client,
-            resource,
-            encoder.encode("DIAG"),
-            () => true,
-            40,
-          );
-        } catch (error) {
-          timeoutError = error;
+          await expect(
+            drainAsyncFileDiagnostic(env.client, resource, encoder.encode("DIAG"), () => true, 40),
+          ).rejects.toThrow("diagnostic reader made no progress");
+          await paused.writePaused;
+
+          // While the dispatched write is still paused, another holder MUST see busy (offset 0 locked).
+          expect(claimFileOffset(resource).kind).toBe("busy");
+
+          // Resume backend write -> wait on explicit deferred settlement (no arbitrary sleep).
+          const settling = env.client.settleDeferredWrites(5_000);
+          paused.release();
+          await settling;
+        } finally {
+          paused.restore();
         }
-        expect(timeoutError).toBeInstanceOf(Error);
-        expect(String(timeoutError)).toContain("diagnostic reader made no progress");
-        await writePaused.promise;
-
-        // While the dispatched write is still paused, another holder MUST see busy (offset 0 locked).
-        expect(claimFileOffset(resource).kind).toBe("busy");
-
-        // Resume backend write -> authoritative settlement commits offset 4 and unlocks!
-        releaseWrite();
-        await new Promise((resolve) => setTimeout(resolve, 30));
         const afterResume = claimFileOffset(resource);
         expect(afterResume.kind).toBe("acquired");
         if (afterResume.kind === "acquired") {
@@ -467,4 +480,56 @@ describe("MultiTabBackend cross-tab live freshness, failover, and diagnostic saf
       await env.close();
     }
   });
+
+  test("worker bootstrap teardown keeps shared offset locked past diagnostic timeout until backend settles", async () => {
+    const env = await openVfsBackend("multitab-peer");
+    try {
+      await env.client.asyncCall("writeFile", ["/boot-diag.log", false, false], new Uint8Array());
+      const root: number = await env.client.asyncCall("preopen", ["/"]);
+      const resolved = await env.client.asyncCall("resolve", [root, "boot-diag.log", true]);
+      const handle = resolved.node as number;
+      env.client.retain(handle);
+      const resource = { kind: "file" as const, handle, offset: 0, append: false };
+      const sharedOffset = shareFileResource(resource, env.client.connection);
+      const paused = pauseNextWrite(env.backend);
+      try {
+        const workerDone = runInWorker<{
+          ok: boolean;
+          posted: { type: string; cleanupErrors?: string[] }[];
+        }>({
+          scenario: "diagnostic",
+          connection: env.forkConnection("primary", [handle]),
+          sharedHandle: handle,
+          sharedOffset,
+        });
+        await paused.writePaused;
+        // Wait past DIAGNOSTIC_STALL_TIMEOUT_MS (5s) so bootstrap's diagnostic drain times out
+        // and enters finishOwned(); teardown must STILL keep the offset locked until backend settles.
+        await new Promise((resolve) => setTimeout(resolve, 5_150));
+        expect(claimFileOffset(resource).kind).toBe("busy");
+
+        // Resume backend write -> worker settles the offset, finishes teardown, and reports stall error.
+        paused.release();
+        const result = await workerDone;
+        expect(result.ok).toBe(true);
+        const terminal = result.posted.find((m) => m.type === "error" || m.type === "exit");
+        expect(
+          terminal?.cleanupErrors?.some((e) => e.includes("diagnostic reader made no progress")),
+        ).toBe(true);
+        const bytes: Uint8Array = await env.client.asyncCall("readFile", ["/boot-diag.log"]);
+        expect(decoder.decode(bytes)).toContain("boom-from-worker");
+        const afterWorker = claimFileOffset(resource);
+        expect(afterWorker.kind).toBe("acquired");
+        if (afterWorker.kind === "acquired") {
+          expect(afterWorker.lease.position).toBe(bytes.length);
+          afterWorker.lease.release();
+        }
+      } finally {
+        paused.restore();
+        env.client.release(handle);
+      }
+    } finally {
+      await env.close();
+    }
+  }, 20_000);
 });

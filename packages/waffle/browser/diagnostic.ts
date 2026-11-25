@@ -184,7 +184,7 @@ function dispatchAsyncDiagnosticChunk(
     },
     mathMax(1, deadline - now()),
   );
-  completion.onBackendSettled(() => {
+  fs.trackDeferredWrite(completion, () => {
     if (settled) return;
     settled = true;
     cancelTimeout(timer);
