@@ -2,4 +2,4 @@
 "@waffle-os/runtime": patch
 ---
 
-Let a process check whether another process or process group exists without signalling it, as POSIX `kill(pid, 0)` does. `kill(pid, 0)`, `kill_job(job, 0)` and the new `runtime_proc.probe_process(pid)` succeed when the caller may signal the target, return `EPERM` when it exists in the caller's root but may not be signalled, and return `ESRCH` when it is gone or belongs to another root. A process that has exited but is not yet collected still exists. The probe changes nothing and wakes nothing. Signals other than 0 behave as before.
+Processes can now check whether another process or job exists without sending a signal, like POSIX `kill(pid, 0)`. `runtime_proc.kill(pid, 0)` checks an execution handle, `runtime_proc.kill_job(job, 0)` checks a job, and the new `runtime_proc.probe_process(pid)` checks a logical PID. Each returns `0` when the caller can signal the target or fails with `EPERM` when the target exists in the same root outside the caller's control. Missing targets and targets in another root fail with `ESRCH`. Exited processes still exist until collected. Probes wake nothing and change no state.
