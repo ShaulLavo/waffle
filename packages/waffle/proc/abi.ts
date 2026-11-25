@@ -92,6 +92,7 @@ export interface ProcessService {
   defaultSignal(pid: number, signal: number): void;
   /** Privileged local services check guest authority; broker clients are already caller-bound. */
   canSignal?(callerPid: number, targetPid: number): boolean;
+  canProbe?(callerPid: number, targetPid: number): boolean;
   canSignalJob?(callerPid: number, job: number): boolean;
   canProbeJob?(callerPid: number, job: number): boolean;
   canSignalProcess?(callerPid: number, processId: number): boolean;
@@ -269,10 +270,12 @@ export class ProcessABI {
       kill: (pid, signal) =>
         this.result(() => {
           const sig = checkedKillSignal(signal!);
-          if (options.service.canSignal) {
-            if (!options.service.canSignal(options.pid, pid!)) return -ProcessErrno.PERM;
-            if (sig === 0) return 0;
-          }
+          const allowed =
+            sig === 0 && options.service.canProbe
+              ? options.service.canProbe(options.pid, pid!)
+              : options.service.canSignal?.(options.pid, pid!);
+          if (allowed === false) return -ProcessErrno.PERM;
+          if (sig === 0 && allowed === true) return 0;
           options.service.kill(pid!, sig);
           return 0;
         }),

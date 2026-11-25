@@ -417,25 +417,41 @@ export class ProcessSupervisor {
   /** Guest adapters may signal themselves and descendants, never a sibling or ancestor. */
   canSignal(callerPid: number, pid: number): boolean {
     const caller = this.requireLiveCaller(callerPid);
-    const directory = this.callerDirectory(caller);
-    if (directory) return probeDirectoryProcess(directory, callerPid, pid);
     const target = this.table.require(pid);
-    if (
-      caller.rootPid === undefined ||
-      target.rootPid !== caller.rootPid ||
-      !this.isLiveDirectoryRecord(target)
-    )
+    if (caller.rootPid === undefined || target.rootPid !== caller.rootPid)
       throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
     return this.controls(callerPid, pid);
+  }
+  /** Signal 0 execution-handle probe: authoritative shared directory for directory-backed targets. */
+  canProbe(callerPid: number, pid: number): boolean {
+    const caller = this.requireLiveCaller(callerPid);
+    const target = this.table.get(pid);
+    if (target) {
+      if (caller.rootPid === undefined || target.rootPid !== caller.rootPid)
+        throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
+      if (isInstance(target.outcome, OutcomeCell)) {
+        if (!peekDirectoryProcess(target.outcome.validity.buffer, pid))
+          throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
+        return (
+          this.controls(callerPid, pid) ||
+          probeDirectoryProcess(target.outcome.validity.buffer, callerPid, pid)
+        );
+      }
+      return this.controls(callerPid, pid);
+    }
+    const directory = this.callerDirectory(caller);
+    if (directory) return probeDirectoryProcess(directory, callerPid, pid);
+    throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
   }
   /** Probe a logical process PID P across live and uncollected zombie members. */
   canSignalProcess(callerPid: number, processId: number): boolean {
     const caller = this.requireLiveCaller(callerPid);
-    if (!Number.isInteger(processId) || processId <= 0 || processId > 0x7fffffff)
-      throw new ProcessError(ProcessErrno.SRCH, `unknown process ${processId}`);
-    const directory = this.callerDirectory(caller);
-    if (directory) return probeDirectoryLogicalPid(directory, callerPid, processId);
-    if (caller.rootPid === undefined)
+    if (
+      caller.rootPid === undefined ||
+      !Number.isInteger(processId) ||
+      processId <= 0 ||
+      processId > 0x7fffffff
+    )
       throw new ProcessError(ProcessErrno.SRCH, `unknown process ${processId}`);
     let found = false;
     for (const record of this.table.values()) {
@@ -448,22 +464,43 @@ export class ProcessSupervisor {
       found = true;
       if (this.controls(callerPid, record.pid)) return true;
     }
+    const directory = this.callerDirectory(caller);
+    if (directory) {
+      try {
+        if (probeDirectoryLogicalPid(directory, callerPid, processId)) return true;
+        found = true;
+      } catch (error) {
+        if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH) throw error;
+      }
+    }
     if (!found) throw new ProcessError(ProcessErrno.SRCH, `unknown process ${processId}`);
     return false;
   }
   canSignalJob(callerPid: number, jobId: number): boolean {
     const caller = this.requireLiveCaller(callerPid);
-    const directory = this.callerDirectory(caller);
-    if (directory) return probeDirectoryJob(directory, callerPid, jobId);
     const job = this.table.job(jobId);
-    if (
-      !job ||
-      caller.rootPid === undefined ||
-      job.rootPid !== caller.rootPid ||
-      !this.isLiveDirectoryJob(jobId)
-    )
+    if (!job || caller.rootPid === undefined || job.rootPid !== caller.rootPid)
       throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
     return job.controlParent === callerPid;
+  }
+  /** Signal 0 job probe: authoritative shared directory for directory-backed jobs. */
+  canProbeJob(callerPid: number, jobId: number): boolean {
+    const caller = this.requireLiveCaller(callerPid);
+    const job = this.table.job(jobId);
+    if (job) {
+      if (caller.rootPid === undefined || job.rootPid !== caller.rootPid)
+        throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
+      const directory = this.table.jobDirectory(jobId);
+      if (directory) {
+        if (!peekDirectoryJob(directory, jobId))
+          throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
+        return job.controlParent === callerPid || probeDirectoryJob(directory, callerPid, jobId);
+      }
+      return job.controlParent === callerPid;
+    }
+    const directory = this.callerDirectory(caller);
+    if (directory) return probeDirectoryJob(directory, callerPid, jobId);
+    throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
   }
   /** A job is controlled by its owner and every live or retained ancestor of that owner. */
   canWaitJob(callerPid: number, jobId: number): boolean {

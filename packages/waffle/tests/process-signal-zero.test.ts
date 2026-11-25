@@ -557,7 +557,7 @@ test("signal 0 probes racing with caller exit do not retire pending executable a
   }
 });
 
-test("broker signal 0 probes use authoritative directory state and never lazily activate on a cold miss", async () => {
+function createBrokerFixture(onActivate?: () => void) {
   const identities = new ProcessIdentityAllocator();
   const table = new ProcessTable(identities);
   const filesystem: ProcessFilesystem = {
@@ -574,20 +574,31 @@ test("broker signal 0 probes use authoritative directory state and never lazily 
     module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
     interruptible: true,
   });
-  let activations = 0;
   const broker = new BrowserProcessBroker({
     reservations: testReservations(),
     identities,
     table,
     registry,
     filesystem,
-    activate: async () => {
-      activations++;
-      return await import("../proc/index.js");
-    },
+    ...(onActivate
+      ? {
+          activate: async () => {
+            onActivate();
+            return await import("../proc/index.js");
+          },
+        }
+      : {}),
     launch() {
       return { terminate() {} };
     },
+  });
+  return { identities, table, broker };
+}
+
+test("broker signal 0 probes use authoritative directory state and never lazily activate on a cold miss", async () => {
+  let activations = 0;
+  const { identities, table, broker } = createBrokerFixture(() => {
+    activations++;
   });
   try {
     // Cold miss must reject with ESRCH directly without activating the supervisor.
@@ -817,5 +828,68 @@ test("supervisor signal 0 probes isolate foreign roots sharing one ProcessTable"
     expect(abiForeignSibling.imports.kill_job!(foreignJob, 0)).toBe(-ProcessErrno.PERM);
   } finally {
     f.supervisor.dispose();
+  }
+});
+
+test("nonzero supervisor signals keep table authority for transferred jobs and standalone children under directory-backed roots", async () => {
+  const { identities, table, broker } = createBrokerFixture();
+  const rootTransport = createWorkerProcessTransport({
+    pid: identities.pid(),
+    job: identities.job(),
+    identity: identities.buffer,
+  });
+  rootTransport.data = { filesystem: createFilesystemIdentity() };
+  const messages: WorkerProcessMessage[] = [];
+  const rootClient = createWorkerClient(rootTransport, messages, () => {});
+  let parentClient: ReturnType<typeof createWorkerClient> | undefined;
+  try {
+    await broker.adoptRuntimeRoot(rootTransport, { memory: [] });
+
+    // Case 1: directory-backed tree where parent exits (uncollected) and supervisor transfers
+    // grandchild's independent job to grandparent while directory still names the exited parent.
+    const parentTransport = spawnWorkerChild(rootClient.client, messages);
+    parentTransport.data = { filesystem: createFilesystemIdentity() };
+    await broker.runtimeMessage(messages.at(-1)!, rootTransport.pid);
+    parentClient = createWorkerClient(parentTransport, messages, () => {});
+    const grandTransport = spawnWorkerChild(parentClient.client, messages);
+    grandTransport.data = { filesystem: createFilesystemIdentity() };
+    await broker.runtimeMessage(messages.at(-1)!, parentTransport.pid);
+
+    const supervisor = await broker.ready();
+    const grandJob = directoryState(grandTransport).job;
+    const rootRecord = supervisor.get(rootTransport.pid)!;
+    const rootAbi = new ProcessABI({
+      processIdentity: rootRecord.processIdentity,
+      memory: new WebAssembly.Memory({ initial: 1 }),
+      descriptors: rootRecord.image.descriptors,
+      fs: new MemFS(),
+      pid: rootRecord.pid,
+      service: supervisor,
+      signals: rootRecord,
+    });
+
+    // Parent exits without being collected; supervisor transfers grandJob ownership to root.
+    const parentDone = supervisor.waitForExit(rootTransport.pid, parentTransport.pid);
+    supervisor.exit(parentTransport.pid, 0);
+    await parentDone;
+    expect(table.job(grandJob)?.controlParent).toBe(rootTransport.pid);
+    expect(rootAbi.imports.kill_job!(grandJob, 0)).toBe(0);
+    expect(rootAbi.imports.kill_job!(grandJob, Signal.SIGINT)).toBe(0);
+
+    // Case 2: standalone supervisor-created child under a directory-backed root.
+    const standalone = supervisor.reserveSpawn(rootTransport.pid, spawnRequest());
+    const standaloneJob = supervisor.jobOf(standalone);
+    expect(rootAbi.imports.kill!(standalone, 0)).toBe(0);
+    expect(rootAbi.imports.probe_process!(standalone)).toBe(0);
+    expect(rootAbi.imports.kill_job!(standaloneJob, 0)).toBe(0);
+    expect(rootAbi.imports.kill!(standalone, Signal.SIGINT)).toBe(0);
+
+    const standaloneForJob = supervisor.reserveSpawn(rootTransport.pid, spawnRequest());
+    const standaloneForJobId = supervisor.jobOf(standaloneForJob);
+    expect(rootAbi.imports.kill_job!(standaloneForJobId, Signal.SIGINT)).toBe(0);
+  } finally {
+    parentClient?.descriptors.dispose();
+    rootClient.descriptors.dispose();
+    await broker.dispose();
   }
 });
