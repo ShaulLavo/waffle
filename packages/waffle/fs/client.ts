@@ -698,7 +698,7 @@ export class FilesystemClient implements FileSystem {
   private disposed = false;
   private finishedDispose = false;
   private deferredWriteCount = 0;
-  private deferredWaiters: (() => void)[] = [];
+  private deferredWaiters = new SetConstructor<() => void>();
   trackDeferredWrite(completion: FilesystemCompletion, onSettled: () => void): void {
     let done = false;
     this.deferredWriteCount++;
@@ -718,8 +718,8 @@ export class FilesystemClient implements FileSystem {
   }
   private notifyDeferredWaiters(): void {
     const waiters = this.deferredWaiters;
-    this.deferredWaiters = [];
-    for (let index = 0; index < waiters.length; index++) waiters[index]!();
+    this.deferredWaiters = new SetConstructor();
+    setForEach(waiters, (waiter) => waiter());
   }
   hasDeferredWrites(): boolean {
     return this.deferredWriteCount > 0;
@@ -733,15 +733,17 @@ export class FilesystemClient implements FileSystem {
     return new PromiseConstructor<boolean>((resolve) => {
       let finished = false;
       let timer: ReturnType<typeof scheduleTimeout> | undefined;
+      const onSettled = () => done(true);
       const done = (settled: boolean) => {
         if (finished) return;
         finished = true;
         if (timer !== undefined) cancelTimeout(timer);
+        setDelete(this.deferredWaiters, onSettled);
         resolve(settled);
       };
       if (timeoutMs !== undefined)
         timer = scheduleTimeout(() => done(false), mathMax(1, timeoutMs));
-      arrayAppend(this.deferredWaiters, () => done(true));
+      setAdd(this.deferredWaiters, onSettled);
       if (this.deferredWriteCount === 0) done(true);
     });
   }

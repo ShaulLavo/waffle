@@ -1892,8 +1892,64 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
       backend.execute = prevExecute;
       client2.dispose();
     }
+    // 5. CommandStdio write revoked while paused at the backend holds the shared offset lease
+    // through authoritative backend settlement and advances the offset before unlocking.
+    const { CommandStdio } = await import("../proc/command-stdio.js");
+    const pair3 = createFilesystemConnection(client.connection);
+    const reservation3 = client.reserve(handle, pair3.client);
+    pair3.client.reservations.push(reservation3);
+    pair3.server.reservations.push(reservation3);
+    service.connect(pair3.server);
+    const abort3 = new AbortController();
+    const table3 = new DescriptorTable();
+    const resource3 = { kind: "file" as const, handle, offset: 8, append: false };
+    shareFileResource(resource3, pair3.client, shareFileResource(resource, client.connection));
+    table3.open(resource3, ALL, ALL); // fd 0
+    table3.open(resource3, ALL, ALL); // fd 1
+    const stdio = new CommandStdio(table3, abort3.signal, pair3.client);
+    let releaseStdioWrite: (() => void) | undefined;
+    const stdioPaused = Promise.withResolvers<void>();
+    let stdioArmed = true;
+    const prevStdioExecute = backend.execute;
+    backend.execute = (operation: string, args: unknown[], data: Uint8Array) => {
+      if (operation === "write" && stdioArmed) {
+        stdioArmed = false;
+        const written = originalExecute(operation, args, data);
+        revokeFilesystem(pair3.client);
+        const gate = Promise.withResolvers<void>();
+        releaseStdioWrite = () => gate.resolve();
+        stdioPaused.resolve();
+        return gate.promise.then(() => written);
+      }
+      return prevStdioExecute(operation, args, data);
+    };
+    try {
+      const writePromise = stdio.stdout.write(new TextEncoder().encode("!!"));
+      await stdioPaused.promise;
+      await expect(writePromise).rejects.toThrow();
+      expect(claimFileOffset(resource).kind).toBe("busy");
+      const settling = stdio.settle();
+      releaseStdioWrite?.();
+      releaseStdioWrite = undefined;
+      await settling;
+      const afterStdio = claimFileOffset(resource);
+      expect(afterStdio.kind).toBe("acquired");
+      if (afterStdio.kind === "acquired") {
+        expect(afterStdio.lease.position).toBe(10);
+        afterStdio.lease.release();
+      }
+      expect(new TextDecoder().decode(await client.asyncCall("readFile", ["/f.txt"]))).toBe(
+        "LIVENEXT!!",
+      );
+    } finally {
+      releaseStdioWrite?.();
+      backend.execute = prevStdioExecute;
+      await stdio.settle();
+    }
+
     client.release(handle);
   } finally {
+    releaseOp?.();
     client.dispose();
     await service.shutdown();
     service.dispose();

@@ -336,19 +336,36 @@ export class ThreadService {
       append ? "append" : "write",
       [resource.handle, position],
       data,
+      lease
+        ? (committed) => {
+            const committedWritten: number = append ? committed.written : committed;
+            lease.commit(append ? committed.offset : position + committedWritten);
+          }
+        : undefined,
     );
     const written: number = append ? result.written : result;
-    lease?.commit(append ? result.offset : position + written);
     this.live();
     return { kind: "ok", value: written };
   }
 
-  private async request(operation: Operation, name: string, args: unknown[], data?: Uint8Array) {
+  private async request(
+    operation: Operation,
+    name: string,
+    args: unknown[],
+    data?: Uint8Array,
+    onCommitted?: (value: any) => void,
+  ) {
     this.live();
     const completion = this.options.filesystem.submit(name, args, data);
     operation.completions.add(completion);
+    let committedApplied = false;
     try {
-      return await completion.value();
+      const value = await completion.value();
+      if (onCommitted) {
+        committedApplied = true;
+        onCommitted(value);
+      }
+      return value;
     } catch (error) {
       if (
         error instanceof FilesystemTransportError ||
@@ -358,8 +375,21 @@ export class ThreadService {
       throw error;
     } finally {
       if (this.phase !== "open") await this.retire(operation);
+      if (onCommitted && !committedApplied) this.consumeCommitted(completion, onCommitted);
       completion.release();
       operation.completions.delete(completion);
+    }
+  }
+
+  private consumeCommitted(
+    completion: FilesystemCompletion,
+    onCommitted: (value: any) => void,
+  ): void {
+    try {
+      const committed = completion.tryConsumeCommitted();
+      if (committed !== undefined) onCommitted(committed);
+    } catch {
+      // Aborted or failed write: leave offset unchanged before releasing the completion.
     }
   }
 
