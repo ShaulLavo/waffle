@@ -11,7 +11,7 @@ import {
 } from "../proc/directory.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { readOutcome } from "../proc/outcome.js";
-import { ExecutableRegistry } from "../proc/registry.js";
+import { ExecutableRegistry, type CommandPrograms } from "../proc/registry.js";
 import { ProcessTable } from "../proc/table.js";
 import type { ProcessContext, SpawnRequest } from "../proc/types.js";
 import {
@@ -50,7 +50,10 @@ interface FixtureOptions {
   quiesce?: (filesystem: FilesystemIdentity) => void | Promise<void>;
   queued?: (root: WorkerProcessTransport, broker: BrowserProcessBroker) => void;
   capacity?: number;
+  programs?: CommandPrograms;
 }
+/** Cleanup strictness belongs to the command root, whichever programs it admits. */
+const policies = ["byte-backed", "guest"] as const;
 
 async function fixture(options: FixtureOptions = {}) {
   const calls: number[] = [];
@@ -103,7 +106,11 @@ async function fixture(options: FixtureOptions = {}) {
   };
   const filesystem = createFilesystemIdentity();
   const supervisor = await broker.ready();
-  await broker.adoptCommandRoot(root, { memory: [], filesystem, stop: ready });
+  await broker.adoptCommandRoot(
+    root,
+    { memory: [], filesystem, stop: ready },
+    options.programs ?? "byte-backed",
+  );
   const notices: WorkerProcessMessage[] = [];
   const descriptors = new DescriptorTable();
   const client = (
@@ -271,109 +278,116 @@ test("a collected process still holds its command until its late adapter handle 
   }
 });
 
-test("descriptor rollback failure keeps the exact unpublished child unconfirmed", async () => {
-  const f = await fixture();
-  const cause = new Error("discard did not release the transferred description");
-  try {
-    const stream = () => ({
-      kind: "pipe" as const,
-      read: () => 0,
-      write: () => 0,
-      readiness: () => ({ readable: true, writable: true, hangup: false }),
-    });
-    for (const fd of [0, 1]) f.descriptors.openAt(fd, stream(), 0n, 0n);
-    const target = Promise.withResolvers<number>();
-    let published = false;
-    let exported = false;
-    const source = f.client(f.root, {
-      postMessage: () => {
-        published = true;
-      },
-      codec: {
-        ...noDescriptors,
-        export(_descriptor, pid) {
-          if (exported) throw new Error("second descriptor export failed");
-          exported = true;
-          target.resolve(pid);
-          return { kind: "retained" };
+test.each(policies)(
+  "descriptor rollback failure keeps the exact unpublished child unconfirmed (%s)",
+  async (programs) => {
+    const f = await fixture({ programs });
+    const cause = new Error("discard did not release the transferred description");
+    try {
+      const stream = () => ({
+        kind: "pipe" as const,
+        read: () => 0,
+        write: () => 0,
+        readiness: () => ({ readable: true, writable: true, hangup: false }),
+      });
+      for (const fd of [0, 1]) f.descriptors.openAt(fd, stream(), 0n, 0n);
+      const target = Promise.withResolvers<number>();
+      let published = false;
+      let exported = false;
+      const source = f.client(f.root, {
+        postMessage: () => {
+          published = true;
         },
-        discard() {
-          throw cause;
+        codec: {
+          ...noDescriptors,
+          export(_descriptor, pid) {
+            if (exported) throw new Error("second descriptor export failed");
+            exported = true;
+            target.resolve(pid);
+            return { kind: "retained" };
+          },
+          discard() {
+            throw cause;
+          },
         },
-      },
-    });
-    expect(() =>
-      source.spawn(source.pid, {
-        ...request,
-        fds: [
-          { parent: 0, child: 0 },
-          { parent: 1, child: 1 },
-        ],
-      }),
-    ).toThrow("second descriptor export failed");
-    expect(published).toBe(false);
-    const pid = await target.promise;
-    const state = findDirectoryProcess(f.root, pid);
-    expect(state).toBeDefined();
-    expect(state && controlLoad(state.confirmed)).toBe(0);
-    expect(() => f.broker.checkCommandCleanup(f.root, true)).toThrow(
-      `Spawn transfer to process ${pid}`,
-    );
-  } finally {
-    await f.close();
-  }
-});
+      });
+      expect(() =>
+        source.spawn(source.pid, {
+          ...request,
+          fds: [
+            { parent: 0, child: 0 },
+            { parent: 1, child: 1 },
+          ],
+        }),
+      ).toThrow("second descriptor export failed");
+      expect(published).toBe(false);
+      const pid = await target.promise;
+      const state = findDirectoryProcess(f.root, pid);
+      expect(state).toBeDefined();
+      expect(state && controlLoad(state.confirmed)).toBe(0);
+      expect(() => f.broker.checkCommandCleanup(f.root, true)).toThrow(
+        `Spawn transfer to process ${pid}`,
+      );
+    } finally {
+      await f.close();
+    }
+  },
+);
 
-test("a staged exec rejection holds the source and reports the exact failure", async () => {
-  const staged = createFilesystemIdentity();
-  const fence = Promise.withResolvers<void>();
-  const fenced = Promise.withResolvers<void>();
-  const failure = new Error("staged filesystem release failed");
-  const f = await fixture({
-    launch: (context) => {
-      context.started();
-    },
-    quiesce: (identity) => {
-      if (identity !== staged) return;
-      fenced.resolve();
-      return fence.promise;
-    },
-  });
-  try {
-    const child = f.spawn();
-    await f.broker.runtimeMessage(child.message, f.root.pid);
-    await f.supervisor.start(child.pid);
-    const stagedMessage =
-      Promise.withResolvers<Extract<WorkerProcessMessage, { operation: "exec" }>>();
-    const source = f.client(child.transport, {
-      prepareExec: () => ({ data: { filesystem: staged } }),
-      registerRevocation: () => ready,
-      postMessage(message) {
-        if (message.operation !== "exec") throw new Error("expected exec");
-        stagedMessage.resolve(message);
+test.each(policies)(
+  "a staged exec rejection holds the source and reports the exact failure (%s)",
+  async (programs) => {
+    const staged = createFilesystemIdentity();
+    const fence = Promise.withResolvers<void>();
+    const fenced = Promise.withResolvers<void>();
+    const failure = new Error("staged filesystem release failed");
+    const f = await fixture({
+      programs,
+      launch: (context) => {
+        context.started();
+      },
+      quiesce: (identity) => {
+        if (identity !== staged) return;
+        fenced.resolve();
+        return fence.promise;
       },
     });
-    source.exec(child.pid, request);
-    const message = await stagedMessage.promise;
-    const state = workerProcessState(child.transport);
-    const handoff = commandExecTransfer(child.transport);
-    if (!handoff) throw new Error("missing scoped exec handoff");
-    expect(controlLoad(handoff)).toBe(2);
-    f.broker.rejectRuntimeMessage(message, child.pid);
-    await fenced.promise;
-    f.broker.stopCommandRoot(f.root);
-    expect(f.broker.checkCommandCleanup(f.root, true)).toBe(false);
-    expect(controlLoad(state.confirmed)).toBe(0);
-    fence.reject(failure);
-    await until(() => f.diagnostics.includes(failure));
-    expect(() => f.broker.checkCommandCleanup(f.root, true)).toThrow("transfer cleanup failed");
-    expect(controlLoad(handoff)).toBe(2);
-    expect(controlLoad(state.confirmed)).toBe(0);
-  } finally {
-    fence.resolve();
-    await f.close();
-  }
-});
+    try {
+      const child = f.spawn();
+      await f.broker.runtimeMessage(child.message, f.root.pid);
+      await f.supervisor.start(child.pid);
+      const stagedMessage =
+        Promise.withResolvers<Extract<WorkerProcessMessage, { operation: "exec" }>>();
+      const source = f.client(child.transport, {
+        prepareExec: () => ({ data: { filesystem: staged } }),
+        registerRevocation: () => ready,
+        postMessage(message) {
+          if (message.operation !== "exec") throw new Error("expected exec");
+          stagedMessage.resolve(message);
+        },
+      });
+      source.exec(child.pid, request);
+      const message = await stagedMessage.promise;
+      const state = workerProcessState(child.transport);
+      const handoff = commandExecTransfer(child.transport);
+      if (!handoff) throw new Error("missing scoped exec handoff");
+      expect(controlLoad(handoff)).toBe(2);
+      f.broker.rejectRuntimeMessage(message, child.pid);
+      await fenced.promise;
+      f.broker.stopCommandRoot(f.root);
+      expect(f.broker.checkCommandCleanup(f.root, true)).toBe(false);
+      expect(controlLoad(state.confirmed)).toBe(0);
+      fence.reject(failure);
+      await until(() => f.diagnostics.includes(failure));
+      expect(() => f.broker.checkCommandCleanup(f.root, true)).toThrow("transfer cleanup failed");
+      expect(controlLoad(handoff)).toBe(2);
+      expect(controlLoad(state.confirmed)).toBe(0);
+    } finally {
+      fence.resolve();
+      await f.close();
+    }
+  },
+);
 
 test("the leader can exit while an independent child's real retirement fences remain pending", async () => {
   const contexts = new Map<number, ProcessContext>();

@@ -97,7 +97,7 @@ import {
 import { type FilesystemConnection, type FilesystemIdentity, isRevoked } from "../fs/protocol.js";
 
 import type { ProcessSupervisor, RootProcessOptions } from "../proc/supervisor.js";
-import type { ExecutableRegistry, ResolvedExecutable } from "../proc/registry.js";
+import type { CommandPrograms, ExecutableRegistry, ResolvedExecutable } from "../proc/registry.js";
 import type { ProcessIdentityAllocator } from "../proc/identity.js";
 import type { ProcessRecord, ProcessTable } from "../proc/table.js";
 import {
@@ -463,6 +463,7 @@ function senderRevoked(
 
 interface CommandRootState {
   readonly root: WorkerProcessTransport;
+  readonly programs: CommandPrograms;
   readonly pending: Set<Promise<void>>;
   readonly failures: Map<WorkerProcessTransport, unknown>;
   stopped: boolean;
@@ -588,8 +589,8 @@ export class BrowserProcessBroker {
       (proc) => {
         const supervisor = (this.supervisor = new proc.ProcessSupervisor({
           registry: this.options.registry,
-          byteBackedGuestOnly: (rootPid) =>
-            rootPid !== undefined && !!this.commandRoots?.has(rootPid),
+          commandPrograms: (rootPid) =>
+            rootPid === undefined ? undefined : this.commandRoots?.get(rootPid)?.programs,
           table: this.options.table,
           launch: (context) => this.launchPrepared(context),
           launchCommand: (context) => this.launchPrepared(context),
@@ -1379,6 +1380,7 @@ export class BrowserProcessBroker {
   async adoptCommandRoot(
     transport: WorkerProcessTransport,
     options: RuntimeRootOptions,
+    programs: CommandPrograms,
   ): Promise<void> {
     if (this.suspended || !this.supervisor) throw new Error("Process broker is unavailable");
     const processCapacity = directoryCapacity(transport.directory);
@@ -1398,6 +1400,7 @@ export class BrowserProcessBroker {
     transport.data = { filesystem: options.filesystem, pipeRegistry: registry.handle() };
     (this.commandRoots ??= new Map()).set(transport.pid, {
       root: transport,
+      programs,
       pending: new Set(),
       failures: new Map(),
       stopped: false,

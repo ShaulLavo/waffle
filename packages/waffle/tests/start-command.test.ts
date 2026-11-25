@@ -101,6 +101,27 @@ test("a real generic command Worker can start within the bounded runtime and exi
   expect(attempt.stderr.toString()).toBe("");
 }, 35_000);
 
+test("guest programs and leader exit follow the command's policies in real Workers", () => {
+  const entry = new URL("./fixtures/command-policies.ts", import.meta.url).pathname;
+  const attempt = Bun.spawnSync([process.execPath, entry], { timeout: 60_000 });
+  // The two refused starts are reported on stderr by design, so only the status is the verdict.
+  expect(attempt.exitCode, attempt.stderr.toString()).toBe(0);
+}, 65_000);
+
+test("command policies reject unknown values before any process is reserved", async () => {
+  const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: fsWorker } });
+  try {
+    expect(() =>
+      startCommand(runtime, "/fixture", { ...options, programs: "registered" as "guest" }),
+    ).toThrow('Command programs must be "byte-backed" or "guest"');
+    expect(() =>
+      startCommand(runtime, "/fixture", { ...options, onLeaderExit: "kill" as "stop" }),
+    ).toThrow('Command onLeaderExit must be "join" or "stop"');
+  } finally {
+    await runtime.dispose();
+  }
+});
+
 test("runtime disposal failure rejects the command before broker disposal and cancels stdin", () => {
   const entry = new URL("./fixtures/command-disposal.ts", import.meta.url).pathname;
   const attempt = Bun.spawnSync([process.execPath, entry], { timeout: 5000 });

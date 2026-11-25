@@ -130,10 +130,13 @@ export class ExecutableNotRunnable extends Error {
     this.name = "ExecutableNotRunnable";
   }
 }
+/** Guest programs a command tree may run: only those admitted from Wasm bytes, or compiled
+ * cooperative modules as well. Neither admits a host command or a registered script. */
+export type CommandPrograms = "byte-backed" | "guest";
 /** Generic names -> compiled module + adapter, with one compilation per module source.
  * Instances and used workers are deliberately not cached.
  */
-type AdmissionMode = "access" | "execute" | "byte-backed-guest";
+type AdmissionMode = "access" | "execute" | CommandPrograms;
 
 export class ExecutableRegistry {
   private readonly entries = new Map<string, RegisteredExecutable | ScriptExecutable>();
@@ -181,15 +184,9 @@ export class ExecutableRegistry {
     cwd = "/",
     assertActive: () => void = () => {},
     argv?: readonly string[],
-    byteBackedGuestOnly = false,
+    commandPrograms?: CommandPrograms,
   ): Promise<ResolvedExecutable> {
-    const admitted = await this.admit(
-      name,
-      cwd,
-      assertActive,
-      argv,
-      byteBackedGuestOnly ? "byte-backed-guest" : "execute",
-    );
+    const admitted = await this.admit(name, cwd, assertActive, argv, commandPrograms ?? "execute");
     const entry = admitted.entry;
     assertActive();
     if ("command" in entry) return this.resolveCommand(entry, admitted.argv, assertActive);
@@ -337,12 +334,8 @@ export class ExecutableRegistry {
       );
     }
     const resolved = file.path === predicted ? registered : this.entries.get(file.path);
-    if (mode === "byte-backed-guest")
-      return this.admitByteBackedGuest(
-        file.kind === "file" ? resolved : undefined,
-        file.path,
-        argv,
-      );
+    if (mode === "byte-backed" || mode === "guest")
+      return this.admitGuest(file.kind === "file" ? resolved : undefined, file.path, argv, mode);
     const admitted =
       resolved &&
       !(
@@ -415,7 +408,7 @@ export class ExecutableRegistry {
     symlinks: number,
     scriptName: string,
   ): Promise<AdmittedExecutable> {
-    if (mode === "byte-backed-guest") return this.admitByteBackedGuest(entry, path, argv);
+    if (mode === "byte-backed" || mode === "guest") return this.admitGuest(entry, path, argv, mode);
     if (!entry) throw new ExecutableNotFound(path);
     if ("script" in entry)
       return this.admitRegisteredScript(
@@ -434,16 +427,17 @@ export class ExecutableRegistry {
     return { entry, ...(argv ? { argv } : {}) };
   }
 
-  private admitByteBackedGuest(
+  private admitGuest(
     entry: RegisteredExecutable | ScriptExecutable | undefined,
     path: string,
-    argv?: readonly string[],
+    argv: readonly string[] | undefined,
+    programs: CommandPrograms,
   ): AdmittedExecutable {
     if (
       !entry ||
       "script" in entry ||
       "command" in entry ||
-      !entry.interruptible ||
+      (programs === "byte-backed" && !entry.interruptible) ||
       entry.execution?.kind !== "guest"
     )
       throw new ExecutableNotRunnable(path, false);
