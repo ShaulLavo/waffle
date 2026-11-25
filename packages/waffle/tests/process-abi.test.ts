@@ -1963,24 +1963,28 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
     const stdio4 = new CommandStdio(table4, abort4.signal, pair4.client);
     // Drop the write descriptor on the client port after submit so service.receive() never sees it.
     const origPost4 = pair4.client.port.postMessage.bind(pair4.client.port);
+    const descriptorDropped = Promise.withResolvers<void>();
     let dropOnce = true;
     pair4.client.port.postMessage = ((msg: unknown, transfer?: StructuredSerializeOptions) => {
       if (dropOnce && msg && typeof msg === "object" && "id" in msg) {
         dropOnce = false;
+        descriptorDropped.resolve();
         return;
       }
       return origPost4(msg, transfer as never);
     }) as typeof pair4.client.port.postMessage;
     const undeliveredWrite = stdio4.stdout.write(new TextEncoder().encode("??"));
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await descriptorDropped.promise;
+    client.release(handle);
+    client.dispose();
+    // Start service.shutdown() FIRST so shutdownOwner is active and shutdownFence() is waiting,
+    // then inject the protocol error while shutdown is already underway.
+    const shutdownPromise = service.shutdown();
     const { closeRequestMemory } = await import("../fs/request-memory.js");
     const { wake } = await import("../fs/protocol.js");
     closeRequestMemory(pair4.client.requests, "protocol");
     wake(pair4.client);
     await expect(undeliveredWrite).rejects.toThrow();
-    client.release(handle);
-    client.dispose();
-    const shutdownPromise = service.shutdown();
     const settle4 = stdio4.settle();
     await Promise.all([shutdownPromise, settle4]);
     expect(resource.offset).toBe(10);

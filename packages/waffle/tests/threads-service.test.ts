@@ -306,21 +306,22 @@ test("a completed file read cannot publish after actual filesystem revocation", 
 
 for (const failureMode of ["revoke", "transport"] as const) {
   test(`a threaded write that committed before ${failureMode} advances and unlocks the shared offset`, async () => {
-    const { FilesystemError, revokeFilesystem, wake } = await import("../fs/protocol.ts");
+    const { revokeFilesystem, wake } = await import("../fs/protocol.ts");
     const { closeRequestMemory } = await import("../fs/request-memory.ts");
     const value = await serviceFixture("growth");
-    const completed = Promise.withResolvers<void>();
+    const published = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const submit = value.client.submit.bind(value.client);
     value.client.submit = (name, args, data) => {
       const completion = submit(name, args, data);
       const waitValue = completion.value.bind(completion);
       completion.value = async () => {
-        await waitValue();
-        completed.resolve();
+        // Gate on backend reply publication BEFORE decoding so completion.value() observes
+        // the injected revocation/transport fault before consuming State.Complete.
+        await new Promise<void>((resolve) => completion.onBackendSettled(resolve));
+        published.resolve();
         await release.promise;
-        if (failureMode === "revoke") throw new FilesystemError(11);
-        return completion.consumeInline();
+        return await waitValue();
       };
       return completion;
     };
@@ -334,7 +335,7 @@ for (const failureMode of ["revoke", "transport"] as const) {
       });
       await value.event("held");
       value.send({ kind: "release" });
-      await completed.promise;
+      await published.promise;
       if (failureMode === "revoke") revokeFilesystem(value.client.connection);
       else {
         closeRequestMemory(value.client.connection.requests, "protocol");

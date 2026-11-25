@@ -272,27 +272,27 @@ export class ThreadService {
     await Promise.race([previous?.catch(() => {}), this.cancelled.promise]);
     this.live();
     const lease = await this.offset(resource);
-    let committed = false;
+    const leaseState: { current: "held" | "settled" | "deferred" } = { current: "held" };
     try {
-      return await this.file(operation, resource, lease.position, lease, () => {
-        committed = true;
+      return await this.file(operation, resource, lease.position, lease, (next) => {
+        leaseState.current = next;
       });
     } finally {
       // Revocation can reject value() while remote preparation still owns this operation.
-      if (this.phase !== "open") await this.retireSequential(operation, lease, committed);
-      lease.release();
+      if (this.phase !== "open") await this.retireSequential(operation, lease, leaseState.current);
+      if (leaseState.current !== "deferred") lease.release();
     }
   }
 
   private async retireSequential(
     operation: Operation,
     lease: AsyncFileOffsetLease,
-    committed: boolean,
+    leaseState: "held" | "settled" | "deferred",
   ): Promise<void> {
     try {
       await this.retire(operation);
     } catch (error) {
-      if (committed) lease.release();
+      if (leaseState === "settled") lease.release();
       throw error;
     }
   }
@@ -312,7 +312,7 @@ export class ThreadService {
     resource: FileResource,
     position: number,
     lease?: AsyncFileOffsetLease,
-    onLeaseCommitted?: () => void,
+    onLeaseState?: (state: "settled" | "deferred") => void,
   ): Promise<ThreadResult> {
     this.live();
     const request = operation.request;
@@ -328,7 +328,7 @@ export class ThreadService {
       this.position(next);
       this.live();
       lease!.commit(next);
-      onLeaseCommitted?.();
+      onLeaseState?.("settled");
       return { kind: "ok", value: next };
     }
     if (request.kind !== "read" && request.kind !== "write") throw new FilesystemError(58);
@@ -343,7 +343,7 @@ export class ThreadService {
         position,
       ]);
       lease?.commit(position + bytes.length);
-      if (lease) onLeaseCommitted?.();
+      if (lease) onLeaseState?.("settled");
       this.live();
       this.scatter(request.spans, bytes);
       return { kind: "ok", value: bytes.length };
@@ -356,10 +356,13 @@ export class ThreadService {
       [resource.handle, position],
       data,
       lease
-        ? (committed) => {
-            const committedWritten: number = append ? committed.written : committed;
-            lease.commit(append ? committed.offset : position + committedWritten);
-            onLeaseCommitted?.();
+        ? {
+            lease,
+            commit: (committed) => {
+              const committedWritten: number = append ? committed.written : committed;
+              lease.commit(append ? committed.offset : position + committedWritten);
+            },
+            onState: onLeaseState,
           }
         : undefined,
     );
@@ -373,7 +376,11 @@ export class ThreadService {
     name: string,
     args: unknown[],
     data?: Uint8Array,
-    onCommitted?: (value: any) => void,
+    writeLease?: {
+      lease: AsyncFileOffsetLease;
+      commit: (value: any) => void;
+      onState?: (state: "settled" | "deferred") => void;
+    },
   ) {
     this.live();
     const completion = this.options.filesystem.submit(name, args, data);
@@ -381,9 +388,10 @@ export class ThreadService {
     let committedApplied = false;
     try {
       const value = await completion.value();
-      if (onCommitted) {
+      if (writeLease) {
         committedApplied = true;
-        onCommitted(value);
+        writeLease.commit(value);
+        writeLease.onState?.("settled");
       }
       return value;
     } catch (error) {
@@ -394,7 +402,7 @@ export class ThreadService {
         this.cancelAll();
       throw error;
     } finally {
-      await this.finishRequest(operation, completion, committedApplied, onCommitted);
+      await this.finishRequest(operation, completion, committedApplied, writeLease);
     }
   }
 
@@ -402,17 +410,51 @@ export class ThreadService {
     operation: Operation,
     completion: FilesystemCompletion,
     committedApplied: boolean,
-    onCommitted?: (value: any) => void,
+    writeLease?: {
+      lease: AsyncFileOffsetLease;
+      commit: (value: any) => void;
+      onState?: (state: "settled" | "deferred") => void;
+    },
   ): Promise<void> {
     const retiredError = this.phase !== "open" ? await this.tryRetire(operation) : undefined;
-    const settled =
-      committedApplied ||
-      (onCommitted !== undefined && this.consumeCommitted(completion, onCommitted));
-    if (retiredError === undefined || settled || completion.backendSettled) {
+    if (writeLease && !committedApplied) {
+      this.settleWriteLease(operation, completion, writeLease, retiredError === undefined);
+    } else if (retiredError === undefined || committedApplied || completion.backendSettled) {
       completion.release();
       operation.completions.delete(completion);
     }
     if (retiredError !== undefined) throw retiredError;
+  }
+
+  private settleWriteLease(
+    operation: Operation,
+    completion: FilesystemCompletion,
+    writeLease: {
+      lease: AsyncFileOffsetLease;
+      commit: (value: any) => void;
+      onState?: (state: "settled" | "deferred") => void;
+    },
+    retiredCleanly: boolean,
+  ): void {
+    // Check monotonic backendSettled BEFORE tryConsumeCommitted so a Pending->Complete
+    // transition can never release the completion without applying the committed offset.
+    if (retiredCleanly || completion.backendSettled) {
+      this.consumeCommitted(completion, writeLease.commit);
+      writeLease.onState?.("settled");
+      completion.release();
+      operation.completions.delete(completion);
+      return;
+    }
+    writeLease.onState?.("deferred");
+    this.options.filesystem.trackDeferredWrite(completion, () => {
+      try {
+        this.consumeCommitted(completion, writeLease.commit);
+      } finally {
+        completion.release();
+        operation.completions.delete(completion);
+        writeLease.lease.release();
+      }
+    });
   }
 
   private async tryRetire(operation: Operation): Promise<unknown> {

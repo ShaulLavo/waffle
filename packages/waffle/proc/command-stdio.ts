@@ -190,11 +190,12 @@ export class CommandStdio {
     writing: boolean,
   ): Promise<number> {
     let releaseLease = true;
+    const defer = () => {
+      releaseLease = false;
+    };
     try {
       if (writing) {
-        const written = await this.writeAsyncFileLease(filesystem, resource, lease, bytes, () => {
-          releaseLease = false;
-        });
+        const written = await this.writeAsyncFileLease(filesystem, resource, lease, bytes, defer);
         lease.release();
         releaseLease = false;
         this.check();

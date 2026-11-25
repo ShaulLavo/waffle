@@ -2172,14 +2172,27 @@ export class FilesystemService {
   }
   private async drainFailedSessionRequests(session: Session): Promise<void> {
     // A transport error stops receive() from accepting new descriptors. Drain every already-
-    // accepted write first, then retire transport memory so undelivered client writes can release
-    // their offset leases and filesystem sections without deadlocking shutdownFence().
+    // accepted request (including flush/sync barriers kept outside this.queue) and preparation
+    // first, then retire transport memory so undelivered client writes can release their leases.
     await waitForRequestQuiescence(session.connection, session.requests);
     for (;;) {
       const queue = this.queue;
       await queue;
+      const pending = Array.from(this.runningRequests).filter(
+        (done) => this.work.get(done) === session,
+      );
+      if (pending.length) await Promise.allSettled(pending);
       if (session.preparations.size) await Promise.allSettled(Array.from(session.preparations));
-      if (queue === this.queue && !session.preparations.size && !session.inFlightWrites.size) break;
+      const stillRunning = Array.from(this.runningRequests).some(
+        (done) => this.work.get(done) === session,
+      );
+      if (
+        queue === this.queue &&
+        !stillRunning &&
+        !session.preparations.size &&
+        !session.inFlightWrites.size
+      )
+        break;
     }
     this.cancelPendingRequests(session);
     const failure = requestTransportError(session.requests);
