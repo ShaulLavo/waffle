@@ -230,7 +230,10 @@ export class FilesystemCompletion {
     const failure = this.client.transportError();
     if (failure?.reason === "stale") return true;
     try {
-      return requestMemoryRetired(this.client.connection.requests);
+      return (
+        requestMemoryRetired(this.client.connection.requests) &&
+        requestMemoryRetirementError(this.client.connection.requests) === 0
+      );
     } catch {
       return true;
     }

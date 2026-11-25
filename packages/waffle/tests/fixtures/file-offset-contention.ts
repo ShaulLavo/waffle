@@ -1,10 +1,6 @@
-import { DescriptorTable } from "../../core/descriptors";
-import { FilesystemClient, type FilesystemConnection } from "../../fs";
-import {
-  createFilesystemDescriptorCodec,
-  type FilesystemDescriptorToken,
-} from "../../proc/filesystem-codec";
-import { atomicHost } from "./wasi-atomic-host";
+import type { FilesystemConnection } from "../../fs";
+import type { FilesystemDescriptorToken } from "../../proc/filesystem-codec";
+import type { atomicHost as AtomicHostFn } from "./wasi-atomic-host";
 
 export interface OffsetRequest {
   connection: FilesystemConnection;
@@ -65,7 +61,10 @@ const seekModule = new WebAssembly.Module(
   ),
 );
 
-function runOperation(host: ReturnType<typeof atomicHost>, operation: OffsetRequest["operation"]) {
+function runOperation(
+  host: ReturnType<typeof AtomicHostFn>,
+  operation: OffsetRequest["operation"],
+) {
   if (operation === "read") return host.calls.fd_read!(8, 0, 1, 1024);
   if (operation !== "seek") return host.calls.fd_write!(8, 0, 1, 1024);
   const seek = host.wasi.imports(seekModule).wasi_snapshot_preview1?.fd_seek;
@@ -73,7 +72,23 @@ function runOperation(host: ReturnType<typeof atomicHost>, operation: OffsetRequ
   return seek(8, 2n, 1, 1040);
 }
 
-self.onmessage = ({ data }: MessageEvent<OffsetRequest>) => {
+self.onmessage = async ({ data }: MessageEvent<OffsetRequest>) => {
+  // Install Atomics observers before importing core/open-file so captured intrinsics observe lock calls.
+  const counts =
+    data.role === "contender" && data.token.offset
+      ? observeLock(data.token.offset)
+      : { attempts: 0, waits: 0 };
+  const [
+    { DescriptorTable },
+    { FilesystemClient },
+    { createFilesystemDescriptorCodec },
+    { atomicHost },
+  ] = await Promise.all([
+    import("../../core/descriptors"),
+    import("../../fs"),
+    import("../../proc/filesystem-codec"),
+    import("./wasi-atomic-host"),
+  ]);
   const client = new FilesystemClient(data.connection);
   const table = new DescriptorTable();
   const description = createFilesystemDescriptorCodec(client).import(data.token, 8);
@@ -90,8 +105,6 @@ self.onmessage = ({ data }: MessageEvent<OffsetRequest>) => {
       while (!Atomics.load(gate, 0)) Atomics.wait(gate, 0, 0);
       return write(...args);
     };
-  const counts =
-    data.role === "contender" ? observeLock(data.token.offset) : { attempts: 0, waits: 0 };
   host.iovecs([new Uint8Array([data.role === "holder" ? 72 : 80])]);
   try {
     const errno = runOperation(host, data.operation);

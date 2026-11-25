@@ -1947,8 +1947,9 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
       await stdio.settle();
     }
 
-    // 6. An undelivered CommandStdio write hitting a transport error during service.shutdown()
-    // retires transport memory cleanly without deadlocking shutdownFence().
+    // 6. An undelivered CommandStdio write AND a paused sync barrier hitting a transport error
+    // during service.shutdown() wait for the barrier before retiring transport memory, then
+    // settle the undelivered write cleanly without deadlocking shutdownFence().
     const pair4 = createFilesystemConnection(client.connection);
     const reservation4 = client.reserve(handle, pair4.client);
     pair4.client.reservations.push(reservation4);
@@ -1961,7 +1962,28 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
     table4.open(resource4, ALL, ALL);
     table4.open(resource4, ALL, ALL);
     const stdio4 = new CommandStdio(table4, abort4.signal, pair4.client);
-    // Drop the write descriptor on the client port after submit so service.receive() never sees it.
+    const pair5 = createFilesystemConnection(client.connection);
+    const reservation5 = client.reserve(handle, pair5.client);
+    pair5.client.reservations.push(reservation5);
+    pair5.server.reservations.push(reservation5);
+    service.connect(pair5.server);
+    const client5 = new FilesystemClient(pair5.client);
+    client5.adopt(reservation5);
+    let releaseSync: (() => void) | undefined;
+    const syncPaused = Promise.withResolvers<void>();
+    const flushBackend = backend as typeof backend & { flush?: () => Promise<void> | void };
+    const prevFlush = flushBackend.flush;
+    let syncArmed = true;
+    flushBackend.flush = () => {
+      if (syncArmed) {
+        syncArmed = false;
+        const gate = Promise.withResolvers<void>();
+        releaseSync = () => gate.resolve();
+        syncPaused.resolve();
+        return gate.promise;
+      }
+      return prevFlush?.();
+    };
     const origPost4 = pair4.client.port.postMessage.bind(pair4.client.port);
     const descriptorDropped = Promise.withResolvers<void>();
     let dropOnce = true;
@@ -1973,21 +1995,44 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
       }
       return origPost4(msg, transfer as never);
     }) as typeof pair4.client.port.postMessage;
-    const undeliveredWrite = stdio4.stdout.write(new TextEncoder().encode("??"));
-    await descriptorDropped.promise;
-    client.release(handle);
-    client.dispose();
-    // Start service.shutdown() FIRST so shutdownOwner is active and shutdownFence() is waiting,
-    // then inject the protocol error while shutdown is already underway.
-    const shutdownPromise = service.shutdown();
-    const { closeRequestMemory } = await import("../fs/request-memory.js");
-    const { wake } = await import("../fs/protocol.js");
-    closeRequestMemory(pair4.client.requests, "protocol");
-    wake(pair4.client);
-    await expect(undeliveredWrite).rejects.toThrow();
-    const settle4 = stdio4.settle();
-    await Promise.all([shutdownPromise, settle4]);
-    expect(resource.offset).toBe(10);
+    try {
+      const syncPending = client5.asyncCall("sync", [handle]).then(
+        () => "resolved",
+        () => "rejected",
+      );
+      await syncPaused.promise;
+      const undeliveredWrite = stdio4.stdout.write(new TextEncoder().encode("??")).then(
+        () => "resolved",
+        () => "rejected",
+      );
+      await descriptorDropped.promise;
+      client.release(handle);
+      client.dispose();
+      // Start service.shutdown() FIRST so shutdownOwner is active and shutdownFence() is waiting,
+      // then inject protocol errors on both sessions while shutdown is underway.
+      const shutdownPromise = service.shutdown();
+      const { closeRequestMemory, requestMemoryRetired } = await import("../fs/request-memory.js");
+      const { wake } = await import("../fs/protocol.js");
+      closeRequestMemory(pair4.client.requests, "protocol");
+      wake(pair4.client);
+      closeRequestMemory(pair5.client.requests, "protocol");
+      wake(pair5.client);
+      expect(await undeliveredWrite).toBe("rejected");
+      expect(await syncPending).toBe("rejected");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      // While the sync barrier on pair5 is still executing, its request memory MUST NOT be retired!
+      expect(requestMemoryRetired(pair5.client.requests)).toBe(false);
+      releaseSync?.();
+      releaseSync = undefined;
+      client5.dispose();
+      await Promise.all([shutdownPromise, stdio4.settle()]);
+      expect(requestMemoryRetired(pair5.client.requests)).toBe(true);
+      expect(resource.offset).toBe(10);
+    } finally {
+      releaseSync?.();
+      flushBackend.flush = prevFlush;
+      client5.dispose();
+    }
   } finally {
     releaseOp?.();
     client.dispose();

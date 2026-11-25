@@ -354,3 +354,78 @@ for (const failureMode of ["revoke", "transport"] as const) {
     }
   });
 }
+
+test("a threaded write still pending when a transport error and failed retirement hit defers settlement until backend commits", async () => {
+  const { MemoryBackend, FilesystemService, FilesystemClient, createFilesystemConnection } =
+    await import("../fs/index.ts");
+  const { wake } = await import("../fs/protocol.ts");
+  const { closeRequestMemory, retireRequestMemory } = await import("../fs/request-memory.ts");
+  const { DescriptorTable } = await import("../core/descriptors.ts");
+  const { RIGHTS_ALL } = await import("../core/rights.ts");
+  const { ThreadService } = await import("../thread/service.ts");
+  const backend = new MemoryBackend();
+  const origExecute = backend.execute.bind(backend);
+  let releaseWrite: (() => void) | undefined;
+  const writePaused = Promise.withResolvers<void>();
+  let armed = true;
+  backend.execute = (operation: string, args: unknown[], data: Uint8Array) => {
+    if (operation === "write" && armed) {
+      armed = false;
+      const result = origExecute(operation, args, data);
+      const gate = Promise.withResolvers<void>();
+      releaseWrite = () => gate.resolve();
+      writePaused.resolve();
+      return gate.promise.then(() => result);
+    }
+    return origExecute(operation, args, data);
+  };
+  const fsService = new FilesystemService(backend);
+  const pair = createFilesystemConnection();
+  fsService.connect(pair.server);
+  const client = new FilesystemClient(pair.client);
+  const descriptors = new DescriptorTable();
+  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
+  try {
+    await client.asyncCall("writeFile", ["/f.txt", false, false], new Uint8Array());
+    const root: number = await client.asyncCall("preopen", ["/"]);
+    const handle = (await client.asyncCall("resolve", [root, "f.txt", true])).node as number;
+    client.retain(handle);
+    const resource = { kind: "file" as const, handle, offset: 0, append: false };
+    const shared = shareFileResource(resource, pair.client);
+    const fd = descriptors.open(resource, RIGHTS_ALL, RIGHTS_ALL, () => client.release(handle));
+    const service = new ThreadService({
+      directory: "test",
+      pid: 1,
+      memory,
+      filesystem: client,
+      descriptors,
+    });
+    new Uint8Array(memory.buffer).set(new TextEncoder().encode("EF"), 256);
+    const pending = service.submit(
+      { thread: { directory: "test", pid: 1, tid: 1 }, sequence: 1 },
+      { kind: "write", fd, spans: [{ address: 256, length: 2 }] },
+    );
+    await writePaused.promise;
+    // Inject both a protocol transport error and a failed retirement (nonzero errno):
+    // neither proves the in-flight write aborted, so the offset lease must stay held.
+    closeRequestMemory(pair.client.requests, "protocol");
+    retireRequestMemory(pair.client.requests, 29);
+    wake(pair.client);
+    await expect(pending).rejects.toThrow("invalid control message");
+    expect(client.hasDeferredWrites()).toBe(true);
+    expect(Atomics.load(new Int32Array(shared), 0)).toBe(pair.client.owner);
+    // Resume the backend write -> deferred callback consumes State.Complete, advances offset, unlocks.
+    const settling = client.settleDeferredWrites();
+    releaseWrite?.();
+    releaseWrite = undefined;
+    expect(await settling).toBe(true);
+    expect(resource.offset).toBe(2);
+    expect(Atomics.load(new Int32Array(shared), 0)).toBe(0);
+  } finally {
+    releaseWrite?.();
+    descriptors.dispose();
+    client.dispose();
+    await fsService.shutdown();
+    fsService.dispose();
+  }
+});
