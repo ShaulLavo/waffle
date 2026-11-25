@@ -623,7 +623,7 @@ export class ProcessABI {
   ): number {
     this.checkFatal();
     if (this.pending()) return -ProcessErrno.AGAIN;
-    const claim = tryClaimFileOffset(resource);
+    const claim = tryClaimFileOffset(resource, true);
     if (claim?.kind === "failed") {
       this.checkFatal();
       return -claim.errno;

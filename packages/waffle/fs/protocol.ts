@@ -18,6 +18,7 @@ import {
   objectKeys,
   stringIncludes,
   SharedArrayBufferConstructor,
+  typedArrayBuffer,
   Uint8ArrayConstructor,
   objectDefineProperty,
 } from "../proc/intrinsics.js";
@@ -498,7 +499,9 @@ function decodable(buffer: ArrayBufferLike): boolean {
 }
 export function unpack(bytes: Uint8Array): any {
   // TextDecoder rejects views over shared or resizable backing, so only those are copied.
-  const text = decoder.decode(decodable(bytes.buffer) ? bytes : new Uint8Array(bytes));
+  const text = decoder.decode(
+    decodable(typedArrayBuffer(bytes)) ? bytes : new Uint8ArrayConstructor(bytes),
+  );
   const value: unknown = JSON.parse(text);
   // A tag is an own object key beginning with "$", which JSON writes as `"$` or as the escape
   // for U+0024. Without either, no object is tagged and the parsed tree is already the answer.

@@ -226,7 +226,14 @@ export class FilesystemCompletion {
     );
   }
   get backendSettled(): boolean {
-    return !!this.client.transportError() || atomicsLoad(this.cells, 0) !== State.Pending;
+    if (atomicsLoad(this.cells, 0) !== State.Pending) return true;
+    const failure = this.client.transportError();
+    if (failure?.reason === "stale") return true;
+    try {
+      return requestMemoryRetired(this.client.connection.requests);
+    } catch {
+      return true;
+    }
   }
   get hasBackendWaiters(): boolean {
     return this.backendWaiters.length > 0;
@@ -599,7 +606,7 @@ export class FilesystemClient implements FileSystem {
     this.epoch = new Int32ArrayConstructor(connection.epoch);
     this.signal = new Int32ArrayConstructor(connection.signal);
     const revoked = sharedRevoked(connection);
-    this.revoked = () => revoked() || !!this.transportError();
+    this.revoked = () => this.disposed || revoked() || !!this.transportError();
     if (connection.residentPublication)
       this.resident = new ResidentAttachment(connection.residentPublication, this.revoked);
     this.section = new FilesystemTransportSection(connection, this.requests.memory, this.revoked);
@@ -688,6 +695,8 @@ export class FilesystemClient implements FileSystem {
   /** A single shared-signal waiter handles service death without a port completion message.
    * Normal replies still use the port; the watcher exits when the last completion is released.
    */
+  private disposed = false;
+  private finishedDispose = false;
   private deferredWriteCount = 0;
   private deferredWaiters: (() => void)[] = [];
   trackDeferredWrite(completion: FilesystemCompletion, onSettled: () => void): void {
@@ -697,8 +706,14 @@ export class FilesystemClient implements FileSystem {
       if (done) return;
       done = true;
       this.deferredWriteCount--;
-      onSettled();
-      if (this.deferredWriteCount === 0) this.notifyDeferredWaiters();
+      try {
+        onSettled();
+      } finally {
+        if (this.deferredWriteCount === 0) {
+          this.notifyDeferredWaiters();
+          if (this.disposed) this.finishDispose();
+        }
+      }
     });
   }
   private notifyDeferredWaiters(): void {
@@ -709,20 +724,25 @@ export class FilesystemClient implements FileSystem {
   hasDeferredWrites(): boolean {
     return this.deferredWriteCount > 0;
   }
-  /** Wait for any deferred direct-disabled writes to settle at the backend before teardown. */
-  settleDeferredWrites(timeoutMs = 5_000): Promise<void> {
-    if (this.deferredWriteCount === 0) return PromiseConstructor.resolve();
-    return new PromiseConstructor<void>((resolve) => {
+  /** Wait for deferred direct-disabled writes to settle authoritatively at the backend.
+   * With no timeout, waits until every deferred write settles; with a finite timeout, returns
+   * true if all settled in time or false if deferred writes are still pending. */
+  settleDeferredWrites(timeoutMs?: number): Promise<boolean> {
+    if (this.deferredWriteCount === 0)
+      return new PromiseConstructor<boolean>((resolve) => resolve(true));
+    return new PromiseConstructor<boolean>((resolve) => {
       let finished = false;
-      const done = () => {
+      let timer: ReturnType<typeof scheduleTimeout> | undefined;
+      const done = (settled: boolean) => {
         if (finished) return;
         finished = true;
-        cancelTimeout(timer);
-        resolve();
+        if (timer !== undefined) cancelTimeout(timer);
+        resolve(settled);
       };
-      const timer = scheduleTimeout(done, mathMax(1, timeoutMs));
-      arrayAppend(this.deferredWaiters, done);
-      if (this.deferredWriteCount === 0) done();
+      if (timeoutMs !== undefined)
+        timer = scheduleTimeout(() => done(false), mathMax(1, timeoutMs));
+      arrayAppend(this.deferredWaiters, () => done(true));
+      if (this.deferredWriteCount === 0) done(true);
     });
   }
   private sweepRevokedCompletions(): boolean {
@@ -1023,16 +1043,10 @@ export class FilesystemClient implements FileSystem {
     if (!options.signal?.aborted) setAdd(this.watchers, watcher);
     return watcher;
   }
-  dispose(): void {
-    this.resident?.invalidate();
-    this.beginWorkspaceStop();
-    // The disposing agent is quiescent: no synchronous file operation can be active here.
-    reapFilesystem(this.connection);
+  private clearDisposedCaches(): void {
     setForEach(this.watchers, (watcher) => {
       void watcher.close();
     });
-    mapForEach(this.completions, (completion) => completion.release());
-    mapClear(this.completions);
     mapClear(this.ioPreparations);
     mapClear(this.stagedWrites);
     this.stagedHandles = new SetConstructor();
@@ -1043,8 +1057,33 @@ export class FilesystemClient implements FileSystem {
     mapClear(this.openHandles);
     mapClear(this.fileSlots);
     mapClear(this.capabilityEntries);
+  }
+  private finishDispose(): void {
+    if (this.finishedDispose) return;
+    this.finishedDispose = true;
+    this.disposed = true;
+    // The disposing agent is quiescent: no synchronous file operation or deferred write is active.
+    reapFilesystem(this.connection);
+    this.clearDisposedCaches();
+    mapForEach(this.completions, (completion) => completion.release());
+    mapClear(this.completions);
     this.sweep();
     this.connection.port.close();
+  }
+  dispose(): void {
+    if (this.finishedDispose) return;
+    this.disposed = true;
+    this.resident?.invalidate();
+    this.beginWorkspaceStop();
+    if (this.deferredWriteCount > 0) {
+      this.clearDisposedCaches();
+      mapForEach(this.completions, (completion) => {
+        if (!completion.hasBackendWaiters) completion.release();
+      });
+      this.watchRevocation();
+      return;
+    }
+    this.finishDispose();
   }
   private version(): number {
     if (this.revoked()) throw new FilesystemError(11);

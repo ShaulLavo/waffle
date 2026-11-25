@@ -246,7 +246,7 @@ export function drainAsyncFileDiagnostic(
         );
         return;
       }
-      const claim = claimFileOffset(resource);
+      const claim = claimFileOffset(resource, true);
       if (claim.kind === "failed") {
         reject(
           new ProcessError(

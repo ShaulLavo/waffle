@@ -18,6 +18,8 @@ const WeakMapConstructor = WeakMap;
 const weakMapGet = WeakMap.prototype.get;
 const weakMapSet = WeakMap.prototype.set;
 const objectDefineProperties = Object.defineProperties;
+const typedArrayPrototype = Object.getPrototypeOf(Int32Array.prototype);
+const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer")!.get!;
 const reflectApply = Reflect.apply;
 
 type FileResource = Extract<Resource, { kind: "file" }>;
@@ -52,7 +54,8 @@ export function shareFileResource(
   // conversion: existing JS offsets above 2^63 must not wrap into negative positions.
   const offset = new BigUint64ArrayConstructor(shared, 8, 1);
   const value = new Float64ArrayConstructor(1);
-  const bits = new BigUint64ArrayConstructor(value.buffer);
+  const valueBuffer = reflectApply(typedArrayBufferGetter, value, []) as ArrayBuffer;
+  const bits = new BigUint64ArrayConstructor(valueBuffer);
   const readOffset = (): number => {
     bits[0] = atomicsLoad(offset, 0);
     return value[0]!;
@@ -66,39 +69,42 @@ export function shareFileResource(
     atomicsStore(cells, 1, ((resource.fdflags ?? 0) & ~1) | (resource.append ? 1 : 0));
     writeOffset(resource.offset);
   }
-  reflectApply(weakMapSet, offsets, [
-    resource,
-    {
-      buffer: shared,
-      cells,
-      ownerStates,
-      identity,
-      section: new FilesystemSection(identity),
-      readOffset,
-      writeOffset,
-      readAppend,
-    },
-  ]);
-  objectDefineProperties(resource, {
+  const state: SharedOffset = {
+    buffer: shared,
+    cells,
+    ownerStates,
+    identity,
+    section: new FilesystemSection(identity),
+    readOffset,
+    writeOffset,
+    readAppend,
+  };
+  const descriptors = {
+    __proto__: null,
     offset: {
+      __proto__: null,
       enumerable: true,
       configurable: false,
       get: readOffset,
       set: writeOffset,
     },
     append: {
+      __proto__: null,
       enumerable: true,
       configurable: false,
       get: readAppend,
       set: (flag: boolean) => (flag ? atomicsOr(cells, 1, 1) : atomicsAnd(cells, 1, ~1)),
     },
     fdflags: {
+      __proto__: null,
       enumerable: true,
       configurable: false,
       get: () => atomicsLoad(cells, 1),
       set: (flags: number) => atomicsStore(cells, 1, flags),
     },
-  });
+  } as unknown as PropertyDescriptorMap;
+  objectDefineProperties(resource, descriptors);
+  reflectApply(weakMapSet, offsets, [resource, state]);
   return shared;
 }
 
@@ -113,17 +119,21 @@ export type OffsetClaim =
   | { kind: "busy"; word: Int32Array; observed: number }
   | { kind: "failed"; errno: number };
 
-/** The operation owner must drain leases before filesystem quiescence can reap this identity. */
-export function claimFileOffset(resource: FileResource): OffsetClaim {
-  const claim = tryClaimFileOffset(resource);
+/** The operation owner must drain leases before filesystem quiescence can reap this identity.
+ * Pass `holdSection = true` only for callers that settle without awaiting transport retirement. */
+export function claimFileOffset(resource: FileResource, holdSection = false): OffsetClaim {
+  const claim = tryClaimFileOffset(resource, holdSection);
   if (!claim) throw new Error("async file offsets require a shared description");
   return claim;
 }
 
 /** Claim a shared file offset when the description is shared; undefined for local descriptions.
- * Keeps the filesystem section entered until the returned lease is released so quiescence and
- * session cleanup wait for the leased operation to settle. */
-export function tryClaimFileOffset(resource: FileResource): OffsetClaim | undefined {
+ * When `holdSection` is true, keeps the filesystem section entered until `lease.release()` so
+ * quiescence waits for the leased operation to settle before reaping the owner. */
+export function tryClaimFileOffset(
+  resource: FileResource,
+  holdSection = false,
+): OffsetClaim | undefined {
   const state = getSharedOffset(resource);
   if (!state) return undefined;
   const { cells, ownerStates, identity, section } = state;
@@ -139,7 +149,7 @@ export function tryClaimFileOffset(resource: FileResource): OffsetClaim | undefi
     const owner = atomicsCompareExchange(cells, 0, 0, identity.owner);
     if (owner === 0) {
       acquired = true;
-      const lease = offsetLease(state);
+      const lease = offsetLease(state, holdSection);
       handedToLease = true;
       return { kind: "acquired", lease };
     }
@@ -152,11 +162,13 @@ export function tryClaimFileOffset(resource: FileResource): OffsetClaim | undefi
         atomicsNotify(cells, 0);
       }
       section.exit();
+    } else if (!holdSection) {
+      section.exit();
     }
   }
 }
 
-function offsetLease(state: SharedOffset): AsyncFileOffsetLease {
+function offsetLease(state: SharedOffset, holdSection: boolean): AsyncFileOffsetLease {
   const { cells, identity, section } = state;
   const position = state.readOffset();
   const append = state.readAppend();
@@ -176,7 +188,7 @@ function offsetLease(state: SharedOffset): AsyncFileOffsetLease {
         atomicsCompareExchange(cells, 0, identity.owner, 0);
         atomicsNotify(cells, 0);
       } finally {
-        section.exit();
+        if (holdSection) section.exit();
       }
     },
   };

@@ -714,6 +714,10 @@ function runPoisonedDiagnostic(
   const origCas = Atomics.compareExchange;
   const origNotify = Atomics.notify;
   const origInt32 = globalThis.Int32Array;
+  const origFloat64 = globalThis.Float64Array;
+  const origBigUint64 = globalThis.BigUint64Array;
+  const typedArrayProto = Object.getPrototypeOf(Int32Array.prototype);
+  const origBufferDesc = Object.getOwnPropertyDescriptor(typedArrayProto, "buffer")!;
   const restore = () => {
     Math.min = origMin;
     Number.isInteger = origIsInt;
@@ -723,11 +727,14 @@ function runPoisonedDiagnostic(
     Atomics.compareExchange = origCas;
     Atomics.notify = origNotify;
     globalThis.Int32Array = origInt32;
+    globalThis.Float64Array = origFloat64;
+    globalThis.BigUint64Array = origBigUint64;
+    Object.defineProperty(typedArrayProto, "buffer", origBufferDesc);
+    delete (Object.prototype as Record<string, unknown>).value;
   };
   try {
     for (const reservation of connection.reservations) fs.adopt(reservation);
     const resource = { kind: "file" as const, handle: sharedHandle, offset: 0, append: false };
-    shareFileResource(resource, fs.connection, sharedOffset);
 
     Math.min = () => {
       throw new Error("poisoned Math.min");
@@ -750,6 +757,23 @@ function runPoisonedDiagnostic(
     globalThis.Int32Array = (() => {
       throw new Error("poisoned Int32Array");
     }) as unknown as Int32ArrayConstructor;
+    globalThis.Float64Array = (() => {
+      throw new Error("poisoned Float64Array");
+    }) as unknown as Float64ArrayConstructor;
+    globalThis.BigUint64Array = (() => {
+      throw new Error("poisoned BigUint64Array");
+    }) as unknown as BigUint64ArrayConstructor;
+    Object.defineProperty(typedArrayProto, "buffer", {
+      configurable: true,
+      get() {
+        throw new Error("poisoned TypedArray.prototype.buffer");
+      },
+    });
+    Object.defineProperty(Object.prototype, "value", {
+      configurable: true,
+      writable: true,
+      value: 123,
+    });
     let thenTouched = 0;
     Reflect.set(
       Promise.prototype,
@@ -763,6 +787,9 @@ function runPoisonedDiagnostic(
         return origThen.call(this, onFulfilled, onRejected);
       },
     );
+
+    // Promote the shared offset AFTER poisoning globals and prototypes to cover first-time promotion.
+    shareFileResource(resource, fs.connection, sharedOffset);
 
     const drained = drainAsyncFileDiagnostic(fs, resource, encoder.encode("!"), () => true);
     origThen.call(

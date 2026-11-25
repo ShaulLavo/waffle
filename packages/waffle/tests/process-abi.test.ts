@@ -1816,6 +1816,8 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
     service.connect(pair2.server);
     const client2 = new FilesystemClient(pair2.client);
     client2.adopt(reservation);
+    let releaseAfterMutate: (() => void) | undefined;
+    const prevExecute = backend.execute;
     try {
       const f2 = fixture();
       const resource2 = { kind: "file" as const, handle, offset: 4, append: false };
@@ -1826,10 +1828,10 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
       );
       const fd2 = f2.descriptors.open(resource2, ALL, ALL);
       const mutated = Promise.withResolvers<void>();
-      let releaseAfterMutate!: () => void;
-      const prevExecute = backend.execute;
+      let pausedOnce = true;
       backend.execute = (operation: string, args: unknown[], data: Uint8Array) => {
-        if (operation === "write") {
+        if (operation === "write" && pausedOnce) {
+          pausedOnce = false;
           const written = originalExecute(operation, args, data);
           revokeFilesystem(client2.connection);
           const gate = Promise.withResolvers<void>();
@@ -1839,6 +1841,8 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
         }
         return prevExecute(operation, args, data);
       };
+      const { closeRequestMemory } = await import("../fs/request-memory.js");
+      const { wake } = await import("../fs/protocol.js");
       const abi2 = new ProcessABI({
         processIdentity: f2.supervisor.get(f2.pid)!.processIdentity,
         memory: f2.memory,
@@ -1855,13 +1859,25 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
       f2.bytes().set(new TextEncoder().encode("NEXT"), 1024);
       expect(() => abi2.imports.write!(fd2, 1024, 4)).toThrow(ProcessSignalExit);
       await mutated.promise;
-      // Triggering service.sweep() while the write is still paused must NOT discard the
-      // pending write or clear session.pending while the offset lease + section are held.
+      // Concurrent protocol transport failure + service.sweep() + early client2.dispose() while
+      // the backend write is still paused must NOT release the offset lease or reap the owner.
+      closeRequestMemory(client2.connection.requests, "protocol");
+      wake(client2.connection);
       service.sweep();
+      expect(await client2.settleDeferredWrites(40)).toBe(false);
+      client2.dispose();
+      expect(
+        Atomics.load(new Int32Array(client2.connection.ownerStates), client2.connection.owner),
+      ).not.toBe(2);
       expect(claimFileOffset(resource).kind).toBe("busy");
-      const teardown2 = client2.settleDeferredWrites(2_000);
-      releaseAfterMutate();
-      await teardown2;
+
+      const teardown2 = client2.settleDeferredWrites();
+      releaseAfterMutate?.();
+      releaseAfterMutate = undefined;
+      expect(await teardown2).toBe(true);
+      expect(
+        Atomics.load(new Int32Array(client2.connection.ownerStates), client2.connection.owner),
+      ).toBe(2);
       const survivingClaim = claimFileOffset(resource);
       expect(survivingClaim.kind).toBe("acquired");
       if (survivingClaim.kind === "acquired") {
@@ -1872,6 +1888,8 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
         "LIVENEXT",
       );
     } finally {
+      releaseAfterMutate?.();
+      backend.execute = prevExecute;
       client2.dispose();
     }
     client.release(handle);

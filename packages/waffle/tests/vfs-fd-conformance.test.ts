@@ -429,13 +429,15 @@ describe("MultiTabBackend cross-tab live freshness, failover, and diagnostic saf
           ).rejects.toThrow("diagnostic reader made no progress");
           await paused.writePaused;
 
-          // While the dispatched write is still paused, another holder MUST see busy (offset 0 locked).
+          // While the dispatched write is still paused, another holder MUST see busy (offset 0 locked),
+          // and a bounded settleDeferredWrites timeout must report false without releasing the lease.
+          expect(await env.client.settleDeferredWrites(40)).toBe(false);
           expect(claimFileOffset(resource).kind).toBe("busy");
 
           // Resume backend write -> wait on explicit deferred settlement (no arbitrary sleep).
-          const settling = env.client.settleDeferredWrites(5_000);
+          const settling = env.client.settleDeferredWrites();
           paused.release();
-          await settling;
+          expect(await settling).toBe(true);
         } finally {
           paused.restore();
         }
@@ -503,9 +505,10 @@ describe("MultiTabBackend cross-tab live freshness, failover, and diagnostic saf
           sharedOffset,
         });
         await paused.writePaused;
-        // Wait past DIAGNOSTIC_STALL_TIMEOUT_MS (5s) so bootstrap's diagnostic drain times out
-        // and enters finishOwned(); teardown must STILL keep the offset locked until backend settles.
-        await new Promise((resolve) => setTimeout(resolve, 5_150));
+        // Wait past DIAGNOSTIC_STALL_TIMEOUT_MS (5s) AND past the former 5s teardown window (>10s)
+        // so bootstrap's diagnostic drain times out and finishOwned() waits authoritatively without
+        // reaping or releasing the shared offset lock while the backend write is still live.
+        await new Promise((resolve) => setTimeout(resolve, 10_200));
         expect(claimFileOffset(resource).kind).toBe("busy");
 
         // Resume backend write -> worker settles the offset, finishes teardown, and reports stall error.
@@ -531,5 +534,5 @@ describe("MultiTabBackend cross-tab live freshness, failover, and diagnostic saf
     } finally {
       await env.close();
     }
-  }, 20_000);
+  }, 25_000);
 });
