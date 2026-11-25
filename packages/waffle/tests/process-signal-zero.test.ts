@@ -2,8 +2,14 @@ import { expect, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors";
 import { MemFS } from "../fs/memory";
 import { BrowserProcessBroker, type ProcessFilesystem } from "../browser/process-broker";
-import { controlLoad, controlStore } from "../proc/control";
-import { confirmDirectoryProcess, directoryState, wakeDirectory } from "../proc/directory";
+import { createFilesystemIdentity } from "../fs/protocol";
+import { controlLoad, controlStore, packedControl } from "../proc/control";
+import {
+  confirmDirectoryProcess,
+  directoryState,
+  findDirectoryJob,
+  wakeDirectory,
+} from "../proc/directory";
 import { ProcessIdentityAllocator } from "../proc/identity";
 import { claimOutcome, readOutcome } from "../proc/outcome";
 import { requestSignal, setSignalDisposition, type SignalTransport } from "../proc/signals";
@@ -11,7 +17,13 @@ import { ProcessABI } from "../proc/abi";
 import { ExecutableRegistry } from "../proc/registry";
 import { ProcessSupervisor } from "../proc/supervisor";
 import { ProcessTable } from "../proc/table";
-import { ProcessErrno, ProcessError, Signal, checkedSignal } from "../proc/types";
+import {
+  ProcessErrno,
+  ProcessError,
+  Signal,
+  checkedSignal,
+  type SpawnRequest,
+} from "../proc/types";
 import {
   WorkerProcessClient,
   createWorkerProcessTransport,
@@ -20,13 +32,14 @@ import {
 } from "../proc/worker-client";
 import { testReservations } from "./fixtures/shared-memory-platform";
 
-const spawnRequest = (job = 0) => ({
+const spawnRequest = (job = 0, overrides: Partial<SpawnRequest> = {}): SpawnRequest => ({
   executable: "fixture",
   argv: [],
   env: {},
   cwd: "/",
   job,
   fds: [],
+  ...overrides,
 });
 
 const unusedCodec = {
@@ -111,9 +124,10 @@ function spawnWorkerChild(
   parent: WorkerProcessClient,
   messages: WorkerProcessMessage[],
   job = 0,
+  overrides: Partial<SpawnRequest> = {},
 ): WorkerProcessTransport {
   const before = messages.length;
-  parent.spawn(parent.pid, spawnRequest(job));
+  parent.spawn(parent.pid, spawnRequest(job, overrides));
   const spawnMessage = messages.slice(before).find((message) => message.operation === "spawn");
   if (!spawnMessage || spawnMessage.operation !== "spawn") {
     throw new Error("expected spawn message");
@@ -418,5 +432,257 @@ test("browser process broker kill(pid, 0) checks existence without waking or sig
     expect(launches).toBe(0);
   } finally {
     await broker.dispose();
+  }
+});
+
+test("worker kill_job(job, 0) never assists sealed collection, never wakes, and isolates foreign roots", () => {
+  const identities = new ProcessIdentityAllocator();
+  const messagesA: WorkerProcessMessage[] = [];
+  const messagesB: WorkerProcessMessage[] = [];
+  const rootATransport = createWorkerProcessTransport({
+    pid: identities.pid(),
+    job: identities.job(),
+    identity: identities.buffer,
+  });
+  const rootBTransport = createWorkerProcessTransport({
+    pid: identities.pid(),
+    job: identities.job(),
+    identity: identities.buffer,
+  });
+  const rootA = createWorkerClient(rootATransport, messagesA, () => {});
+  const rootB = createWorkerClient(rootBTransport, messagesB, () => {});
+  const childTransport = spawnWorkerChild(rootA.client, messagesA);
+  const childState = directoryState(childTransport);
+  const childJob = childState.job;
+
+  try {
+    // Live job in another root sharing the identity allocator must answer ESRCH, not ECHILD.
+    expect(rootA.abi.imports.kill_job!(rootB.client.job, 0)).toBe(-ProcessErrno.SRCH);
+    expectProcessError(() => rootA.client.killJob(rootB.client.job, 0), ProcessErrno.SRCH);
+
+    // Complete child and simulate a paused collector right after its consuming CAS on pending.
+    claimOutcome(childState.signals.outcome, { kind: "exited", code: 0 });
+    controlStore(childState.confirmed, 0, 1);
+    confirmDirectoryProcess(childTransport);
+    const group = findDirectoryJob(rootATransport.directory, childJob)!;
+    const rawPending = new BigInt64Array(group.pending.buffer, group.pending.byteOffset, 1);
+    expect(
+      Atomics.compareExchange(
+        rawPending,
+        0,
+        packedControl(childJob, 0),
+        packedControl(childJob, -1),
+      ),
+    ).toBe(packedControl(childJob, 0));
+
+    const wakeBefore = Atomics.load(rootA.client.wake, 0);
+    // Probing an unrelated missing job or the sealed job must return ESRCH without finishing
+    // the sealed job or advancing the directory wake word.
+    expect(rootA.abi.imports.kill_job!(99999, 0)).toBe(-ProcessErrno.SRCH);
+    expect(rootA.abi.imports.kill_job!(childJob, 0)).toBe(-ProcessErrno.SRCH);
+    expect(Atomics.load(rootA.client.wake, 0)).toBe(wakeBefore);
+    // Sealed row stays unfinalized until a real wait lookup assists it.
+    expect(Atomics.load(rawPending, 0)).toBe(packedControl(childJob, -1));
+    // Wait lookup still preserves its ECHILD contract and collection assistance.
+    expect(rootA.abi.imports.wait_job!(childJob, 1, 64)).toBe(-ProcessErrno.CHILD);
+    expect(Atomics.load(rootA.client.wake, 0)).toBeGreaterThan(wakeBefore);
+    // Collected job continues to answer ESRCH to signal 0 probes.
+    expect(rootA.abi.imports.kill_job!(childJob, 0)).toBe(-ProcessErrno.SRCH);
+  } finally {
+    rootB.descriptors.dispose();
+    rootA.descriptors.dispose();
+  }
+});
+
+test("signal 0 probes racing with caller exit do not retire pending executable access requests", () => {
+  const messages: WorkerProcessMessage[] = [];
+  const rootTransport = createWorkerProcessTransport();
+  const root = createWorkerClient(rootTransport, messages, () => {});
+  try {
+    const requestId = root.client.accessStart(root.client.pid, "/bin/fixture", "/");
+    expect(requestId).toBeGreaterThan(0);
+    const accessMsg = messages.find((message) => message.operation === "access");
+    if (!accessMsg || accessMsg.operation !== "access") throw new Error("expected access message");
+    const completion = new Int32Array(accessMsg.request.completion);
+    expect(Atomics.load(completion, 0)).toBe(0);
+
+    // Select caller exit without running teardown yet.
+    claimOutcome(root.client.signals.outcome, { kind: "exited", code: 0 });
+    expect(root.abi.imports.kill!(root.client.pid, 0)).toBe(-ProcessErrno.SRCH);
+    expect(root.abi.imports.kill_job!(root.client.job, 0)).toBe(-ProcessErrno.SRCH);
+    expect(root.abi.imports.probe_process!(root.client.processIdentity.pid)).toBe(
+      -ProcessErrno.SRCH,
+    );
+    // Access completion word must remain pending (0), not retired (2).
+    expect(Atomics.load(completion, 0)).toBe(0);
+  } finally {
+    root.descriptors.dispose();
+  }
+});
+
+test("broker signal 0 probes use authoritative directory state and never lazily activate on a cold miss", async () => {
+  const identities = new ProcessIdentityAllocator();
+  const table = new ProcessTable(identities);
+  const filesystem: ProcessFilesystem = {
+    connect() {
+      throw new Error("unused");
+    },
+    revoke() {},
+    reap() {},
+    async quiesce() {},
+  };
+  const registry = new ExecutableRegistry();
+  registry.register("fixture", {
+    adapter: "fixture",
+    module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
+    interruptible: true,
+  });
+  let activations = 0;
+  const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
+    identities,
+    table,
+    registry,
+    filesystem,
+    activate: async () => {
+      activations++;
+      return await import("../proc/index.js");
+    },
+    launch() {
+      return { terminate() {} };
+    },
+  });
+  try {
+    // Cold miss must reject with ESRCH directly without activating the supervisor.
+    await expect(broker.kill(99999, 0)).rejects.toMatchObject({ errno: ProcessErrno.SRCH });
+    await expect(broker.killJob(99999, 0)).rejects.toMatchObject({ errno: ProcessErrno.SRCH });
+    expect(activations).toBe(0);
+
+    // Adopt a directory-backed root and spawn a child, then activate and admit it into table.
+    const rootTransport = createWorkerProcessTransport({
+      pid: identities.pid(),
+      job: identities.job(),
+      identity: identities.buffer,
+    });
+    rootTransport.data = { filesystem: createFilesystemIdentity() };
+    await broker.adoptRuntimeRoot(rootTransport, { memory: [] });
+    expect(activations).toBe(0);
+
+    // Still cold: probe root succeeds, cold miss still does not activate.
+    await expect(broker.kill(rootTransport.pid, 0)).resolves.toBeUndefined();
+    await expect(broker.killJob(directoryState(rootTransport).job, 0)).resolves.toBeUndefined();
+    await expect(broker.kill(99999, 0)).rejects.toMatchObject({ errno: ProcessErrno.SRCH });
+    await expect(broker.killJob(99999, 0)).rejects.toMatchObject({ errno: ProcessErrno.SRCH });
+    expect(activations).toBe(0);
+
+    // Now activate supervisor and admit a worker child into the page table.
+    const messages: WorkerProcessMessage[] = [];
+    const rootClient = createWorkerClient(rootTransport, messages, () => {});
+    try {
+      const childTransport = spawnWorkerChild(rootClient.client, messages);
+      childTransport.data = { filesystem: createFilesystemIdentity() };
+      const spawnMsg = messages.find((m) => m.operation === "spawn")!;
+      await broker.runtimeMessage(spawnMsg, rootTransport.pid);
+      const supervisor = await broker.ready();
+      const childState = directoryState(childTransport);
+      expect(table.get(childState.pid)).toBeDefined();
+      expect(table.job(childState.job)).toBeDefined();
+
+      // Complete child through supervisor and collect the job locally, holding back reap-job.
+      const completion = supervisor.waitForExit(rootClient.client.pid, childState.pid);
+      supervisor.exit(childState.pid, 0);
+      await completion;
+      expect(rootClient.client.waitJob(rootClient.client.pid, childState.job)).toMatchObject({
+        kind: "exited",
+        code: 0,
+      });
+
+      // Page table still holds the stale child and job until the reap notice is delivered.
+      expect(table.get(childState.pid)).toBeDefined();
+      expect(table.job(childState.job)).toBeDefined();
+      // Broker probes must consult the authoritative shared directory and answer ESRCH.
+      await expect(broker.kill(childState.pid, 0)).rejects.toMatchObject({
+        errno: ProcessErrno.SRCH,
+      });
+      await expect(broker.killJob(childState.job, 0)).rejects.toMatchObject({
+        errno: ProcessErrno.SRCH,
+      });
+    } finally {
+      rootClient.descriptors.dispose();
+    }
+  } finally {
+    await broker.dispose();
+  }
+});
+
+test("runtime_proc.probe_process resolves logical PIDs without exposing private thread execution handles", () => {
+  const f = createSupervisorFixture();
+  try {
+    const thread = f.supervisor.reserveSpawn(f.root, spawnRequest(-1, { processKind: "thread" }));
+    const child = f.supervisor.reserveSpawn(f.root, spawnRequest());
+    const childThread = f.supervisor.reserveSpawn(
+      child,
+      spawnRequest(-1, { processKind: "thread" }),
+    );
+    const sibling = f.supervisor.reserveSpawn(f.root, spawnRequest());
+    const rootAbi = f.abiFor(f.root);
+    const threadAbi = f.abiFor(thread);
+    const childAbi = f.abiFor(child);
+    const siblingAbi = f.abiFor(sibling);
+
+    // Logical PID 1 (root + thread) succeeds for root and thread, EPERM for child.
+    expect(rootAbi.imports.probe_process!(f.root)).toBe(0);
+    expect(threadAbi.imports.probe_process!(f.root)).toBe(0);
+    expect(childAbi.imports.probe_process!(f.root)).toBe(-ProcessErrno.PERM);
+    // Private thread execution handles are NOT logical PIDs: probe_process answers ESRCH,
+    // while raw execution-handle kill(handle, 0) keeps its execution-handle contract.
+    expect(rootAbi.imports.probe_process!(thread)).toBe(-ProcessErrno.SRCH);
+    expect(threadAbi.imports.probe_process!(thread)).toBe(-ProcessErrno.SRCH);
+    expect(rootAbi.imports.probe_process!(childThread)).toBe(-ProcessErrno.SRCH);
+    expect(rootAbi.imports.kill!(thread, 0)).toBe(0);
+    expect(rootAbi.imports.kill!(childThread, 0)).toBe(0);
+
+    // Child's logical PID stays alive while its thread survives leader collection.
+    const childJob = f.supervisor.jobOf(child);
+    expect(rootAbi.imports.probe_process!(child)).toBe(0);
+    expect(siblingAbi.imports.probe_process!(child)).toBe(-ProcessErrno.PERM);
+    f.supervisor.exit(child, 0);
+    expect(f.supervisor.wait(f.root, child)).toMatchObject({ kind: "exited", code: 0 });
+    expect(rootAbi.imports.probe_process!(child)).toBe(0);
+    expect(siblingAbi.imports.probe_process!(child)).toBe(-ProcessErrno.PERM);
+    f.supervisor.exit(childThread, 0);
+    expect(f.supervisor.waitJob(f.root, childJob)).toMatchObject({ kind: "exited", code: 0 });
+    expect(rootAbi.imports.probe_process!(child)).toBe(-ProcessErrno.SRCH);
+    expect(siblingAbi.imports.probe_process!(child)).toBe(-ProcessErrno.SRCH);
+  } finally {
+    f.supervisor.dispose();
+  }
+
+  // Same logical-PID probe contract in shared worker directory.
+  const messages: WorkerProcessMessage[] = [];
+  const rootTransport = createWorkerProcessTransport();
+  const root = createWorkerClient(rootTransport, messages, () => {});
+  const threadTransport = spawnWorkerChild(root.client, messages, -1, { processKind: "thread" });
+  const childTransport = spawnWorkerChild(root.client, messages);
+  const thread = createWorkerClient(threadTransport, messages, () => {});
+  const child = createWorkerClient(childTransport, messages, () => {});
+  try {
+    const beforeWake = Atomics.load(root.client.wake, 0);
+    const beforeMessages = messages.length;
+    expect(root.abi.imports.probe_process!(root.client.processIdentity.pid)).toBe(0);
+    expect(thread.abi.imports.probe_process!(root.client.processIdentity.pid)).toBe(0);
+    expect(child.abi.imports.probe_process!(root.client.processIdentity.pid)).toBe(
+      -ProcessErrno.PERM,
+    );
+    expect(root.abi.imports.probe_process!(thread.client.pid)).toBe(-ProcessErrno.SRCH);
+    expect(root.abi.imports.kill!(thread.client.pid, 0)).toBe(0);
+    expect(root.abi.imports.probe_process!(child.client.processIdentity.pid)).toBe(0);
+    expect(root.abi.imports.probe_process!(99999)).toBe(-ProcessErrno.SRCH);
+    expect(Atomics.load(root.client.wake, 0)).toBe(beforeWake);
+    expect(messages.length).toBe(beforeMessages);
+  } finally {
+    child.descriptors.dispose();
+    thread.descriptors.dispose();
+    root.descriptors.dispose();
   }
 });

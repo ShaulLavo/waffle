@@ -346,6 +346,72 @@ export function* directoryGroups(
     }
   }
 }
+/** Read-only execution-handle lookup: ignores processes whose job was sealed/collected. */
+export function peekDirectoryProcess(
+  directory: SharedArrayBuffer,
+  pid: number,
+): ReturnType<typeof directoryState> | undefined {
+  const capacity = directoryCapacity(directory);
+  const processes = new BigInt64ArrayConstructor(directory, HEADER_BYTES, capacity * PROCESS_WORDS);
+  for (let slot = 0; slot < capacity; slot++) {
+    const token = atomicsLoad(processes, slot * PROCESS_WORDS);
+    if ((token & 0xffffffffn) !== 1n || Number(token >> 32n) !== pid) continue;
+    try {
+      const state = directoryState({ directory, slot, pid });
+      if (controlLoad(state.jobPending, 0) >= 0) return state;
+    } catch (error) {
+      if (!isCollectedProcess(error)) throw error;
+    }
+  }
+  return undefined;
+}
+/** Read-only logical-PID scan: returns live/zombie members whose job is not sealed. */
+export function findDirectoryProcessesByLogicalPid(
+  handle: DirectoryHandle,
+  processId: number,
+): ReturnType<typeof directoryState>[] {
+  const matches: ReturnType<typeof directoryState>[] = [];
+  if (!Number.isInteger(processId) || processId <= 0 || processId > 0x7fffffff) return matches;
+  const capacity = directoryCapacity(handle.directory);
+  const processes = new BigInt64ArrayConstructor(
+    handle.directory,
+    HEADER_BYTES,
+    capacity * PROCESS_WORDS,
+  );
+  for (let slot = 0; slot < capacity; slot++) {
+    const base = slot * PROCESS_WORDS;
+    const token = atomicsLoad(processes, base);
+    if ((token & 0xffffffffn) !== 1n) continue;
+    const pid = Number(token >> 32n);
+    if (slot === handle.slot && pid !== handle.pid) continue;
+    if (atomicsLoad(processes, base + PROCESS_ID) !== packedControl(pid, processId)) continue;
+    try {
+      const state = directoryState({ directory: handle.directory, slot, pid });
+      if (controlLoad(state.jobPending, 0) >= 0) arrayAppend(matches, state);
+    } catch (error) {
+      if (!isCollectedProcess(error)) throw error;
+    }
+  }
+  return matches;
+}
+/** Read-only job lookup: never assists sealed collection or wakes the directory. */
+export function peekDirectoryJob(
+  directory: SharedArrayBuffer,
+  id: number,
+): ReturnType<typeof directoryJob> | undefined {
+  for (let slot = 0; slot < directoryCapacity(directory); slot++) {
+    const raw = row(directory, slot, true);
+    const token = atomicsLoad(raw, 0);
+    if ((token & 0xffffffffn) !== 1n || Number(token >> 32n) !== id) continue;
+    try {
+      if (controlLoad(cells(raw, id, 4)) < 0) return undefined;
+      return directoryJob(directory, slot, id);
+    } catch (error) {
+      if (!isCollectedProcess(error)) throw error;
+    }
+  }
+  return undefined;
+}
 export function findDirectoryJob(
   directory: SharedArrayBuffer,
   id: number,

@@ -84,7 +84,8 @@ import {
   directoryProcesses,
   directoryAdmissionVersion,
   commitDirectoryAdmission,
-  findDirectoryJob,
+  peekDirectoryJob,
+  peekDirectoryProcess,
   isCollectedProcess,
   wakeDirectory,
 } from "../proc/directory.js";
@@ -100,7 +101,7 @@ import { type FilesystemConnection, type FilesystemIdentity, isRevoked } from ".
 import type { ProcessSupervisor, RootProcessOptions } from "../proc/supervisor.js";
 import type { CommandPrograms, ExecutableRegistry, ResolvedExecutable } from "../proc/registry.js";
 import type { ProcessIdentityAllocator } from "../proc/identity.js";
-import type { ProcessRecord, ProcessTable } from "../proc/table.js";
+import type { ProcessJob, ProcessRecord, ProcessTable } from "../proc/table.js";
 import {
   type ChildExitEvent,
   type ProcessContext,
@@ -117,6 +118,7 @@ import {
 } from "../proc/types.js";
 import { requestSignal, createSignalState, type SignalTransport } from "../proc/signals.js";
 import {
+  OutcomeCell,
   claimOutcome,
   outcomeWord,
   readOutcome,
@@ -3571,30 +3573,37 @@ export class BrowserProcessBroker {
       Array.from(directoryProcesses(root.directory)),
     );
   }
+  private isDirectoryBackedJob(entry: ProcessJob): boolean {
+    if (entry.shared) return true;
+    const leader =
+      entry.leaderPid === undefined ? undefined : this.options.table.get(entry.leaderPid);
+    return leader !== undefined && isInstance(leader.outcome, OutcomeCell);
+  }
   private hasProcess(pid: number): boolean {
-    return (
-      this.states().some((state) => state.pid === pid) ||
-      this.options.table.get(pid) !== undefined ||
-      this.reservedRoots.has(pid)
-    );
+    for (const root of this.roots.values())
+      if (peekDirectoryProcess(root.directory, pid)) return true;
+    const record = this.options.table.get(pid);
+    if (record && !isInstance(record.outcome, OutcomeCell)) return true;
+    const reserved = this.reservedRoots.get(pid);
+    return reserved !== undefined && !isInstance(reserved.outcome, OutcomeCell);
   }
   private hasJob(
     job: number,
     reserved: readonly { pid: number; signals: SignalTransport }[],
   ): boolean {
-    if (reserved.length > 0 || this.options.table.job(job) !== undefined) return true;
-    for (const root of this.roots.values()) if (findDirectoryJob(root.directory, job)) return true;
-    for (const root of this.reservedRoots.values()) if (root.job === job) return true;
+    if (reserved.length > 0) return true;
+    for (const root of this.roots.values()) if (peekDirectoryJob(root.directory, job)) return true;
+    const entry = this.options.table.job(job);
+    if (entry && !this.isDirectoryBackedJob(entry)) return true;
+    for (const root of this.reservedRoots.values())
+      if (root.job === job && !isInstance(root.outcome, OutcomeCell)) return true;
     return false;
   }
   async kill(pid: number, signal: number): Promise<void> {
     const sig = checkedKillSignal(signal);
     if (sig === 0) {
-      if (this.hasProcess(pid)) return;
-      const supervisor = await this.ready();
-      if (this.suspended) return;
-      supervisor.kill(pid, 0);
-      return;
+      if (this.suspended || this.hasProcess(pid)) return;
+      throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
     }
     const found = this.publishProcessSignal(pid, sig);
     const supervisor = await this.ready();
@@ -3651,11 +3660,8 @@ export class BrowserProcessBroker {
   ): Promise<void> {
     const sig = checkedKillSignal(signal);
     if (sig === 0) {
-      if (this.hasJob(job, reserved)) return;
-      const supervisor = await this.ready();
-      if (this.suspended) return;
-      supervisor.killJob(job, 0);
-      return;
+      if (this.suspended || this.hasJob(job, reserved)) return;
+      throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
     }
     const states = this.states().filter((state) => state.job === job);
     const seen = new Set(states.map((state) => state.pid));

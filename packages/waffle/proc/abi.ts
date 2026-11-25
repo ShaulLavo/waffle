@@ -93,6 +93,8 @@ export interface ProcessService {
   /** Privileged local services check guest authority; broker clients are already caller-bound. */
   canSignal?(callerPid: number, targetPid: number): boolean;
   canSignalJob?(callerPid: number, job: number): boolean;
+  canProbeJob?(callerPid: number, job: number): boolean;
+  canSignalProcess?(callerPid: number, processId: number): boolean;
   accessStart?(pid: number, path: string, cwd: string, wake?: Int32Array): number;
   accessTake?(pid: number, request: number): number;
   accessCancel?(pid: number, request: number): number;
@@ -273,11 +275,19 @@ export class ProcessABI {
         }),
       kill_job: (job, signal) =>
         this.result(() => {
-          checkedKillSignal(signal!);
-          if (options.service.canSignalJob?.(options.pid, job!) === false)
-            return -ProcessErrno.PERM;
-          options.service.killJob(job!, signal!);
+          const sig = checkedKillSignal(signal!);
+          const allowed =
+            sig === 0 && options.service.canProbeJob
+              ? options.service.canProbeJob(options.pid, job!)
+              : options.service.canSignalJob?.(options.pid, job!);
+          if (allowed === false) return -ProcessErrno.PERM;
+          options.service.killJob(job!, sig);
           return 0;
+        }),
+      probe_process: (pid) =>
+        this.result(() => {
+          if (!options.service.canSignalProcess) return -NOSYS;
+          return options.service.canSignalProcess(options.pid, pid!) ? 0 : -ProcessErrno.PERM;
         }),
       start_status: (pid) => this.result(() => options.service.startStatus(options.pid, pid!)),
       poll: (ptr, count, timeout, out) =>

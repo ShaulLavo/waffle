@@ -314,6 +314,7 @@ const supervisorCapabilities = {
   cwd: "method",
   canSignal: "method",
   canSignalJob: "method",
+  canSignalProcess: "method",
   canWaitJob: "method",
   accessStart: "method",
   accessTake: "method",

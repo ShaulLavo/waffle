@@ -378,15 +378,32 @@ export class ProcessSupervisor {
     this.access(pid, id).owner.requests.delete(id);
     return 0;
   }
-  /** Guest adapters may signal themselves and descendants, never a sibling or ancestor. */
-  canSignal(callerPid: number, pid: number): boolean {
-    this.table.require(callerPid);
-    this.table.require(pid);
+  private controls(callerPid: number, pid: number): boolean {
     let target: number | undefined = pid;
     while (target !== undefined && target !== 0) {
       if (target === callerPid) return true;
       target = this.table.parentOf(target);
     }
+    return false;
+  }
+  /** Guest adapters may signal themselves and descendants, never a sibling or ancestor. */
+  canSignal(callerPid: number, pid: number): boolean {
+    this.table.require(callerPid);
+    this.table.require(pid);
+    return this.controls(callerPid, pid);
+  }
+  /** Probe a logical process PID P across live and uncollected zombie members. */
+  canSignalProcess(callerPid: number, processId: number): boolean {
+    this.table.require(callerPid);
+    if (!Number.isInteger(processId) || processId <= 0 || processId > 0x7fffffff)
+      throw new ProcessError(ProcessErrno.SRCH, `unknown process ${processId}`);
+    let found = false;
+    for (const record of this.table.values()) {
+      if (record.processIdentity.pid !== processId) continue;
+      found = true;
+      if (this.controls(callerPid, record.pid)) return true;
+    }
+    if (!found) throw new ProcessError(ProcessErrno.SRCH, `unknown process ${processId}`);
     return false;
   }
   canSignalJob(callerPid: number, jobId: number): boolean {

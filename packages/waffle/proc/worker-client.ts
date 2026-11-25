@@ -37,9 +37,11 @@ import {
   beginDirectoryAdmission,
   directoryState,
   findDirectoryProcess,
+  findDirectoryProcessesByLogicalPid,
   directorySlots,
   directoryJob,
   findDirectoryJob,
+  peekDirectoryJob,
   directoryControls,
   isCollectedProcess,
   reserveDirectoryProcess,
@@ -477,6 +479,10 @@ export class WorkerProcessClient {
     if (commandTransferFailed(this.options.transport.commandTransfer))
       throw new ProcessError(ProcessErrno.SRCH, "command transfer cleanup failed");
   }
+  private checkAlive(): void {
+    if (readOutcome(this.signals.outcome))
+      throw new ProcessError(ProcessErrno.SRCH, "process has exited");
+  }
   private admit(): void {
     if (readOutcome(this.signals.outcome)) {
       this.retireAccesses();
@@ -910,7 +916,7 @@ export class WorkerProcessClient {
   }
   canSignal(callerPid: number, pid: number): boolean {
     if (callerPid !== this.pid) return false;
-    this.admit();
+    this.checkAlive();
     const target = this.find(pid);
     return directoryControls(
       this.options.transport.directory,
@@ -937,6 +943,49 @@ export class WorkerProcessClient {
       throw error;
     }
   }
+  canProbeJob(callerPid: number, job: number): boolean {
+    if (callerPid !== this.pid) return false;
+    this.checkAlive();
+    const group = peekDirectoryJob(this.options.transport.directory, job);
+    if (!group) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
+    try {
+      return directoryControls(
+        this.options.transport.directory,
+        () => controlLoad(group.controlParent),
+        this.pid,
+        true,
+      );
+    } catch (error) {
+      if (isCollectedProcess(error))
+        throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
+      throw error;
+    }
+  }
+  canSignalProcess(callerPid: number, processId: number): boolean {
+    if (callerPid !== this.pid) return false;
+    this.checkAlive();
+    const matches = findDirectoryProcessesByLogicalPid(this.options.transport, processId);
+    let found = false;
+    for (let index = 0; index < matches.length; index++) {
+      const target = matches[index]!;
+      try {
+        const controlled = directoryControls(
+          this.options.transport.directory,
+          () => {
+            controlLoad(target.controlParent);
+            return target.pid;
+          },
+          callerPid,
+        );
+        found = true;
+        if (controlled) return true;
+      } catch (error) {
+        if (!isCollectedProcess(error)) throw error;
+      }
+    }
+    if (!found) throw new ProcessError(ProcessErrno.SRCH, `unknown process ${processId}`);
+    return false;
+  }
   kill(pid: number, signal: number): void {
     const sig = checkedKillSignal(signal);
     if (!this.canSignal(this.pid, pid))
@@ -946,9 +995,13 @@ export class WorkerProcessClient {
   }
   killJob(job: number, signal: number): void {
     const sig = checkedKillSignal(signal);
+    if (sig === 0) {
+      if (!this.canProbeJob(this.pid, job))
+        throw new ProcessError(ProcessErrno.PERM, "job is not owned by the caller");
+      return;
+    }
     if (!this.canSignalJob(this.pid, job))
       throw new ProcessError(ProcessErrno.PERM, "job is not owned by the caller");
-    if (sig === 0) return;
     const directory = this.options.transport.directory;
     const slots = directorySlots(directory);
     const targets: ReturnType<typeof directoryState>[] = [];
