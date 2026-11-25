@@ -61,6 +61,7 @@ import {
   ProcessError,
   Signal,
   checkedJobLifetime,
+  checkedKillSignal,
   checkedProcessCwd,
   checkedProcessKind,
   snapshotLogicalProcessIdentity,
@@ -96,7 +97,10 @@ export interface ProcessService {
   defaultSignal(pid: number, signal: number): void;
   /** Privileged local services check guest authority; broker clients are already caller-bound. */
   canSignal?(callerPid: number, targetPid: number): boolean;
+  canProbe?(callerPid: number, targetPid: number): boolean;
   canSignalJob?(callerPid: number, job: number): boolean;
+  canProbeJob?(callerPid: number, job: number): boolean;
+  canSignalProcess?(callerPid: number, processId: number): boolean;
   accessStart?(pid: number, path: string, cwd: string, wake?: Int32Array): number;
   accessTake?(pid: number, request: number): number;
   accessCancel?(pid: number, request: number): number;
@@ -288,15 +292,32 @@ export class ProcessABI {
       wait_job: (job, flags, ptr) => this.result(() => this.waitJob(job!, flags!, ptr!)),
       kill: (pid, signal) =>
         this.result(() => {
-          if (options.service.canSignal?.(options.pid, pid!) === false) return -63;
-          options.service.kill(pid!, signal!);
+          const sig = checkedKillSignal(signal!);
+          const allowed =
+            sig === 0 && options.service.canProbe
+              ? options.service.canProbe(options.pid, pid!)
+              : options.service.canSignal?.(options.pid, pid!);
+          if (allowed === false) return -ProcessErrno.PERM;
+          if (sig === 0 && allowed === true) return 0;
+          options.service.kill(pid!, sig);
           return 0;
         }),
       kill_job: (job, signal) =>
         this.result(() => {
-          if (options.service.canSignalJob?.(options.pid, job!) === false) return -63;
-          options.service.killJob(job!, signal!);
+          const sig = checkedKillSignal(signal!);
+          const allowed =
+            sig === 0 && options.service.canProbeJob
+              ? options.service.canProbeJob(options.pid, job!)
+              : options.service.canSignalJob?.(options.pid, job!);
+          if (allowed === false) return -ProcessErrno.PERM;
+          if (sig === 0 && allowed === true) return 0;
+          options.service.killJob(job!, sig);
           return 0;
+        }),
+      probe_process: (pid) =>
+        this.result(() => {
+          if (!options.service.canSignalProcess) return -NOSYS;
+          return options.service.canSignalProcess(options.pid, pid!) ? 0 : -ProcessErrno.PERM;
         }),
       start_status: (pid) => this.result(() => options.service.startStatus(options.pid, pid!)),
       poll: (ptr, count, timeout, out) =>

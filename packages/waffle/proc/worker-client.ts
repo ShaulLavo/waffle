@@ -40,6 +40,8 @@ import {
   directorySlots,
   directoryJob,
   findDirectoryJob,
+  probeDirectoryJob,
+  probeDirectoryLogicalPid,
   directoryControls,
   isCollectedProcess,
   reserveDirectoryProcess,
@@ -72,6 +74,7 @@ import {
   ProcessErrno,
   ProcessError,
   checkedSignal,
+  checkedKillSignal,
   checkedJobLifetime,
   type JobLifetime,
   checkedProcessCwd,
@@ -475,6 +478,10 @@ export class WorkerProcessClient {
     this.admit();
     if (commandTransferFailed(this.options.transport.commandTransfer))
       throw new ProcessError(ProcessErrno.SRCH, "command transfer cleanup failed");
+  }
+  private checkAlive(): void {
+    if (readOutcome(this.signals.outcome))
+      throw new ProcessError(ProcessErrno.SRCH, "process has exited");
   }
   private admit(): void {
     if (readOutcome(this.signals.outcome)) {
@@ -909,6 +916,7 @@ export class WorkerProcessClient {
   }
   canSignal(callerPid: number, pid: number): boolean {
     if (callerPid !== this.pid) return false;
+    this.checkAlive();
     const target = this.find(pid);
     return directoryControls(
       this.options.transport.directory,
@@ -931,18 +939,41 @@ export class WorkerProcessClient {
         true,
       );
     } catch (error) {
-      if (error instanceof ProcessError && error.errno === 63) return false;
+      if (error instanceof ProcessError && error.errno === ProcessErrno.PERM) return false;
       throw error;
     }
   }
+  canProbeJob(callerPid: number, job: number): boolean {
+    if (callerPid !== this.pid) return false;
+    this.checkAlive();
+    return probeDirectoryJob(this.options.transport.directory, this.pid, job);
+  }
+  canSignalProcess(callerPid: number, processId: number): boolean {
+    if (callerPid !== this.pid) return false;
+    this.checkAlive();
+    return probeDirectoryLogicalPid(
+      this.options.transport.directory,
+      callerPid,
+      processId,
+      this.options.transport.slot,
+    );
+  }
   kill(pid: number, signal: number): void {
+    const sig = checkedKillSignal(signal);
     if (!this.canSignal(this.pid, pid))
-      throw new ProcessError(63, "process is outside the caller's ancestry");
-    this.deliver([this.find(pid)], checkedSignal(signal));
+      throw new ProcessError(ProcessErrno.PERM, "process is outside the caller's ancestry");
+    if (sig === 0) return;
+    this.deliver([this.find(pid)], sig);
   }
   killJob(job: number, signal: number): void {
+    const sig = checkedKillSignal(signal);
+    if (sig === 0) {
+      if (!this.canProbeJob(this.pid, job))
+        throw new ProcessError(ProcessErrno.PERM, "job is not owned by the caller");
+      return;
+    }
     if (!this.canSignalJob(this.pid, job))
-      throw new ProcessError(63, "job is not owned by the caller");
+      throw new ProcessError(ProcessErrno.PERM, "job is not owned by the caller");
     const directory = this.options.transport.directory;
     const slots = directorySlots(directory);
     const targets: ReturnType<typeof directoryState>[] = [];
@@ -957,7 +988,7 @@ export class WorkerProcessClient {
         if (!isCollectedProcess(error)) throw error;
       }
     }
-    this.deliver(targets, checkedSignal(signal), true);
+    this.deliver(targets, sig, true);
   }
   private deliver(
     targets: { slot: number; pid: number; parentPid: number; signals: SignalTransport }[],

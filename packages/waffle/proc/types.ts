@@ -122,6 +122,7 @@ export function snapshotSpawnWorker(worker: unknown): Pick<SpawnRequest, "worker
 export interface SharedJobIdentity {
   readonly ownerPid: number;
   readonly controlParent?: number;
+  readonly rootPid?: number;
   readonly leaderPid: number;
   readonly outcome: OutcomeWord;
   readonly foreground: boolean;
@@ -197,4 +198,9 @@ export function checkedSignal(signal: number): ProcessSignal {
     throw new ProcessError(ProcessErrno.NOTSUP, `stop signal ${signal} is not supported`);
   }
   return signal;
+}
+/** Signal 0 is valid only for existence/permission probes on kill and killJob, never delivery. */
+export function checkedKillSignal(signal: number): number {
+  if (signal === 0) return 0;
+  return checkedSignal(signal);
 }

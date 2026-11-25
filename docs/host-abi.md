@@ -623,6 +623,36 @@ An executor without a signal adapter returns `-52` (`ENOSYS`), not a Linux errno
 consuming a delivery. Modes `0`, `1`, `2`, `3` select default, ignore, handler and
 self-raise respectively. `SIGKILL` cannot be ignored or handled.
 
+`runtime_proc.kill(pid, 0)` and `runtime_proc.kill_job(job, 0)` perform the POSIX
+null-signal probe on execution handles and job IDs: they validate the signal number
+first, check target existence and caller permission, deliver nothing, and cause no
+side effects (no pending-signal change, no wake, no revocation, no sealed-job
+collection assistance, no access retirement, and no host signal message). Signal
+validation runs before lookup and permission checks, so invalid or unsupported signal
+numbers fail with `-28` (`EINVAL`) or `-58` (`ENOTSUP`) regardless of target authority.
+For signal `0`, an existing target in the caller's table or directory that the caller
+may signal (itself or a descendant, or an owned job) returns `0`; an existing visible
+target outside the caller's ancestry returns `-63` (`EPERM`); and a missing, invalid,
+foreign-root, sealed, or already collected target returns `-71` (`ESRCH`). A zombie
+process (exited but not yet collected) still exists in the process table until
+collected, so probing it returns `0` when permitted or `-63` (`EPERM`) otherwise, and
+`-71` (`ESRCH`) once collected. This matches Linux (`kill_pid_info` /
+`group_send_sig_info`), FreeBSD (`kern_kill` via `pfind_any`), and gVisor (`TaskWithID`
+retaining `TaskExitZombie` until reaped), and matches Waffle's process-table lifecycle
+and non-zero signal handling.
+
+`runtime_proc.probe_process(pid: i32) -> i32` performs the same read-only null-signal
+probe by logical process PID `P` (the value returned by `process_id` and
+`parent_process_id`) rather than execution handle `E`. It checks every live or
+uncollected zombie execution record in the caller's table or directory whose logical
+PID equals `pid`: it returns `0` if any matching member is the caller or a descendant
+in its execution ancestry, `-63` (`EPERM`) if at least one matching member exists but
+none is controlled by the caller, and `-71` (`ESRCH`) if no matching member exists, if
+the caller has exited, or if `pid` is non-positive. Private thread execution handles
+are not logical PIDs and therefore answer `-71` (`ESRCH`). `runtime_proc.signal(0, 1|2|3)`
+and `runtime_proc.default_signal(0)` continue to return `-28` (`EINVAL`). Every
+non-zero signal keeps its existing rules.
+
 Default actions terminate with a typed signal outcome except `SIGCHLD` (17),
 `SIGCONT` (18), `SIGURG` (23) and `SIGWINCH` (28), which leave a running process alive.
 Explicit handlers still receive these signals through the same pending-signal table.

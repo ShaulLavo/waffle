@@ -109,6 +109,7 @@ export interface ProcessReplacement {
 export interface ProcessJob {
   readonly id: number;
   readonly ownerPid: number;
+  readonly rootPid: number;
   controlParent: number;
   readonly foreground: boolean;
   readonly jobLifetime: JobLifetime;
@@ -181,6 +182,14 @@ export class ProcessTable {
     const outcome = this.jobs.get(id)?.leaderOutcome;
     return isInstance(outcome, OutcomeCell) && !outcome.valid();
   }
+  jobDirectory(id: number): SharedArrayBuffer | undefined {
+    const job = this.jobs.get(id);
+    if (!job) return undefined;
+    const outcome =
+      job.leaderOutcome ??
+      (job.leaderPid === undefined ? undefined : this.records.get(job.leaderPid)?.outcome);
+    return isInstance(outcome, OutcomeCell) ? outcome.validity.buffer : undefined;
+  }
   values(): IterableIterator<ProcessRecord> {
     return this.records.values();
   }
@@ -198,6 +207,7 @@ export class ProcessTable {
     id = this.identities.job(),
     identity?: SharedJobIdentity,
     jobLifetime: JobLifetime = "independent",
+    rootPid?: number,
   ): ProcessJob {
     if (isInstance(identity?.outcome, OutcomeCell)) identity.outcome.check();
     const captured = isInstance(identity?.outcome, OutcomeCell);
@@ -207,6 +217,7 @@ export class ProcessTable {
     const job: MutableProcessJob = {
       id,
       ownerPid,
+      rootPid: rootPid ?? identity?.rootPid ?? this.records.get(ownerPid)?.rootPid ?? ownerPid,
       controlParent: identity?.controlParent ?? ownerPid,
       foreground,
       jobLifetime: identity?.jobLifetime ?? jobLifetime,

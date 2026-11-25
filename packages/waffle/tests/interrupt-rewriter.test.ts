@@ -443,6 +443,7 @@ test("admits exact runtime_proc imports and rejects forged or malformed imports"
     ["wait_job", type([0x7f, 0x7f, 0x7f], [0x7f])],
     ["kill", type([0x7f, 0x7f], [0x7f])],
     ["kill_job", type([0x7f, 0x7f], [0x7f])],
+    ["probe_process", type([0x7f], [0x7f])],
     ["pipe", type([0x7f], [0x7f])],
     ["dup", type([0x7f], [0x7f])],
     ["inherited_fd", type([0x7f], [0x7f])],

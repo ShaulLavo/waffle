@@ -1,5 +1,13 @@
 import { admitProcessObservation, captureNativeReturn } from "./observation.js";
-import { directoryState, directoryHasProcessSibling } from "./directory.js";
+import {
+  directoryState,
+  directoryHasProcessSibling,
+  peekDirectoryJob,
+  peekDirectoryProcess,
+  probeDirectoryJob,
+  probeDirectoryLogicalPid,
+  probeDirectoryProcess,
+} from "./directory.js";
 import { allocateSharedControl } from "../memory/control.ts";
 import {
   isInstance,
@@ -56,13 +64,14 @@ import {
   ProcessErrno,
   ProcessError,
   Signal,
-  checkedSignal,
+  checkedKillSignal,
   checkedJobLifetime,
   checkedProcessCwd,
   snapshotSpawnWorker,
   checkedProcessKind,
   snapshotLogicalProcessIdentity,
   type AdmittedSpawnReservation,
+  type JobLifetime,
   type ProcessKind,
   type LogicalProcessIdentity,
   type ChildExitEvent,
@@ -378,10 +387,26 @@ export class ProcessSupervisor {
     this.access(pid, id).owner.requests.delete(id);
     return 0;
   }
-  /** Guest adapters may signal themselves and descendants, never a sibling or ancestor. */
-  canSignal(callerPid: number, pid: number): boolean {
-    this.table.require(callerPid);
-    this.table.require(pid);
+  private requireLiveCaller(callerPid: number): ProcessRecord {
+    const caller = this.table.require(callerPid);
+    if (this.disposed || caller.result !== null || readOutcome(caller.outcome))
+      throw new ProcessError(ProcessErrno.SRCH, "process has exited");
+    return caller;
+  }
+  private callerDirectory(caller: ProcessRecord): SharedArrayBuffer | undefined {
+    return isInstance(caller.outcome, OutcomeCell) ? caller.outcome.validity.buffer : undefined;
+  }
+  private isLiveDirectoryRecord(record: ProcessRecord): boolean {
+    return (
+      !isInstance(record.outcome, OutcomeCell) ||
+      peekDirectoryProcess(record.outcome.validity.buffer, record.pid) !== undefined
+    );
+  }
+  private isLiveDirectoryJob(jobId: number): boolean {
+    const directory = this.table.jobDirectory(jobId);
+    return !directory || peekDirectoryJob(directory, jobId) !== undefined;
+  }
+  private controls(callerPid: number, pid: number): boolean {
     let target: number | undefined = pid;
     while (target !== undefined && target !== 0) {
       if (target === callerPid) return true;
@@ -389,11 +414,93 @@ export class ProcessSupervisor {
     }
     return false;
   }
+  /** Guest adapters may signal themselves and descendants, never a sibling or ancestor. */
+  canSignal(callerPid: number, pid: number): boolean {
+    const caller = this.requireLiveCaller(callerPid);
+    const target = this.table.require(pid);
+    if (caller.rootPid === undefined || target.rootPid !== caller.rootPid)
+      throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
+    return this.controls(callerPid, pid);
+  }
+  /** Signal 0 execution-handle probe: authoritative shared directory for directory-backed targets. */
+  canProbe(callerPid: number, pid: number): boolean {
+    const caller = this.requireLiveCaller(callerPid);
+    const target = this.table.get(pid);
+    if (target) {
+      if (caller.rootPid === undefined || target.rootPid !== caller.rootPid)
+        throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
+      if (isInstance(target.outcome, OutcomeCell)) {
+        if (!peekDirectoryProcess(target.outcome.validity.buffer, pid))
+          throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
+        return (
+          this.controls(callerPid, pid) ||
+          probeDirectoryProcess(target.outcome.validity.buffer, callerPid, pid)
+        );
+      }
+      return this.controls(callerPid, pid);
+    }
+    const directory = this.callerDirectory(caller);
+    if (directory) return probeDirectoryProcess(directory, callerPid, pid);
+    throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
+  }
+  /** Probe a logical process PID P across live and uncollected zombie members. */
+  canSignalProcess(callerPid: number, processId: number): boolean {
+    const caller = this.requireLiveCaller(callerPid);
+    if (
+      caller.rootPid === undefined ||
+      !Number.isInteger(processId) ||
+      processId <= 0 ||
+      processId > 0x7fffffff
+    )
+      throw new ProcessError(ProcessErrno.SRCH, `unknown process ${processId}`);
+    let found = false;
+    for (const record of this.table.values()) {
+      if (
+        record.rootPid !== caller.rootPid ||
+        record.processIdentity.pid !== processId ||
+        !this.isLiveDirectoryRecord(record)
+      )
+        continue;
+      found = true;
+      if (this.controls(callerPid, record.pid)) return true;
+    }
+    const directory = this.callerDirectory(caller);
+    if (directory) {
+      try {
+        if (probeDirectoryLogicalPid(directory, callerPid, processId)) return true;
+        found = true;
+      } catch (error) {
+        if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH) throw error;
+      }
+    }
+    if (!found) throw new ProcessError(ProcessErrno.SRCH, `unknown process ${processId}`);
+    return false;
+  }
   canSignalJob(callerPid: number, jobId: number): boolean {
-    this.table.require(callerPid);
+    const caller = this.requireLiveCaller(callerPid);
     const job = this.table.job(jobId);
-    if (!job) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
+    if (!job || caller.rootPid === undefined || job.rootPid !== caller.rootPid)
+      throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
     return job.controlParent === callerPid;
+  }
+  /** Signal 0 job probe: authoritative shared directory for directory-backed jobs. */
+  canProbeJob(callerPid: number, jobId: number): boolean {
+    const caller = this.requireLiveCaller(callerPid);
+    const job = this.table.job(jobId);
+    if (job) {
+      if (caller.rootPid === undefined || job.rootPid !== caller.rootPid)
+        throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
+      const directory = this.table.jobDirectory(jobId);
+      if (directory) {
+        if (!peekDirectoryJob(directory, jobId))
+          throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
+        return job.controlParent === callerPid || probeDirectoryJob(directory, callerPid, jobId);
+      }
+      return job.controlParent === callerPid;
+    }
+    const directory = this.callerDirectory(caller);
+    if (directory) return probeDirectoryJob(directory, callerPid, jobId);
+    throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
   }
   /** A job is controlled by its owner and every live or retained ancestor of that owner. */
   canWaitJob(callerPid: number, jobId: number): boolean {
@@ -514,11 +621,14 @@ export class ProcessSupervisor {
             isInstance(options.outcome, OutcomeCell)
               ? {
                   ownerPid: pid,
+                  rootPid: pid,
                   leaderPid: pid,
                   outcome: options.outcome,
                   foreground: options.foreground ?? true,
                 }
               : undefined,
+            "independent",
+            pid,
           );
     this.table.insert(
       {
@@ -617,32 +727,14 @@ export class ProcessSupervisor {
     const processIdentity = this.spawnIdentity(pid, processKind, parent, capturedIdentity);
     this.table.checkPid(pid, admitted ? reservation.outcome : undefined);
     const observation = admitProcessObservation(pid, outcome, reservation.observation);
-    let job = reservation.job ?? (selector > 0 ? selector : undefined);
-    let createdJob = false;
-    if (job !== undefined && !this.table.job(job)) {
-      if (reservation.job === undefined)
-        throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
-      this.table.createJob(
-        jobIdentity?.ownerPid ?? parentPid,
-        jobIdentity?.foreground ?? selector === 0,
-        job,
-        jobIdentity,
-        jobLifetime,
-      );
-      createdJob = true;
-    }
-    if (job === undefined) {
-      const group = this.table.createJob(
-        parentPid,
-        selector === 0,
-        undefined,
-        undefined,
-        jobLifetime,
-      );
-      group.controlParent = reservation.controlParent ?? parentPid;
-      job = group.id;
-      createdJob = true;
-    }
+    const { job, createdJob } = this.resolveSpawnJob(
+      parentPid,
+      parent,
+      selector,
+      jobLifetime,
+      reservation,
+      jobIdentity,
+    );
     if (jobIdentity) this.table.adoptJobIdentity(job, jobIdentity);
     this.checkJobAdmission(job, admitted);
     const descriptors = new DescriptorTable();
@@ -708,6 +800,41 @@ export class ProcessSupervisor {
       throw error;
     }
     return pid;
+  }
+  private resolveSpawnJob(
+    parentPid: number,
+    parent: ProcessRecord | undefined,
+    selector: number,
+    jobLifetime: JobLifetime,
+    reservation: SpawnReservation,
+    jobIdentity?: SharedJobIdentity,
+  ): { job: number; createdJob: boolean } {
+    const rootPid = reservation.rootPid ?? parent?.rootPid;
+    const job = reservation.job ?? (selector > 0 ? selector : undefined);
+    if (job === undefined) {
+      const group = this.table.createJob(
+        parentPid,
+        selector === 0,
+        undefined,
+        undefined,
+        jobLifetime,
+        rootPid,
+      );
+      group.controlParent = reservation.controlParent ?? parentPid;
+      return { job: group.id, createdJob: true };
+    }
+    if (this.table.job(job)) return { job, createdJob: false };
+    if (reservation.job === undefined)
+      throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
+    this.table.createJob(
+      jobIdentity?.ownerPid ?? parentPid,
+      jobIdentity?.foreground ?? selector === 0,
+      job,
+      jobIdentity,
+      jobLifetime,
+      rootPid,
+    );
+    return { job, createdJob: true };
   }
   private checkSpawnParent(
     parentPid: number,
@@ -1213,8 +1340,13 @@ export class ProcessSupervisor {
   }
   /** Default signals terminate immediately; registered handlers receive shared pending delivery. */
   kill(pid: number, signal: number): void {
-    const sig = checkedSignal(signal),
+    const sig = checkedKillSignal(signal),
       record = this.table.require(pid);
+    if (sig === 0) {
+      if (!this.isLiveDirectoryRecord(record))
+        throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
+      return;
+    }
     if (record.result) return;
     this.recordSignal(record, sig);
     if (record.signal === Signal.SIGKILL || readOutcome(record.outcome))
@@ -1267,9 +1399,14 @@ export class ProcessSupervisor {
     this.finish(pid, winner);
   }
   killJob(jobId: number, signal: number): void {
-    const sig = checkedSignal(signal);
+    const sig = checkedKillSignal(signal);
     const job = this.table.job(jobId);
     if (!job) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
+    if (sig === 0) {
+      if (!this.isLiveDirectoryJob(jobId))
+        throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
+      return;
+    }
     // New background jobs are independent, even when their parent belongs to this job.
     const targets = Array.from(job.members, (pid) => this.table.require(pid));
     // Record every target before callbacks: a dying process cannot spawn through an as-yet
