@@ -964,6 +964,8 @@ export class MultiTabBackend implements FilesystemBackend {
       }
       this.enterHostAdmitted();
       try {
+        await this.hostQueue;
+        this.assertHostReadyForLocal(admittedTerm);
         await this.persistent!.flush(resolvedTarget);
       } finally {
         this.leaveHostAdmitted();
@@ -2646,8 +2648,7 @@ export class MultiTabBackend implements FilesystemBackend {
         return false;
       }
       if (this.peerSessionId !== sessionId || !this.peerAttached) return false;
-      this.drainPeerRetryQueue();
-      this.drainPeerFailoverQueue();
+      this.drainPeerRetryAndFailoverQueues();
       return true;
     } finally {
       if (retryTimer) clearInterval(retryTimer);
@@ -4310,6 +4311,8 @@ export class MultiTabBackend implements FilesystemBackend {
       if (msg.op === "flush" || msg.op === "sync") {
         const target =
           msg.op === "sync" ? (msg.args[0] as number) : (msg.args[0] as string | undefined);
+        await this.hostQueue;
+        this.assertHostOpStillValid(session, admittedTerm);
         await this.persistent!.flush(target);
         await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
         this.assertHostOpStillValid(session, admittedTerm);
@@ -5308,6 +5311,8 @@ export class MultiTabBackend implements FilesystemBackend {
       if (operation === "flush" || operation === "sync") {
         const target =
           operation === "sync" ? (translated[0] as number) : (translated[0] as string | undefined);
+        await this.hostQueue;
+        this.assertHostReadyForLocal(admittedTerm);
         await persistent.flush(target);
         return operation === "sync" ? 0 : undefined;
       }
@@ -6479,46 +6484,70 @@ export class MultiTabBackend implements FilesystemBackend {
     return typeof cookie === "bigint" && cookie >= 3n && op.responseCookieTag !== this.dirEpoch;
   }
 
-  private drainPeerQueue(queue: QueuedPeerOp[]): void {
-    if (!queue.length || !this.peerAttached || this.peerRebinding) return;
-    const queued = queue.splice(0);
-    for (const op of queued) {
+  private dispatchQueuedOps(
+    ops: readonly QueuedPeerOp[],
+    dispatchImmediate: (op: QueuedPeerOp) => Promise<unknown>,
+  ): void {
+    const prior: Promise<unknown>[] = [];
+    for (const op of ops) {
       if (this.isStaleQueuedCookie(op)) {
         op.reject(new FilesystemError(8, "stale directory cookie"));
         continue;
       }
+      const isBarrier = op.op === "flush" || op.op === "sync";
+      const run =
+        isBarrier && prior.length
+          ? Promise.allSettled(prior.splice(0)).then(() =>
+              this.execute(op.op, op.args, op.data ?? new Uint8Array()),
+            )
+          : dispatchImmediate(op);
+      prior.push(run);
+      run.then(op.resolve, op.reject);
+    }
+  }
+
+  private drainPeerQueue(queue: QueuedPeerOp[]): void {
+    if (!queue.length || !this.peerAttached || this.peerRebinding) return;
+    this.dispatchQueuedOps(queue.splice(0), (op) =>
       this.dispatchPeerOperation(
         op.op,
         op.args,
         op.data ?? new Uint8Array(),
         op.op === "readdirPage" ? this.dirEpoch : op.responseCookieTag,
-      ).then(op.resolve, op.reject);
-    }
+      ),
+    );
   }
 
   private drainPeerRetryQueue(): void {
     this.drainPeerQueue(this.peerRetryQueue);
   }
 
-  private drainPeerFailoverQueue(): void {
-    this.drainPeerQueue(this.peerFailoverQueue);
+  private drainPeerRetryAndFailoverQueues(): void {
+    if (!this.peerAttached || this.peerRebinding) return;
+    const all = this.peerRetryQueue.splice(0).concat(this.peerFailoverQueue.splice(0));
+    if (all.length) {
+      this.dispatchQueuedOps(all, (op) =>
+        this.dispatchPeerOperation(
+          op.op,
+          op.args,
+          op.data ?? new Uint8Array(),
+          op.op === "readdirPage" ? this.dirEpoch : op.responseCookieTag,
+        ),
+      );
+    }
     this.notifyFailoverReadyWaiters();
   }
 
   private drainQueuedPeerOpsOnNewHost(): void {
     const all = this.peerRetryQueue.splice(0).concat(this.peerFailoverQueue.splice(0));
-    for (const op of all) {
-      if (this.isStaleQueuedCookie(op)) {
-        op.reject(new FilesystemError(8, "stale directory cookie"));
-        continue;
-      }
+    this.dispatchQueuedOps(all, (op) =>
       this.executeLocalOnHost(
         op.op,
         op.args,
         op.data ?? new Uint8Array(),
         op.op === "readdirPage" ? this.dirEpoch : undefined,
-      ).then(op.resolve, op.reject);
-    }
+      ),
+    );
     this.notifyFailoverReadyWaiters();
   }
 

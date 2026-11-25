@@ -3709,4 +3709,149 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       await tabA.close();
     }
   });
+
+  test("flush queued behind writeFile during Peer promotion drains writeFile before persisting", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-failover-flush-order-${crypto.randomUUID()}`;
+
+    const promotePaused = Promise.withResolvers<void>();
+    const promoteRelease = Promise.withResolvers<void>();
+    let pauseNextCutover = false;
+
+    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    const tabB = await openTab(broker, hub, store, {
+      clientId: "tab-B",
+      name,
+      hooks: {
+        async beforeCutoverBarrier() {
+          if (pauseNextCutover) {
+            pauseNextCutover = false;
+            promotePaused.resolve();
+            await promoteRelease.promise;
+          }
+        },
+      },
+    });
+    let tabC: TestTab | undefined;
+
+    try {
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/doc.txt", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await tabA.client.asyncCall("flush", []);
+
+      pauseNextCutover = true;
+      hub.killOwner("tab-A");
+      broker.crashClient("tab-A");
+      await promotePaused.promise;
+
+      // Queue writeFile followed by flush while Peer B is in failover promotion.
+      const writeP = tabB.backend.execute(
+        "writeFile",
+        ["/doc.txt", false, false],
+        new TextEncoder().encode("new"),
+      );
+      const flushP = tabB.backend.flush();
+
+      promoteRelease.resolve();
+      await flushP;
+      await writeP;
+
+      // Crash promoted Host B immediately after flush() resolved: storage MUST already have "new"!
+      hub.killOwner("tab-B");
+      broker.crashClient("tab-B");
+      tabC = await openTab(broker, hub, store, { clientId: "tab-C", name });
+      const bytes: Uint8Array = await tabC.client.asyncCall("readFile", ["/doc.txt"]);
+      expect(new TextDecoder().decode(bytes)).toBe("new");
+    } finally {
+      promoteRelease.resolve();
+      await tabC?.close();
+      await tabB.close();
+      await tabA.close();
+    }
+  });
+
+  test("Host flush() waits for mutations already queued on hostQueue before checkpointing", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-host-flush-order-${crypto.randomUUID()}`;
+
+    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    let tabB: TestTab | undefined;
+    try {
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/doc.txt", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await tabA.client.asyncCall("flush", []);
+
+      // Submit writeFile (enters hostQueue) and immediately call flush() on the same Host backend.
+      const writeP = tabA.backend.execute(
+        "writeFile",
+        ["/doc.txt", false, false],
+        new TextEncoder().encode("new"),
+      );
+      const flushP = tabA.backend.flush();
+      await flushP;
+      await writeP;
+
+      // Crash Host A immediately after flush() resolved: storage MUST already have "new"!
+      hub.killOwner("tab-A");
+      broker.crashClient("tab-A");
+      tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+      const bytes: Uint8Array = await tabB.client.asyncCall("readFile", ["/doc.txt"]);
+      expect(new TextDecoder().decode(bytes)).toBe("new");
+    } finally {
+      await tabB?.close();
+      await tabA.close();
+    }
+  });
+
+  test("Peer pipelined writeFile followed by flush waits for writeFile on Host before persisting", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-peer-flush-order-${crypto.randomUUID()}`;
+
+    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    const tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+    let tabC: TestTab | undefined;
+    try {
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/doc.txt", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await tabA.client.asyncCall("flush", []);
+
+      // Pipeline writeFile and flush from Peer B to Host A concurrently.
+      const writeP = tabB.backend.execute(
+        "writeFile",
+        ["/doc.txt", false, false],
+        new TextEncoder().encode("new"),
+      );
+      const flushP = tabB.backend.flush();
+      await flushP;
+      await writeP;
+
+      // Crash Host A and Peer B immediately after flush() resolved: storage MUST have "new"!
+      hub.killOwner("tab-A");
+      broker.crashClient("tab-A");
+      hub.killOwner("tab-B");
+      broker.crashClient("tab-B");
+      tabC = await openTab(broker, hub, store, { clientId: "tab-C", name });
+      const bytes: Uint8Array = await tabC.client.asyncCall("readFile", ["/doc.txt"]);
+      expect(new TextDecoder().decode(bytes)).toBe("new");
+    } finally {
+      await tabC?.close();
+      await tabB.close();
+      await tabA.close();
+    }
+  });
 });
