@@ -218,3 +218,14 @@ the child survives. `collectChild` spawns and writes the record in one synchrono
 needs a hang inside that step; on main any readiness timeout leaked the child. A complete fix
 would have the collector pass the child's PID to the test before it can be lost, for example
 by writing the record from a spawn wrapper that runs first.
+
+## Network watch scheduler count, 2026-11-25
+
+`packages/waffle/tests/net-host-watch.test.ts:189`, test
+`onNews wait loops never hand their callbacks to guest-replaceable schedulers`, failed once in a
+full local `bun run test` on the PC under load while preparing PR 629 (which touches no network
+code), then passed 4 times out of 4 alone with
+`bun test packages/waffle/tests/net-host-watch.test.ts`. The test counts promise callbacks handed
+to scheduler hooks, so other work on the same event loop could plausibly add a count. No cause is
+confirmed and no CI run has shown it yet. Next step: rerun it with `--rerun-each 50` next to a
+CPU-heavy test file and read which callback was counted.

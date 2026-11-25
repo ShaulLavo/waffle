@@ -52,19 +52,26 @@ async function echoesThroughCooperativeModule() {
   assert.deepEqual((await command.result).exit, { kind: "exited", code: 0, status: 0 });
 }
 
-/** Resolves once the leader's descendant has written, which is after the leader itself exited. */
+/**
+ * Starts the leader with two independent signals. `descendantRunning` resolves when the child
+ * writes. `leaderGone` resolves when stdin is cancelled: only the leader holds the pipe's read
+ * end (the child does not inherit fd 0), so the reader hangup that cancels it means the leader
+ * has exited and released its descriptors.
+ */
 function startLeader(options: Partial<CommandOptions>) {
   const descendantRunning = Promise.withResolvers<void>();
+  const leaderGone = Promise.withResolvers<void>();
   const command = startCommand(runtime, "/test/leader", {
     ...root,
     ...options,
+    stdin: new ReadableStream<Uint8Array>({ cancel: () => leaderGone.resolve() }),
     stdout: {
       onChunk() {
         descendantRunning.resolve();
       },
     },
   });
-  return { command, descendantRunning: descendantRunning.promise };
+  return { command, descendantRunning: descendantRunning.promise, leaderGone: leaderGone.promise };
 }
 
 try {
@@ -97,7 +104,7 @@ try {
   assert.equal((await exitOf("/test/host", { programs: "guest" }))?.kind, "start-failed");
 
   const joined = startLeader({});
-  await joined.descendantRunning;
+  await Promise.all([joined.descendantRunning, joined.leaderGone]);
   const killed = await joined.command.kill();
   assert.deepEqual(killed.exit, { kind: "exited", code: 7, status: 7 });
   assert.equal(killed.stopRequested, "kill");
