@@ -268,9 +268,12 @@ export class ProcessABI {
       wait_job: (job, flags, ptr) => this.result(() => this.waitJob(job!, flags!, ptr!)),
       kill: (pid, signal) =>
         this.result(() => {
-          checkedKillSignal(signal!);
-          if (options.service.canSignal?.(options.pid, pid!) === false) return -ProcessErrno.PERM;
-          options.service.kill(pid!, signal!);
+          const sig = checkedKillSignal(signal!);
+          if (options.service.canSignal) {
+            if (!options.service.canSignal(options.pid, pid!)) return -ProcessErrno.PERM;
+            if (sig === 0) return 0;
+          }
+          options.service.kill(pid!, sig);
           return 0;
         }),
       kill_job: (job, signal) =>
@@ -281,6 +284,7 @@ export class ProcessABI {
               ? options.service.canProbeJob(options.pid, job!)
               : options.service.canSignalJob?.(options.pid, job!);
           if (allowed === false) return -ProcessErrno.PERM;
+          if (sig === 0 && allowed === true) return 0;
           options.service.killJob(job!, sig);
           return 0;
         }),

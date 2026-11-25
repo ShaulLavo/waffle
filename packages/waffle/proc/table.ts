@@ -182,6 +182,14 @@ export class ProcessTable {
     const outcome = this.jobs.get(id)?.leaderOutcome;
     return isInstance(outcome, OutcomeCell) && !outcome.valid();
   }
+  jobDirectory(id: number): SharedArrayBuffer | undefined {
+    const job = this.jobs.get(id);
+    if (!job) return undefined;
+    const outcome =
+      job.leaderOutcome ??
+      (job.leaderPid === undefined ? undefined : this.records.get(job.leaderPid)?.outcome);
+    return isInstance(outcome, OutcomeCell) ? outcome.validity.buffer : undefined;
+  }
   values(): IterableIterator<ProcessRecord> {
     return this.records.values();
   }

@@ -366,33 +366,98 @@ export function peekDirectoryProcess(
   return undefined;
 }
 /** Read-only logical-PID scan: returns live/zombie members whose job is not sealed. */
-export function findDirectoryProcessesByLogicalPid(
-  handle: DirectoryHandle,
+export function peekDirectoryProcessesByLogicalPid(
+  directory: SharedArrayBuffer,
   processId: number,
+  callerSlot?: number,
+  callerPid?: number,
 ): ReturnType<typeof directoryState>[] {
   const matches: ReturnType<typeof directoryState>[] = [];
   if (!Number.isInteger(processId) || processId <= 0 || processId > 0x7fffffff) return matches;
-  const capacity = directoryCapacity(handle.directory);
-  const processes = new BigInt64ArrayConstructor(
-    handle.directory,
-    HEADER_BYTES,
-    capacity * PROCESS_WORDS,
-  );
+  const capacity = directoryCapacity(directory);
+  const processes = new BigInt64ArrayConstructor(directory, HEADER_BYTES, capacity * PROCESS_WORDS);
   for (let slot = 0; slot < capacity; slot++) {
     const base = slot * PROCESS_WORDS;
     const token = atomicsLoad(processes, base);
     if ((token & 0xffffffffn) !== 1n) continue;
     const pid = Number(token >> 32n);
-    if (slot === handle.slot && pid !== handle.pid) continue;
+    if (callerSlot !== undefined && slot === callerSlot && pid !== callerPid) continue;
     if (atomicsLoad(processes, base + PROCESS_ID) !== packedControl(pid, processId)) continue;
     try {
-      const state = directoryState({ directory: handle.directory, slot, pid });
+      const state = directoryState({ directory, slot, pid });
       if (controlLoad(state.jobPending, 0) >= 0) arrayAppend(matches, state);
     } catch (error) {
       if (!isCollectedProcess(error)) throw error;
     }
   }
   return matches;
+}
+/** Read-only execution-handle probe against an authoritative shared directory. */
+export function probeDirectoryProcess(
+  directory: SharedArrayBuffer,
+  callerPid: number,
+  pid: number,
+): boolean {
+  const target = peekDirectoryProcess(directory, pid);
+  if (!target) throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
+  try {
+    return directoryControls(
+      directory,
+      () => {
+        controlLoad(target.controlParent);
+        return target.pid;
+      },
+      callerPid,
+    );
+  } catch (error) {
+    if (isCollectedProcess(error))
+      throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
+    throw error;
+  }
+}
+/** Read-only logical-PID probe against an authoritative shared directory. */
+export function probeDirectoryLogicalPid(
+  directory: SharedArrayBuffer,
+  callerPid: number,
+  processId: number,
+  callerSlot?: number,
+): boolean {
+  const matches = peekDirectoryProcessesByLogicalPid(directory, processId, callerSlot, callerPid);
+  let found = false;
+  for (let index = 0; index < matches.length; index++) {
+    const target = matches[index]!;
+    try {
+      const controlled = directoryControls(
+        directory,
+        () => {
+          controlLoad(target.controlParent);
+          return target.pid;
+        },
+        callerPid,
+      );
+      found = true;
+      if (controlled) return true;
+    } catch (error) {
+      if (!isCollectedProcess(error)) throw error;
+    }
+  }
+  if (!found) throw new ProcessError(ProcessErrno.SRCH, `unknown process ${processId}`);
+  return false;
+}
+/** Read-only job probe against an authoritative shared directory. */
+export function probeDirectoryJob(
+  directory: SharedArrayBuffer,
+  callerPid: number,
+  job: number,
+): boolean {
+  const group = peekDirectoryJob(directory, job);
+  if (!group) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
+  try {
+    return directoryControls(directory, () => controlLoad(group.controlParent), callerPid, true);
+  } catch (error) {
+    if (isCollectedProcess(error)) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
+    throw error;
+  }
 }
 /** Read-only job lookup: never assists sealed collection or wakes the directory. */
 export function peekDirectoryJob(

@@ -624,11 +624,56 @@ test("broker signal 0 probes use authoritative directory state and never lazily 
       const childState = directoryState(childTransport);
       expect(table.get(childState.pid)).toBeDefined();
       expect(table.job(childState.job)).toBeDefined();
+      const rootRecord = supervisor.get(rootTransport.pid)!;
+      const rootSupervisorAbi = new ProcessABI({
+        processIdentity: rootRecord.processIdentity,
+        memory: new WebAssembly.Memory({ initial: 1 }),
+        descriptors: rootRecord.image.descriptors,
+        fs: new MemFS(),
+        pid: rootRecord.pid,
+        service: supervisor,
+        signals: rootRecord,
+      });
 
-      // Complete child through supervisor and collect the job locally, holding back reap-job.
+      // Complete child through supervisor: while uncollected zombie, supervisor ABI sees 0.
       const completion = supervisor.waitForExit(rootClient.client.pid, childState.pid);
       supervisor.exit(childState.pid, 0);
       await completion;
+      expect(rootSupervisorAbi.imports.kill!(childState.pid, 0)).toBe(0);
+      expect(rootSupervisorAbi.imports.probe_process!(childState.pid)).toBe(0);
+      expect(rootSupervisorAbi.imports.kill_job!(childState.job, 0)).toBe(0);
+
+      // Simulate a sealed job (consuming CAS on pending) before finalization: supervisor ABI
+      // must return ESRCH without finalizing the sealed row or advancing the wake word.
+      const sealedChild = spawnWorkerChild(rootClient.client, messages);
+      sealedChild.data = { filesystem: createFilesystemIdentity() };
+      await broker.runtimeMessage(messages.at(-1)!, rootTransport.pid);
+      const sealedState = directoryState(sealedChild);
+      const sealedCompletion = supervisor.waitForExit(rootClient.client.pid, sealedState.pid);
+      supervisor.exit(sealedState.pid, 0);
+      await sealedCompletion;
+      const sealedGroup = findDirectoryJob(rootTransport.directory, sealedState.job)!;
+      const sealedPending = new BigInt64Array(
+        sealedGroup.pending.buffer,
+        sealedGroup.pending.byteOffset,
+        1,
+      );
+      expect(
+        Atomics.compareExchange(
+          sealedPending,
+          0,
+          packedControl(sealedState.job, 0),
+          packedControl(sealedState.job, -1),
+        ),
+      ).toBe(packedControl(sealedState.job, 0));
+      const wakeBeforeSealed = Atomics.load(rootClient.client.wake, 0);
+      expect(rootSupervisorAbi.imports.kill!(sealedState.pid, 0)).toBe(-ProcessErrno.SRCH);
+      expect(rootSupervisorAbi.imports.probe_process!(sealedState.pid)).toBe(-ProcessErrno.SRCH);
+      expect(rootSupervisorAbi.imports.kill_job!(sealedState.job, 0)).toBe(-ProcessErrno.SRCH);
+      expect(Atomics.load(rootClient.client.wake, 0)).toBe(wakeBeforeSealed);
+      expect(Atomics.load(sealedPending, 0)).toBe(packedControl(sealedState.job, -1));
+
+      // Collect the first job locally in the worker while holding back its reap-job notice.
       expect(rootClient.client.waitJob(rootClient.client.pid, childState.job)).toMatchObject({
         kind: "exited",
         code: 0,
@@ -637,13 +682,18 @@ test("broker signal 0 probes use authoritative directory state and never lazily 
       // Page table still holds the stale child and job until the reap notice is delivered.
       expect(table.get(childState.pid)).toBeDefined();
       expect(table.job(childState.job)).toBeDefined();
-      // Broker probes must consult the authoritative shared directory and answer ESRCH.
+      // Both broker and supervisor-backed ABI probes must consult the authoritative directory.
       await expect(broker.kill(childState.pid, 0)).rejects.toMatchObject({
         errno: ProcessErrno.SRCH,
       });
       await expect(broker.killJob(childState.job, 0)).rejects.toMatchObject({
         errno: ProcessErrno.SRCH,
       });
+      expect(rootSupervisorAbi.imports.kill!(childState.pid, 0)).toBe(-ProcessErrno.SRCH);
+      expect(rootSupervisorAbi.imports.probe_process!(childState.pid)).toBe(-ProcessErrno.SRCH);
+      expect(rootSupervisorAbi.imports.kill_job!(childState.job, 0)).toBe(-ProcessErrno.SRCH);
+      expectProcessError(() => supervisor.kill(childState.pid, 0), ProcessErrno.SRCH);
+      expectProcessError(() => supervisor.killJob(childState.job, 0), ProcessErrno.SRCH);
     } finally {
       rootClient.descriptors.dispose();
     }

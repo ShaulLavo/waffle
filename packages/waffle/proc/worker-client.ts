@@ -37,11 +37,11 @@ import {
   beginDirectoryAdmission,
   directoryState,
   findDirectoryProcess,
-  findDirectoryProcessesByLogicalPid,
   directorySlots,
   directoryJob,
   findDirectoryJob,
-  peekDirectoryJob,
+  probeDirectoryJob,
+  probeDirectoryLogicalPid,
   directoryControls,
   isCollectedProcess,
   reserveDirectoryProcess,
@@ -946,45 +946,17 @@ export class WorkerProcessClient {
   canProbeJob(callerPid: number, job: number): boolean {
     if (callerPid !== this.pid) return false;
     this.checkAlive();
-    const group = peekDirectoryJob(this.options.transport.directory, job);
-    if (!group) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
-    try {
-      return directoryControls(
-        this.options.transport.directory,
-        () => controlLoad(group.controlParent),
-        this.pid,
-        true,
-      );
-    } catch (error) {
-      if (isCollectedProcess(error))
-        throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
-      throw error;
-    }
+    return probeDirectoryJob(this.options.transport.directory, this.pid, job);
   }
   canSignalProcess(callerPid: number, processId: number): boolean {
     if (callerPid !== this.pid) return false;
     this.checkAlive();
-    const matches = findDirectoryProcessesByLogicalPid(this.options.transport, processId);
-    let found = false;
-    for (let index = 0; index < matches.length; index++) {
-      const target = matches[index]!;
-      try {
-        const controlled = directoryControls(
-          this.options.transport.directory,
-          () => {
-            controlLoad(target.controlParent);
-            return target.pid;
-          },
-          callerPid,
-        );
-        found = true;
-        if (controlled) return true;
-      } catch (error) {
-        if (!isCollectedProcess(error)) throw error;
-      }
-    }
-    if (!found) throw new ProcessError(ProcessErrno.SRCH, `unknown process ${processId}`);
-    return false;
+    return probeDirectoryLogicalPid(
+      this.options.transport.directory,
+      callerPid,
+      processId,
+      this.options.transport.slot,
+    );
   }
   kill(pid: number, signal: number): void {
     const sig = checkedKillSignal(signal);
