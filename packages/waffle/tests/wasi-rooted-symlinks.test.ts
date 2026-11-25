@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { MemFS } from "../fs/memory.js";
+import { reapFilesystem } from "../fs/protocol.js";
 import {
   preview1,
   rootedSymlinkExpected,
@@ -45,6 +46,7 @@ describe.each(VFS_BACKEND_KINDS)("worker-backed rooted symlinks (%s)", (kind: Vf
         });
       } finally {
         worker.terminate();
+        reapFilesystem(child);
       }
     } finally {
       await env.close();

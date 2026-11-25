@@ -96,6 +96,8 @@ async function inVfsBackendWorker(kind: VfsBackendKind, scenario: FileTimeScenar
       return value;
     } finally {
       worker.terminate();
+      const { reapFilesystem } = await import("../fs/protocol.js");
+      reapFilesystem(connection);
     }
   } finally {
     await env.close();

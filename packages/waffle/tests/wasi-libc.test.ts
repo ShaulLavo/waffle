@@ -295,6 +295,8 @@ describe.skipIf(!fixtures)("real wasi-sdk 34 libc preopen discovery (bun run tes
           expect(result).toEqual({ exit: 0, output: "early\nmain\n" });
         } finally {
           worker.terminate();
+          const { reapFilesystem } = await import("../fs/protocol.js");
+          reapFilesystem(connection);
         }
       } finally {
         await env.close();

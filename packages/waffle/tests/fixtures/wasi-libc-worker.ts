@@ -20,6 +20,7 @@ self.onmessage = ({
     stderr() {},
     sleep() {},
   });
+  let reply: unknown;
   try {
     wasi.descriptors.openAt(
       3,
@@ -37,13 +38,14 @@ self.onmessage = ({
     );
     const instance = new WebAssembly.Instance(data.module, wasi.imports(data.module));
     const exit = wasi.start(instance);
-    self.postMessage({ exit, output: output.join("") });
+    reply = { exit, output: output.join("") };
   } catch (error) {
-    self.postMessage({
+    reply = {
       error: error instanceof Error ? (error.stack ?? error.message) : String(error),
-    });
+    };
   } finally {
     wasi.descriptors.dispose();
     fs.dispose();
   }
+  self.postMessage(reply);
 };

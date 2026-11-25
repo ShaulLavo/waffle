@@ -5,16 +5,18 @@ const cases = fdReopenCases();
 
 self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection; index: number }>) => {
   const fs = new FilesystemClient(data.connection);
+  let reply: unknown;
   try {
     const entry = cases[data.index];
     if (!entry) throw new Error(`unknown fdReopenCase index ${data.index}`);
     entry.run(() => fs);
-    self.postMessage({ ok: true });
+    reply = { ok: true };
   } catch (error) {
-    self.postMessage({
+    reply = {
       error: error instanceof Error ? (error.stack ?? error.message) : String(error),
-    });
+    };
   } finally {
     fs.dispose();
   }
+  self.postMessage(reply);
 };
