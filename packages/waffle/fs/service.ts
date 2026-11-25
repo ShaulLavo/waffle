@@ -161,6 +161,10 @@ interface Session {
   reader?: WorkspaceReadAuthority;
   readerClosing?: Promise<void>;
 }
+function isCommittedScalarWrite(operation: string, state: State): boolean {
+  return (operation === "write" || operation === "append") && state === State.Complete;
+}
+
 function sessionRevoked(session: Session): boolean {
   return isRevoked(session.connection) || !!requestTransportError(session.requests);
 }
@@ -1189,11 +1193,11 @@ export class FilesystemService {
     try {
       this.finishSocketOperation(session, operation, result, args);
       const pending = session.pending.get(id);
+      const scalarWrite = operation === "write" || operation === "append";
       if (
-        sessionRevoked(session) ||
-        !this.sessions.has(session) ||
         !pending ||
-        requestCancelled(pending)
+        (!scalarWrite &&
+          (sessionRevoked(session) || !this.sessions.has(session) || requestCancelled(pending)))
       )
         throw new FilesystemError(11);
       if (operation === "preopen" || (operation === "create" && typeof result === "number"))
@@ -1295,6 +1299,7 @@ export class FilesystemService {
     let opened = false;
     let preparing = false;
     let staging = false;
+    let committedWrite = false;
     let admission: PublicationAdmission | undefined;
     let dirtyRetry: number | undefined;
     const epoch = session.epoch;
@@ -1348,6 +1353,7 @@ export class FilesystemService {
       this.announceSegments(this.backend.takeSharedSegments?.() ?? [], this.sessions);
       state = this.writeResponse(session, id, cells, response, value, bytes);
       staging = operation === "stageWrite";
+      committedWrite = isCommittedScalarWrite(operation, state);
     } catch (error) {
       this.discardResponse(session, id);
       const dirtyChange = this.dirtyRetryChange(error);
@@ -1373,13 +1379,7 @@ export class FilesystemService {
         this.cancelPublication(session, admission);
         this.releasePrepared(session, prepared);
         cells[5] = Atomics.load(epoch, 0);
-        if (sessionRevoked(session) || requestCancelled(buffer)) {
-          this.discardResponse(session, id);
-          state = State.Cancelled;
-        }
-        // Complete is what lets the client commit a stage. Never publish it for a stage the
-        // owner no longer holds, or that commit would have nothing to apply.
-        if (staging && !session.stages.has(id)) state = State.Cancelled;
+        state = this.settleCancelledState(session, id, buffer, state, staging, committedWrite);
         this.settleWalk(session, id, state === State.Complete);
         this.settleWatch(session, id, state === State.Complete || state === State.Overflow);
         Atomics.store(cells, 0, state);
@@ -1399,6 +1399,25 @@ export class FilesystemService {
       );
       this.joinPreparation(session, id, buffer, prepared, wait);
     }
+  }
+  private settleCancelledState(
+    session: Session,
+    id: number,
+    buffer: FilesystemRequestBuffer,
+    state: State,
+    staging: boolean,
+    committedWrite: boolean,
+  ): State {
+    if (sessionRevoked(session) || requestCancelled(buffer)) {
+      this.discardResponse(session, id);
+      // Preserve inline committed write/append results so shared-offset leases observe
+      // an already-landed mutation before releasing the offset lock.
+      if (!committedWrite) state = State.Cancelled;
+    }
+    // Complete is what lets the client commit a stage. Never publish it for a stage the
+    // owner no longer holds, or that commit would have nothing to apply.
+    if (staging && !session.stages.has(id)) return State.Cancelled;
+    return state;
   }
   private holdResponseMemory(session: Session, id: number, release: () => void): void {
     const prior = session.responseMemory.get(id);

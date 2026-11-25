@@ -1804,6 +1804,73 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
       afterWriteClaim.lease.release();
     }
     expect(new TextDecoder().decode(await client.asyncCall("readFile", ["/f.txt"]))).toBe("LIVE");
+
+    // 4. Even when the backend mutates the file first and the writer is BOTH fatally killed
+    // AND filesystem-revoked before service reply publication, the surviving shared offset
+    // still advances to match the committed bytes (never stays at 4 while the file grew to 8).
+    const { revokeFilesystem } = await import("../fs/protocol.js");
+    const pair2 = createFilesystemConnection(client.connection);
+    const reservation = client.reserve(handle, pair2.client);
+    pair2.client.reservations.push(reservation);
+    pair2.server.reservations.push(reservation);
+    service.connect(pair2.server);
+    const client2 = new FilesystemClient(pair2.client);
+    client2.adopt(reservation);
+    try {
+      const f2 = fixture();
+      const resource2 = { kind: "file" as const, handle, offset: 4, append: false };
+      shareFileResource(
+        resource2,
+        client2.connection,
+        shareFileResource(resource, client.connection),
+      );
+      const fd2 = f2.descriptors.open(resource2, ALL, ALL);
+      const mutated = Promise.withResolvers<void>();
+      let releaseAfterMutate!: () => void;
+      const prevExecute = backend.execute;
+      backend.execute = (operation: string, args: unknown[], data: Uint8Array) => {
+        if (operation === "write") {
+          const written = originalExecute(operation, args, data);
+          revokeFilesystem(client2.connection);
+          const gate = Promise.withResolvers<void>();
+          releaseAfterMutate = () => gate.resolve();
+          mutated.resolve();
+          return gate.promise.then(() => written);
+        }
+        return prevExecute(operation, args, data);
+      };
+      const abi2 = new ProcessABI({
+        processIdentity: f2.supervisor.get(f2.pid)!.processIdentity,
+        memory: f2.memory,
+        descriptors: f2.descriptors,
+        fs: client2,
+        pid: f2.pid,
+        service: f2.supervisor,
+        signals: f2.signals,
+        wake: new Int32Array(new SharedArrayBuffer(4)),
+        wait() {
+          f2.supervisor.kill(f2.pid, 9);
+        },
+      });
+      f2.bytes().set(new TextEncoder().encode("NEXT"), 1024);
+      expect(() => abi2.imports.write!(fd2, 1024, 4)).toThrow(ProcessSignalExit);
+      await mutated.promise;
+      expect(claimFileOffset(resource).kind).toBe("busy");
+      const teardown2 = client2.settleDeferredWrites(2_000);
+      releaseAfterMutate();
+      await teardown2;
+      const survivingClaim = claimFileOffset(resource);
+      expect(survivingClaim.kind).toBe("acquired");
+      if (survivingClaim.kind === "acquired") {
+        expect(survivingClaim.lease.position).toBe(8);
+        survivingClaim.lease.release();
+      }
+      expect(new TextDecoder().decode(await client.asyncCall("readFile", ["/f.txt"]))).toBe(
+        "LIVENEXT",
+      );
+    } finally {
+      client2.dispose();
+    }
     client.release(handle);
   } finally {
     client.dispose();
