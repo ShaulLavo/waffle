@@ -1947,28 +1947,21 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
       await stdio.settle();
     }
 
-    // 6. An undelivered CommandStdio write AND a paused sync barrier hitting a transport error
-    // during service.shutdown() wait for the barrier before retiring transport memory, then
-    // settle the undelivered write cleanly without deadlocking shutdownFence().
+    // 6. A paused sync barrier and an undelivered write on the SAME session hitting a protocol
+    // error during service.shutdown() keep request memory unretired until the barrier finishes,
+    // then retire transport memory so the undelivered write releases its section without deadlock.
+    const { drainAsyncFileDiagnostic } = await import("../browser/diagnostic.js");
+    const { closeRequestMemory, requestMemoryRetired } = await import("../fs/request-memory.js");
+    const { wake } = await import("../fs/protocol.js");
     const pair4 = createFilesystemConnection(client.connection);
     const reservation4 = client.reserve(handle, pair4.client);
     pair4.client.reservations.push(reservation4);
     pair4.server.reservations.push(reservation4);
     service.connect(pair4.server);
-    const abort4 = new AbortController();
-    const table4 = new DescriptorTable();
+    const client4 = new FilesystemClient(pair4.client);
+    client4.adopt(reservation4);
     const resource4 = { kind: "file" as const, handle, offset: 10, append: false };
     shareFileResource(resource4, pair4.client, shareFileResource(resource, client.connection));
-    table4.open(resource4, ALL, ALL);
-    table4.open(resource4, ALL, ALL);
-    const stdio4 = new CommandStdio(table4, abort4.signal, pair4.client);
-    const pair5 = createFilesystemConnection(client.connection);
-    const reservation5 = client.reserve(handle, pair5.client);
-    pair5.client.reservations.push(reservation5);
-    pair5.server.reservations.push(reservation5);
-    service.connect(pair5.server);
-    const client5 = new FilesystemClient(pair5.client);
-    client5.adopt(reservation5);
     let releaseSync: (() => void) | undefined;
     const syncPaused = Promise.withResolvers<void>();
     const flushBackend = backend as typeof backend & { flush?: () => Promise<void> | void };
@@ -1986,52 +1979,63 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
     };
     const origPost4 = pair4.client.port.postMessage.bind(pair4.client.port);
     const descriptorDropped = Promise.withResolvers<void>();
-    let dropOnce = true;
+    let dropNextRequest = false;
     pair4.client.port.postMessage = ((msg: unknown, transfer?: StructuredSerializeOptions) => {
-      if (dropOnce && msg && typeof msg === "object" && "id" in msg) {
-        dropOnce = false;
+      if (dropNextRequest && msg && typeof msg === "object" && "id" in msg) {
+        dropNextRequest = false;
         descriptorDropped.resolve();
         return;
       }
       return origPost4(msg, transfer as never);
     }) as typeof pair4.client.port.postMessage;
     try {
-      const syncPending = client5.asyncCall("sync", [handle]).then(
+      const syncPending = client4.asyncCall("sync", [handle]).then(
         () => "resolved",
         () => "rejected",
       );
       await syncPaused.promise;
-      const undeliveredWrite = stdio4.stdout.write(new TextEncoder().encode("??")).then(
+      dropNextRequest = true;
+      const undeliveredWrite = drainAsyncFileDiagnostic(
+        client4,
+        resource4,
+        new TextEncoder().encode("??"),
+        () => true,
+        50,
+      ).then(
         () => "resolved",
         () => "rejected",
       );
       await descriptorDropped.promise;
+      // Session 4 now has BOTH a running sync barrier AND an undelivered write holding sections[0]=1.
+      expect(new Int32Array(pair4.client.sections)[0]).toBe(1);
       client.release(handle);
       client.dispose();
-      // Start service.shutdown() FIRST so shutdownOwner is active and shutdownFence() is waiting,
-      // then inject protocol errors on both sessions while shutdown is underway.
+      // Start service.shutdown() FIRST so shutdownFence(session4) is blocked on sections[0]=1,
+      // then inject the protocol error so shutdownFence enters drainFailedSessionRequests(session4).
       const shutdownPromise = service.shutdown();
-      const { closeRequestMemory, requestMemoryRetired } = await import("../fs/request-memory.js");
-      const { wake } = await import("../fs/protocol.js");
       closeRequestMemory(pair4.client.requests, "protocol");
       wake(pair4.client);
-      closeRequestMemory(pair5.client.requests, "protocol");
-      wake(pair5.client);
-      expect(await undeliveredWrite).toBe("rejected");
       expect(await syncPending).toBe("rejected");
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      // While the sync barrier on pair5 is still executing, its request memory MUST NOT be retired!
-      expect(requestMemoryRetired(pair5.client.requests)).toBe(false);
+      expect(await undeliveredWrite).toBe("rejected");
+      // While the sync barrier is still paused, drainFailedSessionRequests must NOT retire memory,
+      // so the undelivered write stays deferred and sections[0] remains 1.
+      expect(await client4.settleDeferredWrites(40)).toBe(false);
+      expect(requestMemoryRetired(pair4.client.requests)).toBe(false);
+      expect(new Int32Array(pair4.client.sections)[0]).toBe(1);
+      // Releasing the sync barrier lets drainFailedSessionRequests retire memory, unlocking the
+      // undelivered write, dropping sections[0] to 0, and finishing shutdown cleanly.
+      const settling4 = client4.settleDeferredWrites();
       releaseSync?.();
       releaseSync = undefined;
-      client5.dispose();
-      await Promise.all([shutdownPromise, stdio4.settle()]);
-      expect(requestMemoryRetired(pair5.client.requests)).toBe(true);
+      expect(await settling4).toBe(true);
+      await shutdownPromise;
+      expect(requestMemoryRetired(pair4.client.requests)).toBe(true);
+      expect(new Int32Array(pair4.client.sections)[0]).toBe(0);
       expect(resource.offset).toBe(10);
     } finally {
       releaseSync?.();
       flushBackend.flush = prevFlush;
-      client5.dispose();
+      client4.dispose();
     }
   } finally {
     releaseOp?.();
