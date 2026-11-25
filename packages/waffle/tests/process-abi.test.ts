@@ -1947,7 +1947,43 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
       await stdio.settle();
     }
 
+    // 6. An undelivered CommandStdio write hitting a transport error during service.shutdown()
+    // retires transport memory cleanly without deadlocking shutdownFence().
+    const pair4 = createFilesystemConnection(client.connection);
+    const reservation4 = client.reserve(handle, pair4.client);
+    pair4.client.reservations.push(reservation4);
+    pair4.server.reservations.push(reservation4);
+    service.connect(pair4.server);
+    const abort4 = new AbortController();
+    const table4 = new DescriptorTable();
+    const resource4 = { kind: "file" as const, handle, offset: 10, append: false };
+    shareFileResource(resource4, pair4.client, shareFileResource(resource, client.connection));
+    table4.open(resource4, ALL, ALL);
+    table4.open(resource4, ALL, ALL);
+    const stdio4 = new CommandStdio(table4, abort4.signal, pair4.client);
+    // Drop the write descriptor on the client port after submit so service.receive() never sees it.
+    const origPost4 = pair4.client.port.postMessage.bind(pair4.client.port);
+    let dropOnce = true;
+    pair4.client.port.postMessage = ((msg: unknown, transfer?: StructuredSerializeOptions) => {
+      if (dropOnce && msg && typeof msg === "object" && "id" in msg) {
+        dropOnce = false;
+        return;
+      }
+      return origPost4(msg, transfer as never);
+    }) as typeof pair4.client.port.postMessage;
+    const undeliveredWrite = stdio4.stdout.write(new TextEncoder().encode("??"));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const { closeRequestMemory } = await import("../fs/request-memory.js");
+    const { wake } = await import("../fs/protocol.js");
+    closeRequestMemory(pair4.client.requests, "protocol");
+    wake(pair4.client);
+    await expect(undeliveredWrite).rejects.toThrow();
     client.release(handle);
+    client.dispose();
+    const shutdownPromise = service.shutdown();
+    const settle4 = stdio4.settle();
+    await Promise.all([shutdownPromise, settle4]);
+    expect(resource.offset).toBe(10);
   } finally {
     releaseOp?.();
     client.dispose();

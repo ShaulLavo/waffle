@@ -6,7 +6,7 @@ import {
   shareFileResource,
   type AsyncFileOffsetLease,
 } from "../core/open-file.js";
-import { FilesystemClient } from "../fs/client.js";
+import { FilesystemClient, type FilesystemCompletion } from "../fs/client.js";
 import { errno, type FilesystemConnection } from "../fs/protocol.js";
 import { CommandStdioError, type CommandInput, type CommandOutput } from "./command.js";
 
@@ -135,6 +135,24 @@ export class CommandStdio {
     return written;
   }
 
+  private deferAsyncWrite(
+    filesystem: FilesystemClient,
+    completion: FilesystemCompletion,
+    lease: AsyncFileOffsetLease,
+  ): void {
+    filesystem.trackDeferredWrite(completion, () => {
+      try {
+        const settled = completion.tryConsumeCommitted();
+        if (settled !== undefined) this.commitAsyncWrite(lease, settled);
+      } catch {
+        // Aborted or failed write: leave offset unchanged before releasing the lease.
+      } finally {
+        completion.release();
+        lease.release();
+      }
+    });
+  }
+
   private async writeAsyncFileLease(
     filesystem: FilesystemClient,
     resource: Extract<Resource, { kind: "file" }>,
@@ -156,21 +174,46 @@ export class CommandStdio {
       } else {
         handedOff = true;
         onDefer();
-        filesystem.trackDeferredWrite(completion, () => {
-          try {
-            const settled = completion.tryConsumeCommitted();
-            if (settled !== undefined) this.commitAsyncWrite(lease, settled);
-          } catch {
-            // Aborted or failed write: leave offset unchanged before releasing the lease.
-          } finally {
-            completion.release();
-            lease.release();
-          }
-        });
+        this.deferAsyncWrite(filesystem, completion, lease);
       }
       throw error;
     } finally {
       if (!handedOff) completion.release();
+    }
+  }
+
+  private async runLeasedTransfer(
+    filesystem: FilesystemClient,
+    resource: Extract<Resource, { kind: "file" }>,
+    lease: AsyncFileOffsetLease,
+    bytes: Uint8Array,
+    writing: boolean,
+  ): Promise<number> {
+    let releaseLease = true;
+    try {
+      if (writing) {
+        const written = await this.writeAsyncFileLease(filesystem, resource, lease, bytes, () => {
+          releaseLease = false;
+        });
+        lease.release();
+        releaseLease = false;
+        this.check();
+        return written;
+      }
+      const read: Uint8Array = await filesystem.asyncCall("read", [
+        resource.handle,
+        bytes.length,
+        lease.position,
+      ]);
+      bytes.set(read, 0);
+      if (read.length > 0) lease.commit(lease.position + read.length);
+      this.check();
+      return read.length;
+    } catch (error) {
+      if (error instanceof CommandStdioError) throw error;
+      throw stdioError(-errno(error));
+    } finally {
+      if (releaseLease) lease.release();
     }
   }
 
@@ -191,33 +234,7 @@ export class CommandStdio {
         await this.wait([claim.word], [claim.observed]);
         continue;
       }
-      const { lease } = claim;
-      let releaseLease = true;
-      try {
-        if (writing) {
-          const written = await this.writeAsyncFileLease(filesystem, resource, lease, bytes, () => {
-            releaseLease = false;
-          });
-          lease.release();
-          releaseLease = false;
-          this.check();
-          return written;
-        }
-        const read: Uint8Array = await filesystem.asyncCall("read", [
-          resource.handle,
-          bytes.length,
-          lease.position,
-        ]);
-        bytes.set(read, 0);
-        if (read.length > 0) lease.commit(lease.position + read.length);
-        this.check();
-        return read.length;
-      } catch (error) {
-        if (error instanceof CommandStdioError) throw error;
-        throw stdioError(-errno(error));
-      } finally {
-        if (releaseLease) lease.release();
-      }
+      return await this.runLeasedTransfer(filesystem, resource, claim.lease, bytes, writing);
     }
   }
 

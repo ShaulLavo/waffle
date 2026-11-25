@@ -304,41 +304,52 @@ test("a completed file read cannot publish after actual filesystem revocation", 
   }
 });
 
-test("a cancelled threaded write that already committed advances the shared offset before unlocking", async () => {
-  const { FilesystemError, revokeFilesystem } = await import("../fs/protocol.ts");
-  const value = await serviceFixture("growth");
-  const completed = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  const submit = value.client.submit.bind(value.client);
-  value.client.submit = (name, args, data) => {
-    const completion = submit(name, args, data);
-    const waitValue = completion.value.bind(completion);
-    completion.value = async () => {
-      await waitValue();
-      completed.resolve();
-      await release.promise;
-      throw new FilesystemError(11);
+for (const failureMode of ["revoke", "transport"] as const) {
+  test(`a threaded write that committed before ${failureMode} advances and unlocks the shared offset`, async () => {
+    const { FilesystemError, revokeFilesystem, wake } = await import("../fs/protocol.ts");
+    const { closeRequestMemory } = await import("../fs/request-memory.ts");
+    const value = await serviceFixture("growth");
+    const completed = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const submit = value.client.submit.bind(value.client);
+    value.client.submit = (name, args, data) => {
+      const completion = submit(name, args, data);
+      const waitValue = completion.value.bind(completion);
+      completion.value = async () => {
+        await waitValue();
+        completed.resolve();
+        await release.promise;
+        if (failureMode === "revoke") throw new FilesystemError(11);
+        return completion.consumeInline();
+      };
+      return completion;
     };
-    return completion;
-  };
-  try {
-    const shared = shareFileResource(value.resource, value.pair.client);
-    new Uint8Array(value.memory.buffer).set(new TextEncoder().encode("AB"), 256);
-    const pending = value.service.submit(value.call(), {
-      kind: "write",
-      fd: value.fd,
-      spans: [{ address: 256, length: 2 }],
-    });
-    await value.event("held");
-    value.send({ kind: "release" });
-    await completed.promise;
-    revokeFilesystem(value.client.connection);
-    release.resolve();
-    expect(await pending).toEqual({ kind: "error", errno: 11 });
-    expect(value.resource.offset).toBe(2);
-    expect(Atomics.load(new Int32Array(shared), 0)).toBe(0);
-  } finally {
-    release.resolve();
-    await value.dispose();
-  }
-});
+    try {
+      const shared = shareFileResource(value.resource, value.pair.client);
+      new Uint8Array(value.memory.buffer).set(new TextEncoder().encode("AB"), 256);
+      const pending = value.service.submit(value.call(), {
+        kind: "write",
+        fd: value.fd,
+        spans: [{ address: 256, length: 2 }],
+      });
+      await value.event("held");
+      value.send({ kind: "release" });
+      await completed.promise;
+      if (failureMode === "revoke") revokeFilesystem(value.client.connection);
+      else {
+        closeRequestMemory(value.client.connection.requests, "protocol");
+        wake(value.client.connection);
+      }
+      release.resolve();
+      if (failureMode === "revoke") expect(await pending).toEqual({ kind: "error", errno: 11 });
+      else await expect(pending).rejects.toThrow("invalid control message");
+      expect(value.resource.offset).toBe(2);
+      expect(Atomics.load(new Int32Array(shared), 0)).toBe(0);
+    } finally {
+      release.resolve();
+      if (failureMode === "transport")
+        await expect(value.dispose()).rejects.toThrow("thread fixture teardown failed");
+      else await value.dispose();
+    }
+  });
+}

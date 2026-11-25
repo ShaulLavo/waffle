@@ -8,6 +8,7 @@ import {
   retainResponseBytes,
   captureRequestMemory,
   closeRequestMemory,
+  requestMemoryRetired,
   retireRequestMemory,
   requestTransportError,
   requestLengths,
@@ -1930,6 +1931,16 @@ export class FilesystemService {
         this.backend.shared.publication?.releasePin(id);
     session.publicationPins?.clear();
   }
+  private cancelPendingRequests(session: Session): void {
+    for (const [id, buffer] of session.pending) {
+      const cells = requestCells(buffer);
+      Atomics.store(cells, 6, 1);
+      Atomics.store(cells, 0, State.Cancelled);
+      Atomics.notify(cells, 0);
+      session.connection.port.postMessage({ completed: id });
+    }
+    session.pending.clear();
+  }
   private releaseSessionPins(session: Session): void {
     this.cancelSessionWatchResponses(session);
     this.watchService?.closeOwner(session.connection.owner);
@@ -1973,14 +1984,7 @@ export class FilesystemService {
     // A discard can be lost when a port closes. Retirement settles what remains, before this
     // session's file pins and request blocks go: a committed write is applied, never dropped.
     for (const id of Array.from(session.stages.keys())) this.settleStage(session, id);
-    for (const [id, buffer] of session.pending) {
-      const cells = requestCells(buffer);
-      Atomics.store(cells, 6, 1);
-      Atomics.store(cells, 0, State.Cancelled);
-      Atomics.notify(cells, 0);
-      session.connection.port.postMessage({ completed: id });
-    }
-    session.pending.clear();
+    this.cancelPendingRequests(session);
     wake(session.connection);
     for (const id of session.walkTransactions.keys()) this.settleWalk(session, id, false);
     session.walks?.dispose();
@@ -2147,7 +2151,41 @@ export class FilesystemService {
   }
   private async shutdownFence(session: Session): Promise<void> {
     revokeFilesystemService(session.connection);
-    await waitForFilesystemQuiescence(session.connection);
+    const quiesced = waitForFilesystemQuiescence(session.connection);
+    let done = false;
+    void quiesced.finally(() => {
+      done = true;
+      wake(session.connection);
+    });
+    const signal = new Int32Array(session.connection.signal);
+    while (!done) {
+      const observed = Atomics.load(signal, 0);
+      if (requestTransportError(session.requests)) {
+        session.transportFailed = true;
+        await this.drainFailedSessionRequests(session);
+        break;
+      }
+      const waiting = atomicsWaitAsync(signal, 0, observed);
+      if (waiting.async) await waiting.value;
+    }
+    await quiesced;
+  }
+  private async drainFailedSessionRequests(session: Session): Promise<void> {
+    // A transport error stops receive() from accepting new descriptors. Drain every already-
+    // accepted write first, then retire transport memory so undelivered client writes can release
+    // their offset leases and filesystem sections without deadlocking shutdownFence().
+    await waitForRequestQuiescence(session.connection, session.requests);
+    for (;;) {
+      const queue = this.queue;
+      await queue;
+      if (session.preparations.size) await Promise.allSettled(Array.from(session.preparations));
+      if (queue === this.queue && !session.preparations.size && !session.inFlightWrites.size) break;
+    }
+    this.cancelPendingRequests(session);
+    const failure = requestTransportError(session.requests);
+    if (failure?.reason !== "stale" && !requestMemoryRetired(session.requests))
+      retireRequestMemory(session.requests);
+    wake(session.connection);
   }
   private async drainShutdown(owner: ShutdownOwner, fences: Promise<void>[]): Promise<void> {
     const failures: unknown[] = [];
