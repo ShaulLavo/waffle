@@ -1,7 +1,6 @@
-import { DescriptorTable } from "../../core/descriptors.js";
-import { withFileOffset } from "../../core/open-file.js";
+import { bootstrap } from "../../browser/worker.js";
+import { shareFileResource } from "../../core/open-file.js";
 import { Wasi } from "../../core/wasi.js";
-import { drainDiagnostic } from "../../browser/diagnostic.js";
 import { FilesystemClient, type FilesystemConnection } from "../../fs/index.js";
 import { PAGE } from "../../fs/protocol.js";
 import { ProcessABI } from "../../proc/abi.js";
@@ -20,12 +19,15 @@ const OFLAG_CREAT = 1;
 const OFLAG_EXCL = 4;
 const OFLAG_TRUNC = 8;
 const FDFLAG_APPEND = 1;
-const FDFLAG_NONBLOCK = 4;
 
 interface WorkerRequest {
-  readonly scenario: "wasi-fd" | "proc-redirection" | "poll-wake" | "diagnostic";
+  readonly scenario: "wasi-fd" | "proc-redirection" | "shared-write" | "diagnostic";
   readonly connection: FilesystemConnection;
   readonly seedText?: string;
+  readonly sharedOffset?: SharedArrayBuffer;
+  readonly sharedHandle?: number;
+  readonly barrier?: SharedArrayBuffer;
+  readonly byteValue?: number;
 }
 
 function assertEqual(actual: unknown, expected: unknown, label: string): void {
@@ -98,7 +100,6 @@ function runWasiFdConformance(fs: FilesystemClient) {
   try {
     // 1. O_CREAT | O_EXCL, fd_write, fd_seek, fd_tell, fd_read, fd_pread, fd_pwrite
     const fd = g.open("alpha.txt", OFLAG_CREAT | OFLAG_EXCL, ALL_RIGHTS, 0);
-    // Second O_CREAT | O_EXCL must return EEXIST (20)
     const lenA = g.putStr("alpha.txt", 2048);
     assertEqual(
       g.call(
@@ -126,6 +127,15 @@ function runWasiFdConformance(fs: FilesystemClient) {
 
     assertEqual(g.call("fd_tell", fd, 272), 0, "fd_tell");
     assertEqual(g.view().getBigUint64(272, true), BigInt(payload.length), "fd_tell value");
+
+    // Empty leading iovec followed by non-empty iovec must NOT return false EOF!
+    g.view().setUint32(256, 4400, true);
+    g.view().setUint32(260, 0, true);
+    g.view().setUint32(264, 4400, true);
+    g.view().setUint32(268, 5, true);
+    assertEqual(g.call("fd_pread", fd, 256, 2, 0n, 276), 0, "fd_pread with empty leading iovec");
+    assertEqual(g.view().getUint32(276, true), 5, "empty leading iovec byte count");
+    assertEqual(decoder.decode(g.bytes().slice(4400, 4405)), "hello", "empty leading iovec data");
 
     // fd_pwrite does not move offset; fd_pread reads without moving offset
     const patch = encoder.encode("WASM");
@@ -204,7 +214,6 @@ function runWasiFdConformance(fs: FilesystemClient) {
     const renamedLen = g.putStr("renamed.txt", 2500);
     assertEqual(g.call("path_rename", 3, 2200, linkLen, 3, 2500, renamedLen), 0, "path_rename");
 
-    // Unlink alpha.txt while fd is open; fd stays readable/writable!
     assertEqual(g.call("path_unlink_file", 3, 2048, fromLen), 0, "unlink alpha");
     assertEqual(g.call("path_unlink_file", 3, 2500, renamedLen), 0, "unlink renamed");
     const ghost = encoder.encode("!");
@@ -282,9 +291,7 @@ function runProcRedirectionConformance(fs: FilesystemClient, seedText?: string) 
     },
   });
   const pid = supervisor.createRoot({ descriptors: g.wasi.descriptors });
-  // Use a separate wake word from fs.signal (just like real browser/worker.ts runtimeProcess.wake!)
   const processWake = new Int32Array(new SharedArrayBuffer(4));
-  let waitsOnFsSignal = 0;
   let waitsOnProcessWake = 0;
   const abi = new ProcessABI({
     processIdentity: supervisor.get(pid)!.processIdentity,
@@ -296,9 +303,7 @@ function runProcRedirectionConformance(fs: FilesystemClient, seedText?: string) 
     signals: supervisor.get(pid)!,
     wake: processWake,
     wait(milliseconds, word, expected) {
-      if (word instanceof Int32Array && word.buffer === fs.signal.buffer) waitsOnFsSignal++;
-      else if (word instanceof Int32Array && word.buffer === processWake.buffer)
-        waitsOnProcessWake++;
+      if (word instanceof Int32Array && word.buffer === processWake.buffer) waitsOnProcessWake++;
       controlWait(word, 0, expected, milliseconds);
     },
   });
@@ -364,7 +369,35 @@ function runProcRedirectionConformance(fs: FilesystemClient, seedText?: string) 
     assertEqual(outText, "first\nsecond\n", "echo > and >> then cat");
     g.call("fd_close", fd3);
 
-    // 4. `2>&1 > dup.txt` shared offset across dup'd FDs
+    // 4. Independent opens on same inode reading alternating offsets never starve each other
+    const openA = g.open("out.txt", 0, ALL_RIGHTS, 0);
+    const openB = g.open("out.txt", 0, ALL_RIGHTS, 0);
+    assertEqual(g.call("fd_seek", openB, 1n, 0, 272), 0, "seek openB to 1");
+    let gotA = "";
+    let gotB = "";
+    for (let step = 0; step < 4; step++) {
+      let nA = abi.imports.read!(openA, 16384, 1);
+      while (nA === -6) {
+        pollOne(0, openA, 21n);
+        nA = abi.imports.read!(openA, 16384, 1);
+      }
+      assertEqual(nA, 1, "alternating read openA");
+      gotA += decoder.decode(g.bytes().slice(16384, 16385));
+
+      let nB = abi.imports.read!(openB, 16384, 1);
+      while (nB === -6) {
+        pollOne(0, openB, 22n);
+        nB = abi.imports.read!(openB, 16384, 1);
+      }
+      assertEqual(nB, 1, "alternating read openB");
+      gotB += decoder.decode(g.bytes().slice(16384, 16385));
+    }
+    assertEqual(gotA, "firs", "independent openA bytes");
+    assertEqual(gotB, "irst", "independent openB bytes");
+    g.call("fd_close", openA);
+    g.call("fd_close", openB);
+
+    // 5. `2>&1 > dup.txt` shared offset across dup'd FDs
     const dupA = g.open("dup.txt", OFLAG_CREAT | OFLAG_TRUNC, RIGHT_WRITE | RIGHT_POLL, 0);
     const dupB = abi.imports.dup!(dupA);
     if (dupB < 0) throw new Error(`dup failed: ${dupB}`);
@@ -381,7 +414,7 @@ function runProcRedirectionConformance(fs: FilesystemClient, seedText?: string) 
     );
     g.call("fd_close", dupRead);
 
-    // 5. `cat big.bin > big-copy.bin` (> 140 KiB multi-chunk streaming across PAGE boundaries)
+    // 6. `cat big.bin > big-copy.bin` (> 140 KiB multi-chunk streaming across PAGE boundaries)
     const bigSize = PAGE * 2 + 9999;
     const bigInput = new Uint8Array(bigSize);
     for (let i = 0; i < bigSize; i++) bigInput[i] = (i * 17 + 3) & 0xff;
@@ -405,7 +438,7 @@ function runProcRedirectionConformance(fs: FilesystemClient, seedText?: string) 
         throw new Error(`big-copy byte mismatch at ${i}: ${copied[i]} !== ${bigInput[i]}`);
     }
 
-    // 6. Unlinked-while-open regular file via runtime_proc + fd_reopen
+    // 7. Unlinked-while-open regular file via runtime_proc + fd_reopen
     const unlinkedFd = g.open("ephemeral.txt", OFLAG_CREAT | OFLAG_TRUNC, ALL_RIGHTS, 0);
     writeAll(unlinkedFd, encoder.encode("ghost-data"));
     const ephLen = g.putStr("ephemeral.txt", 2048);
@@ -420,7 +453,7 @@ function runProcRedirectionConformance(fs: FilesystemClient, seedText?: string) 
     assertEqual(decoder.decode(readAll(reopenedFd)), "ghost-data", "read reopened unlinked");
     g.call("fd_close", reopenedFd);
 
-    // 7. Zero-length I/O and error propagation (EISDIR, EACCES) without advancing offsets
+    // 8. Zero-length I/O and error propagation (EISDIR, EACCES) without advancing offsets
     assertEqual(abi.imports.read!(3, 16384, 8), -31, "read directory -> -EISDIR");
     const roFd = g.open("readonly.txt", OFLAG_CREAT | OFLAG_TRUNC, ALL_RIGHTS, 0);
     writeAll(roFd, encoder.encode("fixed"));
@@ -438,8 +471,10 @@ function runProcRedirectionConformance(fs: FilesystemClient, seedText?: string) 
     assertEqual(abi.imports.read!(roFd, 16384, 0), 0, "zero-length read");
     assertEqual(roRes.offset, 2, "offset untouched after EACCES and zero-length IO");
     g.call("fd_close", roFd);
+    const roLen = g.putStr("readonly.txt", 2048);
+    assertEqual(g.call("path_unlink_file", 3, 2048, roLen), 0, "unlink readonly.txt");
 
-    // 8. If seedText was written by counterpart tab, verify live cross-tab read
+    // 9. Cross-tab live read if seeded by counterpart tab
     let crossTabRead: string | undefined;
     if (seedText !== undefined) {
       const crossFd = g.open("cross-tab.txt", 0, RIGHT_READ | RIGHT_POLL, 0);
@@ -451,7 +486,6 @@ function runProcRedirectionConformance(fs: FilesystemClient, seedText?: string) 
       ok: true,
       outText,
       bigSize: copied.length,
-      waitsOnFsSignal,
       waitsOnProcessWake,
       crossTabRead,
     };
@@ -461,7 +495,14 @@ function runProcRedirectionConformance(fs: FilesystemClient, seedText?: string) 
   }
 }
 
-function runPollWakeCheck(fs: FilesystemClient) {
+function runSharedOffsetWrite(
+  fs: FilesystemClient,
+  sharedHandle: number,
+  sharedOffset: SharedArrayBuffer,
+  barrier: SharedArrayBuffer,
+  byteValue: number,
+) {
+  for (const reservation of fs.connection.reservations) fs.adopt(reservation);
   const g = createGuestHost(fs);
   const supervisor = new ProcessSupervisor({
     registry: new ExecutableRegistry(),
@@ -470,8 +511,6 @@ function runPollWakeCheck(fs: FilesystemClient) {
     },
   });
   const pid = supervisor.createRoot({ descriptors: g.wasi.descriptors });
-  const processWake = new Int32Array(new SharedArrayBuffer(4));
-  const waitWords: string[] = [];
   const abi = new ProcessABI({
     processIdentity: supervisor.get(pid)!.processIdentity,
     memory: g.memory,
@@ -480,100 +519,112 @@ function runPollWakeCheck(fs: FilesystemClient) {
     pid,
     service: supervisor,
     signals: supervisor.get(pid)!,
-    wake: processWake,
-    wait(milliseconds, word, expected) {
-      waitWords.push(
-        word instanceof Int32Array && word.buffer === fs.signal.buffer
-          ? "fs.signal"
-          : word instanceof Int32Array && word.buffer === processWake.buffer
-            ? "process.wake"
-            : "other",
-      );
-      controlWait(word, 0, expected, milliseconds);
-    },
   });
   try {
-    const fd = g.open("wake.txt", OFLAG_CREAT | OFLAG_TRUNC, ALL_RIGHTS, 0);
-    g.bytes().set(encoder.encode("wake-check"), 16384);
+    const resource = { kind: "file" as const, handle: sharedHandle, offset: 0, append: false };
+    shareFileResource(resource, fs.connection, sharedOffset);
+    const fd = g.wasi.descriptors.open(resource, ALL_RIGHTS, 0n);
+    const cells = new Int32Array(barrier);
+    const arrived = Atomics.add(cells, 0, 1) + 1;
+    if (arrived < 2) {
+      while (Atomics.load(cells, 0) < 2) Atomics.wait(cells, 0, arrived, 100);
+    } else {
+      Atomics.notify(cells, 0);
+    }
     const view = new DataView(g.memory.buffer);
-    let writeResult = abi.imports.write!(fd, 16384, 10);
-    while (writeResult === -6) {
-      view.setUint32(512, 1, true);
-      view.setUint32(516, fd, true);
-      view.setBigUint64(520, 42n, true);
-      assertEqual(abi.imports.poll!(512, 1, 5000, 640), 1, "poll write");
-      writeResult = abi.imports.write!(fd, 16384, 10);
-    }
-    assertEqual(writeResult, 10, "write count");
-    assertEqual(g.call("fd_seek", fd, 0n, 0, 272), 0, "seek 0");
-    let readResult = abi.imports.read!(fd, 16384, 10);
-    while (readResult === -6) {
-      view.setUint32(512, 0, true);
-      view.setUint32(516, fd, true);
-      view.setBigUint64(520, 43n, true);
-      assertEqual(abi.imports.poll!(512, 1, 5000, 640), 1, "poll read");
-      readResult = abi.imports.read!(fd, 16384, 10);
-    }
-    assertEqual(readResult, 10, "read count");
-    assertEqual(decoder.decode(g.bytes().slice(16384, 16394)), "wake-check", "read text");
-    g.call("fd_close", fd);
-    return {
-      ok: true,
-      waitWords,
-      directDisabled: fs.shared.isDirectDisabled(),
+    const writeOne = (userdata: number): number => {
+      for (;;) {
+        const res = abi.imports.write!(fd, 16384, 1);
+        if (res !== -6) return res;
+        view.setUint32(512, 1, true);
+        view.setUint32(516, fd, true);
+        view.setBigUint64(520, BigInt(userdata), true);
+        abi.imports.poll!(512, 1, 5000, 640);
+      }
     };
+    let writtenTotal = 0;
+    for (let i = 0; i < 8; i++) {
+      g.bytes()[16384] = byteValue;
+      const res = writeOne(i);
+      assertEqual(res, 1, "shared-offset write count");
+      writtenTotal += res;
+    }
+    g.call("fd_close", fd);
+    return { ok: true, writtenTotal };
   } finally {
     supervisor.dispose();
     g.wasi.descriptors.dispose();
   }
 }
 
-async function runDiagnosticCheck(fs: FilesystemClient) {
-  const root = fs.preopen("/");
-  const created = fs.create(
-    { parent: root, node: undefined, name: "stderr.log", trailingSlash: false, terminalDot: false },
-    "file",
-    false,
+async function runBootstrapDiagnostic(connection: FilesystemConnection) {
+  const startModule = new WebAssembly.Module(
+    new Uint8Array([
+      0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 5, 3, 1, 0, 1, 7, 19, 2, 6, 109,
+      101, 109, 111, 114, 121, 2, 0, 6, 95, 115, 116, 97, 114, 116, 0, 0, 10, 4, 1, 2, 0, 11,
+    ]),
   );
-  if (typeof created !== "number") throw new Error(`create failed: ${created.error}`);
-  fs.retain(created);
-  const descriptors = new DescriptorTable();
-  try {
-    const fd = descriptors.open(
-      {
-        kind: "file",
-        handle: created,
-        offset: 0,
-        append: true,
-        fdflags: FDFLAG_APPEND | FDFLAG_NONBLOCK,
+  const posted: unknown[] = [];
+  await bootstrap(
+    {
+      controlGrant: { kind: "unbounded" },
+      module: startModule,
+      args: ["diag"],
+      env: {},
+      filesystem: connection,
+    },
+    {
+      beforeBindings({ fs, wasi }) {
+        const root = fs.preopen("/");
+        const created = fs.create(
+          {
+            parent: root,
+            node: undefined,
+            name: "stderr.log",
+            trailingSlash: false,
+            terminalDot: false,
+          },
+          "file",
+          false,
+        );
+        if (typeof created !== "number")
+          throw new Error(`create stderr.log failed: ${created.error}`);
+        fs.retain(created);
+        wasi.descriptors.close(2);
+        wasi.descriptors.openAt(
+          2,
+          { kind: "file", handle: created, offset: 0, append: true, fdflags: FDFLAG_APPEND },
+          ALL_RIGHTS,
+          0n,
+          () => fs.release(created),
+        );
       },
-      ALL_RIGHTS,
-      0n,
-    );
-    const resource = descriptors.get(fd)!.resource;
-    if (resource.kind !== "file") throw new Error("expected file");
-    await drainDiagnostic(encoder.encode("fatal: redirected diagnostic\n"), (chunk) =>
-      withFileOffset(
-        resource,
-        () => {
-          const result = fs.tryAppend(resource.handle, [chunk]);
-          if (typeof result === "number") return result;
-          resource.offset = result.offset;
-          return result.written;
-        },
-        true,
-      ),
-    );
-    const readBuf = new Uint8Array(64);
-    const count = fs.read(created, [readBuf], 0);
-    return { ok: true, text: decoder.decode(readBuf.subarray(0, count)) };
-  } finally {
-    descriptors.dispose();
-    fs.release(created);
-  }
+      run() {
+        throw new Error("boom-from-worker");
+      },
+    },
+    {
+      crossOriginIsolated: true,
+      postMessage(message) {
+        posted.push(message);
+      },
+    },
+  );
+  return { ok: true, postedCount: posted.length };
 }
 
 self.onmessage = async ({ data }: MessageEvent<WorkerRequest>) => {
+  if (data.scenario === "diagnostic") {
+    try {
+      const value = await runBootstrapDiagnostic(data.connection);
+      self.postMessage({ value });
+    } catch (error) {
+      self.postMessage({
+        error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+      });
+    }
+    return;
+  }
   const fs = new FilesystemClient(data.connection);
   try {
     const result =
@@ -581,9 +632,13 @@ self.onmessage = async ({ data }: MessageEvent<WorkerRequest>) => {
         ? runWasiFdConformance(fs)
         : data.scenario === "proc-redirection"
           ? runProcRedirectionConformance(fs, data.seedText)
-          : data.scenario === "poll-wake"
-            ? runPollWakeCheck(fs)
-            : await runDiagnosticCheck(fs);
+          : runSharedOffsetWrite(
+              fs,
+              data.sharedHandle!,
+              data.sharedOffset!,
+              data.barrier!,
+              data.byteValue!,
+            );
     self.postMessage({ value: result });
   } catch (error) {
     self.postMessage({

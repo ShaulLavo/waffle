@@ -349,6 +349,8 @@ export interface VfsBackendHandle {
   /** For multi-tab backends, the counterpart tab's client (peer when kind is host, host when peer). */
   readonly peerClient?: FilesystemClient;
   readonly peerService?: FilesystemService;
+  /** For multi-tab backends, gracefully closes the counterpart tab (e.g. Host failover to Peer). */
+  closeCounterpart?(): Promise<void>;
   forkConnection(
     which?: "primary" | "counterpart",
     reserveHandles?: readonly number[],
@@ -390,11 +392,14 @@ async function openMultiTabNode(
   const service = new FilesystemService(backend);
   service.connect(pair.server);
   const client = new FilesystemClient(pair.client);
+  let closed = false;
   return {
     backend,
     service,
     client,
     async close() {
+      if (closed) return;
+      closed = true;
       client.dispose();
       await service.shutdown();
       await backend.close();
@@ -488,6 +493,7 @@ export async function openVfsBackend(kind: VfsBackendKind): Promise<VfsBackendHa
     client: primary.client,
     peerClient: counterpart.client,
     peerService: counterpart.service,
+    closeCounterpart: () => counterpart.close(),
     forkConnection(which = "primary", reserveHandles) {
       const target = which === "counterpart" ? counterpart : primary;
       return forkReservedConnection(target.client, target.service, reserveHandles);

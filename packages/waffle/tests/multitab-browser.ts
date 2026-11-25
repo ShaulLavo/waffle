@@ -151,49 +151,37 @@ const api = {
     if (typeof resolved === "number" || resolved.node === undefined) {
       throw new Error(`resolve failed for ${path}`);
     }
-    const handle = resolved.node;
-    fs.client.retain(handle);
+    const buf = new Uint8Array(8);
+    return {
+      tryRead: fs.client.tryRead(resolved.node, [buf], 0),
+      tryWrite: fs.client.tryWrite(resolved.node, [buf], 0),
+      tryAppend: fs.client.tryAppend(resolved.node, [buf]),
+      readiness: fs.client.ioReadiness(resolved.node, false),
+    };
+  },
+
+  async runWorkerRedirection(id: number, seedText?: string) {
+    const fs = tabs.get(id)!.fs;
+    const connection = fs.fork();
+    const worker = new Worker("/fd-conformance-worker.js", { type: "module" });
     try {
-      const waitDir = async (writing: boolean) => {
-        for (let i = 0; i < 200; i++) {
-          const r = fs.client.ioReadiness(handle, writing);
-          if (writing ? r.writable : r.readable) return r;
-          await new Promise((done) => setTimeout(done, 1));
-        }
-        throw new Error(`nonblocking ioReadiness timeout (writing=${writing})`);
-      };
-      const initialReadiness = fs.client.ioReadiness(handle, false);
-      const readBuf = new Uint8Array(8);
-      const firstRead = fs.client.tryRead(handle, [readBuf], 0);
-      const pendingRead = fs.client.ioPending(handle, false);
-      if (firstRead === -6) await waitDir(false);
-      const secondRead = firstRead === -6 ? fs.client.tryRead(handle, [readBuf], 0) : firstRead;
-
-      const writeData = encoder.encode("nb-write");
-      const firstWrite = fs.client.tryWrite(handle, [writeData], 0);
-      if (firstWrite === -6) await waitDir(true);
-      const secondWrite =
-        firstWrite === -6 ? fs.client.tryWrite(handle, [writeData], 0) : firstWrite;
-
-      const appendData = encoder.encode("-app");
-      const firstAppend = fs.client.tryAppend(handle, [appendData]);
-      if (firstAppend === -6) await waitDir(true);
-      const secondAppend =
-        firstAppend === -6 ? fs.client.tryAppend(handle, [appendData]) : firstAppend;
-
-      return {
-        firstRead,
-        pendingRead,
-        secondRead,
-        readFirstByte: readBuf[0],
-        firstWrite,
-        secondWrite,
-        firstAppend,
-        secondAppend,
-        readiness: initialReadiness,
-      };
+      return await new Promise<unknown>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("fd conformance worker timed out")), 30000);
+        worker.onerror = (event) => {
+          clearTimeout(timer);
+          reject(new Error(event.message || "fd conformance worker error"));
+        };
+        worker.onmessage = ({ data }: MessageEvent<{ value?: unknown; error?: string }>) => {
+          clearTimeout(timer);
+          if (data.error) reject(new Error(data.error));
+          else resolve(data.value);
+        };
+        worker.postMessage({ scenario: "proc-redirection", connection, seedText }, [
+          connection.port,
+        ]);
+      });
     } finally {
-      fs.client.release(handle);
+      worker.terminate();
     }
   },
 

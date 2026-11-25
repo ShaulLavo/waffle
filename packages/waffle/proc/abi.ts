@@ -102,6 +102,7 @@ export interface ProcessService {
 
 interface NonblockingFileSystem extends FileSystem {
   readonly signal?: Int32Array;
+  readonly directDisabled?: boolean;
   tryRead?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
   tryWrite?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
   tryAppend?(
@@ -584,23 +585,28 @@ export class ProcessABI {
     if (typedArrayLength(bytes) === 0) return 0;
     if (resource.kind === "file") {
       const fs: NonblockingFileSystem = this.options.fs;
+      // When direct shared-memory file I/O is disabled (e.g. multi-tab attach), regular files
+      // execute their RPC directly under the shared offset lock, matching POSIX/Linux regular-file
+      // semantics without mutating on EAGAIN or releasing the offset lock mid-write.
+      const useImmediate = !fs.directDisabled;
       return withFileOffset(
         resource,
         () => {
           if (write && resource.append) {
-            const result = fs.tryAppend
-              ? fs.tryAppend(resource.handle, [bytes])
-              : fs.append(resource.handle, [bytes]);
+            const result =
+              useImmediate && fs.tryAppend
+                ? fs.tryAppend(resource.handle, [bytes])
+                : fs.append(resource.handle, [bytes]);
             if (typeof result === "number") return result;
             resource.offset = result.offset;
             return result.written;
           }
           const position = resource.offset;
           const count = write
-            ? fs.tryWrite
+            ? useImmediate && fs.tryWrite
               ? fs.tryWrite(resource.handle, [bytes], position)
               : fs.write(resource.handle, [bytes], position)
-            : fs.tryRead
+            : useImmediate && fs.tryRead
               ? fs.tryRead(resource.handle, [bytes], position)
               : fs.read(resource.handle, [bytes], position);
           if (count >= 0) resource.offset = position + count;
@@ -959,7 +965,7 @@ export class ProcessABI {
     return fullyNotified;
   }
   private pollFilesystemWait(sub: Subscription): "pending" | "file" | "none" {
-    if (sub.kind === 3) return "pending";
+    if (sub.kind === 3) return this.options.service.filesystemReady ? "none" : "pending";
     if (sub.kind !== 0 && sub.kind !== 1) return "none";
     const resource = this.descriptor(sub.id, POLL).resource;
     if (resource.kind !== "file") return "none";
@@ -970,24 +976,31 @@ export class ProcessABI {
     subscriptions: readonly Subscription[],
     timeout: number,
     hasFsSignal: boolean,
-  ): { ready: { sub: Subscription; flags: number }[]; waitOnFs: boolean; sawFile: boolean } {
+  ): {
+    ready: { sub: Subscription; flags: number }[];
+    waitOnFs: boolean;
+    sawFile: boolean;
+    allFs: boolean;
+  } {
     const ready: { sub: Subscription; flags: number }[] = [];
     let waitOnFs = false;
     let sawFile = false;
+    let allFs = subscriptions.length > 0;
     for (const sub of subscriptions) {
       const state = this.readiness(sub, timeout);
       if (state && ((sub.kind === 1 ? state.writable : state.readable) || state.hangup)) {
         ready.push({ sub, flags: state.hangup ? 1 : 0 });
         continue;
       }
-      if (!hasFsSignal || waitOnFs) continue;
+      if (!hasFsSignal) continue;
       const fsWait = this.pollFilesystemWait(sub);
-      if (fsWait === "pending") {
+      if (fsWait === "none") allFs = false;
+      else if (fsWait === "pending") {
         waitOnFs = true;
         sawFile = true;
-      } else if (fsWait === "file") sawFile = true;
+      } else sawFile = true;
     }
-    return { ready, waitOnFs, sawFile };
+    return { ready, waitOnFs, sawFile, allFs };
   }
   private poll(ptr: number, count: number, timeout: number, out: number): number {
     count >>>= 0;
@@ -1019,7 +1032,7 @@ export class ProcessABI {
         const sequence = controlLoad(word, 0);
         const fsSequence = fsWord ? controlLoad(fsWord, 0) : 0;
         if (this.pending()) return 0;
-        const { ready, waitOnFs, sawFile } = this.scanPollSubscriptions(
+        const { ready, waitOnFs, sawFile, allFs } = this.scanPollSubscriptions(
           subscriptions,
           timeout,
           fsWord !== undefined,
@@ -1036,13 +1049,14 @@ export class ProcessABI {
           return ready.length;
         }
         if (this.pending()) return 0;
-        if (sawFile && fsWord && controlLoad(fsWord, 0) !== fsSequence) continue;
         const remaining = deadline - this.now();
         if (remaining <= 0) return 0;
+        if (allFs && sawFile && fsWord && controlLoad(fsWord, 0) !== fsSequence) continue;
         // Independent signals, early child startup, filesystem and legacy streams need a bounded
         // rescan. A fully notified wait set can park until its actual deadline.
-        const waitWord = waitOnFs && fsWord ? fsWord : word;
-        const expected = waitOnFs && fsWord ? fsSequence : sequence;
+        const useFsWake = allFs && waitOnFs && fsWord !== undefined;
+        const waitWord = useFsWake ? fsWord : word;
+        const expected = useFsWake ? fsSequence : sequence;
         const milliseconds = fullyNotified ? remaining : Math.min(remaining, 10);
         assertTerminalWaitAllowed();
         if (this.options.wait) this.options.wait(milliseconds, waitWord, expected);

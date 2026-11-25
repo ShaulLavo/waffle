@@ -45,7 +45,12 @@ import {
 import { checkedSignal, ProcessError, type ProcessExit } from "../proc/types.js";
 import { defaultSignalTerminates, signalPending } from "../proc/signals.js";
 import { FilesystemClient } from "../fs/client.js";
-import { revokeFilesystem, reapFilesystem, type FilesystemConnection } from "../fs/protocol.js";
+import {
+  isRevoked,
+  revokeFilesystem,
+  reapFilesystem,
+  type FilesystemConnection,
+} from "../fs/protocol.js";
 import { sharedRevoked } from "../fs/shared.js";
 import { registerResolveObservation } from "../fs/resolve-observation.js";
 import { Wasi, WasiExit, type Stream } from "../core/index.js";
@@ -58,7 +63,7 @@ import {
   type TerminalOutputWriterOptions,
   type RuntimeTerminalOutput,
 } from "./terminal-output.js";
-import { drainDiagnostic } from "./diagnostic.js";
+import { drainAsyncFileDiagnostic, drainDiagnostic } from "./diagnostic.js";
 import { withFileOffset } from "../core/open-file.js";
 import type { ProcessABI } from "../proc/abi.js";
 
@@ -828,8 +833,23 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     if (runtimeDiagnostic && "error" in result) {
       try {
         const bytes = new TextEncoder().encode(`${describeWorkerError(result.error)}\n`);
-        const pending = drainDiagnostic(bytes, (data) => writeDiagnostic!(data));
-        if (pending) await pending;
+        const stderr = wasi?.descriptors.get(2);
+        if (
+          stderr &&
+          (stderr.rightsBase & (1n << 6n)) !== 0n &&
+          stderr.resource.kind === "file" &&
+          fs.shared.isDirectDisabled()
+        ) {
+          await drainAsyncFileDiagnostic(
+            fs,
+            stderr.resource,
+            bytes,
+            () => !isRevoked(fs.connection),
+          );
+        } else {
+          const pending = drainDiagnostic(bytes, (data) => writeDiagnostic!(data));
+          if (pending) await pending;
+        }
       } catch (error) {
         collect(error);
       }

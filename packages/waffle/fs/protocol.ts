@@ -9,6 +9,8 @@ import { FilesystemSection } from "./section.js";
 export { FilesystemSection, isRevoked } from "./section.js";
 import { workspacePublication, type WorkspaceConfiguration } from "./workspace-protocol.js";
 import {
+  atomicsAdd,
+  atomicsNotify,
   BigIntConstructor,
   bigintToString,
   Int32ArrayConstructor,
@@ -456,9 +458,9 @@ export function reapFilesystem(connection: FilesystemIdentity): void {
   wake(connection);
 }
 export function wake(connection: FilesystemIdentity): void {
-  const signal = new Int32Array(connection.signal);
-  Atomics.add(signal, 0, 1);
-  Atomics.notify(signal, 0);
+  const signal = new Int32ArrayConstructor(connection.signal);
+  atomicsAdd(signal, 0, 1);
+  atomicsNotify(signal, 0);
 }
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

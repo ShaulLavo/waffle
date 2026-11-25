@@ -8,6 +8,13 @@ import { EpochCache } from "../fs/epoch-cache.ts";
 import { localPublication } from "../fs/publication-internal.ts";
 import { mutationIntent } from "../fs/publication.ts";
 import { takeResolveObservation } from "../fs/resolve-observation.ts";
+import {
+  CLIENT_MODE,
+  CLIENT_MODE_NO_CLIENT_CACHE,
+  CLIENT_MODE_NO_DIRECT_IO,
+  SharedFilesystemState,
+} from "../fs/shared.ts";
+import { SHARED_ROOT_BYTES } from "../fs/storage-geometry.ts";
 import { poisonProcessIntrinsics, type IntrinsicsReport } from "./fixtures/process-intrinsics.ts";
 
 const clientSource = new Bun.Transpiler({ loader: "ts" }).transformSync(
@@ -330,61 +337,29 @@ test("the client's epoch caches keep capability-bearing answers out of guest int
   expect(report.leaks).toContain("Map.set");
 });
 
-test("remote nonblocking tryRead/tryWrite/tryAppend and takeReady stay out of guest intrinsics", () => {
-  const { client, source, target, buffers } = fixture();
-  client.shared.isDirectDisabled = () => true;
-  const readBuf = new native.Uint8ArrayConstructor(4);
-  const writeData = new native.Uint8ArrayConstructor([65, 66, 67]);
-  let readRes = 0;
-  let writeRes = 0;
-  let pendingBefore = false;
-  let readyAfter = false;
+test("real SharedFilesystemState.isDirectDisabled and protocol.wake stay out of guest intrinsics", () => {
+  const sharedBuffer = new native.SharedArrayBufferConstructor(SHARED_ROOT_BYTES);
+  const signalBuffer = new native.SharedArrayBufferConstructor(4);
+  const state = new SharedFilesystemState(sharedBuffer, protocol.PAGE, 1);
+  state.setClientMode(CLIENT_MODE_NO_DIRECT_IO | CLIENT_MODE_NO_CLIENT_CACHE);
+  const connection = { signal: signalBuffer } as protocol.FilesystemIdentity;
+  let directDisabled = false;
+  let cacheDisabled = false;
   let report: IntrinsicsReport | undefined;
-  const firstCompletion = (): FilesystemCompletion => {
-    let found: FilesystemCompletion | undefined;
-    native.mapForEach(client.completions, (value) => {
-      found ??= value;
-    });
-    return found!;
-  };
-  const observer = poisonProcessIntrinsics(buffers);
+  const observer = poisonProcessIntrinsics([sharedBuffer, signalBuffer]);
   try {
-    expect(client.tryRead(7, [readBuf], 0)).toBe(-6);
-    pendingBefore = client.ioPending(7, false);
-    const readComp = firstCompletion();
-    native.typedArraySet(
-      requests.requestBytes(readComp.buffer),
-      new native.Uint8ArrayConstructor([72, 73]),
-    );
-    readComp.cells[2] = 2;
-    readComp.cells[4] = 1;
-    native.atomicsStore(readComp.cells, 0, protocol.State.Complete);
-    readyAfter = client.ioReadiness(7, false).readable;
-    readRes = client.tryRead(7, [readBuf], 0);
-
-    expect(client.tryWrite(7, [writeData], 0)).toBe(-6);
-    const writeComp = firstCompletion();
-    native.typedArraySet(
-      requests.requestBytes(writeComp.buffer),
-      new native.Uint8ArrayConstructor([3]),
-    );
-    writeComp.cells[2] = 1;
-    writeComp.cells[4] = 0;
-    native.atomicsStore(writeComp.cells, 0, protocol.State.Complete);
-    // Stubbed unpack returns Uint8Array([3]); verify takeReady runs without touching guest intrinsics.
-    const taken: unknown = client.tryWrite(7, [writeData], 0);
-    writeRes = taken instanceof native.Uint8ArrayConstructor ? taken[0]! : (taken as number);
-    client.dispose();
+    directDisabled = state.isDirectDisabled();
+    cacheDisabled = state.isClientCacheDisabled();
+    protocol.wake(connection);
   } finally {
     report = observer.restore();
-    client.dispose();
-    source.port.close();
-    target.port.close();
   }
   expect(report.leaks).toEqual([]);
-  expect(pendingBefore).toBe(true);
-  expect(readyAfter).toBe(true);
-  expect(readRes).toBe(2);
-  expect(Array.from(readBuf.subarray(0, 2))).toEqual([72, 73]);
-  expect(writeRes).toBe(3);
+  expect(directDisabled).toBe(true);
+  expect(cacheDisabled).toBe(true);
+  expect(
+    native.atomicsLoad(new native.Int32ArrayConstructor(sharedBuffer), CLIENT_MODE) &
+      CLIENT_MODE_NO_DIRECT_IO,
+  ).toBe(CLIENT_MODE_NO_DIRECT_IO);
+  expect(native.atomicsLoad(new native.Int32ArrayConstructor(signalBuffer), 0)).toBe(1);
 });

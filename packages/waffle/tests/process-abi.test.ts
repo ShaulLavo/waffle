@@ -1566,3 +1566,128 @@ test("fatal cancellation during exec staging unwinds instead of returning its st
   );
   expect(() => abi.imports.exec!(2048, length)).toThrow(ProcessSignalExit);
 });
+
+test("filesystem poll wakes never bypass a zero-time or expired deadline", () => {
+  const f = fixture();
+  const fsSignal = new Int32Array(new SharedArrayBuffer(4));
+  let now = 100;
+  let readinessScans = 0;
+  let waits = 0;
+  const fs = Object.assign(f.fs, {
+    signal: fsSignal,
+    readiness() {
+      readinessScans++;
+      // Simulate continuous unrelated filesystem signal bumps during readiness scans.
+      Atomics.add(fsSignal, 0, 1);
+      return { ready: false };
+    },
+  });
+  const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
+    memory: f.memory,
+    descriptors: f.descriptors,
+    fs,
+    pid: f.pid,
+    service: f.supervisor,
+    signals: f.signals,
+    wake: new Int32Array(new SharedArrayBuffer(4)),
+    now: () => now,
+    wait() {
+      waits++;
+      now += 10;
+    },
+  });
+  f.sub(0, 3, 1);
+  // Zero-time poll must scan once and return 0 without spinning on fsSignal bumps.
+  expect(abi.imports.poll!(256, 1, 0, 512)).toBe(0);
+  expect(readinessScans).toBe(1);
+  expect(waits).toBe(0);
+
+  // Finite poll must terminate once clock passes deadline even under continuous fsSignal bumps.
+  readinessScans = 0;
+  const abiFinite = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
+    memory: f.memory,
+    descriptors: f.descriptors,
+    fs,
+    pid: f.pid,
+    service: f.supervisor,
+    signals: f.signals,
+    wake: new Int32Array(new SharedArrayBuffer(4)),
+    now: () => {
+      now += 5;
+      return now;
+    },
+    wait() {
+      waits++;
+    },
+  });
+  expect(abiFinite.imports.poll!(256, 1, 10, 512)).toBe(0);
+  expect(readinessScans).toBeLessThanOrEqual(4);
+});
+
+test("poll parks on fs.signal only for pure fs waits and keeps mixed or service-backed polls on process wake", () => {
+  const f = fixture();
+  const fsSignal = new Int32Array(new SharedArrayBuffer(4));
+  const processWake = new Int32Array(new SharedArrayBuffer(4));
+  let fileReady = false;
+  let serviceFsReady = false;
+  const waitWords: string[] = [];
+  const fs = Object.assign(f.fs, {
+    signal: fsSignal,
+    ioReadiness: () => ({ readable: fileReady, writable: false, hangup: false }),
+    ioPending: () => !fileReady,
+  });
+  const fileFd = f.descriptors.open(
+    { kind: "file", handle: 1, offset: 0, append: false },
+    ALL,
+    ALL,
+  );
+  expect(f.abi.imports.pipe!(32)).toBe(0);
+  const pipeReader = f.view().getUint32(32, true);
+
+  const makeAbi = (withServiceFs: boolean) =>
+    new ProcessABI({
+      processIdentity: f.supervisor.get(f.pid)!.processIdentity,
+      memory: f.memory,
+      descriptors: f.descriptors,
+      fs,
+      pid: f.pid,
+      service: withServiceFs
+        ? Object.assign(Object.create(f.supervisor), {
+            filesystemReady: () => serviceFsReady,
+          })
+        : f.supervisor,
+      signals: f.signals,
+      wake: processWake,
+      wait(_ms, word) {
+        waitWords.push(
+          word === fsSignal ? "fs.signal" : word === processWake ? "process.wake" : "other",
+        );
+        fileReady = true;
+        serviceFsReady = true;
+      },
+    });
+
+  // 1. Pure pending file subscription waits directly on fs.signal.
+  fileReady = false;
+  waitWords.length = 0;
+  f.sub(0, 0, fileFd);
+  expect(makeAbi(false).imports.poll!(256, 1, 100, 512)).toBe(1);
+  expect(waitWords).toEqual(["fs.signal"]);
+
+  // 2. Mixed [pipe, file] subscription waits on processWake so pipe/signal wakes are not delayed.
+  fileReady = false;
+  waitWords.length = 0;
+  f.sub(0, 0, pipeReader);
+  f.sub(1, 0, fileFd);
+  expect(makeAbi(false).imports.poll!(256, 2, 100, 512)).toBe(1);
+  expect(waitWords).toEqual(["process.wake"]);
+
+  // 3. Kind-3 subscription backed by service.filesystemReady waits on processWake, not fs.signal.
+  serviceFsReady = false;
+  waitWords.length = 0;
+  f.sub(0, 3, 9);
+  expect(makeAbi(true).imports.poll!(256, 1, 100, 512)).toBe(1);
+  expect(waitWords).toEqual(["process.wake"]);
+});
