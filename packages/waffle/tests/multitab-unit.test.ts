@@ -765,17 +765,42 @@ describe("multitab 2-tab & 3-tab live operations", () => {
       expect(await tabB.client.asyncCall("remove", ["/big.bin", true], big)).toBe(true);
       expect(await tabA.client.asyncCall("readFile", ["/big.bin"])).toBeUndefined();
 
-      // Uniform -58 (-ENOTSUP) for tryRead/tryWrite/tryAppend & ioReadiness!
+      // Nonblocking tryRead/tryWrite/tryAppend & ioReadiness work over remote RPC without ENOTSUP!
       const rootB: number = await tabB.client.asyncCall("preopen", ["/"]);
       const resolved = await tabB.client.asyncCall("resolve", [rootB, "hello.txt", true]);
-      expect(tabB.client.tryRead(resolved.node, [new Uint8Array(8)], 0)).toBe(-58);
-      expect(tabB.client.tryWrite(resolved.node, [new Uint8Array(8)], 0)).toBe(-58);
-      expect(tabB.client.tryAppend(resolved.node, [new Uint8Array(8)])).toBe(-58);
+      const readBuf = new Uint8Array(8);
       expect(tabB.client.ioReadiness(resolved.node, false)).toEqual({
         readable: true,
         writable: false,
         hangup: false,
       });
+      expect(tabB.client.tryRead(resolved.node, [readBuf], 0)).toBe(-6);
+      expect(tabB.client.ioPending(resolved.node, false)).toBe(true);
+      for (let i = 0; i < 100 && !tabB.client.ioReadiness(resolved.node, false).readable; i++) {
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      expect(tabB.client.tryRead(resolved.node, [readBuf], 0)).toBe(6);
+      expect(new TextDecoder().decode(readBuf.subarray(0, 6))).toBe("from-A");
+
+      const writePayload = new TextEncoder().encode("from-B");
+      expect(tabB.client.tryWrite(resolved.node, [writePayload], 0)).toBe(-6);
+      for (let i = 0; i < 100 && !tabB.client.ioReadiness(resolved.node, true).writable; i++) {
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      expect(tabB.client.tryWrite(resolved.node, [writePayload], 0)).toBe(6);
+
+      const appendPayload = new TextEncoder().encode("!");
+      expect(tabB.client.tryAppend(resolved.node, [appendPayload])).toBe(-6);
+      for (let i = 0; i < 100 && !tabB.client.ioReadiness(resolved.node, true).writable; i++) {
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      expect(tabB.client.tryAppend(resolved.node, [appendPayload])).toEqual({
+        written: 1,
+        offset: 7,
+      });
+      expect(
+        new TextDecoder().decode(await tabA.client.asyncCall("readFile", ["/hello.txt"])),
+      ).toBe("from-B!");
 
       // Same-session multi-page readdirPage continuation (low 48-bit strip + high 16-bit tag!)
       for (let i = 0; i < 6; i++) {

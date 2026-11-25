@@ -35,7 +35,7 @@ async function runIndexedDBSuite(
   context: BrowserContext,
   origin: string,
 ): Promise<void> {
-  // 1. 3-tab simultaneous attach: live R/W, >1 MiB chunking, conditional remove, try* -ENOTSUP, cross-tab watch!
+  // 1. 3-tab simultaneous attach: live R/W, >1 MiB chunking, conditional remove, nonblocking try*, cross-tab watch!
   {
     const name = `mt-idb-3tab-${engine}-${crypto.randomUUID()}`;
     const [pA, pB, pC] = await Promise.all([
@@ -103,14 +103,55 @@ async function runIndexedDBSuite(
       );
       assert(rightRm === true, `${engine}: matching ifContent must remove`);
 
-      // Uniform -58 (-ENOTSUP) on tryRead/tryWrite/tryAppend!
-      const nb = await pB.evaluate(
-        ({ id }) => (globalThis as any).multitabTest.checkNonBlocking(id, "/big.bin"),
+      // Nonblocking tryRead/tryWrite/tryAppend work on both Host and Peer tabs (no -58 ENOTSUP, no Atomics.wait on main thread)!
+      await pA.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.writeFile(id, "/nb-test.txt", "seed-nb!"),
+        a,
+      );
+      const nbPeer = await pB.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.checkNonBlocking(id, "/nb-test.txt"),
         b,
       );
       assert(
-        nb.tryRead === -58 && nb.tryWrite === -58 && nb.tryAppend === -58,
-        `${engine}: expected uniform -58, got ${JSON.stringify(nb)}`,
+        nbPeer.firstRead === -6 &&
+          nbPeer.secondRead === 8 &&
+          nbPeer.readFirstByte === 115 &&
+          nbPeer.firstWrite === -6 &&
+          nbPeer.secondWrite === 8 &&
+          nbPeer.firstAppend === -6 &&
+          nbPeer.secondAppend?.written === 4 &&
+          nbPeer.secondAppend?.offset === 12,
+        `${engine}: Peer nonblocking try* failed: ${JSON.stringify(nbPeer)}`,
+      );
+      const afterPeerNb = await pA.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.readFileText(id, "/nb-test.txt"),
+        a,
+      );
+      assert(
+        afterPeerNb === "nb-write-app",
+        `${engine}: Host did not observe Peer tryWrite+tryAppend: ${JSON.stringify(afterPeerNb)}`,
+      );
+      const nbHost = await pA.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.checkNonBlocking(id, "/nb-test.txt"),
+        a,
+      );
+      assert(
+        nbHost.firstRead === -6 &&
+          nbHost.secondRead === 8 &&
+          nbHost.firstWrite === -6 &&
+          nbHost.secondWrite === 8 &&
+          nbHost.firstAppend === -6 &&
+          nbHost.secondAppend?.written === 4 &&
+          nbHost.secondAppend?.offset === 16,
+        `${engine}: Host nonblocking try* failed: ${JSON.stringify(nbHost)}`,
+      );
+      const afterHostNb = await pC.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.readFileText(id, "/nb-test.txt"),
+        c,
+      );
+      assert(
+        afterHostNb === "nb-write-app-app",
+        `${engine}: Peer C did not observe Host tryWrite+tryAppend: ${JSON.stringify(afterHostNb)}`,
       );
 
       // Cross-tab fs.watch: B opens watch, C writes, B receives event!

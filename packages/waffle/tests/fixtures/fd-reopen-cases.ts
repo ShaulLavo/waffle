@@ -1,4 +1,4 @@
-import { FilesystemError } from "../../core/filesystem.js";
+import { FilesystemError, type FileSystem } from "../../core/filesystem.js";
 import { Wasi } from "../../core/wasi.js";
 import { MemFS } from "../../fs/memory.js";
 import { ProcessABI } from "../../proc/abi.js";
@@ -13,7 +13,13 @@ const encoder = new TextEncoder(),
 function equal(actual: unknown, expected: unknown): void {
   if (actual !== expected) throw new Error(`expected ${String(expected)}, got ${String(actual)}`);
 }
-function fixture(fs = new MemFS(), reservedFds: number[] = []) {
+export type FdReopenFileSystem = FileSystem & {
+  writeFile(path: string, value: string | Uint8Array): void;
+  lookup(path: string): unknown;
+  setMode(handle: number, mode: number): number;
+  permissions: NonNullable<FileSystem["permissions"]>;
+};
+function fixture(fs: FdReopenFileSystem = new MemFS(), reservedFds: number[] = []) {
   const memory = new WebAssembly.Memory({ initial: 4 });
   const traces: string[] = [];
   const wasi = new Wasi({
@@ -119,8 +125,11 @@ function fixture(fs = new MemFS(), reservedFds: number[] = []) {
   };
 }
 type Fixture = ReturnType<typeof fixture>;
-function using(run: (f: Fixture) => void): void {
-  const f = fixture();
+function using(
+  run: (f: Fixture) => void,
+  createFs: () => FdReopenFileSystem = () => new MemFS(),
+): void {
+  const f = fixture(createFs());
   try {
     run(f);
   } finally {
@@ -136,9 +145,9 @@ function seed(f: Fixture, text = "abcdef", base = READ | WRITE, flags = 0): numb
   f.fs.writeFile("/file", text);
   return f.open("file", 0, base, flags);
 }
-const cases: { label: string; run(): void }[] = [];
+const cases: { label: string; run(createFs?: () => FdReopenFileSystem): void }[] = [];
 function test(label: string, run: (f: Fixture) => void): void {
-  cases.push({ label: `fd_reopen: ${label}`, run: () => using(run) });
+  cases.push({ label: `fd_reopen: ${label}`, run: (createFs) => using(run, createFs) });
 }
 
 test("regular files start at zero and have independent offsets", (f) => {
@@ -485,6 +494,9 @@ test("child inherited fd 3 reopens independently through its displaced root preo
     child.supervisor.dispose();
   }
 });
-export function fdReopenCases(): readonly { label: string; run(): void }[] {
+export function fdReopenCases(): readonly {
+  label: string;
+  run(createFs?: () => FdReopenFileSystem): void;
+}[] {
   return cases;
 }

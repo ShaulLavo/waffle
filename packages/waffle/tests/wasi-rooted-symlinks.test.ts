@@ -1,14 +1,11 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { MemFS } from "../fs/memory.js";
-import { MemoryBackend } from "../fs/backend.js";
-import { FilesystemClient } from "../fs/client.js";
-import { FilesystemService } from "../fs/service.js";
-import { createFilesystemConnection } from "../fs/protocol.js";
 import {
   preview1,
   rootedSymlinkExpected,
   rootedSymlinkScenario,
 } from "./fixtures/rooted-symlinks-guest.js";
+import { openVfsBackend, VFS_BACKEND_KINDS, type VfsBackendKind } from "./fixtures/vfs-backends.js";
 
 const DIRECTORY = 3,
   SYMLINK = 7,
@@ -27,29 +24,31 @@ test("Preview1 follows absolute and climbing links in the guest's root namespace
   expect(rootedSymlinkScenario(new MemFS())).toEqual(rootedSymlinkExpected);
 });
 
-test("the worker-backed client resolves the same namespace and keeps rooted and confined cache entries apart", async () => {
-  const backend = new MemoryBackend();
-  const service = new FilesystemService(backend);
-  cleanups.push(() => service.dispose());
-  const connection = createFilesystemConnection();
-  cleanups.push(() => connection.server.port.close());
-  cleanups.push(() => connection.client.port.close());
-  service.connect(connection.server);
-  const client = new FilesystemClient(connection.client);
-  cleanups.push(() => client.dispose());
-  const child = createFilesystemConnection(client.connection);
-  service.connect(child.server);
-  const worker = new Worker(new URL("./fixtures/rooted-symlinks-worker.ts", import.meta.url).href);
-  cleanups.push(() => worker.terminate());
-  const reply = new Promise<unknown>((resolve, reject) => {
-    worker.onmessage = ({ data }) => resolve(data);
-    worker.onerror = reject;
-  });
-  worker.postMessage(child.client, [child.client.port]);
-  expect(await reply).toEqual({
-    scenario: rootedSymlinkExpected,
-    same: true,
-    cache: [4, -63, 4, -63],
+describe.each(VFS_BACKEND_KINDS)("worker-backed rooted symlinks (%s)", (kind: VfsBackendKind) => {
+  test("the worker-backed client resolves the same namespace and keeps rooted and confined cache entries apart", async () => {
+    const env = await openVfsBackend(kind);
+    try {
+      const child = env.forkConnection();
+      const worker = new Worker(
+        new URL("./fixtures/rooted-symlinks-worker.ts", import.meta.url).href,
+      );
+      try {
+        const reply = new Promise<unknown>((resolve, reject) => {
+          worker.onmessage = ({ data }) => resolve(data);
+          worker.onerror = reject;
+        });
+        worker.postMessage(child, [child.port]);
+        expect(await reply).toEqual({
+          scenario: rootedSymlinkExpected,
+          same: true,
+          cache: [4, -63, 4, -63],
+        });
+      } finally {
+        worker.terminate();
+      }
+    } finally {
+      await env.close();
+    }
   });
 });
 

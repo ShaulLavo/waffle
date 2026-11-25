@@ -101,6 +101,7 @@ export interface ProcessService {
 }
 
 interface NonblockingFileSystem extends FileSystem {
+  readonly signal?: Int32Array;
   tryRead?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
   tryWrite?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
   tryAppend?(
@@ -108,6 +109,7 @@ interface NonblockingFileSystem extends FileSystem {
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number;
   ioReadiness?(handle: number, writing: boolean): Readiness;
+  ioPending?(handle: number, writing: boolean): boolean;
   readiness?(request: number): { ready: boolean } | undefined;
 }
 interface NonblockingStream extends Stream {
@@ -202,6 +204,12 @@ function sameWord(first: Int32Array | undefined, second: Int32Array): boolean {
     typedArrayByteOffset(first) === typedArrayByteOffset(second) &&
     typedArrayLength(first) === 1
   );
+}
+
+function validWakeWord(word: Int32Array | undefined): Int32Array | undefined {
+  return word && isSharedArrayBuffer(typedArrayBuffer(word)) && typedArrayLength(word) === 1
+    ? word
+    : undefined;
 }
 
 /** Guest adapter for the runtime_proc WASM namespace. Only poll and blocking wait_job wait.
@@ -950,6 +958,37 @@ export class ProcessABI {
     }
     return fullyNotified;
   }
+  private pollFilesystemWait(sub: Subscription): "pending" | "file" | "none" {
+    if (sub.kind === 3) return "pending";
+    if (sub.kind !== 0 && sub.kind !== 1) return "none";
+    const resource = this.descriptor(sub.id, POLL).resource;
+    if (resource.kind !== "file") return "none";
+    const fs: NonblockingFileSystem = this.options.fs;
+    return fs.ioPending?.(resource.handle, sub.kind === 1) ? "pending" : "file";
+  }
+  private scanPollSubscriptions(
+    subscriptions: readonly Subscription[],
+    timeout: number,
+    hasFsSignal: boolean,
+  ): { ready: { sub: Subscription; flags: number }[]; waitOnFs: boolean; sawFile: boolean } {
+    const ready: { sub: Subscription; flags: number }[] = [];
+    let waitOnFs = false;
+    let sawFile = false;
+    for (const sub of subscriptions) {
+      const state = this.readiness(sub, timeout);
+      if (state && ((sub.kind === 1 ? state.writable : state.readable) || state.hangup)) {
+        ready.push({ sub, flags: state.hangup ? 1 : 0 });
+        continue;
+      }
+      if (!hasFsSignal || waitOnFs) continue;
+      const fsWait = this.pollFilesystemWait(sub);
+      if (fsWait === "pending") {
+        waitOnFs = true;
+        sawFile = true;
+      } else if (fsWait === "file") sawFile = true;
+    }
+    return { ready, waitOnFs, sawFile };
+  }
   private poll(ptr: number, count: number, timeout: number, out: number): number {
     count >>>= 0;
     if (!Number.isInteger(timeout) || timeout < -1) return -ProcessErrno.INVAL;
@@ -970,6 +1009,7 @@ export class ProcessABI {
     if (this.pending()) return 0;
     const unregister: (() => void)[] = [];
     const wake = this.options.wake;
+    const fsWord = validWakeWord((this.options.fs as NonblockingFileSystem).signal);
     try {
       const fullyNotified = this.registerPollWakes(subscriptions, wake, unregister);
       const deadline = timeout === -1 ? Infinity : this.now() + timeout;
@@ -977,13 +1017,13 @@ export class ProcessABI {
         // Observe sequence before state; publication racing scan makes Atomics.wait return immediately.
         const word = wake ?? this.options.signals.interrupt;
         const sequence = controlLoad(word, 0);
+        const fsSequence = fsWord ? controlLoad(fsWord, 0) : 0;
         if (this.pending()) return 0;
-        const ready: { sub: Subscription; flags: number }[] = [];
-        for (const sub of subscriptions) {
-          const state = this.readiness(sub, timeout);
-          if (state && ((sub.kind === 1 ? state.writable : state.readable) || state.hangup))
-            ready.push({ sub, flags: state.hangup ? 1 : 0 });
-        }
+        const { ready, waitOnFs, sawFile } = this.scanPollSubscriptions(
+          subscriptions,
+          timeout,
+          fsWord !== undefined,
+        );
         if (ready.length) {
           // Waiting/host services can grow memory; never retain a DataView across them.
           const output = this.view(out, ready.length * 16);
@@ -996,15 +1036,17 @@ export class ProcessABI {
           return ready.length;
         }
         if (this.pending()) return 0;
+        if (sawFile && fsWord && controlLoad(fsWord, 0) !== fsSequence) continue;
         const remaining = deadline - this.now();
         if (remaining <= 0) return 0;
         // Independent signals, early child startup, filesystem and legacy streams need a bounded
         // rescan. A fully notified wait set can park until its actual deadline.
+        const waitWord = waitOnFs && fsWord ? fsWord : word;
+        const expected = waitOnFs && fsWord ? fsSequence : sequence;
         const milliseconds = fullyNotified ? remaining : Math.min(remaining, 10);
-        const expected = sequence;
         assertTerminalWaitAllowed();
-        if (this.options.wait) this.options.wait(milliseconds, word, expected);
-        else controlWait(word, 0, expected, milliseconds);
+        if (this.options.wait) this.options.wait(milliseconds, waitWord, expected);
+        else controlWait(waitWord, 0, expected, milliseconds);
       }
     } finally {
       for (let index = unregister.length - 1; index >= 0; index--) unregister[index]!();

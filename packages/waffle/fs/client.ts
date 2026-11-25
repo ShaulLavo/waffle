@@ -249,6 +249,18 @@ export class FilesystemCompletion {
       this.release();
     }
   }
+  /** Consume a ready inline result without waiting or requesting an overflow transfer. */
+  takeReady(): any {
+    if (!this.ready) throw new FilesystemError(6);
+    this.check();
+    if (this.consumed) return this.decoded;
+    if (atomicsLoad(this.cells, 0) !== State.Complete) throw new FilesystemError(29);
+    const bytes = this.inlineBytes();
+    this.check();
+    this.decoded = this.decode(bytes);
+    this.consumed = true;
+    return this.decoded;
+  }
   /** Release a staged write after this client committed it. Committing is the only use of that
    * completion, and the discard posted here asks the owner to apply the write. */
   releaseCommitted(): void {
@@ -360,6 +372,32 @@ interface StagedPreparation {
   append: boolean;
   bytes: Uint8Array;
 }
+/** A nonblocking remote read/write/append in flight when direct shared-memory I/O is disabled. */
+interface RemoteIO {
+  kind: "read" | "write" | "append";
+  completion: FilesystemCompletion;
+  offset: number;
+  length: number;
+  bytes?: Uint8Array;
+}
+function chunkLength(chunks: readonly Uint8Array[]): number {
+  let total = 0;
+  for (let i = 0; i < chunks.length; i++) total += typedArrayLength(chunks[i]!);
+  return total;
+}
+/** A private copy of the first bytes of a remote nonblocking write, at most one transport page. */
+function remoteWriteBytes(chunks: readonly Uint8Array[]): Uint8Array {
+  const length = Math.min(PAGE, chunkLength(chunks));
+  const bytes = new Uint8ArrayConstructor(length);
+  let at = 0;
+  for (let i = 0; i < chunks.length && at < length; i++) {
+    const chunk = chunks[i]!;
+    const count = Math.min(typedArrayLength(chunk), length - at);
+    if (count > 0) typedArraySet(bytes, typedArraySubarray(chunk, 0, count), at);
+    at += count;
+  }
+  return bytes;
+}
 /** A private copy of the first bytes of a write, at most one transport page. */
 function stagedBytes(chunks: readonly Uint8Array[]): Uint8Array {
   let length = 0;
@@ -375,8 +413,9 @@ function stagedBytes(chunks: readonly Uint8Array[]): Uint8Array {
   return bytes;
 }
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
+  const length = typedArrayLength(left);
+  if (length !== typedArrayLength(right)) return false;
+  for (let index = 0; index < length; index++) if (left[index] !== right[index]) return false;
   return true;
 }
 /** Copies `bytes` into the iovecs, starting `skip` bytes into their combined range. */
@@ -502,6 +541,9 @@ export class FilesystemClient implements FileSystem {
   // first asking for growth and staging on the retry after that. Only a hint: a wrong one costs
   // a stage the direct path then makes unnecessary.
   private stagedHandles = new SetConstructor<number>();
+  // In-flight nonblocking RPCs when direct shared-memory I/O is disabled (e.g. multi-tab attach).
+  private remoteReads = new MapConstructor<number, RemoteIO>();
+  private remoteWrites = new MapConstructor<number, RemoteIO>();
   private capabilityEntries = new MapConstructor<number, number>();
   private capabilities: Int32Array;
   private epoch: Int32Array;
@@ -901,6 +943,8 @@ export class FilesystemClient implements FileSystem {
     mapClear(this.completions);
     mapClear(this.ioPreparations);
     mapClear(this.stagedWrites);
+    mapClear(this.remoteReads);
+    mapClear(this.remoteWrites);
     this.stagedHandles = new SetConstructor();
     this.reads.clear();
     this.stats.clear();
@@ -1052,7 +1096,15 @@ export class FilesystemClient implements FileSystem {
   private closeIO(handle: FileHandle): void {
     this.cancelIO(handle);
     this.cancelStage(handle);
+    this.cancelRemote(this.remoteReads, handle);
+    this.cancelRemote(this.remoteWrites, handle);
     setDelete(this.stagedHandles, handle);
+  }
+  private cancelRemote(table: Map<number, RemoteIO>, handle: FileHandle): void {
+    const pending = mapGet(table, handle);
+    if (!pending) return;
+    mapDelete(table, handle);
+    pending.completion.release();
   }
   /** Withdraws an uncommitted staged write. The owner drops its copy and nothing changed. */
   private cancelStage(handle: FileHandle): void {
@@ -1215,10 +1267,12 @@ export class FilesystemClient implements FileSystem {
   }
   private copyReadResult(chunks: readonly Uint8Array[], bytes: Uint8Array): number {
     let at = 0;
-    for (const chunk of chunks) {
-      const count = Math.min(chunk.length, bytes.length - at);
+    const total = typedArrayLength(bytes);
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]!;
+      const count = Math.min(typedArrayLength(chunk), total - at);
       if (count <= 0) break;
-      typedArraySet(chunk, bytes.subarray(at, at + count));
+      typedArraySet(chunk, typedArraySubarray(bytes, at, at + count));
       at += count;
     }
     return at;
@@ -1285,12 +1339,110 @@ export class FilesystemClient implements FileSystem {
       this.section.exit();
     }
   }
+  private tryRemoteRead(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.revoked()) return -11;
+    if (!Number.isSafeInteger(offset) || offset < 0) return -28;
+    const wanted = Math.min(PAGE, chunkLength(chunks));
+    const pending = mapGet(this.remoteReads, handle);
+    if (pending) {
+      if (pending.offset === offset && pending.length >= wanted) {
+        if (!pending.completion.ready) return -6;
+        return this.finishRemoteRead(handle, pending, chunks, wanted);
+      }
+      this.cancelRemote(this.remoteReads, handle);
+    }
+    try {
+      const completion = this.submit("read", [handle, wanted, offset], undefined, PAGE);
+      mapSet(this.remoteReads, handle, { kind: "read", completion, offset, length: wanted });
+      return -6;
+    } catch (error) {
+      return -errno(error);
+    }
+  }
+  private finishRemoteRead(
+    handle: FileHandle,
+    pending: RemoteIO,
+    chunks: readonly Uint8Array[],
+    wanted: number,
+  ): number {
+    mapDelete(this.remoteReads, handle);
+    try {
+      const bytes: Uint8Array = pending.completion.takeReady();
+      const count = Math.min(typedArrayLength(bytes), wanted);
+      return this.copyReadResult(chunks, typedArraySubarray(bytes, 0, count));
+    } catch (error) {
+      return -errno(error);
+    } finally {
+      pending.completion.release();
+    }
+  }
+  private tryRemoteWrite(
+    kind: "write",
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+  ): number;
+  private tryRemoteWrite(
+    kind: "append",
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+  ): { written: number; offset: number } | number;
+  private tryRemoteWrite(
+    kind: "write" | "append",
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+  ): { written: number; offset: number } | number {
+    if (this.revoked()) return -11;
+    if (kind === "write" && (!Number.isSafeInteger(offset) || offset < 0)) return -28;
+    this.cancelRemote(this.remoteReads, handle);
+    const bytes = remoteWriteBytes(fixedWriteSources(chunks));
+    const pending = mapGet(this.remoteWrites, handle);
+    if (pending) {
+      if (!pending.completion.ready) return -6;
+      const matches =
+        pending.kind === kind &&
+        (kind === "append" || pending.offset === offset) &&
+        pending.bytes !== undefined &&
+        sameBytes(pending.bytes, bytes);
+      if (matches) return this.finishRemoteWrite(handle, pending);
+      this.cancelRemote(this.remoteWrites, handle);
+    }
+    try {
+      const args = kind === "append" ? [handle] : [handle, offset];
+      const completion = this.submit(kind, args, bytes);
+      mapSet(this.remoteWrites, handle, {
+        kind,
+        completion,
+        offset,
+        length: typedArrayLength(bytes),
+        bytes,
+      });
+      return -6;
+    } catch (error) {
+      return -errno(error);
+    }
+  }
+  private finishRemoteWrite(
+    handle: FileHandle,
+    pending: RemoteIO,
+  ): { written: number; offset: number } | number {
+    mapDelete(this.remoteWrites, handle);
+    try {
+      return pending.completion.takeReady();
+    } catch (error) {
+      return -errno(error);
+    } finally {
+      pending.completion.release();
+    }
+  }
   /** Nonblocking runtime_proc I/O. Never retain an iovec across an EAGAIN boundary. */
   tryRead(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
-    if (this.shared.isDirectDisabled()) return -58;
+    if (this.shared.isDirectDisabled()) return this.tryRemoteRead(handle, chunks, offset);
     if (this.resident)
       return this.residentIO(() => this.resident?.client?.tryRead(handle, chunks, offset) ?? -6);
-    if (!(offset >= 0)) return -28;
+    if (!Number.isSafeInteger(offset) || offset < 0) return -28;
     try {
       const prepared = this.preparedRead(handle, chunks, offset);
       if (prepared !== undefined) return prepared;
@@ -1323,11 +1475,11 @@ export class FilesystemClient implements FileSystem {
     }
   }
   tryWrite(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
-    if (this.shared.isDirectDisabled()) return -58;
+    if (this.shared.isDirectDisabled()) return this.tryRemoteWrite("write", handle, chunks, offset);
     if (this.resident)
       return this.residentIO(() => this.resident?.client?.tryWrite(handle, chunks, offset) ?? -6);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, true);
-    if (!(offset >= 0)) return -28;
+    if (!Number.isSafeInteger(offset) || offset < 0) return -28;
     try {
       if (!this.preparedWrite(handle)) return -6;
       const slot = this.directSlot(handle);
@@ -1376,7 +1528,7 @@ export class FilesystemClient implements FileSystem {
     handle: FileHandle,
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number {
-    if (this.shared.isDirectDisabled()) return -58;
+    if (this.shared.isDirectDisabled()) return this.tryRemoteWrite("append", handle, chunks, 0);
     if (this.resident)
       return this.residentIO(() => this.resident?.client?.tryAppend(handle, chunks) ?? -6);
     if (this.shared.publication) return this.publishedAppend(handle, chunks, true);
@@ -1619,8 +1771,11 @@ export class FilesystemClient implements FileSystem {
     // A failed preparation is ready too: retrying the syscall delivers its errno, rather than
     // leaving poll asleep forever. Preserve that completion until the syscall consumes it.
     if (this.revoked()) return { readable: true, writable: true, hangup: true };
-    if (this.shared.isDirectDisabled())
-      return { readable: !writing, writable: writing, hangup: false };
+    if (this.shared.isDirectDisabled()) {
+      const remote = mapGet(writing ? this.remoteWrites : this.remoteReads, handle);
+      const ready = !remote || remote.completion.ready;
+      return { readable: !writing && ready, writable: writing && ready, hangup: false };
+    }
     if (pending?.kind === "read")
       return { readable: pending.completion.ready, writable: false, hangup: false };
     if ((pending && !pending.completion.ready) || (stage && !stage.completion.ready))
@@ -1652,6 +1807,19 @@ export class FilesystemClient implements FileSystem {
     } catch {
       return { readable: true, writable: true, hangup: false };
     }
+  }
+  /** True while a nonblocking filesystem request for this handle and direction is still in flight. */
+  ioPending(handle: FileHandle, writing: boolean): boolean {
+    if (this.shared.isDirectDisabled()) {
+      const pending = mapGet(writing ? this.remoteWrites : this.remoteReads, handle);
+      return pending !== undefined && !pending.completion.ready;
+    }
+    const preparation = mapGet(this.ioPreparations, handle);
+    if (preparation && !preparation.completion.ready)
+      return preparation.kind === "read" ? !writing : true;
+    if (!writing) return false;
+    const stage = mapGet(this.stagedWrites, handle);
+    return stage !== undefined && !stage.completion.ready;
   }
   resolveBorrowed(
     directory: FileHandle,
@@ -1835,7 +2003,7 @@ export class FilesystemClient implements FileSystem {
     if (this.connection.residentPublication?.kind === "file")
       return this.tryRead(handle, chunks, offset);
     if (this.resident) return this.workspaceRead(handle, chunks, offset);
-    if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
+    if (!Number.isSafeInteger(offset) || offset < 0) return -28; // EINVAL: positions are never negative.
     if (this.shared.isDirectDisabled()) return this.readUnloaded(handle, chunks, offset);
     const slot = this.directSlot(handle);
     if (slot) {
@@ -1883,19 +2051,19 @@ export class FilesystemClient implements FileSystem {
       return this.tryWrite(handle, chunks, offset);
     if (this.resident) return this.workspaceWrite(handle, chunks, offset, false);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, false);
-    if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
+    if (!Number.isSafeInteger(offset) || offset < 0) return -28; // EINVAL: positions are never negative.
     chunks = fixedWriteSources(chunks);
     if (this.shared.isDirectDisabled()) {
+      this.cancelRemote(this.remoteReads, handle);
       try {
-        let total = 0;
-        for (let i = 0; i < chunks.length; i++) total += chunks[i]!.length;
+        const total = chunkLength(chunks);
         const limit = Math.min(total, 1024 * 1024);
         const data = new Uint8ArrayConstructor(limit);
         let at = 0;
         for (let i = 0; i < chunks.length && at < limit; i++) {
           const chunk = chunks[i]!;
-          const count = Math.min(chunk.length, limit - at);
-          if (count > 0) typedArraySet(data, chunk.subarray(0, count), at);
+          const count = Math.min(typedArrayLength(chunk), limit - at);
+          if (count > 0) typedArraySet(data, typedArraySubarray(chunk, 0, count), at);
           at += count;
         }
         return this.call("write", [handle, offset], data);
@@ -1983,14 +2151,15 @@ export class FilesystemClient implements FileSystem {
     let total = 0;
     for (let i = 0; i < chunks.length; i++) total += chunks[i]!.length;
     if (this.shared.isDirectDisabled()) {
+      this.cancelRemote(this.remoteReads, handle);
       try {
         const limit = Math.min(total, 1024 * 1024);
         const data = new Uint8ArrayConstructor(limit);
         let at = 0;
         for (let i = 0; i < chunks.length && at < limit; i++) {
           const chunk = chunks[i]!;
-          const count = Math.min(chunk.length, limit - at);
-          if (count > 0) typedArraySet(data, chunk.subarray(0, count), at);
+          const count = Math.min(typedArrayLength(chunk), limit - at);
+          if (count > 0) typedArraySet(data, typedArraySubarray(chunk, 0, count), at);
           at += count;
         }
         return this.call("append", [handle], data);
@@ -2135,6 +2304,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   resize(handle: FileHandle, size: number, truncate: boolean): number {
+    if (this.shared.isDirectDisabled()) this.cancelRemote(this.remoteReads, handle);
     if (this.shared.publication)
       return this.publishedMetadata({ kind: "resize", handle, size, truncate });
     if (

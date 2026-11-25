@@ -23,6 +23,7 @@ import {
   type Times,
   type Window,
 } from "./fixtures/file-times-guest.js";
+import { openVfsBackend, type VfsBackendKind } from "./fixtures/vfs-backends.js";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -73,6 +74,34 @@ function seeded(fs: MemFS): MemFS {
   return fs;
 }
 
+async function inVfsBackendWorker(kind: VfsBackendKind, scenario: FileTimeScenario): Promise<any> {
+  const env = await openVfsBackend(kind);
+  try {
+    await env.client.asyncCall(
+      "writeFile",
+      ["/file", false, false],
+      new TextEncoder().encode("abc"),
+    );
+    await env.client.asyncCall("mkdirp", ["/dir"]);
+    const connection = env.forkConnection();
+    const worker = new Worker(new URL("./fixtures/file-times-worker.ts", import.meta.url).href);
+    try {
+      const reply = new Promise<{ value?: unknown; error?: string }>((resolve, reject) => {
+        worker.onmessage = (event) => resolve(event.data);
+        worker.onerror = reject;
+      });
+      worker.postMessage({ connection, scenario }, [connection.port]);
+      const { value, error } = await reply;
+      if (error) throw new Error(error);
+      return value;
+    } finally {
+      worker.terminate();
+    }
+  } finally {
+    await env.close();
+  }
+}
+
 const runners: [string, (scenario: FileTimeScenario) => Promise<any>][] = [
   ["memory", async (scenario) => fileTimeScenarios[scenario](seeded(new MemFS()))],
   [
@@ -91,6 +120,9 @@ const runners: [string, (scenario: FileTimeScenario) => Promise<any>][] = [
       return inWorker(backend, scenario, true);
     },
   ],
+  ["persistent worker", (scenario) => inVfsBackendWorker("persistent", scenario)],
+  ["multitab-host worker", (scenario) => inVfsBackendWorker("multitab-host", scenario)],
+  ["multitab-peer worker", (scenario) => inVfsBackendWorker("multitab-peer", scenario)],
 ];
 
 function within(time: bigint, window: Window): void {

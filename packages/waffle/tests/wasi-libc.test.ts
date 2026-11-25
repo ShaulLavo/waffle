@@ -11,6 +11,7 @@ import { ProcessABI } from "../proc/abi.ts";
 import { ProcessSupervisor } from "../proc/supervisor.ts";
 import { ExecutableRegistry } from "../proc/registry.ts";
 import { pipeWriteRights } from "./fixtures/pipe-filestat-guest.ts";
+import { openVfsBackend, VFS_BACKEND_KINDS } from "./fixtures/vfs-backends.js";
 
 const fixtures = process.env.WAFFLE_LIBC_FIXTURES;
 const all = (1n << 29n) - 1n;
@@ -269,4 +270,35 @@ describe.skipIf(!fixtures)("real wasi-sdk 34 libc preopen discovery (bun run tes
       connection.server.port.close();
     }
   });
+
+  for (const kind of VFS_BACKEND_KINDS) {
+    test(`patched libc reads /fixture and writes inherited fd3 across ${kind}`, async () => {
+      const env = await openVfsBackend(kind);
+      try {
+        await env.client.asyncCall(
+          "writeFile",
+          ["/fixture", false, false],
+          new TextEncoder().encode("fixture"),
+        );
+        const module = await guest("patched", true);
+        const connection = env.forkConnection();
+        const worker = new Worker(new URL("./fixtures/wasi-libc-worker.ts", import.meta.url).href);
+        try {
+          const result = await new Promise<{ exit?: number; output?: string; error?: string }>(
+            (resolve, reject) => {
+              worker.onmessage = ({ data }) => resolve(data);
+              worker.onerror = (event) => reject(new Error(event.message || "libc worker error"));
+              worker.postMessage({ connection, module }, [connection.port]);
+            },
+          );
+          if (result.error) throw new Error(result.error);
+          expect(result).toEqual({ exit: 0, output: "early\nmain\n" });
+        } finally {
+          worker.terminate();
+        }
+      } finally {
+        await env.close();
+      }
+    });
+  }
 });

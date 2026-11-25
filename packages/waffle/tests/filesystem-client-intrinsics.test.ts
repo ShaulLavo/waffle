@@ -105,10 +105,14 @@ function fixture(overrides: Partial<typeof native> = {}) {
       exit() {}
     },
     SharedFilesystemState: class {
+      isDirectDisabled() {
+        return false;
+      }
       isUnlinked() {
         return false;
       }
     },
+    fixedWriteSources: (chunks: readonly Uint8Array[]) => chunks,
   };
   const names = Object.keys(bindings);
   const evaluate = new Function(...names.concat([clientSource]));
@@ -324,4 +328,63 @@ test("the client's epoch caches keep capability-bearing answers out of guest int
     report = observer.restore();
   }
   expect(report.leaks).toContain("Map.set");
+});
+
+test("remote nonblocking tryRead/tryWrite/tryAppend and takeReady stay out of guest intrinsics", () => {
+  const { client, source, target, buffers } = fixture();
+  client.shared.isDirectDisabled = () => true;
+  const readBuf = new native.Uint8ArrayConstructor(4);
+  const writeData = new native.Uint8ArrayConstructor([65, 66, 67]);
+  let readRes = 0;
+  let writeRes = 0;
+  let pendingBefore = false;
+  let readyAfter = false;
+  let report: IntrinsicsReport | undefined;
+  const firstCompletion = (): FilesystemCompletion => {
+    let found: FilesystemCompletion | undefined;
+    native.mapForEach(client.completions, (value) => {
+      found ??= value;
+    });
+    return found!;
+  };
+  const observer = poisonProcessIntrinsics(buffers);
+  try {
+    expect(client.tryRead(7, [readBuf], 0)).toBe(-6);
+    pendingBefore = client.ioPending(7, false);
+    const readComp = firstCompletion();
+    native.typedArraySet(
+      requests.requestBytes(readComp.buffer),
+      new native.Uint8ArrayConstructor([72, 73]),
+    );
+    readComp.cells[2] = 2;
+    readComp.cells[4] = 1;
+    native.atomicsStore(readComp.cells, 0, protocol.State.Complete);
+    readyAfter = client.ioReadiness(7, false).readable;
+    readRes = client.tryRead(7, [readBuf], 0);
+
+    expect(client.tryWrite(7, [writeData], 0)).toBe(-6);
+    const writeComp = firstCompletion();
+    native.typedArraySet(
+      requests.requestBytes(writeComp.buffer),
+      new native.Uint8ArrayConstructor([3]),
+    );
+    writeComp.cells[2] = 1;
+    writeComp.cells[4] = 0;
+    native.atomicsStore(writeComp.cells, 0, protocol.State.Complete);
+    // Stubbed unpack returns Uint8Array([3]); verify takeReady runs without touching guest intrinsics.
+    const taken: unknown = client.tryWrite(7, [writeData], 0);
+    writeRes = taken instanceof native.Uint8ArrayConstructor ? taken[0]! : (taken as number);
+    client.dispose();
+  } finally {
+    report = observer.restore();
+    client.dispose();
+    source.port.close();
+    target.port.close();
+  }
+  expect(report.leaks).toEqual([]);
+  expect(pendingBefore).toBe(true);
+  expect(readyAfter).toBe(true);
+  expect(readRes).toBe(2);
+  expect(Array.from(readBuf.subarray(0, 2))).toEqual([72, 73]);
+  expect(writeRes).toBe(3);
 });
