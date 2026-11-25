@@ -8,6 +8,7 @@ import {
   retainResponseBytes,
   captureRequestMemory,
   closeRequestMemory,
+  requestMemoryRetired,
   retireRequestMemory,
   requestTransportError,
   requestLengths,
@@ -148,6 +149,8 @@ interface Session {
   stages: Map<number, SessionStage>;
   retainedRequests: Map<number, FilesystemRequestBuffer>;
   pending: Map<number, FilesystemRequestBuffer>;
+  /** Scalar write/append requests already dispatched to backend execution. */
+  inFlightWrites: Set<number>;
   /** Transferred inputs by request id. Removed only when that request's work settles. */
   privateInputs: Map<number, Uint8Array>;
   preparingHandles: Map<number, number>;
@@ -161,6 +164,10 @@ interface Session {
   reader?: WorkspaceReadAuthority;
   readerClosing?: Promise<void>;
 }
+function isCommittedScalarWrite(operation: string, state: State): boolean {
+  return (operation === "write" || operation === "append") && state === State.Complete;
+}
+
 function sessionRevoked(session: Session): boolean {
   return isRevoked(session.connection) || !!requestTransportError(session.requests);
 }
@@ -296,6 +303,7 @@ export class FilesystemService {
       stages: new Map(),
       retainedRequests: new Map(),
       pending: new Map(),
+      inFlightWrites: new Set(),
       privateInputs: new Map(),
       preparingHandles: new Map(),
       preparations: new Set(),
@@ -1189,11 +1197,11 @@ export class FilesystemService {
     try {
       this.finishSocketOperation(session, operation, result, args);
       const pending = session.pending.get(id);
+      const scalarWrite = operation === "write" || operation === "append";
       if (
-        sessionRevoked(session) ||
-        !this.sessions.has(session) ||
         !pending ||
-        requestCancelled(pending)
+        (!scalarWrite &&
+          (sessionRevoked(session) || !this.sessions.has(session) || requestCancelled(pending)))
       )
         throw new FilesystemError(11);
       if (operation === "preopen" || (operation === "create" && typeof result === "number"))
@@ -1295,6 +1303,7 @@ export class FilesystemService {
     let opened = false;
     let preparing = false;
     let staging = false;
+    let committedWrite = false;
     let admission: PublicationAdmission | undefined;
     let dirtyRetry: number | undefined;
     const epoch = session.epoch;
@@ -1340,6 +1349,7 @@ export class FilesystemService {
         prepared?.read && (!this.backend.isPreparedReadValid || this.backend.isPreparedReadValid())
           ? prepared.read
           : undefined;
+      if (operation === "write" || operation === "append") session.inFlightWrites.add(id);
       const value = preparedRead
         ? this.finishResult(session, id, operation, preparedRead.value)
         : local && operation !== "flush" && operation !== "sync"
@@ -1348,6 +1358,7 @@ export class FilesystemService {
       this.announceSegments(this.backend.takeSharedSegments?.() ?? [], this.sessions);
       state = this.writeResponse(session, id, cells, response, value, bytes);
       staging = operation === "stageWrite";
+      committedWrite = isCommittedScalarWrite(operation, state);
     } catch (error) {
       this.discardResponse(session, id);
       const dirtyChange = this.dirtyRetryChange(error);
@@ -1373,23 +1384,20 @@ export class FilesystemService {
         this.cancelPublication(session, admission);
         this.releasePrepared(session, prepared);
         cells[5] = Atomics.load(epoch, 0);
-        if (sessionRevoked(session) || requestCancelled(buffer)) {
-          this.discardResponse(session, id);
-          state = State.Cancelled;
-        }
-        // Complete is what lets the client commit a stage. Never publish it for a stage the
-        // owner no longer holds, or that commit would have nothing to apply.
-        if (staging && !session.stages.has(id)) state = State.Cancelled;
+        state = this.settleCancelledState(session, id, buffer, state, staging, committedWrite);
         this.settleWalk(session, id, state === State.Complete);
         this.settleWatch(session, id, state === State.Complete || state === State.Overflow);
         Atomics.store(cells, 0, state);
         Atomics.notify(cells, 0);
         wake(session.connection);
+        session.inFlightWrites.delete(id);
         session.pending.delete(id);
         session.privateInputs.delete(id);
         this.retainRequestReply(session, id, buffer);
         session.connection.port.postMessage({ completed: id });
         this.sweep();
+      } else {
+        session.inFlightWrites.delete(id);
       }
     }
     if (dirtyRetry !== undefined && prepared) {
@@ -1399,6 +1407,25 @@ export class FilesystemService {
       );
       this.joinPreparation(session, id, buffer, prepared, wait);
     }
+  }
+  private settleCancelledState(
+    session: Session,
+    id: number,
+    buffer: FilesystemRequestBuffer,
+    state: State,
+    staging: boolean,
+    committedWrite: boolean,
+  ): State {
+    if (sessionRevoked(session) || requestCancelled(buffer)) {
+      this.discardResponse(session, id);
+      // Preserve inline committed write/append results so shared-offset leases observe
+      // an already-landed mutation before releasing the offset lock.
+      if (!committedWrite) state = State.Cancelled;
+    }
+    // Complete is what lets the client commit a stage. Never publish it for a stage the
+    // owner no longer holds, or that commit would have nothing to apply.
+    if (staging && !session.stages.has(id)) return State.Cancelled;
+    return state;
   }
   private holdResponseMemory(session: Session, id: number, release: () => void): void {
     const prior = session.responseMemory.get(id);
@@ -1904,6 +1931,16 @@ export class FilesystemService {
         this.backend.shared.publication?.releasePin(id);
     session.publicationPins?.clear();
   }
+  private cancelPendingRequests(session: Session): void {
+    for (const [id, buffer] of session.pending) {
+      const cells = requestCells(buffer);
+      Atomics.store(cells, 6, 1);
+      Atomics.store(cells, 0, State.Cancelled);
+      Atomics.notify(cells, 0);
+      session.connection.port.postMessage({ completed: id });
+    }
+    session.pending.clear();
+  }
   private releaseSessionPins(session: Session): void {
     this.cancelSessionWatchResponses(session);
     this.watchService?.closeOwner(session.connection.owner);
@@ -1940,18 +1977,14 @@ export class FilesystemService {
       );
       return;
     }
+    // Keep the session open until every already-dispatched write/append publishes its
+    // authoritative commit or abort state; request()'s finally calls sweep() on completion.
+    if (session.inFlightWrites.size) return;
     if (ownRevocation === 2) this.backend.revokeOwner?.(session.connection.owner, session.epoch);
     // A discard can be lost when a port closes. Retirement settles what remains, before this
     // session's file pins and request blocks go: a committed write is applied, never dropped.
     for (const id of Array.from(session.stages.keys())) this.settleStage(session, id);
-    for (const [id, buffer] of session.pending) {
-      const cells = requestCells(buffer);
-      Atomics.store(cells, 6, 1);
-      Atomics.store(cells, 0, State.Cancelled);
-      Atomics.notify(cells, 0);
-      session.connection.port.postMessage({ completed: id });
-    }
-    session.pending.clear();
+    this.cancelPendingRequests(session);
     wake(session.connection);
     for (const id of session.walkTransactions.keys()) this.settleWalk(session, id, false);
     session.walks?.dispose();
@@ -2118,7 +2151,54 @@ export class FilesystemService {
   }
   private async shutdownFence(session: Session): Promise<void> {
     revokeFilesystemService(session.connection);
-    await waitForFilesystemQuiescence(session.connection);
+    const quiesced = waitForFilesystemQuiescence(session.connection);
+    let done = false;
+    void quiesced.finally(() => {
+      done = true;
+      wake(session.connection);
+    });
+    const signal = new Int32Array(session.connection.signal);
+    while (!done) {
+      const observed = Atomics.load(signal, 0);
+      if (requestTransportError(session.requests)) {
+        session.transportFailed = true;
+        await this.drainFailedSessionRequests(session);
+        break;
+      }
+      const waiting = atomicsWaitAsync(signal, 0, observed);
+      if (waiting.async) await waiting.value;
+    }
+    await quiesced;
+  }
+  private async drainFailedSessionRequests(session: Session): Promise<void> {
+    // A transport error stops receive() from accepting new descriptors. Drain every already-
+    // accepted request (including flush/sync barriers kept outside this.queue) and preparation
+    // first, then retire transport memory so undelivered client writes can release their leases.
+    await waitForRequestQuiescence(session.connection, session.requests);
+    for (;;) {
+      const queue = this.queue;
+      await queue;
+      const pending = Array.from(this.runningRequests).filter(
+        (done) => this.work.get(done) === session,
+      );
+      if (pending.length) await Promise.allSettled(pending);
+      if (session.preparations.size) await Promise.allSettled(Array.from(session.preparations));
+      const stillRunning = Array.from(this.runningRequests).some(
+        (done) => this.work.get(done) === session,
+      );
+      if (
+        queue === this.queue &&
+        !stillRunning &&
+        !session.preparations.size &&
+        !session.inFlightWrites.size
+      )
+        break;
+    }
+    this.cancelPendingRequests(session);
+    const failure = requestTransportError(session.requests);
+    if (failure?.reason !== "stale" && !requestMemoryRetired(session.requests))
+      retireRequestMemory(session.requests);
+    wake(session.connection);
   }
   private async drainShutdown(owner: ShutdownOwner, fences: Promise<void>[]): Promise<void> {
     const failures: unknown[] = [];

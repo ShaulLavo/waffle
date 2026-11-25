@@ -765,9 +765,10 @@ describe("multitab 2-tab & 3-tab live operations", () => {
       expect(await tabB.client.asyncCall("remove", ["/big.bin", true], big)).toBe(true);
       expect(await tabA.client.asyncCall("readFile", ["/big.bin"])).toBeUndefined();
 
-      // Uniform -58 (-ENOTSUP) for tryRead/tryWrite/tryAppend & ioReadiness!
+      // Uniform -58 (-ENOTSUP) for direct-memory tryRead/tryWrite/tryAppend & ioReadiness!
       const rootB: number = await tabB.client.asyncCall("preopen", ["/"]);
       const resolved = await tabB.client.asyncCall("resolve", [rootB, "hello.txt", true]);
+      expect(tabB.client.directDisabled).toBe(true);
       expect(tabB.client.tryRead(resolved.node, [new Uint8Array(8)], 0)).toBe(-58);
       expect(tabB.client.tryWrite(resolved.node, [new Uint8Array(8)], 0)).toBe(-58);
       expect(tabB.client.tryAppend(resolved.node, [new Uint8Array(8)])).toBe(-58);

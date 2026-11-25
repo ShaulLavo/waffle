@@ -6,11 +6,13 @@ self.onmessage = ({
   data,
 }: MessageEvent<{ connection: FilesystemConnection; scenario: FileTimeScenario }>) => {
   const fs = new FilesystemClient(data.connection);
+  let reply: unknown;
   try {
-    self.postMessage({ value: fileTimeScenarios[data.scenario](fs) });
+    reply = { value: fileTimeScenarios[data.scenario](fs) };
   } catch (error) {
-    self.postMessage({ error: String(error) });
+    reply = { error: String(error) };
   } finally {
     fs.dispose();
   }
+  self.postMessage(reply);
 };

@@ -15,7 +15,7 @@ import {
   type FileId,
   type FileVersion,
 } from "./file-identity.js";
-import { typedArraySet } from "../proc/intrinsics.js";
+import { Int32ArrayConstructor, atomicsLoad, typedArraySet } from "../proc/intrinsics.js";
 import {
   PublicationDomain,
   type PublicationAdmission,
@@ -289,10 +289,10 @@ export class SharedFilesystemState {
     Atomics.store(this.cells, CLIENT_MODE, mode | 0);
   }
   isDirectDisabled(): boolean {
-    return (Atomics.load(this.cells, CLIENT_MODE) & CLIENT_MODE_NO_DIRECT_IO) !== 0;
+    return (atomicsLoad(this.cells, CLIENT_MODE) & CLIENT_MODE_NO_DIRECT_IO) !== 0;
   }
   isClientCacheDisabled(): boolean {
-    return (Atomics.load(this.cells, CLIENT_MODE) & CLIENT_MODE_NO_CLIENT_CACHE) !== 0;
+    return (atomicsLoad(this.cells, CLIENT_MODE) & CLIENT_MODE_NO_CLIENT_CACHE) !== 0;
   }
   /** Reset all per-mount filesystem state in place across Host remount/demotion while preserving
    * tab-lifetime header invariants (`MAGIC`, `maxSegments`, owner/probe words, `WATCH_OFFSET`,
@@ -2491,13 +2491,13 @@ export function sharedRevoked(connection: {
   ownerStates: SharedArrayBuffer;
   publication?: PublicationConnection;
 }): () => boolean {
-  const words = [new Int32Array(connection.ownerStates, 0, 1)].concat(
-    connection.revocations.map((buffer) => new Int32Array(buffer)),
+  const words = [new Int32ArrayConstructor(connection.ownerStates, 0, 1)].concat(
+    connection.revocations.map((buffer) => new Int32ArrayConstructor(buffer)),
   );
   if (connection.publication)
-    words.push(new Int32Array(connection.publication.buffers.control, 0, 1));
+    words.push(new Int32ArrayConstructor(connection.publication.buffers.control, 0, 1));
   return () => {
-    for (let i = 0; i < words.length; i++) if (Atomics.load(words[i]!, 0) !== 0) return true;
+    for (let i = 0; i < words.length; i++) if (atomicsLoad(words[i]!, 0) !== 0) return true;
     return false;
   };
 }

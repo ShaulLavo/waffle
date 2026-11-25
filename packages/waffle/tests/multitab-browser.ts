@@ -160,6 +160,31 @@ const api = {
     };
   },
 
+  async runWorkerRedirection(id: number, seedText?: string) {
+    const fs = tabs.get(id)!.fs;
+    const connection = fs.fork();
+    const worker = new Worker("/fd-conformance-worker.js", { type: "module" });
+    try {
+      return await new Promise<unknown>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("fd conformance worker timed out")), 30000);
+        worker.onerror = (event) => {
+          clearTimeout(timer);
+          reject(new Error(event.message || "fd conformance worker error"));
+        };
+        worker.onmessage = ({ data }: MessageEvent<{ value?: unknown; error?: string }>) => {
+          clearTimeout(timer);
+          if (data.error) reject(new Error(data.error));
+          else resolve(data.value);
+        };
+        worker.postMessage({ scenario: "proc-redirection", connection, seedText }, [
+          connection.port,
+        ]);
+      });
+    } finally {
+      worker.terminate();
+    }
+  },
+
   async openWatch(id: number, path: string, recursive: boolean) {
     const h = tabs.get(id)!;
     const root: number = await h.fs.client.asyncCall("preopen", ["/"]);

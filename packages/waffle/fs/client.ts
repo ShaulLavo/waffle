@@ -54,8 +54,12 @@ import {
   atomicsAdd,
   atomicsCompareExchange,
   atomicsNotify,
+  PromiseConstructor,
+  scheduleTimeout,
+  cancelTimeout,
   atomicsWait,
   atomicsWaitAsync,
+  afterNativePromise,
   typedArrayLength,
   typedArraySet,
   typedArraySubarray,
@@ -137,8 +141,12 @@ export function resolveWriteFileMode(mode: WriteFileMode = false): {
 }
 
 /** Physical response room is at most one page; a larger result completes through overflow. */
+const mathMin = Math.min;
+const mathMax = Math.max;
+const numberIsSafeInteger = Number.isSafeInteger;
+
 function validateResponseCapacity(capacity: number): number {
-  if (!Number.isSafeInteger(capacity) || capacity < 0) throw new FilesystemError(28);
+  if (!numberIsSafeInteger(capacity) || capacity < 0) throw new FilesystemError(28);
   return capacity;
 }
 function privateInput(
@@ -180,6 +188,14 @@ let waitForObservedResolve: (
   cancellation: WaitCancellation,
 ) => ResolvedPath | number;
 
+export interface DirectDisabledIOControl {
+  checkFatal(): void;
+  pending(): boolean;
+  wait(milliseconds: number, word: Int32Array, expected: number): void;
+  commitWrite?(result: { written: number; offset: number } | number): void;
+  deferWrite?(completion: FilesystemCompletion): void;
+}
+
 export class FilesystemCompletion {
   static {
     waitForObservedResolve = (completion, cancellation) => completion.#wait(cancellation);
@@ -187,10 +203,12 @@ export class FilesystemCompletion {
 
   readonly cells: Int32Array;
   private changed: (() => void)[] = [];
+  private backendWaiters: (() => void)[] = [];
   private cancellations = new SetConstructor<() => void>();
   private decoded: unknown;
   private loading?: Promise<unknown>;
   private consumed = false;
+  private released = false;
   constructor(
     readonly id: number,
     readonly buffer: FilesystemRequestBuffer,
@@ -207,6 +225,22 @@ export class FilesystemCompletion {
       atomicsLoad(this.cells, 0) !== State.Pending
     );
   }
+  get backendSettled(): boolean {
+    if (atomicsLoad(this.cells, 0) !== State.Pending) return true;
+    const failure = this.client.transportError();
+    if (failure?.reason === "stale") return true;
+    try {
+      return (
+        requestMemoryRetired(this.client.connection.requests) &&
+        requestMemoryRetirementError(this.client.connection.requests) === 0
+      );
+    } catch {
+      return true;
+    }
+  }
+  get hasBackendWaiters(): boolean {
+    return this.backendWaiters.length > 0;
+  }
   get epoch(): number {
     return this.cells[5]!;
   }
@@ -214,6 +248,11 @@ export class FilesystemCompletion {
     const changed = this.changed;
     this.changed = [];
     for (let index = 0; index < changed.length; index++) changed[index]!();
+    if (this.backendSettled && this.backendWaiters.length) {
+      const waiters = this.backendWaiters;
+      this.backendWaiters = [];
+      for (let index = 0; index < waiters.length; index++) waiters[index]!();
+    }
   }
   cancel(): void {
     if (this.publication) this.client.cancelPublication(this.publication);
@@ -230,13 +269,49 @@ export class FilesystemCompletion {
     this.notify();
   }
   release(): void {
+    if (this.released) return;
+    this.released = true;
     // Shared state can be ready before its port notification wakes value(). An unconsumed
     // release cancels that value and notifies its waiters before removing the completion.
     if (!this.consumed) this.cancel();
-    else this.client.connection.port.postMessage({ discard: this.id });
+    else {
+      this.client.connection.port.postMessage({ discard: this.id });
+      this.notify();
+    }
     mapDelete(this.client.completions, this.id);
     releaseRequestBuffer(this.buffer, REQUEST_CLIENT);
     if (!mapSize(this.client.completions)) wake(this.client.connection);
+  }
+  /** Register a guest-safe callback invoked once the backend itself publishes a terminal state
+   * (not early on local revocation or cancellation while the service is still executing). */
+  onBackendSettled(callback: () => void): void {
+    if (this.backendSettled) {
+      callback();
+      return;
+    }
+    arrayAppend(this.backendWaiters, callback);
+    this.client.watchRevocation();
+    if (this.backendSettled) this.notify();
+  }
+  /** If the service already published State.Complete, decode and return the inline result even
+   * if local revocation raced after completion. Returns undefined otherwise. */
+  tryConsumeCommitted(): any {
+    if (this.consumed) return this.decoded;
+    if (atomicsLoad(this.cells, 0) !== State.Complete) return undefined;
+    const bytes = this.inlineBytes();
+    this.decoded = this.decode(bytes);
+    this.consumed = true;
+    return this.decoded;
+  }
+  /** Consume a ready inline response without waiting or touching Promise globals. */
+  consumeInline(): any {
+    this.check();
+    if (this.consumed) return this.decoded;
+    const bytes = this.inlineBytes();
+    this.check();
+    this.decoded = this.decode(bytes);
+    this.consumed = true;
+    return this.decoded;
   }
   /** Release a ready result that the caller does not need, while still delivering failures.
    * This never waits, decodes bytes or requests an overflow transfer. */
@@ -274,7 +349,7 @@ export class FilesystemCompletion {
   }
   private inlineBytes(): Uint8Array {
     const size = this.cells[2]!;
-    const available = Math.min(size, this.buffer.length - HEADER);
+    const available = mathMin(size, this.buffer.length - HEADER);
     return new Uint8ArrayConstructor(typedArraySubarray(requestBytes(this.buffer), 0, available));
   }
   wait(): any {
@@ -360,6 +435,11 @@ interface StagedPreparation {
   append: boolean;
   bytes: Uint8Array;
 }
+function chunkLength(chunks: readonly Uint8Array[]): number {
+  let total = 0;
+  for (let i = 0; i < chunks.length; i++) total += typedArrayLength(chunks[i]!);
+  return total;
+}
 /** A private copy of the first bytes of a write, at most one transport page. */
 function stagedBytes(chunks: readonly Uint8Array[]): Uint8Array {
   let length = 0;
@@ -375,8 +455,9 @@ function stagedBytes(chunks: readonly Uint8Array[]): Uint8Array {
   return bytes;
 }
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
+  const length = typedArrayLength(left);
+  if (length !== typedArrayLength(right)) return false;
+  for (let index = 0; index < length; index++) if (left[index] !== right[index]) return false;
   return true;
 }
 /** Copies `bytes` into the iovecs, starting `skip` bytes into their combined range. */
@@ -528,7 +609,7 @@ export class FilesystemClient implements FileSystem {
     this.epoch = new Int32ArrayConstructor(connection.epoch);
     this.signal = new Int32ArrayConstructor(connection.signal);
     const revoked = sharedRevoked(connection);
-    this.revoked = () => revoked() || !!this.transportError();
+    this.revoked = () => this.disposed || revoked() || !!this.transportError();
     if (connection.residentPublication)
       this.resident = new ResidentAttachment(connection.residentPublication, this.revoked);
     this.section = new FilesystemTransportSection(connection, this.requests.memory, this.revoked);
@@ -617,26 +698,104 @@ export class FilesystemClient implements FileSystem {
   /** A single shared-signal waiter handles service death without a port completion message.
    * Normal replies still use the port; the watcher exits when the last completion is released.
    */
+  private disposed = false;
+  private finishedDispose = false;
+  private deferredWriteCount = 0;
+  private deferredWaiters = new SetConstructor<() => void>();
+  trackDeferredWrite(completion: FilesystemCompletion, onSettled: () => void): void {
+    let done = false;
+    this.deferredWriteCount++;
+    completion.onBackendSettled(() => {
+      if (done) return;
+      done = true;
+      this.deferredWriteCount--;
+      try {
+        onSettled();
+      } finally {
+        if (this.deferredWriteCount === 0) {
+          this.notifyDeferredWaiters();
+          if (this.disposed) this.finishDispose();
+        }
+      }
+    });
+  }
+  private notifyDeferredWaiters(): void {
+    const waiters = this.deferredWaiters;
+    this.deferredWaiters = new SetConstructor();
+    setForEach(waiters, (waiter) => waiter());
+  }
+  hasDeferredWrites(): boolean {
+    return this.deferredWriteCount > 0;
+  }
+  /** Wait for deferred direct-disabled writes to settle authoritatively at the backend.
+   * With no timeout, waits until every deferred write settles; with a finite timeout, returns
+   * true if all settled in time or false if deferred writes are still pending. */
+  settleDeferredWrites(timeoutMs?: number): Promise<boolean> {
+    if (this.deferredWriteCount === 0)
+      return new PromiseConstructor<boolean>((resolve) => resolve(true));
+    return new PromiseConstructor<boolean>((resolve) => {
+      let finished = false;
+      let timer: ReturnType<typeof scheduleTimeout> | undefined;
+      const onSettled = () => done(true);
+      const done = (settled: boolean) => {
+        if (finished) return;
+        finished = true;
+        if (timer !== undefined) cancelTimeout(timer);
+        setDelete(this.deferredWaiters, onSettled);
+        resolve(settled);
+      };
+      if (timeoutMs !== undefined)
+        timer = scheduleTimeout(() => done(false), mathMax(1, timeoutMs));
+      setAdd(this.deferredWaiters, onSettled);
+      if (this.deferredWriteCount === 0) done(true);
+    });
+  }
+  private sweepRevokedCompletions(): boolean {
+    let waitingBackend = false;
+    mapForEach(this.completions, (completion) => {
+      if (!completion.hasBackendWaiters) completion.cancel();
+      else if (completion.backendSettled) completion.notify();
+      else waitingBackend = true;
+    });
+    return waitingBackend;
+  }
+  private notifySettledBackendWaiters(): void {
+    mapForEach(this.completions, (completion) => {
+      if (completion.hasBackendWaiters && completion.backendSettled) completion.notify();
+    });
+  }
   watchRevocation(): void {
     if (this.watchingRevocation) return;
     this.watchingRevocation = true;
-    void this.monitorRevocation();
+    this.monitorRevocation();
   }
-  private async monitorRevocation(): Promise<void> {
+  private monitorRevocation(): void {
     const signal = this.signal;
-    try {
-      while (mapSize(this.completions)) {
-        const observed = atomicsLoad(signal, 0);
-        if (this.revoked()) {
-          mapForEach(this.completions, (completion) => completion.cancel());
-          return;
-        }
-        const waiting = atomicsWaitAsync(signal, 0, observed);
-        if (waiting.async) await waiting.value;
-      }
-    } finally {
+    const stop = () => {
       this.watchingRevocation = false;
-    }
+    };
+    const step = () => {
+      try {
+        while (mapSize(this.completions)) {
+          const observed = atomicsLoad(signal, 0);
+          if (this.revoked()) {
+            if (!this.sweepRevokedCompletions()) break;
+          } else {
+            this.notifySettledBackendWaiters();
+          }
+          if (!mapSize(this.completions)) break;
+          const waiting = atomicsWaitAsync(signal, 0, observed);
+          if (waiting.async) {
+            afterNativePromise(waiting.value, step, stop);
+            return;
+          }
+        }
+      } catch {
+        // Stop watching if the signal backing is retired or unavailable.
+      }
+      stop();
+    };
+    step();
   }
   fork(): FilesystemConnection {
     const failure = this.transportError();
@@ -815,9 +974,9 @@ export class FilesystemClient implements FileSystem {
     const inputLength = typedArrayLength(input);
     const total = inputLength + typedArrayLength(data);
     const privateLength = total > REQUEST_INLINE_BYTES ? total : 0;
-    const room = Math.min(validateResponseCapacity(capacity), PAGE);
+    const room = mathMin(validateResponseCapacity(capacity), PAGE);
     const buffer = this.requests.allocate(
-      privateLength ? room : Math.max(total, room),
+      privateLength ? room : mathMax(total, room),
       privateLength,
     );
     try {
@@ -889,16 +1048,10 @@ export class FilesystemClient implements FileSystem {
     if (!options.signal?.aborted) setAdd(this.watchers, watcher);
     return watcher;
   }
-  dispose(): void {
-    this.resident?.invalidate();
-    this.beginWorkspaceStop();
-    // The disposing agent is quiescent: no synchronous file operation can be active here.
-    reapFilesystem(this.connection);
+  private clearDisposedCaches(): void {
     setForEach(this.watchers, (watcher) => {
       void watcher.close();
     });
-    mapForEach(this.completions, (completion) => completion.release());
-    mapClear(this.completions);
     mapClear(this.ioPreparations);
     mapClear(this.stagedWrites);
     this.stagedHandles = new SetConstructor();
@@ -909,8 +1062,33 @@ export class FilesystemClient implements FileSystem {
     mapClear(this.openHandles);
     mapClear(this.fileSlots);
     mapClear(this.capabilityEntries);
+  }
+  private finishDispose(): void {
+    if (this.finishedDispose) return;
+    this.finishedDispose = true;
+    this.disposed = true;
+    // The disposing agent is quiescent: no synchronous file operation or deferred write is active.
+    reapFilesystem(this.connection);
+    this.clearDisposedCaches();
+    mapForEach(this.completions, (completion) => completion.release());
+    mapClear(this.completions);
     this.sweep();
     this.connection.port.close();
+  }
+  dispose(): void {
+    if (this.finishedDispose) return;
+    this.disposed = true;
+    this.resident?.invalidate();
+    this.beginWorkspaceStop();
+    if (this.deferredWriteCount > 0) {
+      this.clearDisposedCaches();
+      mapForEach(this.completions, (completion) => {
+        if (!completion.hasBackendWaiters) completion.release();
+      });
+      this.watchRevocation();
+      return;
+    }
+    this.finishDispose();
   }
   private version(): number {
     if (this.revoked()) throw new FilesystemError(11);
@@ -1215,10 +1393,12 @@ export class FilesystemClient implements FileSystem {
   }
   private copyReadResult(chunks: readonly Uint8Array[], bytes: Uint8Array): number {
     let at = 0;
-    for (const chunk of chunks) {
-      const count = Math.min(chunk.length, bytes.length - at);
-      if (count <= 0) break;
-      typedArraySet(chunk, bytes.subarray(at, at + count));
+    const total = typedArrayLength(bytes);
+    for (let i = 0; i < chunks.length && at < total; i++) {
+      const chunk = chunks[i]!;
+      const count = Math.min(typedArrayLength(chunk), total - at);
+      if (count <= 0) continue;
+      typedArraySet(chunk, typedArraySubarray(bytes, at, at + count));
       at += count;
     }
     return at;
@@ -1263,8 +1443,7 @@ export class FilesystemClient implements FileSystem {
    * owner. A cold file is read as a range and is not loaded whole, so this stays a short read. */
   private readUnloaded(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
     try {
-      let requested = 0;
-      for (let i = 0; i < chunks.length; i++) requested += chunks[i]!.length;
+      const requested = chunkLength(chunks);
       const bytes: Uint8Array = this.call("read", [handle, Math.min(PAGE, requested), offset]);
       return this.copyReadResult(chunks, bytes);
     } catch (failure) {
@@ -1285,12 +1464,78 @@ export class FilesystemClient implements FileSystem {
       this.section.exit();
     }
   }
+  /** True when the backend disables direct shared-memory file I/O (e.g. multi-tab attach). */
+  get directDisabled(): boolean {
+    return this.shared.isDirectDisabled();
+  }
+  /** Bounded (<= PAGE) regular-file RPC used by ProcessABI when direct shared-memory I/O is
+   * disabled. Yields immediately on pending signals before dispatch, interrupts in-flight reads on
+   * handled signals, and checks fatal liveness on every wait slice. */
+  directDisabledIO(
+    operation: "read" | "write" | "append",
+    handle: FileHandle,
+    bytes: Uint8Array,
+    offset: number,
+    control: DirectDisabledIOControl,
+  ): { written: number; offset: number } | number {
+    if (operation !== "append" && (!numberIsSafeInteger(offset) || offset < 0)) return -28;
+    control.checkFatal();
+    if (control.pending()) return -6;
+    const count = mathMin(PAGE, typedArrayLength(bytes));
+    if (count === 0) return operation === "append" ? { written: 0, offset } : 0;
+    const completion =
+      operation === "read"
+        ? this.submit("read", [handle, count, offset])
+        : operation === "append"
+          ? this.submit("append", [handle], typedArraySubarray(bytes, 0, count))
+          : this.submit("write", [handle, offset], typedArraySubarray(bytes, 0, count));
+    let handedOff = false;
+    try {
+      while (!completion.ready) {
+        const observed = atomicsLoad(this.signal, 0);
+        if (operation !== "read" && atomicsLoad(completion.cells, 0) === State.Complete) break;
+        control.checkFatal();
+        if (operation === "read" && control.pending()) {
+          completion.cancel();
+          return -6;
+        }
+        if (completion.ready) break;
+        control.wait(10, this.signal, observed);
+      }
+      if (operation === "read") {
+        control.checkFatal();
+        const data = completion.consumeInline() as Uint8Array;
+        typedArraySet(bytes, data, 0);
+        return typedArrayLength(data);
+      }
+      const committed = completion.tryConsumeCommitted();
+      if (committed !== undefined) return committed as { written: number; offset: number } | number;
+      return completion.consumeInline() as { written: number; offset: number } | number;
+    } catch (error) {
+      if (operation !== "read") {
+        const committed = completion.tryConsumeCommitted();
+        if (committed !== undefined) {
+          control.commitWrite?.(committed as { written: number; offset: number } | number);
+        } else if (control.deferWrite) {
+          handedOff = true;
+          control.deferWrite(completion);
+        }
+      }
+      if (isInstance(error, FilesystemError)) {
+        control.checkFatal();
+        return -error.errno;
+      }
+      throw error;
+    } finally {
+      if (!handedOff) completion.release();
+    }
+  }
   /** Nonblocking runtime_proc I/O. Never retain an iovec across an EAGAIN boundary. */
   tryRead(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
     if (this.shared.isDirectDisabled()) return -58;
     if (this.resident)
       return this.residentIO(() => this.resident?.client?.tryRead(handle, chunks, offset) ?? -6);
-    if (!(offset >= 0)) return -28;
+    if (!Number.isSafeInteger(offset) || offset < 0) return -28;
     try {
       const prepared = this.preparedRead(handle, chunks, offset);
       if (prepared !== undefined) return prepared;
@@ -1327,7 +1572,7 @@ export class FilesystemClient implements FileSystem {
     if (this.resident)
       return this.residentIO(() => this.resident?.client?.tryWrite(handle, chunks, offset) ?? -6);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, true);
-    if (!(offset >= 0)) return -28;
+    if (!Number.isSafeInteger(offset) || offset < 0) return -28;
     try {
       if (!this.preparedWrite(handle)) return -6;
       const slot = this.directSlot(handle);
@@ -1653,6 +1898,16 @@ export class FilesystemClient implements FileSystem {
       return { readable: true, writable: true, hangup: false };
     }
   }
+  /** True while a nonblocking filesystem preparation or staged write is still in flight. */
+  ioPending(handle: FileHandle, writing: boolean): boolean {
+    if (this.shared.isDirectDisabled()) return false;
+    const preparation = mapGet(this.ioPreparations, handle);
+    if (preparation && !preparation.completion.ready)
+      return preparation.kind === "read" ? !writing : true;
+    if (!writing) return false;
+    const stage = mapGet(this.stagedWrites, handle);
+    return stage !== undefined && !stage.completion.ready;
+  }
   resolveBorrowed(
     directory: FileHandle,
     path: string,
@@ -1835,7 +2090,7 @@ export class FilesystemClient implements FileSystem {
     if (this.connection.residentPublication?.kind === "file")
       return this.tryRead(handle, chunks, offset);
     if (this.resident) return this.workspaceRead(handle, chunks, offset);
-    if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
+    if (!Number.isSafeInteger(offset) || offset < 0) return -28; // EINVAL: positions are never negative.
     if (this.shared.isDirectDisabled()) return this.readUnloaded(handle, chunks, offset);
     const slot = this.directSlot(handle);
     if (slot) {
@@ -1883,19 +2138,18 @@ export class FilesystemClient implements FileSystem {
       return this.tryWrite(handle, chunks, offset);
     if (this.resident) return this.workspaceWrite(handle, chunks, offset, false);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, false);
-    if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
+    if (!Number.isSafeInteger(offset) || offset < 0) return -28; // EINVAL: positions are never negative.
     chunks = fixedWriteSources(chunks);
     if (this.shared.isDirectDisabled()) {
       try {
-        let total = 0;
-        for (let i = 0; i < chunks.length; i++) total += chunks[i]!.length;
+        const total = chunkLength(chunks);
         const limit = Math.min(total, 1024 * 1024);
         const data = new Uint8ArrayConstructor(limit);
         let at = 0;
         for (let i = 0; i < chunks.length && at < limit; i++) {
           const chunk = chunks[i]!;
-          const count = Math.min(chunk.length, limit - at);
-          if (count > 0) typedArraySet(data, chunk.subarray(0, count), at);
+          const count = Math.min(typedArrayLength(chunk), limit - at);
+          if (count > 0) typedArraySet(data, typedArraySubarray(chunk, 0, count), at);
           at += count;
         }
         return this.call("write", [handle, offset], data);
@@ -1989,8 +2243,8 @@ export class FilesystemClient implements FileSystem {
         let at = 0;
         for (let i = 0; i < chunks.length && at < limit; i++) {
           const chunk = chunks[i]!;
-          const count = Math.min(chunk.length, limit - at);
-          if (count > 0) typedArraySet(data, chunk.subarray(0, count), at);
+          const count = Math.min(typedArrayLength(chunk), limit - at);
+          if (count > 0) typedArraySet(data, typedArraySubarray(chunk, 0, count), at);
           at += count;
         }
         return this.call("append", [handle], data);

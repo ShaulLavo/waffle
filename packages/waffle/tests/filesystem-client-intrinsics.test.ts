@@ -8,6 +8,13 @@ import { EpochCache } from "../fs/epoch-cache.ts";
 import { localPublication } from "../fs/publication-internal.ts";
 import { mutationIntent } from "../fs/publication.ts";
 import { takeResolveObservation } from "../fs/resolve-observation.ts";
+import {
+  CLIENT_MODE,
+  CLIENT_MODE_NO_CLIENT_CACHE,
+  CLIENT_MODE_NO_DIRECT_IO,
+  SharedFilesystemState,
+} from "../fs/shared.ts";
+import { SHARED_ROOT_BYTES } from "../fs/storage-geometry.ts";
 import { poisonProcessIntrinsics, type IntrinsicsReport } from "./fixtures/process-intrinsics.ts";
 
 const clientSource = new Bun.Transpiler({ loader: "ts" }).transformSync(
@@ -105,10 +112,14 @@ function fixture(overrides: Partial<typeof native> = {}) {
       exit() {}
     },
     SharedFilesystemState: class {
+      isDirectDisabled() {
+        return false;
+      }
       isUnlinked() {
         return false;
       }
     },
+    fixedWriteSources: (chunks: readonly Uint8Array[]) => chunks,
   };
   const names = Object.keys(bindings);
   const evaluate = new Function(...names.concat([clientSource]));
@@ -324,4 +335,31 @@ test("the client's epoch caches keep capability-bearing answers out of guest int
     report = observer.restore();
   }
   expect(report.leaks).toContain("Map.set");
+});
+
+test("real SharedFilesystemState.isDirectDisabled and protocol.wake stay out of guest intrinsics", () => {
+  const sharedBuffer = new native.SharedArrayBufferConstructor(SHARED_ROOT_BYTES);
+  const signalBuffer = new native.SharedArrayBufferConstructor(4);
+  const state = new SharedFilesystemState(sharedBuffer, protocol.PAGE, 1);
+  state.setClientMode(CLIENT_MODE_NO_DIRECT_IO | CLIENT_MODE_NO_CLIENT_CACHE);
+  const connection = { signal: signalBuffer } as protocol.FilesystemIdentity;
+  let directDisabled = false;
+  let cacheDisabled = false;
+  let report: IntrinsicsReport | undefined;
+  const observer = poisonProcessIntrinsics([sharedBuffer, signalBuffer]);
+  try {
+    directDisabled = state.isDirectDisabled();
+    cacheDisabled = state.isClientCacheDisabled();
+    protocol.wake(connection);
+  } finally {
+    report = observer.restore();
+  }
+  expect(report.leaks).toEqual([]);
+  expect(directDisabled).toBe(true);
+  expect(cacheDisabled).toBe(true);
+  expect(
+    native.atomicsLoad(new native.Int32ArrayConstructor(sharedBuffer), CLIENT_MODE) &
+      CLIENT_MODE_NO_DIRECT_IO,
+  ).toBe(CLIENT_MODE_NO_DIRECT_IO);
+  expect(native.atomicsLoad(new native.Int32ArrayConstructor(signalBuffer), 0)).toBe(1);
 });

@@ -1566,3 +1566,481 @@ test("fatal cancellation during exec staging unwinds instead of returning its st
   );
   expect(() => abi.imports.exec!(2048, length)).toThrow(ProcessSignalExit);
 });
+
+test("filesystem poll wakes never bypass a zero-time or expired deadline", () => {
+  const f = fixture();
+  const fsSignal = new Int32Array(new SharedArrayBuffer(4));
+  let now = 100;
+  let readinessScans = 0;
+  let waits = 0;
+  const fs = Object.assign(f.fs, {
+    signal: fsSignal,
+    readiness() {
+      readinessScans++;
+      // Simulate continuous unrelated filesystem signal bumps during readiness scans.
+      Atomics.add(fsSignal, 0, 1);
+      return { ready: false };
+    },
+  });
+  const abi = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
+    memory: f.memory,
+    descriptors: f.descriptors,
+    fs,
+    pid: f.pid,
+    service: f.supervisor,
+    signals: f.signals,
+    wake: new Int32Array(new SharedArrayBuffer(4)),
+    now: () => now,
+    wait() {
+      waits++;
+      now += 10;
+    },
+  });
+  f.sub(0, 3, 1);
+  // Zero-time poll must scan once and return 0 without spinning on fsSignal bumps.
+  expect(abi.imports.poll!(256, 1, 0, 512)).toBe(0);
+  expect(readinessScans).toBe(1);
+  expect(waits).toBe(0);
+
+  // Finite poll must terminate once clock passes deadline even under continuous fsSignal bumps.
+  readinessScans = 0;
+  const abiFinite = new ProcessABI({
+    processIdentity: f.supervisor.get(f.pid)!.processIdentity,
+    memory: f.memory,
+    descriptors: f.descriptors,
+    fs,
+    pid: f.pid,
+    service: f.supervisor,
+    signals: f.signals,
+    wake: new Int32Array(new SharedArrayBuffer(4)),
+    now: () => {
+      now += 5;
+      return now;
+    },
+    wait() {
+      waits++;
+    },
+  });
+  expect(abiFinite.imports.poll!(256, 1, 10, 512)).toBe(0);
+  expect(readinessScans).toBeLessThanOrEqual(4);
+});
+
+test("poll parks on fs.signal only for pure fs waits and keeps mixed or service-backed polls on process wake", () => {
+  const f = fixture();
+  const fsSignal = new Int32Array(new SharedArrayBuffer(4));
+  const processWake = new Int32Array(new SharedArrayBuffer(4));
+  let fileReady = false;
+  let serviceFsReady = false;
+  const waitWords: string[] = [];
+  const fs = Object.assign(f.fs, {
+    signal: fsSignal,
+    ioReadiness: () => ({ readable: fileReady, writable: false, hangup: false }),
+    ioPending: () => !fileReady,
+  });
+  const fileFd = f.descriptors.open(
+    { kind: "file", handle: 1, offset: 0, append: false },
+    ALL,
+    ALL,
+  );
+  expect(f.abi.imports.pipe!(32)).toBe(0);
+  const pipeReader = f.view().getUint32(32, true);
+
+  const makeAbi = (withServiceFs: boolean) =>
+    new ProcessABI({
+      processIdentity: f.supervisor.get(f.pid)!.processIdentity,
+      memory: f.memory,
+      descriptors: f.descriptors,
+      fs,
+      pid: f.pid,
+      service: withServiceFs
+        ? Object.assign(Object.create(f.supervisor), {
+            filesystemReady: () => serviceFsReady,
+          })
+        : f.supervisor,
+      signals: f.signals,
+      wake: processWake,
+      wait(_ms, word) {
+        waitWords.push(
+          word === fsSignal ? "fs.signal" : word === processWake ? "process.wake" : "other",
+        );
+        fileReady = true;
+        serviceFsReady = true;
+      },
+    });
+
+  // 1. Pure pending file subscription waits directly on fs.signal.
+  fileReady = false;
+  waitWords.length = 0;
+  f.sub(0, 0, fileFd);
+  expect(makeAbi(false).imports.poll!(256, 1, 100, 512)).toBe(1);
+  expect(waitWords).toEqual(["fs.signal"]);
+
+  // 2. Mixed [pipe, file] subscription waits on processWake so pipe/signal wakes are not delayed.
+  fileReady = false;
+  waitWords.length = 0;
+  f.sub(0, 0, pipeReader);
+  f.sub(1, 0, fileFd);
+  expect(makeAbi(false).imports.poll!(256, 2, 100, 512)).toBe(1);
+  expect(waitWords).toEqual(["process.wake"]);
+
+  // 3. Kind-3 subscription backed by service.filesystemReady waits on processWake, not fs.signal.
+  serviceFsReady = false;
+  waitWords.length = 0;
+  f.sub(0, 3, 9);
+  expect(makeAbi(true).imports.poll!(256, 1, 100, 512)).toBe(1);
+  expect(waitWords).toEqual(["process.wake"]);
+});
+
+test("directDisabled file IO yields on pending signals, interrupts reads, and unwinds fatal kills without releasing live write offsets", async () => {
+  const { FilesystemClient, FilesystemService, MemoryBackend, createFilesystemConnection } =
+    await import("../fs/index.js");
+  const { claimFileOffset, shareFileResource } = await import("../core/open-file.js");
+  const { setSignalDisposition, requestSignal } = await import("../proc/signals.js");
+  const { CLIENT_MODE_NO_DIRECT_IO } = await import("../fs/shared.js");
+
+  let releaseOp: (() => void) | undefined;
+  let opDispatched = Promise.withResolvers<void>();
+  let pauseNextOp: "read" | "write" | null = null;
+  const backend = new MemoryBackend();
+  const originalExecute = backend.execute.bind(backend);
+  backend.execute = (operation: string, args: unknown[], data: Uint8Array) => {
+    if (pauseNextOp === operation) {
+      pauseNextOp = null;
+      const gate = Promise.withResolvers<void>();
+      releaseOp = () => gate.resolve();
+      opDispatched.resolve();
+      return gate.promise.then(() => originalExecute(operation, args, data));
+    }
+    return originalExecute(operation, args, data);
+  };
+  const service = new FilesystemService(backend);
+  const pair = createFilesystemConnection();
+  service.connect(pair.server);
+  backend.shared.setClientMode(CLIENT_MODE_NO_DIRECT_IO);
+  const client = new FilesystemClient(pair.client);
+  try {
+    await client.asyncCall("writeFile", ["/f.txt", false, false], new TextEncoder().encode("seed"));
+    const root: number = await client.asyncCall("preopen", ["/"]);
+    const resolved = await client.asyncCall("resolve", [root, "f.txt", true]);
+    const handle = resolved.node as number;
+    client.retain(handle);
+
+    const f = fixture();
+    const resource = { kind: "file" as const, handle, offset: 0, append: false };
+    shareFileResource(resource, client.connection);
+    const fd = f.descriptors.open(resource, ALL, ALL);
+    setSignalDisposition(f.signals.signalState, 2, 2, f.signals.interrupt); // HANDLE SIGINT
+
+    let waitCalls = 0;
+    let onWait: (() => void) | undefined;
+    const abi = new ProcessABI({
+      processIdentity: f.supervisor.get(f.pid)!.processIdentity,
+      memory: f.memory,
+      descriptors: f.descriptors,
+      fs: client,
+      pid: f.pid,
+      service: f.supervisor,
+      signals: f.signals,
+      wake: new Int32Array(new SharedArrayBuffer(4)),
+      wait() {
+        waitCalls++;
+        onWait?.();
+      },
+    });
+
+    // 1. Handled SIGINT already pending -> yields -EAGAIN immediately without dispatching or mutating.
+    requestSignal(f.signals, 2);
+    f.bytes().set(new TextEncoder().encode("NOPE"), 1024);
+    expect(abi.imports.write!(fd, 1024, 4)).toBe(-6);
+    expect(abi.imports.read!(fd, 1024, 4)).toBe(-6);
+    expect(waitCalls).toBe(0);
+    expect(new TextDecoder().decode(await client.asyncCall("readFile", ["/f.txt"]))).toBe("seed");
+    // Consume the handled SIGINT.
+    expect(abi.imports.interrupted!()).toBe(2);
+
+    // 2. Stalled directDisabled read is interrupted by handled SIGINT mid-wait and releases offset lock.
+    pauseNextOp = "read";
+    onWait = () => {
+      requestSignal(f.signals, 2);
+    };
+    expect(abi.imports.read!(fd, 1024, 4)).toBe(-6);
+    expect(waitCalls).toBeGreaterThanOrEqual(1);
+    const afterReadClaim = claimFileOffset(resource);
+    expect(afterReadClaim.kind).toBe("acquired");
+    if (afterReadClaim.kind === "acquired") afterReadClaim.lease.release();
+    releaseOp?.();
+    expect(abi.imports.interrupted!()).toBe(2);
+
+    // 3. Fatal SIGKILL during a paused directDisabled write unwinds with ProcessSignalExit(9)
+    // (never returns -ECANCELED) and holds the shared offset lock until the backend write settles,
+    // even while worker teardown waits on settleDeferredWrites().
+    opDispatched = Promise.withResolvers<void>();
+    pauseNextOp = "write";
+    onWait = () => {
+      f.supervisor.kill(f.pid, 9);
+    };
+    f.bytes().set(new TextEncoder().encode("LIVE"), 1024);
+    expect(() => abi.imports.write!(fd, 1024, 4)).toThrow(ProcessSignalExit);
+    await opDispatched.promise;
+    expect(client.hasDeferredWrites()).toBe(true);
+    let teardownDone = false;
+    const teardown = client.settleDeferredWrites(2_000).then(() => {
+      teardownDone = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    // While the backend write is still paused, teardown waits and another holder sees busy.
+    expect(teardownDone).toBe(false);
+    expect(claimFileOffset(resource).kind).toBe("busy");
+    // Resume backend write -> authoritative settlement commits offset 4, releases the lock, and unblocks teardown!
+    releaseOp?.();
+    await teardown;
+    expect(teardownDone).toBe(true);
+    expect(client.hasDeferredWrites()).toBe(false);
+    const afterWriteClaim = claimFileOffset(resource);
+    expect(afterWriteClaim.kind).toBe("acquired");
+    if (afterWriteClaim.kind === "acquired") {
+      expect(afterWriteClaim.lease.position).toBe(4);
+      afterWriteClaim.lease.release();
+    }
+    expect(new TextDecoder().decode(await client.asyncCall("readFile", ["/f.txt"]))).toBe("LIVE");
+
+    // 4. Even when the backend mutates the file first and the writer is BOTH fatally killed
+    // AND filesystem-revoked before service reply publication, the surviving shared offset
+    // still advances to match the committed bytes (never stays at 4 while the file grew to 8).
+    const { revokeFilesystem } = await import("../fs/protocol.js");
+    const pair2 = createFilesystemConnection(client.connection);
+    const reservation = client.reserve(handle, pair2.client);
+    pair2.client.reservations.push(reservation);
+    pair2.server.reservations.push(reservation);
+    service.connect(pair2.server);
+    const client2 = new FilesystemClient(pair2.client);
+    client2.adopt(reservation);
+    let releaseAfterMutate: (() => void) | undefined;
+    const prevExecute = backend.execute;
+    try {
+      const f2 = fixture();
+      const resource2 = { kind: "file" as const, handle, offset: 4, append: false };
+      shareFileResource(
+        resource2,
+        client2.connection,
+        shareFileResource(resource, client.connection),
+      );
+      const fd2 = f2.descriptors.open(resource2, ALL, ALL);
+      const mutated = Promise.withResolvers<void>();
+      let pausedOnce = true;
+      backend.execute = (operation: string, args: unknown[], data: Uint8Array) => {
+        if (operation === "write" && pausedOnce) {
+          pausedOnce = false;
+          const written = originalExecute(operation, args, data);
+          revokeFilesystem(client2.connection);
+          const gate = Promise.withResolvers<void>();
+          releaseAfterMutate = () => gate.resolve();
+          mutated.resolve();
+          return gate.promise.then(() => written);
+        }
+        return prevExecute(operation, args, data);
+      };
+      const { closeRequestMemory } = await import("../fs/request-memory.js");
+      const { wake } = await import("../fs/protocol.js");
+      const abi2 = new ProcessABI({
+        processIdentity: f2.supervisor.get(f2.pid)!.processIdentity,
+        memory: f2.memory,
+        descriptors: f2.descriptors,
+        fs: client2,
+        pid: f2.pid,
+        service: f2.supervisor,
+        signals: f2.signals,
+        wake: new Int32Array(new SharedArrayBuffer(4)),
+        wait() {
+          f2.supervisor.kill(f2.pid, 9);
+        },
+      });
+      f2.bytes().set(new TextEncoder().encode("NEXT"), 1024);
+      expect(() => abi2.imports.write!(fd2, 1024, 4)).toThrow(ProcessSignalExit);
+      await mutated.promise;
+      // Concurrent protocol transport failure + service.sweep() + early client2.dispose() while
+      // the backend write is still paused must NOT release the offset lease or reap the owner.
+      closeRequestMemory(client2.connection.requests, "protocol");
+      wake(client2.connection);
+      service.sweep();
+      expect(await client2.settleDeferredWrites(40)).toBe(false);
+      client2.dispose();
+      expect(
+        Atomics.load(new Int32Array(client2.connection.ownerStates), client2.connection.owner),
+      ).not.toBe(2);
+      expect(claimFileOffset(resource).kind).toBe("busy");
+
+      const teardown2 = client2.settleDeferredWrites();
+      releaseAfterMutate?.();
+      releaseAfterMutate = undefined;
+      expect(await teardown2).toBe(true);
+      expect(
+        Atomics.load(new Int32Array(client2.connection.ownerStates), client2.connection.owner),
+      ).toBe(2);
+      const survivingClaim = claimFileOffset(resource);
+      expect(survivingClaim.kind).toBe("acquired");
+      if (survivingClaim.kind === "acquired") {
+        expect(survivingClaim.lease.position).toBe(8);
+        survivingClaim.lease.release();
+      }
+      expect(new TextDecoder().decode(await client.asyncCall("readFile", ["/f.txt"]))).toBe(
+        "LIVENEXT",
+      );
+    } finally {
+      releaseAfterMutate?.();
+      backend.execute = prevExecute;
+      client2.dispose();
+    }
+    // 5. CommandStdio write revoked while paused at the backend holds the shared offset lease
+    // through authoritative backend settlement and advances the offset before unlocking.
+    const { CommandStdio } = await import("../proc/command-stdio.js");
+    const pair3 = createFilesystemConnection(client.connection);
+    const reservation3 = client.reserve(handle, pair3.client);
+    pair3.client.reservations.push(reservation3);
+    pair3.server.reservations.push(reservation3);
+    service.connect(pair3.server);
+    const abort3 = new AbortController();
+    const table3 = new DescriptorTable();
+    const resource3 = { kind: "file" as const, handle, offset: 8, append: false };
+    shareFileResource(resource3, pair3.client, shareFileResource(resource, client.connection));
+    table3.open(resource3, ALL, ALL); // fd 0
+    table3.open(resource3, ALL, ALL); // fd 1
+    const stdio = new CommandStdio(table3, abort3.signal, pair3.client);
+    let releaseStdioWrite: (() => void) | undefined;
+    const stdioPaused = Promise.withResolvers<void>();
+    let stdioArmed = true;
+    const prevStdioExecute = backend.execute;
+    backend.execute = (operation: string, args: unknown[], data: Uint8Array) => {
+      if (operation === "write" && stdioArmed) {
+        stdioArmed = false;
+        const written = originalExecute(operation, args, data);
+        revokeFilesystem(pair3.client);
+        const gate = Promise.withResolvers<void>();
+        releaseStdioWrite = () => gate.resolve();
+        stdioPaused.resolve();
+        return gate.promise.then(() => written);
+      }
+      return prevStdioExecute(operation, args, data);
+    };
+    try {
+      const writePromise = stdio.stdout.write(new TextEncoder().encode("!!"));
+      await stdioPaused.promise;
+      await expect(writePromise).rejects.toThrow();
+      expect(claimFileOffset(resource).kind).toBe("busy");
+      const settling = stdio.settle();
+      releaseStdioWrite?.();
+      releaseStdioWrite = undefined;
+      await settling;
+      const afterStdio = claimFileOffset(resource);
+      expect(afterStdio.kind).toBe("acquired");
+      if (afterStdio.kind === "acquired") {
+        expect(afterStdio.lease.position).toBe(10);
+        afterStdio.lease.release();
+      }
+      expect(new TextDecoder().decode(await client.asyncCall("readFile", ["/f.txt"]))).toBe(
+        "LIVENEXT!!",
+      );
+    } finally {
+      releaseStdioWrite?.();
+      backend.execute = prevStdioExecute;
+      await stdio.settle();
+    }
+
+    // 6. A paused sync barrier and an undelivered write on the SAME session hitting a protocol
+    // error during service.shutdown() keep request memory unretired until the barrier finishes,
+    // then retire transport memory so the undelivered write releases its section without deadlock.
+    const { drainAsyncFileDiagnostic } = await import("../browser/diagnostic.js");
+    const { closeRequestMemory, requestMemoryRetired } = await import("../fs/request-memory.js");
+    const { wake } = await import("../fs/protocol.js");
+    const pair4 = createFilesystemConnection(client.connection);
+    const reservation4 = client.reserve(handle, pair4.client);
+    pair4.client.reservations.push(reservation4);
+    pair4.server.reservations.push(reservation4);
+    service.connect(pair4.server);
+    const client4 = new FilesystemClient(pair4.client);
+    client4.adopt(reservation4);
+    const resource4 = { kind: "file" as const, handle, offset: 10, append: false };
+    shareFileResource(resource4, pair4.client, shareFileResource(resource, client.connection));
+    let releaseSync: (() => void) | undefined;
+    const syncPaused = Promise.withResolvers<void>();
+    const flushBackend = backend as typeof backend & { flush?: () => Promise<void> | void };
+    const prevFlush = flushBackend.flush;
+    let syncArmed = true;
+    flushBackend.flush = () => {
+      if (syncArmed) {
+        syncArmed = false;
+        const gate = Promise.withResolvers<void>();
+        releaseSync = () => gate.resolve();
+        syncPaused.resolve();
+        return gate.promise;
+      }
+      return prevFlush?.();
+    };
+    const origPost4 = pair4.client.port.postMessage.bind(pair4.client.port);
+    const descriptorDropped = Promise.withResolvers<void>();
+    let dropNextRequest = false;
+    pair4.client.port.postMessage = ((msg: unknown, transfer?: StructuredSerializeOptions) => {
+      if (dropNextRequest && msg && typeof msg === "object" && "id" in msg) {
+        dropNextRequest = false;
+        descriptorDropped.resolve();
+        return;
+      }
+      return origPost4(msg, transfer as never);
+    }) as typeof pair4.client.port.postMessage;
+    try {
+      const syncPending = client4.asyncCall("sync", [handle]).then(
+        () => "resolved",
+        () => "rejected",
+      );
+      await syncPaused.promise;
+      dropNextRequest = true;
+      const undeliveredWrite = drainAsyncFileDiagnostic(
+        client4,
+        resource4,
+        new TextEncoder().encode("??"),
+        () => true,
+        50,
+      ).then(
+        () => "resolved",
+        () => "rejected",
+      );
+      await descriptorDropped.promise;
+      // Session 4 now has BOTH a running sync barrier AND an undelivered write holding sections[0]=1.
+      expect(new Int32Array(pair4.client.sections)[0]).toBe(1);
+      client.release(handle);
+      client.dispose();
+      // Start service.shutdown() FIRST so shutdownFence(session4) is blocked on sections[0]=1,
+      // then inject the protocol error so shutdownFence enters drainFailedSessionRequests(session4).
+      const shutdownPromise = service.shutdown();
+      closeRequestMemory(pair4.client.requests, "protocol");
+      wake(pair4.client);
+      expect(await syncPending).toBe("rejected");
+      expect(await undeliveredWrite).toBe("rejected");
+      // While the sync barrier is still paused, drainFailedSessionRequests must NOT retire memory,
+      // so the undelivered write stays deferred and sections[0] remains 1.
+      expect(await client4.settleDeferredWrites(40)).toBe(false);
+      expect(requestMemoryRetired(pair4.client.requests)).toBe(false);
+      expect(new Int32Array(pair4.client.sections)[0]).toBe(1);
+      // Releasing the sync barrier lets drainFailedSessionRequests retire memory, unlocking the
+      // undelivered write, dropping sections[0] to 0, and finishing shutdown cleanly.
+      const settling4 = client4.settleDeferredWrites();
+      releaseSync?.();
+      releaseSync = undefined;
+      expect(await settling4).toBe(true);
+      await shutdownPromise;
+      expect(requestMemoryRetired(pair4.client.requests)).toBe(true);
+      expect(new Int32Array(pair4.client.sections)[0]).toBe(0);
+      expect(resource.offset).toBe(10);
+    } finally {
+      releaseSync?.();
+      flushBackend.flush = prevFlush;
+      client4.dispose();
+    }
+  } finally {
+    releaseOp?.();
+    client.dispose();
+    await service.shutdown();
+    service.dispose();
+  }
+});

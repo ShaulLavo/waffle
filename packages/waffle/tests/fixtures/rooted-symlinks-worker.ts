@@ -4,6 +4,7 @@ import { preview1, rootedSymlinkScenario } from "./rooted-symlinks-guest.js";
 /** The rooted symlink scenario over the worker-backed client, as a process worker runs it. */
 self.onmessage = ({ data }: MessageEvent<FilesystemConnection>) => {
   const client = new FilesystemClient(data);
+  let reply: unknown;
   try {
     const scenario = rootedSymlinkScenario(client);
     // The same directory handle, path and follow flag in a rooted and a confined process, both
@@ -14,14 +15,15 @@ self.onmessage = ({ data }: MessageEvent<FilesystemConnection>) => {
       const tmp = rooted.openDirectory("tmp");
       const same = rooted.handleOf(tmp) === confined.handleOf(3);
       const ask = () => [rooted.stat("x/climb", true, tmp), confined.stat("x/climb", true)];
-      self.postMessage({ scenario, same, cache: ask().concat(ask()) });
+      reply = { scenario, same, cache: ask().concat(ask()) };
     } finally {
       rooted.dispose();
       confined.dispose();
     }
   } catch (error) {
-    self.postMessage({ error: String(error) });
+    reply = { error: String(error) };
   } finally {
     client.dispose();
   }
+  self.postMessage(reply);
 };

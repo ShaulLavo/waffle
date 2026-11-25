@@ -34,7 +34,12 @@ import {
   type Stream,
 } from "../core/descriptors.js";
 import type { FileSystem } from "../core/filesystem.js";
-import { withFileOffset } from "../core/open-file.js";
+import {
+  tryClaimFileOffset,
+  withFileOffset,
+  type AsyncFileOffsetLease,
+} from "../core/open-file.js";
+import type { DirectDisabledIOControl, FilesystemCompletion } from "../fs/client.js";
 import { PipeController } from "./pipes.js";
 import { readOutcome } from "./outcome.js";
 import { WasiExit } from "../core/wasi.js";
@@ -101,6 +106,16 @@ export interface ProcessService {
 }
 
 interface NonblockingFileSystem extends FileSystem {
+  readonly signal?: Int32Array;
+  readonly directDisabled?: boolean;
+  directDisabledIO?(
+    operation: "read" | "write" | "append",
+    handle: number,
+    bytes: Uint8Array,
+    offset: number,
+    control: DirectDisabledIOControl,
+  ): { written: number; offset: number } | number;
+  trackDeferredWrite?(completion: FilesystemCompletion, onSettled: () => void): void;
   tryRead?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
   tryWrite?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
   tryAppend?(
@@ -108,6 +123,7 @@ interface NonblockingFileSystem extends FileSystem {
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number;
   ioReadiness?(handle: number, writing: boolean): Readiness;
+  ioPending?(handle: number, writing: boolean): boolean;
   readiness?(request: number): { ready: boolean } | undefined;
 }
 interface NonblockingStream extends Stream {
@@ -204,9 +220,16 @@ function sameWord(first: Int32Array | undefined, second: Int32Array): boolean {
   );
 }
 
-/** Guest adapter for the runtime_proc WASM namespace. Only poll and blocking wait_job wait.
- * FileSystem must provide immediate I/O; worker-backed services supply nonblocking file I/O.
- * Streams with potentially blocking read/write must expose tryRead/tryWrite. */
+function validWakeWord(word: Int32Array | undefined): Int32Array | undefined {
+  return word && isSharedArrayBuffer(typedArrayBuffer(word)) && typedArrayLength(word) === 1
+    ? word
+    : undefined;
+}
+
+/** Guest adapter for the runtime_proc WASM namespace. Only poll, blocking wait_job, and
+ * bounded regular-file RPCs on direct-disabled backends wait. FileSystem supplies immediate
+ * nonblocking I/O whenever direct shared-memory access is enabled; streams with potentially
+ * blocking read/write must expose tryRead/tryWrite. */
 export class ProcessABI {
   readonly imports: Record<string, (...args: number[]) => number>;
   private readonly now: () => number;
@@ -568,6 +591,86 @@ export class ProcessABI {
       throw new ProcessError(NOTCAPABLE, "descriptor rights denied");
     return entry;
   }
+  private settleDeferredWriteLease(
+    fs: NonblockingFileSystem,
+    completion: FilesystemCompletion,
+    lease: AsyncFileOffsetLease,
+    append: boolean,
+  ): void {
+    const finish = () => {
+      try {
+        const committed = completion.tryConsumeCommitted();
+        if (committed !== undefined) {
+          if (append) lease.commit((committed as { written: number; offset: number }).offset);
+          else if (typeof committed === "number" && committed > 0)
+            lease.commit(lease.position + committed);
+        }
+      } catch {
+        // Aborted or failed write: leave shared offset unchanged before releasing the lease.
+      } finally {
+        completion.release();
+        lease.release();
+      }
+    };
+    if (fs.trackDeferredWrite) fs.trackDeferredWrite(completion, finish);
+    else completion.onBackendSettled(finish);
+  }
+  private directDisabledFileIO(
+    write: boolean,
+    resource: Extract<Descriptor["resource"], { kind: "file" }>,
+    bytes: Uint8Array,
+    fs: NonblockingFileSystem,
+  ): number {
+    this.checkFatal();
+    if (this.pending()) return -ProcessErrno.AGAIN;
+    const claim = tryClaimFileOffset(resource, true);
+    if (claim?.kind === "failed") {
+      this.checkFatal();
+      return -claim.errno;
+    }
+    if (claim?.kind === "busy") return -ProcessErrno.AGAIN;
+    const lease = claim?.kind === "acquired" ? claim.lease : undefined;
+    let releaseLease = true;
+    let outcome: number;
+    try {
+      const append = write && (lease ? lease.append : resource.append);
+      const position = lease ? lease.position : resource.offset;
+      const op = append ? "append" : write ? "write" : "read";
+      const commitOffset = (result: { written: number; offset: number } | number): number => {
+        if (typeof result !== "number") {
+          if (lease) lease.commit(result.offset);
+          else resource.offset = result.offset;
+          return result.written;
+        }
+        if (result > 0) {
+          if (lease) lease.commit(position + result);
+          else resource.offset = position + result;
+        }
+        return result;
+      };
+      const result = fs.directDisabledIO!(op, resource.handle, bytes, position, {
+        checkFatal: () => this.checkFatal(),
+        pending: () => this.pending(),
+        wait: (ms, word, expected) => {
+          assertTerminalWaitAllowed();
+          if (this.options.wait) this.options.wait(ms, word, expected);
+          else controlWait(word, 0, expected, ms);
+        },
+        commitWrite: commitOffset,
+        deferWrite: lease
+          ? (completion) => {
+              releaseLease = false;
+              this.settleDeferredWriteLease(fs, completion, lease, append);
+            }
+          : undefined,
+      });
+      outcome = commitOffset(result);
+    } finally {
+      if (lease && releaseLease) lease.release();
+    }
+    this.checkFatal();
+    return outcome;
+  }
   private io(write: boolean, fd: number, ptr: number, length: number): number {
     const entry = this.descriptor(fd, write ? WRITE : READ),
       resource = entry.resource;
@@ -576,6 +679,8 @@ export class ProcessABI {
     if (typedArrayLength(bytes) === 0) return 0;
     if (resource.kind === "file") {
       const fs: NonblockingFileSystem = this.options.fs;
+      if (fs.directDisabled && fs.directDisabledIO)
+        return this.directDisabledFileIO(write, resource, bytes, fs);
       return withFileOffset(
         resource,
         () => {
@@ -950,6 +1055,44 @@ export class ProcessABI {
     }
     return fullyNotified;
   }
+  private pollFilesystemWait(sub: Subscription): "pending" | "file" | "none" {
+    if (sub.kind === 3) return this.options.service.filesystemReady ? "none" : "pending";
+    if (sub.kind !== 0 && sub.kind !== 1) return "none";
+    const resource = this.descriptor(sub.id, POLL).resource;
+    if (resource.kind !== "file") return "none";
+    const fs: NonblockingFileSystem = this.options.fs;
+    return fs.ioPending?.(resource.handle, sub.kind === 1) ? "pending" : "file";
+  }
+  private scanPollSubscriptions(
+    subscriptions: readonly Subscription[],
+    timeout: number,
+    hasFsSignal: boolean,
+  ): {
+    ready: { sub: Subscription; flags: number }[];
+    waitOnFs: boolean;
+    sawFile: boolean;
+    allFs: boolean;
+  } {
+    const ready: { sub: Subscription; flags: number }[] = [];
+    let waitOnFs = false;
+    let sawFile = false;
+    let allFs = subscriptions.length > 0;
+    for (const sub of subscriptions) {
+      const state = this.readiness(sub, timeout);
+      if (state && ((sub.kind === 1 ? state.writable : state.readable) || state.hangup)) {
+        ready.push({ sub, flags: state.hangup ? 1 : 0 });
+        continue;
+      }
+      if (!hasFsSignal) continue;
+      const fsWait = this.pollFilesystemWait(sub);
+      if (fsWait === "none") allFs = false;
+      else if (fsWait === "pending") {
+        waitOnFs = true;
+        sawFile = true;
+      } else sawFile = true;
+    }
+    return { ready, waitOnFs, sawFile, allFs };
+  }
   private poll(ptr: number, count: number, timeout: number, out: number): number {
     count >>>= 0;
     if (!Number.isInteger(timeout) || timeout < -1) return -ProcessErrno.INVAL;
@@ -970,6 +1113,7 @@ export class ProcessABI {
     if (this.pending()) return 0;
     const unregister: (() => void)[] = [];
     const wake = this.options.wake;
+    const fsWord = validWakeWord((this.options.fs as NonblockingFileSystem).signal);
     try {
       const fullyNotified = this.registerPollWakes(subscriptions, wake, unregister);
       const deadline = timeout === -1 ? Infinity : this.now() + timeout;
@@ -977,13 +1121,13 @@ export class ProcessABI {
         // Observe sequence before state; publication racing scan makes Atomics.wait return immediately.
         const word = wake ?? this.options.signals.interrupt;
         const sequence = controlLoad(word, 0);
+        const fsSequence = fsWord ? controlLoad(fsWord, 0) : 0;
         if (this.pending()) return 0;
-        const ready: { sub: Subscription; flags: number }[] = [];
-        for (const sub of subscriptions) {
-          const state = this.readiness(sub, timeout);
-          if (state && ((sub.kind === 1 ? state.writable : state.readable) || state.hangup))
-            ready.push({ sub, flags: state.hangup ? 1 : 0 });
-        }
+        const { ready, waitOnFs, sawFile, allFs } = this.scanPollSubscriptions(
+          subscriptions,
+          timeout,
+          fsWord !== undefined,
+        );
         if (ready.length) {
           // Waiting/host services can grow memory; never retain a DataView across them.
           const output = this.view(out, ready.length * 16);
@@ -998,13 +1142,16 @@ export class ProcessABI {
         if (this.pending()) return 0;
         const remaining = deadline - this.now();
         if (remaining <= 0) return 0;
+        if (allFs && sawFile && fsWord && controlLoad(fsWord, 0) !== fsSequence) continue;
         // Independent signals, early child startup, filesystem and legacy streams need a bounded
         // rescan. A fully notified wait set can park until its actual deadline.
+        const useFsWake = allFs && waitOnFs && fsWord !== undefined;
+        const waitWord = useFsWake ? fsWord : word;
+        const expected = useFsWake ? fsSequence : sequence;
         const milliseconds = fullyNotified ? remaining : Math.min(remaining, 10);
-        const expected = sequence;
         assertTerminalWaitAllowed();
-        if (this.options.wait) this.options.wait(milliseconds, word, expected);
-        else controlWait(word, 0, expected, milliseconds);
+        if (this.options.wait) this.options.wait(milliseconds, waitWord, expected);
+        else controlWait(waitWord, 0, expected, milliseconds);
       }
     } finally {
       for (let index = unregister.length - 1; index >= 0; index--) unregister[index]!();

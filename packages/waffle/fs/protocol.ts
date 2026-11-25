@@ -9,6 +9,8 @@ import { FilesystemSection } from "./section.js";
 export { FilesystemSection, isRevoked } from "./section.js";
 import { workspacePublication, type WorkspaceConfiguration } from "./workspace-protocol.js";
 import {
+  atomicsAdd,
+  atomicsNotify,
   BigIntConstructor,
   bigintToString,
   Int32ArrayConstructor,
@@ -16,6 +18,7 @@ import {
   objectKeys,
   stringIncludes,
   SharedArrayBufferConstructor,
+  typedArrayBuffer,
   Uint8ArrayConstructor,
   objectDefineProperty,
 } from "../proc/intrinsics.js";
@@ -456,9 +459,9 @@ export function reapFilesystem(connection: FilesystemIdentity): void {
   wake(connection);
 }
 export function wake(connection: FilesystemIdentity): void {
-  const signal = new Int32Array(connection.signal);
-  Atomics.add(signal, 0, 1);
-  Atomics.notify(signal, 0);
+  const signal = new Int32ArrayConstructor(connection.signal);
+  atomicsAdd(signal, 0, 1);
+  atomicsNotify(signal, 0);
 }
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -496,7 +499,9 @@ function decodable(buffer: ArrayBufferLike): boolean {
 }
 export function unpack(bytes: Uint8Array): any {
   // TextDecoder rejects views over shared or resizable backing, so only those are copied.
-  const text = decoder.decode(decodable(bytes.buffer) ? bytes : new Uint8Array(bytes));
+  const text = decoder.decode(
+    decodable(typedArrayBuffer(bytes)) ? bytes : new Uint8ArrayConstructor(bytes),
+  );
   const value: unknown = JSON.parse(text);
   // A tag is an own object key beginning with "$", which JSON writes as `"$` or as the escape
   // for U+0024. Without either, no object is tagged and the parsed tree is already the answer.

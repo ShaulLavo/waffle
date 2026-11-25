@@ -272,12 +272,28 @@ export class ThreadService {
     await Promise.race([previous?.catch(() => {}), this.cancelled.promise]);
     this.live();
     const lease = await this.offset(resource);
+    const leaseState: { current: "held" | "settled" | "deferred" } = { current: "held" };
     try {
-      return await this.file(operation, resource, lease.position, lease);
+      return await this.file(operation, resource, lease.position, lease, (next) => {
+        leaseState.current = next;
+      });
     } finally {
       // Revocation can reject value() while remote preparation still owns this operation.
-      if (this.phase !== "open") await this.retire(operation);
-      lease.release();
+      if (this.phase !== "open") await this.retireSequential(operation, lease, leaseState.current);
+      if (leaseState.current !== "deferred") lease.release();
+    }
+  }
+
+  private async retireSequential(
+    operation: Operation,
+    lease: AsyncFileOffsetLease,
+    leaseState: "held" | "settled" | "deferred",
+  ): Promise<void> {
+    try {
+      await this.retire(operation);
+    } catch (error) {
+      if (leaseState === "settled") lease.release();
+      throw error;
     }
   }
 
@@ -296,6 +312,7 @@ export class ThreadService {
     resource: FileResource,
     position: number,
     lease?: AsyncFileOffsetLease,
+    onLeaseState?: (state: "settled" | "deferred") => void,
   ): Promise<ThreadResult> {
     this.live();
     const request = operation.request;
@@ -311,6 +328,7 @@ export class ThreadService {
       this.position(next);
       this.live();
       lease!.commit(next);
+      onLeaseState?.("settled");
       return { kind: "ok", value: next };
     }
     if (request.kind !== "read" && request.kind !== "write") throw new FilesystemError(58);
@@ -325,6 +343,7 @@ export class ThreadService {
         position,
       ]);
       lease?.commit(position + bytes.length);
+      if (lease) onLeaseState?.("settled");
       this.live();
       this.scatter(request.spans, bytes);
       return { kind: "ok", value: bytes.length };
@@ -336,19 +355,45 @@ export class ThreadService {
       append ? "append" : "write",
       [resource.handle, position],
       data,
+      lease
+        ? {
+            lease,
+            commit: (committed) => {
+              const committedWritten: number = append ? committed.written : committed;
+              lease.commit(append ? committed.offset : position + committedWritten);
+            },
+            onState: onLeaseState,
+          }
+        : undefined,
     );
     const written: number = append ? result.written : result;
-    lease?.commit(append ? result.offset : position + written);
     this.live();
     return { kind: "ok", value: written };
   }
 
-  private async request(operation: Operation, name: string, args: unknown[], data?: Uint8Array) {
+  private async request(
+    operation: Operation,
+    name: string,
+    args: unknown[],
+    data?: Uint8Array,
+    writeLease?: {
+      lease: AsyncFileOffsetLease;
+      commit: (value: any) => void;
+      onState?: (state: "settled" | "deferred") => void;
+    },
+  ) {
     this.live();
     const completion = this.options.filesystem.submit(name, args, data);
     operation.completions.add(completion);
+    let committedApplied = false;
     try {
-      return await completion.value();
+      const value = await completion.value();
+      if (writeLease) {
+        committedApplied = true;
+        writeLease.commit(value);
+        writeLease.onState?.("settled");
+      }
+      return value;
     } catch (error) {
       if (
         error instanceof FilesystemTransportError ||
@@ -357,9 +402,82 @@ export class ThreadService {
         this.cancelAll();
       throw error;
     } finally {
-      if (this.phase !== "open") await this.retire(operation);
+      await this.finishRequest(operation, completion, committedApplied, writeLease);
+    }
+  }
+
+  private async finishRequest(
+    operation: Operation,
+    completion: FilesystemCompletion,
+    committedApplied: boolean,
+    writeLease?: {
+      lease: AsyncFileOffsetLease;
+      commit: (value: any) => void;
+      onState?: (state: "settled" | "deferred") => void;
+    },
+  ): Promise<void> {
+    const retiredError = this.phase !== "open" ? await this.tryRetire(operation) : undefined;
+    if (writeLease && !committedApplied) {
+      this.settleWriteLease(operation, completion, writeLease, retiredError === undefined);
+    } else if (retiredError === undefined || committedApplied || completion.backendSettled) {
       completion.release();
       operation.completions.delete(completion);
+    }
+    if (retiredError !== undefined) throw retiredError;
+  }
+
+  private settleWriteLease(
+    operation: Operation,
+    completion: FilesystemCompletion,
+    writeLease: {
+      lease: AsyncFileOffsetLease;
+      commit: (value: any) => void;
+      onState?: (state: "settled" | "deferred") => void;
+    },
+    retiredCleanly: boolean,
+  ): void {
+    // Check monotonic backendSettled BEFORE tryConsumeCommitted so a Pending->Complete
+    // transition can never release the completion without applying the committed offset.
+    if (retiredCleanly || completion.backendSettled) {
+      this.consumeCommitted(completion, writeLease.commit);
+      writeLease.onState?.("settled");
+      completion.release();
+      operation.completions.delete(completion);
+      return;
+    }
+    writeLease.onState?.("deferred");
+    this.options.filesystem.trackDeferredWrite(completion, () => {
+      try {
+        this.consumeCommitted(completion, writeLease.commit);
+      } finally {
+        completion.release();
+        operation.completions.delete(completion);
+        writeLease.lease.release();
+      }
+    });
+  }
+
+  private async tryRetire(operation: Operation): Promise<unknown> {
+    try {
+      await this.retire(operation);
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  }
+
+  private consumeCommitted(
+    completion: FilesystemCompletion,
+    onCommitted: (value: any) => void,
+  ): boolean {
+    try {
+      const committed = completion.tryConsumeCommitted();
+      if (committed === undefined) return false;
+      onCommitted(committed);
+      return true;
+    } catch {
+      // Aborted or failed write: leave offset unchanged before releasing the completion.
+      return false;
     }
   }
 

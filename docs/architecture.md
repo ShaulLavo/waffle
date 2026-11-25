@@ -535,7 +535,8 @@ The browser loads this adapter lazily for modules importing the extended process
 `adapter: "preview1"` runs a generic WASI executable without Bun's slot adapter. Existing Bun
 slots and the signal-only preview1 path remain available.
 
-Every guest ABI call is nonblocking except `poll` and blocking `wait_job`. See
+Every guest ABI call is nonblocking except `poll`, blocking `wait_job`, and bounded regular-file
+RPCs on backends that disable direct shared-memory file I/O (such as multi-tab attach). See
 [the host ABI reference](host-abi.md) for the full contract and startup-result error table. Descriptor I/O returns a byte count, zero for EOF or
 zero-length I/O, or a negative WASI errno; a partial write is permitted. EAGAIN is -6 and EPIPE
 is -64. Spawn reserves inherited capabilities before returning the child PID.
@@ -548,7 +549,7 @@ is -64. Spawn reserves inherited capabilities before returning the child PID.
 | `access_cancel(request)`                                    | Retires the request and discards any late filesystem/registry completion. Returns `0`, or `-EBADF` for an already retired request.                                                                                                                     |
 | `pipe(out)`                                                 | Writes two little-endian u32 fds, reader then writer; returns 0.                                                                                                                                                                                       |
 | `dup(fd)`                                                   | Returns a new fd sharing the open description and offset. Use preview1 `fd_close` to close either binding.                                                                                                                                             |
-| `read(fd, ptr, len)`, `write(fd, ptr, len)`                 | Use the same fd namespace as preview1. Filesystem cold reads/growth prepare asynchronously and return EAGAIN without consuming bytes or advancing the shared offset.                                                                                   |
+| `read(fd, ptr, len)`, `write(fd, ptr, len)`                 | Use the same fd namespace as preview1. Direct shared-memory cold reads/growth prepare asynchronously and return EAGAIN without consuming bytes or advancing the shared offset; backends with direct shared-memory I/O disabled execute one bounded (`<= 64 KiB`) RPC under the offset lock, yielding on pending signals or contended offsets, interrupting in-flight reads on handled signals, and unwinding on fatal signals. |
 | `start_status(pid)`                                         | Returns 0 once executable entry is committed, `-EAGAIN` while startup is pending, a positive WASI startup errno on failure, or `-ECANCELED` if cancellation prevented entry. Does not consume the child.                                               |
 | `wait(pid, out)`                                            | Returns 0 and writes u32 kind (0 exited, 1 signaled, 2 start-failed), then i32 exit code, signal number or positive WASI startup errno respectively; returns `-EAGAIN` before confirmed cleanup.                                                       |
 | `wait_job(job, flags, out)`                                 | Writes the same eight-byte typed result as `wait`; flags 0 blocks until completion, flags 1 returns `-EAGAIN` while pending.                                                                                                                           |

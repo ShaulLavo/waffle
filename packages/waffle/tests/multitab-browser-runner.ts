@@ -35,7 +35,7 @@ async function runIndexedDBSuite(
   context: BrowserContext,
   origin: string,
 ): Promise<void> {
-  // 1. 3-tab simultaneous attach: live R/W, >1 MiB chunking, conditional remove, try* -ENOTSUP, cross-tab watch!
+  // 1. 3-tab simultaneous attach: live R/W, >1 MiB chunking, conditional remove, nonblocking try*, cross-tab watch!
   {
     const name = `mt-idb-3tab-${engine}-${crypto.randomUUID()}`;
     const [pA, pB, pC] = await Promise.all([
@@ -103,7 +103,7 @@ async function runIndexedDBSuite(
       );
       assert(rightRm === true, `${engine}: matching ifContent must remove`);
 
-      // Uniform -58 (-ENOTSUP) on tryRead/tryWrite/tryAppend!
+      // Uniform -58 (-ENOTSUP) on direct-memory tryRead/tryWrite/tryAppend!
       const nb = await pB.evaluate(
         ({ id }) => (globalThis as any).multitabTest.checkNonBlocking(id, "/big.bin"),
         b,
@@ -111,6 +111,39 @@ async function runIndexedDBSuite(
       assert(
         nb.tryRead === -58 && nb.tryWrite === -58 && nb.tryAppend === -58,
         `${engine}: expected uniform -58, got ${JSON.stringify(nb)}`,
+      );
+
+      // Real browser Worker WASI + runtime_proc redirection conformance on Peer B & Host A!
+      await pA.evaluate(
+        ({ id }) =>
+          (globalThis as any).multitabTest.writeFile(id, "/cross-tab.txt", "browser-host"),
+        a,
+      );
+      const peerProc = await pB.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.runWorkerRedirection(id, "browser-host"),
+        b,
+      );
+      assert(
+        peerProc.ok === true &&
+          peerProc.outText === "first\nsecond\n" &&
+          peerProc.crossTabRead === "browser-host",
+        `${engine}: Peer worker redirection failed: ${JSON.stringify(peerProc)}`,
+      );
+      const hostReadOut = await pA.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.readFileText(id, "/out.txt"),
+        a,
+      );
+      assert(
+        hostReadOut === "first\nsecond\n",
+        `${engine}: Host did not see Peer redirection output: ${JSON.stringify(hostReadOut)}`,
+      );
+      const hostProc = await pA.evaluate(
+        ({ id }) => (globalThis as any).multitabTest.runWorkerRedirection(id, "browser-host"),
+        a,
+      );
+      assert(
+        hostProc.ok === true && hostProc.outText === "first\nsecond\n",
+        `${engine}: Host worker redirection failed: ${JSON.stringify(hostProc)}`,
       );
 
       // Cross-tab fs.watch: B opens watch, C writes, B receives event!
@@ -499,6 +532,9 @@ async function main(): Promise<void> {
         "/fs-worker.js": await browserBundle(resolve(import.meta.dir, "../browser/fs-worker.ts")),
         "/freeze-fs-worker.js": await browserBundle(
           resolve(import.meta.dir, "multitab-freeze-worker.ts"),
+        ),
+        "/fd-conformance-worker.js": await browserBundle(
+          resolve(import.meta.dir, "fixtures/vfs-fd-conformance-worker.ts"),
         ),
       },
       Number(process.env.MULTITAB_TEST_PORT ?? 0),

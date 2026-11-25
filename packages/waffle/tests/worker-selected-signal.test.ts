@@ -285,18 +285,22 @@ for (const claimed of [
   test(`checkActive unwinds as a ${claimed.kind} outcome claimed during its revocation read`, async () => {
     const fixture = childFixture();
     const state = workerProcessState(fixture.transport);
-    const nativeLoad = Atomics.load;
-    // Armed once the guest runs, so only checkActive's revocation read is held.
+    // Armed once the guest runs, so only checkActive's revocation/abort check is intercepted.
     let armed: ReturnType<typeof createFilesystemConnection> | undefined;
     let killed = false;
-    const loads = spyOn(Atomics, "load").mockImplementation(((array: Int32Array, index: number) => {
-      if (armed && !killed && array.buffer === armed.client.ownerStates) {
-        killed = true;
-        claimOutcome(state.signals.outcome, claimed);
-        revokeFilesystem(armed.client);
-      }
-      return nativeLoad(array, index);
-    }) as typeof Atomics.load);
+    const abortedDesc = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")!;
+    Object.defineProperty(AbortSignal.prototype, "aborted", {
+      configurable: true,
+      get(this: AbortSignal) {
+        if (armed && !killed) {
+          killed = true;
+          claimOutcome(state.signals.outcome, claimed);
+          revokeFilesystem(armed.client);
+          return true;
+        }
+        return abortedDesc.get!.call(this);
+      },
+    });
     try {
       const result = await observeDefaultSignal(
         fixture.transport,
@@ -321,7 +325,7 @@ for (const claimed of [
       }
     } finally {
       armed = undefined;
-      loads.mockRestore();
+      Object.defineProperty(AbortSignal.prototype, "aborted", abortedDesc);
       fixture.descriptors.dispose();
     }
   });
