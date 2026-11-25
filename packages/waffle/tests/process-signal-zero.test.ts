@@ -518,6 +518,43 @@ test("signal 0 probes racing with caller exit do not retire pending executable a
   } finally {
     root.descriptors.dispose();
   }
+
+  // Supervisor-backed path: selecting the caller's exit outcome makes probes return ESRCH
+  // without mutating outcome, revoking the caller, or waking/retiring pending access queries,
+  // while a live caller still observes same-root zombies as existing.
+  const f = createSupervisorFixture();
+  try {
+    const child = f.supervisor.reserveSpawn(f.root, spawnRequest());
+    const sibling = f.supervisor.reserveSpawn(f.root, spawnRequest());
+    const rootAbi = f.abiFor(f.root);
+    const childAbi = f.abiFor(child);
+    const siblingAbi = f.abiFor(sibling);
+
+    // Exited child zombie: live root sees 0, live sibling sees EPERM, exited child sees ESRCH.
+    f.supervisor.exit(child, 0);
+    expect(rootAbi.imports.kill!(child, 0)).toBe(0);
+    expect(rootAbi.imports.probe_process!(child)).toBe(0);
+    expect(siblingAbi.imports.probe_process!(child)).toBe(-ProcessErrno.PERM);
+    expect(childAbi.imports.kill!(child, 0)).toBe(-ProcessErrno.SRCH);
+    expect(childAbi.imports.kill_job!(f.supervisor.jobOf(child), 0)).toBe(-ProcessErrno.SRCH);
+    expect(childAbi.imports.probe_process!(child)).toBe(-ProcessErrno.SRCH);
+
+    // Select caller exit outcome without running teardown yet; pending access stays untouched.
+    const accessWake = new Int32Array(new SharedArrayBuffer(4));
+    const accessId = f.supervisor.accessStart(f.root, "/bin/fixture", "/", accessWake);
+    expect(accessId).toBeGreaterThan(0);
+    const rootRecord = f.supervisor.get(f.root)!;
+    claimOutcome(rootRecord.outcome, { kind: "exited", code: 0 });
+    expect(rootAbi.imports.kill!(f.root, 0)).toBe(-ProcessErrno.SRCH);
+    expect(rootAbi.imports.kill_job!(f.supervisor.jobOf(f.root), 0)).toBe(-ProcessErrno.SRCH);
+    expect(rootAbi.imports.probe_process!(f.root)).toBe(-ProcessErrno.SRCH);
+    expect(readOutcome(rootRecord.outcome)).toMatchObject({ kind: "exited", code: 0 });
+    expect(rootRecord.result).toBeNull();
+    expect(rootRecord.revoked).toBe(false);
+    expect(Atomics.load(accessWake, 0)).toBe(0);
+  } finally {
+    f.supervisor.dispose();
+  }
 });
 
 test("broker signal 0 probes use authoritative directory state and never lazily activate on a cold miss", async () => {
@@ -684,5 +721,51 @@ test("runtime_proc.probe_process resolves logical PIDs without exposing private 
     child.descriptors.dispose();
     thread.descriptors.dispose();
     root.descriptors.dispose();
+  }
+});
+
+test("supervisor signal 0 probes isolate foreign roots sharing one ProcessTable", () => {
+  const f = createSupervisorFixture();
+  try {
+    const rootA = f.root;
+    const rootB = f.supervisor.createRoot();
+    const foreignChild = f.supervisor.reserveSpawn(rootB, spawnRequest());
+    const foreignThread = f.supervisor.reserveSpawn(
+      foreignChild,
+      spawnRequest(-1, { processKind: "thread" }),
+    );
+    const foreignSibling = f.supervisor.reserveSpawn(rootB, spawnRequest());
+    const foreignJob = f.supervisor.jobOf(foreignChild);
+    const rootBJob = f.supervisor.jobOf(rootB);
+
+    const abiA = f.abiFor(rootA);
+    const abiB = f.abiFor(rootB);
+    const abiForeignSibling = f.abiFor(foreignSibling);
+
+    // Every process and job in rootB is invisible (ESRCH, never EPERM) from rootA.
+    expect(abiA.imports.kill!(rootB, 0)).toBe(-ProcessErrno.SRCH);
+    expect(abiA.imports.kill!(foreignChild, 0)).toBe(-ProcessErrno.SRCH);
+    expect(abiA.imports.kill!(foreignThread, 0)).toBe(-ProcessErrno.SRCH);
+    expect(abiA.imports.probe_process!(rootB)).toBe(-ProcessErrno.SRCH);
+    expect(abiA.imports.probe_process!(foreignChild)).toBe(-ProcessErrno.SRCH);
+    expect(abiA.imports.kill_job!(rootBJob, 0)).toBe(-ProcessErrno.SRCH);
+    expect(abiA.imports.kill_job!(foreignJob, 0)).toBe(-ProcessErrno.SRCH);
+
+    // Reap foreignChild while foreignThread stays alive: rootA still sees ESRCH for all probes,
+    // while rootB sees 0 and foreignSibling sees EPERM for same-root targets.
+    f.supervisor.exit(foreignChild, 0);
+    expect(f.supervisor.wait(rootB, foreignChild)).toMatchObject({ kind: "exited", code: 0 });
+    expect(abiA.imports.kill!(foreignChild, 0)).toBe(-ProcessErrno.SRCH);
+    expect(abiA.imports.probe_process!(foreignChild)).toBe(-ProcessErrno.SRCH);
+    expect(abiA.imports.kill!(foreignThread, 0)).toBe(-ProcessErrno.SRCH);
+    expect(abiA.imports.kill_job!(foreignJob, 0)).toBe(-ProcessErrno.SRCH);
+
+    expect(abiB.imports.probe_process!(foreignChild)).toBe(0);
+    expect(abiB.imports.kill!(foreignThread, 0)).toBe(0);
+    expect(abiB.imports.kill_job!(foreignJob, 0)).toBe(0);
+    expect(abiForeignSibling.imports.probe_process!(foreignChild)).toBe(-ProcessErrno.PERM);
+    expect(abiForeignSibling.imports.kill_job!(foreignJob, 0)).toBe(-ProcessErrno.PERM);
+  } finally {
+    f.supervisor.dispose();
   }
 });

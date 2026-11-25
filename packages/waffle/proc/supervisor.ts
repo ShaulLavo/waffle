@@ -63,6 +63,7 @@ import {
   checkedProcessKind,
   snapshotLogicalProcessIdentity,
   type AdmittedSpawnReservation,
+  type JobLifetime,
   type ProcessKind,
   type LogicalProcessIdentity,
   type ChildExitEvent,
@@ -378,6 +379,12 @@ export class ProcessSupervisor {
     this.access(pid, id).owner.requests.delete(id);
     return 0;
   }
+  private requireLiveCaller(callerPid: number): ProcessRecord {
+    const caller = this.table.require(callerPid);
+    if (this.disposed || caller.result !== null || readOutcome(caller.outcome))
+      throw new ProcessError(ProcessErrno.SRCH, "process has exited");
+    return caller;
+  }
   private controls(callerPid: number, pid: number): boolean {
     let target: number | undefined = pid;
     while (target !== undefined && target !== 0) {
@@ -388,18 +395,25 @@ export class ProcessSupervisor {
   }
   /** Guest adapters may signal themselves and descendants, never a sibling or ancestor. */
   canSignal(callerPid: number, pid: number): boolean {
-    this.table.require(callerPid);
-    this.table.require(pid);
+    const caller = this.requireLiveCaller(callerPid);
+    const target = this.table.require(pid);
+    if (caller.rootPid === undefined || target.rootPid !== caller.rootPid)
+      throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
     return this.controls(callerPid, pid);
   }
   /** Probe a logical process PID P across live and uncollected zombie members. */
   canSignalProcess(callerPid: number, processId: number): boolean {
-    this.table.require(callerPid);
-    if (!Number.isInteger(processId) || processId <= 0 || processId > 0x7fffffff)
+    const caller = this.requireLiveCaller(callerPid);
+    if (
+      caller.rootPid === undefined ||
+      !Number.isInteger(processId) ||
+      processId <= 0 ||
+      processId > 0x7fffffff
+    )
       throw new ProcessError(ProcessErrno.SRCH, `unknown process ${processId}`);
     let found = false;
     for (const record of this.table.values()) {
-      if (record.processIdentity.pid !== processId) continue;
+      if (record.rootPid !== caller.rootPid || record.processIdentity.pid !== processId) continue;
       found = true;
       if (this.controls(callerPid, record.pid)) return true;
     }
@@ -407,9 +421,10 @@ export class ProcessSupervisor {
     return false;
   }
   canSignalJob(callerPid: number, jobId: number): boolean {
-    this.table.require(callerPid);
+    const caller = this.requireLiveCaller(callerPid);
     const job = this.table.job(jobId);
-    if (!job) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
+    if (!job || caller.rootPid === undefined || job.rootPid !== caller.rootPid)
+      throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
     return job.controlParent === callerPid;
   }
   /** A job is controlled by its owner and every live or retained ancestor of that owner. */
@@ -531,11 +546,14 @@ export class ProcessSupervisor {
             isInstance(options.outcome, OutcomeCell)
               ? {
                   ownerPid: pid,
+                  rootPid: pid,
                   leaderPid: pid,
                   outcome: options.outcome,
                   foreground: options.foreground ?? true,
                 }
               : undefined,
+            "independent",
+            pid,
           );
     this.table.insert(
       {
@@ -634,32 +652,14 @@ export class ProcessSupervisor {
     const processIdentity = this.spawnIdentity(pid, processKind, parent, capturedIdentity);
     this.table.checkPid(pid, admitted ? reservation.outcome : undefined);
     const observation = admitProcessObservation(pid, outcome, reservation.observation);
-    let job = reservation.job ?? (selector > 0 ? selector : undefined);
-    let createdJob = false;
-    if (job !== undefined && !this.table.job(job)) {
-      if (reservation.job === undefined)
-        throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
-      this.table.createJob(
-        jobIdentity?.ownerPid ?? parentPid,
-        jobIdentity?.foreground ?? selector === 0,
-        job,
-        jobIdentity,
-        jobLifetime,
-      );
-      createdJob = true;
-    }
-    if (job === undefined) {
-      const group = this.table.createJob(
-        parentPid,
-        selector === 0,
-        undefined,
-        undefined,
-        jobLifetime,
-      );
-      group.controlParent = reservation.controlParent ?? parentPid;
-      job = group.id;
-      createdJob = true;
-    }
+    const { job, createdJob } = this.resolveSpawnJob(
+      parentPid,
+      parent,
+      selector,
+      jobLifetime,
+      reservation,
+      jobIdentity,
+    );
     if (jobIdentity) this.table.adoptJobIdentity(job, jobIdentity);
     this.checkJobAdmission(job, admitted);
     const descriptors = new DescriptorTable();
@@ -725,6 +725,41 @@ export class ProcessSupervisor {
       throw error;
     }
     return pid;
+  }
+  private resolveSpawnJob(
+    parentPid: number,
+    parent: ProcessRecord | undefined,
+    selector: number,
+    jobLifetime: JobLifetime,
+    reservation: SpawnReservation,
+    jobIdentity?: SharedJobIdentity,
+  ): { job: number; createdJob: boolean } {
+    const rootPid = reservation.rootPid ?? parent?.rootPid;
+    const job = reservation.job ?? (selector > 0 ? selector : undefined);
+    if (job === undefined) {
+      const group = this.table.createJob(
+        parentPid,
+        selector === 0,
+        undefined,
+        undefined,
+        jobLifetime,
+        rootPid,
+      );
+      group.controlParent = reservation.controlParent ?? parentPid;
+      return { job: group.id, createdJob: true };
+    }
+    if (this.table.job(job)) return { job, createdJob: false };
+    if (reservation.job === undefined)
+      throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
+    this.table.createJob(
+      jobIdentity?.ownerPid ?? parentPid,
+      jobIdentity?.foreground ?? selector === 0,
+      job,
+      jobIdentity,
+      jobLifetime,
+      rootPid,
+    );
+    return { job, createdJob: true };
   }
   private checkSpawnParent(
     parentPid: number,

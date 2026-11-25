@@ -122,6 +122,7 @@ export function snapshotSpawnWorker(worker: unknown): Pick<SpawnRequest, "worker
 export interface SharedJobIdentity {
   readonly ownerPid: number;
   readonly controlParent?: number;
+  readonly rootPid?: number;
   readonly leaderPid: number;
   readonly outcome: OutcomeWord;
   readonly foreground: boolean;

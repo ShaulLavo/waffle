@@ -109,6 +109,7 @@ export interface ProcessReplacement {
 export interface ProcessJob {
   readonly id: number;
   readonly ownerPid: number;
+  readonly rootPid: number;
   controlParent: number;
   readonly foreground: boolean;
   readonly jobLifetime: JobLifetime;
@@ -198,6 +199,7 @@ export class ProcessTable {
     id = this.identities.job(),
     identity?: SharedJobIdentity,
     jobLifetime: JobLifetime = "independent",
+    rootPid?: number,
   ): ProcessJob {
     if (isInstance(identity?.outcome, OutcomeCell)) identity.outcome.check();
     const captured = isInstance(identity?.outcome, OutcomeCell);
@@ -207,6 +209,7 @@ export class ProcessTable {
     const job: MutableProcessJob = {
       id,
       ownerPid,
+      rootPid: rootPid ?? identity?.rootPid ?? this.records.get(ownerPid)?.rootPid ?? ownerPid,
       controlParent: identity?.controlParent ?? ownerPid,
       foreground,
       jobLifetime: identity?.jobLifetime ?? jobLifetime,
