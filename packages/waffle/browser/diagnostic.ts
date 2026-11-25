@@ -97,7 +97,8 @@ function settleAsyncDiagnosticChunk(
 ): void {
   let written = 0;
   try {
-    const result = completion.consumeInline();
+    const committed = completion.tryConsumeCommitted();
+    const result = committed !== undefined ? committed : completion.consumeInline();
     if (lease.append) {
       const appended = result as { written: number; offset: number };
       lease.commit(appended.offset);
@@ -183,7 +184,7 @@ function dispatchAsyncDiagnosticChunk(
     },
     mathMax(1, deadline - now()),
   );
-  completion.onReady(() => {
+  completion.onBackendSettled(() => {
     if (settled) return;
     settled = true;
     cancelTimeout(timer);

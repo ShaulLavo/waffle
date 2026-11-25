@@ -1773,7 +1773,8 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
     expect(abi.imports.interrupted!()).toBe(2);
 
     // 3. Fatal SIGKILL during a paused directDisabled write unwinds with ProcessSignalExit(9)
-    // (never returns -ECANCELED) and holds the shared offset lock until the backend write settles.
+    // (never returns -ECANCELED) and holds the shared offset lock until the backend write settles,
+    // even while worker teardown waits on settleDeferredWrites().
     opDispatched = Promise.withResolvers<void>();
     pauseNextOp = "write";
     onWait = () => {
@@ -1782,11 +1783,20 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
     f.bytes().set(new TextEncoder().encode("LIVE"), 1024);
     expect(() => abi.imports.write!(fd, 1024, 4)).toThrow(ProcessSignalExit);
     await opDispatched.promise;
-    // While the backend write is still paused, another holder sees busy and cannot reuse offset 0.
+    expect(client.hasDeferredWrites()).toBe(true);
+    let teardownDone = false;
+    const teardown = client.settleDeferredWrites(2_000).then(() => {
+      teardownDone = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    // While the backend write is still paused, teardown waits and another holder sees busy.
+    expect(teardownDone).toBe(false);
     expect(claimFileOffset(resource).kind).toBe("busy");
-    // Resume backend write -> authoritative settlement commits offset 4 and releases the lock!
+    // Resume backend write -> authoritative settlement commits offset 4, releases the lock, and unblocks teardown!
     releaseOp?.();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await teardown;
+    expect(teardownDone).toBe(true);
+    expect(client.hasDeferredWrites()).toBe(false);
     const afterWriteClaim = claimFileOffset(resource);
     expect(afterWriteClaim.kind).toBe("acquired");
     if (afterWriteClaim.kind === "acquired") {

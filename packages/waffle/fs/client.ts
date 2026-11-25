@@ -54,6 +54,9 @@ import {
   atomicsAdd,
   atomicsCompareExchange,
   atomicsNotify,
+  PromiseConstructor,
+  scheduleTimeout,
+  cancelTimeout,
   atomicsWait,
   atomicsWaitAsync,
   afterNativePromise,
@@ -189,6 +192,7 @@ export interface DirectDisabledIOControl {
   checkFatal(): void;
   pending(): boolean;
   wait(milliseconds: number, word: Int32Array, expected: number): void;
+  commitWrite?(result: { written: number; offset: number } | number): void;
   deferWrite?(completion: FilesystemCompletion): void;
 }
 
@@ -199,6 +203,7 @@ export class FilesystemCompletion {
 
   readonly cells: Int32Array;
   private changed: (() => void)[] = [];
+  private backendWaiters: (() => void)[] = [];
   private cancellations = new SetConstructor<() => void>();
   private decoded: unknown;
   private loading?: Promise<unknown>;
@@ -220,6 +225,16 @@ export class FilesystemCompletion {
       atomicsLoad(this.cells, 0) !== State.Pending
     );
   }
+  get backendSettled(): boolean {
+    return (
+      !!this.client.transportError() ||
+      this.released ||
+      atomicsLoad(this.cells, 0) !== State.Pending
+    );
+  }
+  get hasBackendWaiters(): boolean {
+    return this.backendWaiters.length > 0;
+  }
   get epoch(): number {
     return this.cells[5]!;
   }
@@ -227,6 +242,11 @@ export class FilesystemCompletion {
     const changed = this.changed;
     this.changed = [];
     for (let index = 0; index < changed.length; index++) changed[index]!();
+    if (this.backendSettled && this.backendWaiters.length) {
+      const waiters = this.backendWaiters;
+      this.backendWaiters = [];
+      for (let index = 0; index < waiters.length; index++) waiters[index]!();
+    }
   }
   cancel(): void {
     if (this.publication) this.client.cancelPublication(this.publication);
@@ -248,20 +268,34 @@ export class FilesystemCompletion {
     // Shared state can be ready before its port notification wakes value(). An unconsumed
     // release cancels that value and notifies its waiters before removing the completion.
     if (!this.consumed) this.cancel();
-    else this.client.connection.port.postMessage({ discard: this.id });
+    else {
+      this.client.connection.port.postMessage({ discard: this.id });
+      this.notify();
+    }
     mapDelete(this.client.completions, this.id);
     releaseRequestBuffer(this.buffer, REQUEST_CLIENT);
     if (!mapSize(this.client.completions)) wake(this.client.connection);
   }
-  /** Register a guest-safe callback invoked once this completion reaches a terminal state. */
-  onReady(callback: () => void): void {
-    if (this.ready) {
+  /** Register a guest-safe callback invoked once the backend itself publishes a terminal state
+   * (not early on local revocation or cancellation while the service is still executing). */
+  onBackendSettled(callback: () => void): void {
+    if (this.backendSettled) {
       callback();
       return;
     }
-    arrayAppend(this.changed, callback);
+    arrayAppend(this.backendWaiters, callback);
     this.client.watchRevocation();
-    if (this.ready) this.notify();
+    if (this.backendSettled) this.notify();
+  }
+  /** If the service already published State.Complete, decode and return the inline result even
+   * if local revocation raced after completion. Returns undefined otherwise. */
+  tryConsumeCommitted(): any {
+    if (this.consumed) return this.decoded;
+    if (atomicsLoad(this.cells, 0) !== State.Complete) return undefined;
+    const bytes = this.inlineBytes();
+    this.decoded = this.decode(bytes);
+    this.consumed = true;
+    return this.decoded;
   }
   /** Consume a ready inline response without waiting or touching Promise globals. */
   consumeInline(): any {
@@ -658,6 +692,57 @@ export class FilesystemClient implements FileSystem {
   /** A single shared-signal waiter handles service death without a port completion message.
    * Normal replies still use the port; the watcher exits when the last completion is released.
    */
+  private deferredWriteCount = 0;
+  private deferredWaiters: (() => void)[] = [];
+  trackDeferredWrite(completion: FilesystemCompletion, onSettled: () => void): void {
+    let done = false;
+    this.deferredWriteCount++;
+    completion.onBackendSettled(() => {
+      if (done) return;
+      done = true;
+      this.deferredWriteCount--;
+      onSettled();
+      if (this.deferredWriteCount === 0) this.notifyDeferredWaiters();
+    });
+  }
+  private notifyDeferredWaiters(): void {
+    const waiters = this.deferredWaiters;
+    this.deferredWaiters = [];
+    for (let index = 0; index < waiters.length; index++) waiters[index]!();
+  }
+  hasDeferredWrites(): boolean {
+    return this.deferredWriteCount > 0;
+  }
+  /** Wait for any deferred direct-disabled writes to settle at the backend before teardown. */
+  settleDeferredWrites(timeoutMs = 5_000): Promise<void> {
+    if (this.deferredWriteCount === 0) return PromiseConstructor.resolve();
+    return new PromiseConstructor<void>((resolve) => {
+      let finished = false;
+      const done = () => {
+        if (finished) return;
+        finished = true;
+        cancelTimeout(timer);
+        resolve();
+      };
+      const timer = scheduleTimeout(done, mathMax(1, timeoutMs));
+      arrayAppend(this.deferredWaiters, done);
+      if (this.deferredWriteCount === 0) done();
+    });
+  }
+  private sweepRevokedCompletions(): boolean {
+    let waitingBackend = false;
+    mapForEach(this.completions, (completion) => {
+      if (!completion.hasBackendWaiters) completion.cancel();
+      else if (completion.backendSettled) completion.notify();
+      else waitingBackend = true;
+    });
+    return waitingBackend;
+  }
+  private notifySettledBackendWaiters(): void {
+    mapForEach(this.completions, (completion) => {
+      if (completion.hasBackendWaiters && completion.backendSettled) completion.notify();
+    });
+  }
   watchRevocation(): void {
     if (this.watchingRevocation) return;
     this.watchingRevocation = true;
@@ -673,10 +758,11 @@ export class FilesystemClient implements FileSystem {
         while (mapSize(this.completions)) {
           const observed = atomicsLoad(signal, 0);
           if (this.revoked()) {
-            mapForEach(this.completions, (completion) => completion.cancel());
-            stop();
-            return;
+            if (!this.sweepRevokedCompletions()) break;
+          } else {
+            this.notifySettledBackendWaiters();
           }
+          if (!mapSize(this.completions)) break;
           const waiting = atomicsWaitAsync(signal, 0, observed);
           if (waiting.async) {
             afterNativePromise(waiting.value, step, stop);
@@ -1367,6 +1453,7 @@ export class FilesystemClient implements FileSystem {
     try {
       while (!completion.ready) {
         const observed = atomicsLoad(this.signal, 0);
+        if (operation !== "read" && atomicsLoad(completion.cells, 0) === State.Complete) break;
         control.checkFatal();
         if (operation === "read" && control.pending()) {
           completion.cancel();
@@ -1381,15 +1468,18 @@ export class FilesystemClient implements FileSystem {
         typedArraySet(bytes, data, 0);
         return typedArrayLength(data);
       }
+      const committed = completion.tryConsumeCommitted();
+      if (committed !== undefined) return committed as { written: number; offset: number } | number;
       return completion.consumeInline() as { written: number; offset: number } | number;
     } catch (error) {
-      if (
-        operation !== "read" &&
-        atomicsLoad(completion.cells, 0) === State.Pending &&
-        control.deferWrite
-      ) {
-        handedOff = true;
-        control.deferWrite(completion);
+      if (operation !== "read") {
+        const committed = completion.tryConsumeCommitted();
+        if (committed !== undefined) {
+          control.commitWrite?.(committed as { written: number; offset: number } | number);
+        } else if (!completion.backendSettled && control.deferWrite) {
+          handedOff = true;
+          control.deferWrite(completion);
+        }
       }
       if (isInstance(error, FilesystemError)) {
         control.checkFatal();

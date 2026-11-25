@@ -115,6 +115,7 @@ interface NonblockingFileSystem extends FileSystem {
     offset: number,
     control: DirectDisabledIOControl,
   ): { written: number; offset: number } | number;
+  trackDeferredWrite?(completion: FilesystemCompletion, onSettled: () => void): void;
   tryRead?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
   tryWrite?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
   tryAppend?(
@@ -591,25 +592,28 @@ export class ProcessABI {
     return entry;
   }
   private settleDeferredWriteLease(
+    fs: NonblockingFileSystem,
     completion: FilesystemCompletion,
     lease: AsyncFileOffsetLease,
     append: boolean,
   ): void {
-    let settled = false;
-    completion.onReady(() => {
-      if (settled) return;
-      settled = true;
+    const finish = () => {
       try {
-        const result = completion.consumeInline();
-        if (append) lease.commit((result as { written: number; offset: number }).offset);
-        else if (typeof result === "number" && result > 0) lease.commit(lease.position + result);
+        const committed = completion.tryConsumeCommitted();
+        if (committed !== undefined) {
+          if (append) lease.commit((committed as { written: number; offset: number }).offset);
+          else if (typeof committed === "number" && committed > 0)
+            lease.commit(lease.position + committed);
+        }
       } catch {
         // Aborted or failed write: leave shared offset unchanged before releasing the lease.
       } finally {
         completion.release();
         lease.release();
       }
-    });
+    };
+    if (fs.trackDeferredWrite) fs.trackDeferredWrite(completion, finish);
+    else completion.onBackendSettled(finish);
   }
   private directDisabledFileIO(
     write: boolean,
@@ -632,6 +636,18 @@ export class ProcessABI {
       const append = write && (lease ? lease.append : resource.append);
       const position = lease ? lease.position : resource.offset;
       const op = append ? "append" : write ? "write" : "read";
+      const commitOffset = (result: { written: number; offset: number } | number): number => {
+        if (typeof result !== "number") {
+          if (lease) lease.commit(result.offset);
+          else resource.offset = result.offset;
+          return result.written;
+        }
+        if (result > 0) {
+          if (lease) lease.commit(position + result);
+          else resource.offset = position + result;
+        }
+        return result;
+      };
       const result = fs.directDisabledIO!(op, resource.handle, bytes, position, {
         checkFatal: () => this.checkFatal(),
         pending: () => this.pending(),
@@ -640,24 +656,15 @@ export class ProcessABI {
           if (this.options.wait) this.options.wait(ms, word, expected);
           else controlWait(word, 0, expected, ms);
         },
+        commitWrite: commitOffset,
         deferWrite: lease
           ? (completion) => {
               releaseLease = false;
-              this.settleDeferredWriteLease(completion, lease, append);
+              this.settleDeferredWriteLease(fs, completion, lease, append);
             }
           : undefined,
       });
-      if (typeof result !== "number") {
-        if (lease) lease.commit(result.offset);
-        else resource.offset = result.offset;
-        outcome = result.written;
-      } else if (result > 0) {
-        if (lease) lease.commit(position + result);
-        else resource.offset = position + result;
-        outcome = result;
-      } else {
-        outcome = result;
-      }
+      outcome = commitOffset(result);
     } finally {
       if (lease && releaseLease) lease.release();
     }

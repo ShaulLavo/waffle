@@ -867,6 +867,13 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     ) {
       attempt(() => executor.diagnostic?.(`${describeWorkerError(result.error)}\n`));
     }
+    if (fs.hasDeferredWrites?.()) {
+      try {
+        await fs.settleDeferredWrites?.();
+      } catch (error) {
+        collect(error);
+      }
+    }
     const descriptorsReleased = attempt(() => {
       if (wasi) {
         disposeProcessDescriptors(wasi, discardedStdio);
