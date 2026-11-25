@@ -58,6 +58,11 @@ const files = {
     (if (call $close (i32.const 0)) (then unreachable))
     (call $emit (i32.const 1) (i32.const 32) (i32.const 6))
     (loop $live (drop (call $signal (i32.const 0) (i32.const 4))) (br $live)) ${close}`,
+  live: `(module ${imports} ${io} ${emit}
+    (data (i32.const 32) "live")
+    ${open}
+    (call $emit (i32.const 1) (i32.const 32) (i32.const 4))
+    (loop $live (drop (call $signal (i32.const 0) (i32.const 4))) (br $live)) ${close}`,
   "sigint-twice": `(module ${imports} ${io} ${emit}
     (data (i32.const 32) "readyhandled")
     ${open}
@@ -101,10 +106,23 @@ function processGuest(
     ${open} ${body} ${close}`;
 }
 
+/** Starts a child that never exits on its own, then ends with a status of its own. */
+function leaderGuest(child: string, code: number) {
+  const json = request(child, "spawn");
+  return `(module (import "runtime_proc" "spawn" (func $spawn (param i32 i32) (result i32)))
+    ${exit} ${io}
+    (data (i32.const 32) "${data(json)}")
+    ${open}
+    (if (i32.le_s (call $spawn (i32.const 32) (i32.const ${json.length})) (i32.const 0))
+      (then unreachable))
+    (call $exit (i32.const ${code})) ${close}`;
+}
+
 export async function compileCommandGuests(): Promise<Map<string, Uint8Array>> {
   const compiler = await wabt();
   const cases = {
     ...files,
+    "leader-exit7": leaderGuest("/test/live", 7),
     "spawn-child": processGuest("spawn", "/test/exit130", "success"),
     "spawn-disallowed": processGuest("spawn", "/test/script", "success"),
     "exec-disallowed": processGuest("exec", "/test/script", "error"),

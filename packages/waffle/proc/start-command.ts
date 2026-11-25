@@ -1,5 +1,10 @@
 import type { Runtime } from "../runtime.js";
+import type { CommandPrograms } from "./registry.js";
 import type { ProcessExit, ProcessSignal } from "./types.js";
+
+export type { CommandPrograms } from "./registry.js";
+/** What happens to the rest of the tree when the command's first process ends. */
+export type CommandLeaderExit = "join" | "stop";
 
 export interface CommandOutputOptions {
   readonly limitBytes?: number;
@@ -8,6 +13,19 @@ export interface CommandOutputOptions {
 
 export interface CommandOptions {
   readonly filesystem: "runtime-root";
+  /**
+   * Which guest programs the command and its descendants may start or replace their image
+   * with. `"byte-backed"`, the default, admits only programs registered from Wasm bytes.
+   * `"guest"` also admits compiled modules registered with `cooperative: true`. Waffle cannot
+   * interrupt those: a stop takes effect when the module next polls, or when the browser ends
+   * its Worker. Host commands and registered scripts are refused either way.
+   */
+  readonly programs?: CommandPrograms;
+  /**
+   * `"join"`, the default, lets descendants that outlive the first process finish. `"stop"`
+   * stops them as `kill()` would once the first process has its outcome, which the result keeps.
+   */
+  readonly onLeaderExit?: CommandLeaderExit;
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
@@ -62,11 +80,20 @@ function output(value: CommandOutputOptions | "closed" | undefined) {
   return { limitBytes, onChunk };
 }
 
+function policies({ programs = "byte-backed", onLeaderExit = "join" }: CommandOptions) {
+  if (programs !== "byte-backed" && programs !== "guest")
+    throw new TypeError('Command programs must be "byte-backed" or "guest"');
+  if (onLeaderExit !== "join" && onLeaderExit !== "stop")
+    throw new TypeError('Command onLeaderExit must be "join" or "stop"');
+  return { programs, onLeaderExit };
+}
+
 function snapshot(executable: string, options: CommandOptions): CommandOptions {
   if (options?.filesystem !== "runtime-root")
     throw new TypeError('Commands require filesystem: "runtime-root"');
   if (!path(executable)) throw new TypeError("Command executable must be an absolute path");
   const { args, cwd = "/", env, stdin, stdout, stderr, deadlineMs } = options;
+  const { programs, onLeaderExit } = policies(options);
   if (!path(cwd)) throw new TypeError("Command cwd must be an absolute path");
   if (args !== undefined && !Array.isArray(args)) throw new TypeError("Invalid command args");
   const argv = Array.from(args ?? []);
@@ -92,6 +119,8 @@ function snapshot(executable: string, options: CommandOptions): CommandOptions {
     throw new RangeError("Command deadline must be between 1 and 2147483647 ms");
   return {
     filesystem: "runtime-root",
+    programs,
+    onLeaderExit,
     args: argv,
     cwd,
     env: Object.fromEntries(entries),

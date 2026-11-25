@@ -63,6 +63,36 @@ provide Wasm bytes and a guest adapter. The same rule applies through filesystem
 Waffle loads and admits the bytes on demand. Importing the command entry and registering the
 package leave process activation and the guest's Wasm load until execution.
 
+### Compiled modules
+
+Pass `programs: "guest"` to also admit programs registered as a compiled `WebAssembly.Module`
+with `cooperative: true`, such as a language runtime that ships its own adapter. The rule covers
+the first process, its descendants and every `exec`. Host commands and registered scripts stay
+refused, so the tree still runs only guest code.
+
+```ts
+const command = startCommand(runtime, "/bin/interpreter", {
+  filesystem: "runtime-root",
+  programs: "guest",
+  args: ["/srv/main.js"],
+  stdin: input.readable,
+  stdout: { limitBytes: 0, onChunk: (bytes) => void received.push(bytes) },
+});
+```
+
+Waffle did not instrument a compiled module, so it cannot interrupt one. `kill()`, signal 9 and
+`deadlineMs` select the outcome, revoke the process's descriptors and end its Worker. A module
+that polls for signals or blocks in a host call stops at once. A module spinning in a loop that
+never calls the host keeps its thread until the browser ends the Worker, and Safari can let such
+a loop run on after `Worker.terminate()`. Admit only modules whose adapter polls.
+
+### When the first process ends
+
+By default a command waits for every descendant, so a first process that exits while a child
+still runs leaves `result` pending. Pass `onLeaderExit: "stop"` to stop the rest of the tree as
+`kill()` would once the first process has its outcome. The result keeps that outcome and reports
+no `stopRequested`. Use it for a supervisor whose children are useless without it.
+
 ## Output and completion
 
 Waffle captures the first 64 KiB of stdout and stderr by default. Set `limitBytes` on either

@@ -34,7 +34,7 @@ import {
   OpenDescription,
   type Descriptor,
 } from "../core/descriptors.js";
-import { ExecutableRegistry, type ResolvedExecutable } from "./registry.js";
+import { ExecutableRegistry, type CommandPrograms, type ResolvedExecutable } from "./registry.js";
 import {
   ProcessTable,
   type ProcessJob,
@@ -106,7 +106,9 @@ interface ProcessAccesses {
 
 export interface SupervisorOptions {
   registry: ExecutableRegistry;
-  byteBackedGuestOnly?(rootPid: number | undefined): boolean;
+  /** Defined for a page-owned command root: the programs its tree may run. Such a root also
+   * joins its descendants' cleanup, so a descriptor disposal failure fails its fence. */
+  commandPrograms?(rootPid: number | undefined): CommandPrograms | undefined;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
   launchCommand?(context: CommandProcessContext): ProcessHandle | Promise<ProcessHandle>;
   /** Emit while inherited output is owned; an asynchronous sink must stop when active is false.
@@ -848,7 +850,7 @@ export class ProcessSupervisor {
             throw new Error("process exited before executable admission completed");
         },
         image.request!.argv,
-        this.options.byteBackedGuestOnly?.(record.rootPid),
+        this.options.commandPrograms?.(record.rootPid),
       );
       if (record.result || record.revoked) return;
       const settled = readOutcome(record.outcome);
@@ -1019,7 +1021,7 @@ export class ProcessSupervisor {
         replacement.request.cwd,
         active,
         replacement.request.argv,
-        this.options.byteBackedGuestOnly?.(record.rootPid),
+        this.options.commandPrograms?.(record.rootPid),
       );
       active();
       if (record.processKind === "thread")
@@ -1099,7 +1101,7 @@ export class ProcessSupervisor {
     if (image.stopping) return image.stopping;
     const stop = async () => {
       this.revokeImage(image);
-      if (this.options.byteBackedGuestOnly?.(record.rootPid)) image.descriptors.dispose();
+      if (this.options.commandPrograms?.(record.rootPid)) image.descriptors.dispose();
       else this.disposeDescriptors(image.descriptors);
       await this.options.stopImage!(record.pid, image.generation, () =>
         this.replacementActive(record, replacement),
@@ -1558,7 +1560,7 @@ export class ProcessSupervisor {
     for (const hook of hooks) this.safely(hook);
     this.revokeImage(record.image);
     this.disposeDescriptors(record.image.descriptors, (error) => {
-      if (!this.options.byteBackedGuestOnly?.(record.rootPid)) {
+      if (!this.options.commandPrograms?.(record.rootPid)) {
         this.report(error);
         return;
       }

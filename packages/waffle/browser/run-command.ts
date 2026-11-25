@@ -195,12 +195,16 @@ class Command {
     let adopted = false;
     let leader: Leader | undefined;
     try {
-      await owner.adoptCommandRoot(root, {
-        filesystem,
-        memory: [],
-        tryOutput: (fd, bytes) => this.deliver(fd, bytes),
-        stop: () => this.input?.stop(),
-      });
+      await owner.adoptCommandRoot(
+        root,
+        {
+          filesystem,
+          memory: [],
+          tryOutput: (fd, bytes) => this.deliver(fd, bytes),
+          stop: () => this.input?.stop(),
+        },
+        this.options.programs ?? "byte-backed",
+      );
       adopted = true;
       if (this.runtime.disposed) return this.disposed();
       if (!this.stopped.aborted) leader = this.spawn(owner, root);
@@ -357,6 +361,13 @@ class Command {
     return bytes.length;
   }
 
+  /** Reads the leader's outcome once it has one, stopping the rest of its tree when asked to. */
+  private leaderExit(leader: Leader): ProcessExit | null {
+    const exit = readOutcome(leader.state.outcome);
+    if (exit && this.options.onLeaderExit === "stop") this.stop();
+    return exit;
+  }
+
   private async join(owner: BrowserProcessBroker, root: WorkerProcessTransport, leader?: Leader) {
     const wake = workerProcessState(root).wake;
     let exit: ProcessExit | null = null;
@@ -364,7 +375,7 @@ class Command {
       const expected = Atomics.load(wake, 0);
       if (this.runtime.disposed) return this.disposed();
       if (this.stopped.aborted || this.ioFailure) this.stopInput();
-      if (leader && !exit) exit = readOutcome(leader.state.outcome);
+      if (leader && !exit) exit = this.leaderExit(leader);
       if (owner.checkCommandCleanup(root, !leader || exit !== null)) {
         if (!leader || exit) return exit;
         throw new Error("Command leader retired without an outcome");
