@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { drainAsyncFileDiagnostic } from "../browser/diagnostic.js";
 import { DescriptorTable } from "../core/descriptors.js";
-import { shareFileResource } from "../core/open-file.js";
+import { claimFileOffset, shareFileResource } from "../core/open-file.js";
 import { FilesystemClient, FilesystemCompletion } from "../fs/client.js";
 import { PAGE } from "../fs/protocol.js";
 import { CommandStdio } from "../proc/command-stdio.js";
@@ -274,8 +275,61 @@ describe.each(VFS_BACKEND_KINDS)("VFS/FD conformance (%s)", (kind: VfsBackendKin
   });
 });
 
-describe("MultiTabBackend cross-tab live freshness and failover", () => {
-  test("Host and Peer tabs share live cooperative runtime_proc redirections and cross-tab overwrites without stale reads", async () => {
+describe("MultiTabBackend cross-tab live freshness, failover, and diagnostic safety", () => {
+  function runLiveWorker(
+    connection: ReturnType<Awaited<ReturnType<typeof openVfsBackend>>["forkConnection"]>,
+    gate: SharedArrayBuffer,
+    checkFailoverWrite: boolean,
+    onReady1: (text: string) => Promise<void>,
+  ): Promise<{ ok: boolean; first: string; second: string; failoverWritten: boolean }> {
+    const worker = new Worker(
+      new URL("./fixtures/vfs-fd-conformance-worker.ts", import.meta.url).href,
+    );
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        worker.terminate();
+        reject(new Error("live-descriptor worker timed out"));
+      }, 15_000);
+      worker.onerror = (event) => {
+        clearTimeout(timer);
+        worker.terminate();
+        reject(new Error(event.message || "worker error"));
+      };
+      worker.onmessage = ({
+        data,
+      }: MessageEvent<{
+        step?: string;
+        text?: string;
+        value?: { ok: boolean; first: string; second: string; failoverWritten: boolean };
+        error?: string;
+      }>) => {
+        if (data.step === "ready1") {
+          void onReady1(data.text!).then(
+            () => {
+              const cells = new Int32Array(gate);
+              Atomics.store(cells, 0, 1);
+              Atomics.notify(cells, 0);
+            },
+            (err) => {
+              clearTimeout(timer);
+              worker.terminate();
+              reject(err);
+            },
+          );
+          return;
+        }
+        clearTimeout(timer);
+        worker.terminate();
+        if (data.error) reject(new Error(data.error));
+        else resolve(data.value!);
+      };
+      worker.postMessage({ scenario: "live-descriptor", connection, gate, checkFailoverWrite }, [
+        connection.port,
+      ]);
+    });
+  }
+
+  test("a surviving Peer open descriptor observes a cross-tab Host overwrite freshly without reopening", async () => {
     const env = await openVfsBackend("multitab-peer");
     try {
       await env.peerClient!.asyncCall(
@@ -283,66 +337,132 @@ describe("MultiTabBackend cross-tab live freshness and failover", () => {
         ["/cross-tab.txt", false, false],
         encoder.encode("v1-from-host"),
       );
-      const peer1 = await runInWorker<{ ok: boolean; crossTabRead?: string }>({
-        scenario: "proc-redirection",
-        connection: env.forkConnection("primary"),
-        seedText: "v1-from-host",
+      const gate = new SharedArrayBuffer(4);
+      const result = await runLiveWorker(env.forkConnection("primary"), gate, false, async () => {
+        await env.peerClient!.asyncCall(
+          "writeFile",
+          ["/cross-tab.txt", false, false],
+          encoder.encode("v2-overwritten"),
+        );
       });
-      expect(peer1.ok).toBe(true);
-      expect(peer1.crossTabRead).toBe("v1-from-host");
-
-      // Host immediately sees files created by Peer's runtime_proc redirects without flush,
-      // and overwriting /cross-tab.txt is observed freshly on the next Peer runtime_proc read!
-      const outOnHost: Uint8Array = await env.peerClient!.asyncCall("readFile", ["/out.txt"]);
-      expect(decoder.decode(outOnHost)).toBe("first\nsecond\n");
-
-      await env.peerClient!.asyncCall(
-        "writeFile",
-        ["/cross-tab.txt", false, false],
-        encoder.encode("v2-overwritten"),
-      );
-      const peer2 = await runInWorker<{ ok: boolean; crossTabRead?: string }>({
-        scenario: "proc-redirection",
-        connection: env.forkConnection("primary"),
-        seedText: "v2-overwritten",
-      });
-      expect(peer2.ok).toBe(true);
-      expect(peer2.crossTabRead).toBe("v2-overwritten");
+      expect(result.ok).toBe(true);
+      expect(result.first).toBe("v1-from-host");
+      expect(result.second).toBe("v2-overwritten");
     } finally {
       await env.close();
     }
   });
 
-  test("Peer promotes to Host after graceful Host close and keeps cooperative runtime_proc redirections intact", async () => {
+  test("a surviving Peer worker and open descriptor stay intact across graceful Host-close failover", async () => {
     const env = await openVfsBackend("multitab-peer");
     try {
-      // Write via Peer while attached to Host.
       await env.peerClient!.asyncCall(
         "writeFile",
         ["/cross-tab.txt", false, false],
         encoder.encode("before-failover"),
       );
-      const before = await runInWorker<{ ok: boolean; outText: string; crossTabRead?: string }>({
-        scenario: "proc-redirection",
-        connection: env.forkConnection("primary"),
-        seedText: "before-failover",
+      const gate = new SharedArrayBuffer(4);
+      const result = await runLiveWorker(env.forkConnection("primary"), gate, true, async () => {
+        await env.closeCounterpart!();
       });
-      expect(before.ok).toBe(true);
-      expect(before.outText).toBe("first\nsecond\n");
-      expect(before.crossTabRead).toBe("before-failover");
+      expect(result.ok).toBe(true);
+      expect(result.first).toBe("before-failover");
+      expect(result.second).toBe("before-failover");
+      expect(result.failoverWritten).toBe(true);
+      const persisted: Uint8Array = await env.client.asyncCall("readFile", ["/after-failover.txt"]);
+      expect(decoder.decode(persisted)).toBe("survived-failover");
+    } finally {
+      await env.close();
+    }
+  });
 
-      // Gracefully close the Host tab; Peer must promote to Host and keep all prior files + FDs working.
-      await env.closeCounterpart!();
-      const after = await runInWorker<{ ok: boolean; outText: string; crossTabRead?: string }>({
-        scenario: "proc-redirection",
-        connection: env.forkConnection("primary"),
-        seedText: "before-failover",
-      });
-      expect(after.ok).toBe(true);
-      expect(after.outText).toBe("first\nsecond\n");
-      expect(after.crossTabRead).toBe("before-failover");
-      const persisted: Uint8Array = await env.client.asyncCall("readFile", ["/out.txt"]);
-      expect(decoder.decode(persisted)).toBe("first\nsecond\n");
+  test("drainAsyncFileDiagnostic holds shared offset until a timed-out write authoritatively settles and resists poisoned globals", async () => {
+    const env = await openVfsBackend("multitab-peer");
+    try {
+      await env.client.asyncCall("writeFile", ["/diag.txt", false, false], encoder.encode("seed"));
+      const root: number = await env.client.asyncCall("preopen", ["/"]);
+      const resolved = await env.client.asyncCall("resolve", [root, "diag.txt", true]);
+      const handle = resolved.node as number;
+      env.client.retain(handle);
+      try {
+        const resource = { kind: "file" as const, handle, offset: 0, append: false };
+        const sharedOffset = shareFileResource(resource, env.client.connection);
+
+        // 1. Pause the Peer->Host write after dispatch and force a short stall timeout.
+        let releaseWrite!: () => void;
+        const writePaused = Promise.withResolvers<void>();
+        const origExecute = env.backend.execute.bind(env.backend);
+        let pauseOnce = true;
+        env.backend.execute = (op: string, args: unknown[], data: Uint8Array) => {
+          if (op === "write" && pauseOnce) {
+            pauseOnce = false;
+            const gate = Promise.withResolvers<void>();
+            releaseWrite = () => gate.resolve();
+            writePaused.resolve();
+            return gate.promise.then(() => origExecute(op, args, data));
+          }
+          return origExecute(op, args, data);
+        };
+
+        let timeoutError: unknown;
+        try {
+          await drainAsyncFileDiagnostic(
+            env.client,
+            resource,
+            encoder.encode("DIAG"),
+            () => true,
+            40,
+          );
+        } catch (error) {
+          timeoutError = error;
+        }
+        expect(timeoutError).toBeInstanceOf(Error);
+        expect(String(timeoutError)).toContain("diagnostic reader made no progress");
+        await writePaused.promise;
+
+        // While the dispatched write is still paused, another holder MUST see busy (offset 0 locked).
+        expect(claimFileOffset(resource).kind).toBe("busy");
+
+        // Resume backend write -> authoritative settlement commits offset 4 and unlocks!
+        releaseWrite();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const afterResume = claimFileOffset(resource);
+        expect(afterResume.kind).toBe("acquired");
+        if (afterResume.kind === "acquired") {
+          expect(afterResume.lease.position).toBe(4);
+          afterResume.lease.release();
+        }
+        expect(decoder.decode(await env.client.asyncCall("readFile", ["/diag.txt"]))).toBe("DIAG");
+
+        // 2. In a separate Worker realm, poisoned Math.min, Number.isInteger, and Promise.prototype.then
+        // never break drainAsyncFileDiagnostic or strand the shared offset lease.
+        const poisoned = await runInWorker<{ ok: boolean; thenTouched: number; position: number }>({
+          scenario: "poisoned-diagnostic",
+          connection: env.forkConnection("primary", [handle]),
+          sharedHandle: handle,
+          sharedOffset,
+        });
+        expect(poisoned).toEqual({ ok: true, thenTouched: 0, position: 5 });
+        expect(decoder.decode(await env.client.asyncCall("readFile", ["/diag.txt"]))).toBe("DIAG!");
+
+        // 3. A synchronous submit failure after lease acquisition still releases the lease.
+        const origSubmit = env.client.submit.bind(env.client);
+        env.client.submit = () => {
+          throw new Error("submit boom");
+        };
+        try {
+          await expect(
+            drainAsyncFileDiagnostic(env.client, resource, encoder.encode("Z"), () => true),
+          ).rejects.toThrow("diagnostic write failed");
+        } finally {
+          env.client.submit = origSubmit;
+        }
+        const afterFailure = claimFileOffset(resource);
+        expect(afterFailure.kind).toBe("acquired");
+        if (afterFailure.kind === "acquired") afterFailure.lease.release();
+      } finally {
+        env.client.release(handle);
+      }
     } finally {
       await env.close();
     }

@@ -1541,7 +1541,9 @@ function installProcessImports(
     const call = name === "poll" && observedPoll ? observedPoll.wrap(entry[1]) : entry[1];
     target[name] = (...args) => {
       checkActive();
-      return call(...args);
+      const result = call(...args);
+      checkActive();
+      return result;
     };
   }
 }

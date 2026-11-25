@@ -81,8 +81,15 @@ export type OffsetClaim =
 
 /** The operation owner must drain leases before filesystem quiescence can reap this identity. */
 export function claimFileOffset(resource: FileResource): OffsetClaim {
+  const claim = tryClaimFileOffset(resource);
+  if (!claim) throw new Error("async file offsets require a shared description");
+  return claim;
+}
+
+/** Claim a shared file offset when the description is shared; undefined for local descriptions. */
+export function tryClaimFileOffset(resource: FileResource): OffsetClaim | undefined {
   const state = offsets.get(resource);
-  if (!state) throw new Error("async file offsets require a shared description");
+  if (!state) return undefined;
   const { cells, identity, section } = state;
   try {
     section.enter();

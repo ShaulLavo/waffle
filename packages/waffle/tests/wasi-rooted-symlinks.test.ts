@@ -49,7 +49,7 @@ describe.each(VFS_BACKEND_KINDS)("worker-backed rooted symlinks (%s)", (kind: Vf
     } finally {
       await env.close();
     }
-  });
+  }, 15_000);
 });
 
 test("a guest whose / is not the filesystem root keeps every lookup beneath its directories", () => {

@@ -1691,3 +1691,113 @@ test("poll parks on fs.signal only for pure fs waits and keeps mixed or service-
   expect(makeAbi(true).imports.poll!(256, 1, 100, 512)).toBe(1);
   expect(waitWords).toEqual(["process.wake"]);
 });
+
+test("directDisabled file IO yields on pending signals, interrupts reads, and unwinds fatal kills without releasing live write offsets", async () => {
+  const { FilesystemClient, FilesystemService, MemoryBackend, createFilesystemConnection } =
+    await import("../fs/index.js");
+  const { claimFileOffset, shareFileResource } = await import("../core/open-file.js");
+  const { setSignalDisposition, requestSignal } = await import("../proc/signals.js");
+  const { CLIENT_MODE_NO_DIRECT_IO } = await import("../fs/shared.js");
+
+  let releaseOp: (() => void) | undefined;
+  let opDispatched = Promise.withResolvers<void>();
+  let pauseNextOp: "read" | "write" | null = null;
+  const backend = new MemoryBackend();
+  const originalExecute = backend.execute.bind(backend);
+  backend.execute = (operation: string, args: unknown[], data: Uint8Array) => {
+    if (pauseNextOp === operation) {
+      pauseNextOp = null;
+      const gate = Promise.withResolvers<void>();
+      releaseOp = () => gate.resolve();
+      opDispatched.resolve();
+      return gate.promise.then(() => originalExecute(operation, args, data));
+    }
+    return originalExecute(operation, args, data);
+  };
+  const service = new FilesystemService(backend);
+  const pair = createFilesystemConnection();
+  service.connect(pair.server);
+  backend.shared.setClientMode(CLIENT_MODE_NO_DIRECT_IO);
+  const client = new FilesystemClient(pair.client);
+  try {
+    await client.asyncCall("writeFile", ["/f.txt", false, false], new TextEncoder().encode("seed"));
+    const root: number = await client.asyncCall("preopen", ["/"]);
+    const resolved = await client.asyncCall("resolve", [root, "f.txt", true]);
+    const handle = resolved.node as number;
+    client.retain(handle);
+
+    const f = fixture();
+    const resource = { kind: "file" as const, handle, offset: 0, append: false };
+    shareFileResource(resource, client.connection);
+    const fd = f.descriptors.open(resource, ALL, ALL);
+    setSignalDisposition(f.signals.signalState, 2, 2, f.signals.interrupt); // HANDLE SIGINT
+
+    let waitCalls = 0;
+    let onWait: (() => void) | undefined;
+    const abi = new ProcessABI({
+      processIdentity: f.supervisor.get(f.pid)!.processIdentity,
+      memory: f.memory,
+      descriptors: f.descriptors,
+      fs: client,
+      pid: f.pid,
+      service: f.supervisor,
+      signals: f.signals,
+      wake: new Int32Array(new SharedArrayBuffer(4)),
+      wait() {
+        waitCalls++;
+        onWait?.();
+      },
+    });
+
+    // 1. Handled SIGINT already pending -> yields -EAGAIN immediately without dispatching or mutating.
+    requestSignal(f.signals, 2);
+    f.bytes().set(new TextEncoder().encode("NOPE"), 1024);
+    expect(abi.imports.write!(fd, 1024, 4)).toBe(-6);
+    expect(abi.imports.read!(fd, 1024, 4)).toBe(-6);
+    expect(waitCalls).toBe(0);
+    expect(new TextDecoder().decode(await client.asyncCall("readFile", ["/f.txt"]))).toBe("seed");
+    // Consume the handled SIGINT.
+    expect(abi.imports.interrupted!()).toBe(2);
+
+    // 2. Stalled directDisabled read is interrupted by handled SIGINT mid-wait and releases offset lock.
+    pauseNextOp = "read";
+    onWait = () => {
+      requestSignal(f.signals, 2);
+    };
+    expect(abi.imports.read!(fd, 1024, 4)).toBe(-6);
+    expect(waitCalls).toBeGreaterThanOrEqual(1);
+    const afterReadClaim = claimFileOffset(resource);
+    expect(afterReadClaim.kind).toBe("acquired");
+    if (afterReadClaim.kind === "acquired") afterReadClaim.lease.release();
+    releaseOp?.();
+    expect(abi.imports.interrupted!()).toBe(2);
+
+    // 3. Fatal SIGKILL during a paused directDisabled write unwinds with ProcessSignalExit(9)
+    // (never returns -ECANCELED) and holds the shared offset lock until the backend write settles.
+    opDispatched = Promise.withResolvers<void>();
+    pauseNextOp = "write";
+    onWait = () => {
+      f.supervisor.kill(f.pid, 9);
+    };
+    f.bytes().set(new TextEncoder().encode("LIVE"), 1024);
+    expect(() => abi.imports.write!(fd, 1024, 4)).toThrow(ProcessSignalExit);
+    await opDispatched.promise;
+    // While the backend write is still paused, another holder sees busy and cannot reuse offset 0.
+    expect(claimFileOffset(resource).kind).toBe("busy");
+    // Resume backend write -> authoritative settlement commits offset 4 and releases the lock!
+    releaseOp?.();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const afterWriteClaim = claimFileOffset(resource);
+    expect(afterWriteClaim.kind).toBe("acquired");
+    if (afterWriteClaim.kind === "acquired") {
+      expect(afterWriteClaim.lease.position).toBe(4);
+      afterWriteClaim.lease.release();
+    }
+    expect(new TextDecoder().decode(await client.asyncCall("readFile", ["/f.txt"]))).toBe("LIVE");
+    client.release(handle);
+  } finally {
+    client.dispose();
+    await service.shutdown();
+    service.dispose();
+  }
+});

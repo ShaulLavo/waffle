@@ -1,17 +1,30 @@
 import type { Resource } from "../core/descriptors.js";
-import { claimFileOffset, shareFileResource } from "../core/open-file.js";
-import type { FilesystemClient } from "../fs/client.js";
+import {
+  claimFileOffset,
+  shareFileResource,
+  type AsyncFileOffsetLease,
+} from "../core/open-file.js";
+import type { FilesystemClient, FilesystemCompletion } from "../fs/client.js";
 import { errno as fsErrno, PAGE } from "../fs/protocol.js";
-import { isInstance, typedArrayLength, typedArraySubarray } from "../proc/intrinsics.ts";
+import {
+  cancelTimeout,
+  isInstance,
+  PromiseConstructor,
+  scheduleTimeout,
+  typedArrayLength,
+  typedArraySubarray,
+} from "../proc/intrinsics.ts";
 import { ProcessErrno, ProcessError } from "../proc/types.js";
 
 /** Diagnostic delivery must not retain a dead/stalled process indefinitely. */
 export const DIAGNOSTIC_STALL_TIMEOUT_MS = 5_000;
 
-// Guest code can replace globals after entry; diagnostics retain host timing authority.
+// Guest code can replace globals after entry; diagnostics retain host timing and math authority.
 const now = performance.now.bind(performance);
-const delay = setTimeout;
-const cancelDelay = clearTimeout;
+const delay = scheduleTimeout;
+const mathMin = Math.min;
+const mathMax = Math.max;
+const numberIsInteger = Number.isInteger;
 
 /** Drain partial writes without blocking the page/Worker event loop. Positive writes reset
  * the no-progress deadline; a draining reader always gets every byte. The synchronous fast
@@ -63,109 +76,214 @@ export function drainDiagnostic(
   })();
 }
 
-async function writeAsyncDiagnosticChunk(
-  fs: FilesystemClient,
-  handle: number,
-  lease: { readonly position: number; readonly append: boolean; commit(next: number): void },
-  chunk: Uint8Array,
-  timeoutMs: number,
-): Promise<number> {
-  const completion = lease.append
-    ? fs.submit("append", [handle], chunk)
-    : fs.submit("write", [handle, lease.position], chunk);
-  let timer: ReturnType<typeof setTimeout> | undefined;
+function diagnosticWriteError(error: unknown, remaining: number, total: number): ProcessError {
+  if (isInstance(error, ProcessError)) return error;
+  const code = fsErrno(error);
+  return new ProcessError(
+    code,
+    `diagnostic write failed (${-code}); ${remaining} of ${total} diagnostic bytes unwritten`,
+  );
+}
+
+function settleAsyncDiagnosticChunk(
+  completion: FilesystemCompletion,
+  lease: AsyncFileOffsetLease,
+  remaining: number,
+  total: number,
+  callerSettled: boolean,
+  releaseLease: () => void,
+  onAccept: (written: number) => void,
+  onReject: (error: ProcessError) => void,
+): void {
+  let written = 0;
   try {
-    const timedOut = new Promise<never>((_resolve, reject) => {
-      timer = delay(
-        () => {
-          completion.cancel();
-          reject(
-            new ProcessError(
-              ProcessErrno.AGAIN,
-              "diagnostic reader made no progress for five seconds",
-            ),
-          );
-        },
-        Math.max(1, timeoutMs),
-      );
-    });
-    const settled = completion.value();
-    void settled.catch(() => {});
-    const result = await Promise.race([settled, timedOut]);
+    const result = completion.consumeInline();
     if (lease.append) {
       const appended = result as { written: number; offset: number };
       lease.commit(appended.offset);
-      return appended.written;
+      written = appended.written;
+    } else {
+      written = result as number;
+      if (written > 0) lease.commit(lease.position + written);
     }
-    const written = result as number;
-    if (written > 0) lease.commit(lease.position + written);
-    return written;
-  } finally {
-    if (timer !== undefined) cancelDelay(timer);
+  } catch (error) {
     completion.release();
+    releaseLease();
+    if (!callerSettled) onReject(diagnosticWriteError(error, remaining, total));
+    return;
   }
+  completion.release();
+  releaseLease();
+  if (callerSettled) return;
+  if (!numberIsInteger(written) || written <= 0 || written > remaining) {
+    onReject(
+      new ProcessError(
+        29,
+        `diagnostic write failed (${written}); ${remaining} of ${total} diagnostic bytes unwritten`,
+      ),
+    );
+    return;
+  }
+  onAccept(written);
+}
+
+function dispatchAsyncDiagnosticChunk(
+  fs: FilesystemClient,
+  handle: number,
+  lease: AsyncFileOffsetLease,
+  bytes: Uint8Array,
+  offset: number,
+  total: number,
+  deadline: number,
+  onWritten: (written: number) => void,
+  onError: (error: ProcessError) => void,
+): void {
+  const remaining = total - offset;
+  let leaseReleased = false;
+  const releaseLease = () => {
+    if (leaseReleased) return;
+    leaseReleased = true;
+    lease.release();
+  };
+  let completion: FilesystemCompletion;
+  try {
+    if (now() >= deadline) {
+      releaseLease();
+      onError(
+        new ProcessError(
+          ProcessErrno.AGAIN,
+          `diagnostic reader made no progress for five seconds; ${remaining} of ${total} diagnostic bytes unwritten`,
+        ),
+      );
+      return;
+    }
+    const chunk = typedArraySubarray(bytes, offset, mathMin(total, offset + PAGE));
+    completion = lease.append
+      ? fs.submit("append", [handle], chunk)
+      : fs.submit("write", [handle, lease.position], chunk);
+  } catch (error) {
+    releaseLease();
+    onError(diagnosticWriteError(error, remaining, total));
+    return;
+  }
+  let callerSettled = false;
+  let settled = false;
+  // Once dispatched, keep the shared offset lease until the backend reports an authoritative
+  // commit or abort so another holder cannot reuse the same offset while the write is still live.
+  const timer = delay(
+    () => {
+      if (callerSettled) return;
+      callerSettled = true;
+      onError(
+        new ProcessError(
+          ProcessErrno.AGAIN,
+          `diagnostic reader made no progress for five seconds; ${remaining} of ${total} diagnostic bytes unwritten`,
+        ),
+      );
+    },
+    mathMax(1, deadline - now()),
+  );
+  completion.onReady(() => {
+    if (settled) return;
+    settled = true;
+    cancelTimeout(timer);
+    settleAsyncDiagnosticChunk(
+      completion,
+      lease,
+      remaining,
+      total,
+      callerSettled,
+      releaseLease,
+      (written) => {
+        if (callerSettled) return;
+        callerSettled = true;
+        onWritten(written);
+      },
+      (error) => {
+        if (callerSettled) return;
+        callerSettled = true;
+        onError(error);
+      },
+    );
+  });
 }
 
 /** Drain diagnostic bytes to a regular file whose backend disables direct shared-memory I/O. */
-export async function drainAsyncFileDiagnostic(
+export function drainAsyncFileDiagnostic(
   fs: FilesystemClient,
   resource: Extract<Resource, { kind: "file" }>,
   bytes: Uint8Array,
   active: () => boolean,
+  stallTimeoutMs = DIAGNOSTIC_STALL_TIMEOUT_MS,
 ): Promise<void> {
-  const total = typedArrayLength(bytes);
-  if (!total) return;
-  shareFileResource(resource, fs.connection);
-  let offset = 0;
-  let deadline = now() + DIAGNOSTIC_STALL_TIMEOUT_MS;
-  while (offset < total) {
-    const remaining = total - offset;
-    if (!active())
-      throw new ProcessError(
-        ProcessErrno.CANCELED,
-        `diagnostic delivery cancelled; ${remaining} of ${total} diagnostic bytes unwritten`,
-      );
-    const claim = claimFileOffset(resource);
-    if (claim.kind === "failed")
-      throw new ProcessError(
-        claim.errno,
-        `diagnostic write failed (${-claim.errno}); ${remaining} of ${total} diagnostic bytes unwritten`,
-      );
-    if (claim.kind === "busy") {
-      if (now() >= deadline)
-        throw new ProcessError(
-          ProcessErrno.AGAIN,
-          `diagnostic reader made no progress for five seconds; ${remaining} of ${total} diagnostic bytes unwritten`,
-        );
-      await new Promise((resolve) => delay(resolve, 1));
-      continue;
+  return new PromiseConstructor<void>((resolve, reject) => {
+    const total = typedArrayLength(bytes);
+    if (!total) {
+      resolve();
+      return;
     }
-    const { lease } = claim;
-    const chunk = typedArraySubarray(bytes, offset, Math.min(total, offset + PAGE));
     try {
-      const written = await writeAsyncDiagnosticChunk(
+      shareFileResource(resource, fs.connection);
+    } catch (error) {
+      reject(diagnosticWriteError(error, total, total));
+      return;
+    }
+    let offset = 0;
+    let deadline = now() + stallTimeoutMs;
+    const step = (): void => {
+      if (offset >= total) {
+        resolve();
+        return;
+      }
+      const remaining = total - offset;
+      if (!active()) {
+        reject(
+          new ProcessError(
+            ProcessErrno.CANCELED,
+            `diagnostic delivery cancelled; ${remaining} of ${total} diagnostic bytes unwritten`,
+          ),
+        );
+        return;
+      }
+      const claim = claimFileOffset(resource);
+      if (claim.kind === "failed") {
+        reject(
+          new ProcessError(
+            claim.errno,
+            `diagnostic write failed (${-claim.errno}); ${remaining} of ${total} diagnostic bytes unwritten`,
+          ),
+        );
+        return;
+      }
+      if (claim.kind === "busy") {
+        if (now() >= deadline) {
+          reject(
+            new ProcessError(
+              ProcessErrno.AGAIN,
+              `diagnostic reader made no progress for five seconds; ${remaining} of ${total} diagnostic bytes unwritten`,
+            ),
+          );
+          return;
+        }
+        delay(step, 1);
+        return;
+      }
+      dispatchAsyncDiagnosticChunk(
         fs,
         resource.handle,
-        lease,
-        chunk,
-        deadline - now(),
+        claim.lease,
+        bytes,
+        offset,
+        total,
+        deadline,
+        (written) => {
+          offset += written;
+          deadline = now() + stallTimeoutMs;
+          step();
+        },
+        reject,
       );
-      if (!Number.isInteger(written) || written <= 0 || written > remaining)
-        throw new ProcessError(
-          29,
-          `diagnostic write failed (${written}); ${remaining} of ${total} diagnostic bytes unwritten`,
-        );
-      offset += written;
-      deadline = now() + DIAGNOSTIC_STALL_TIMEOUT_MS;
-    } catch (error) {
-      if (isInstance(error, ProcessError)) throw error;
-      const code = fsErrno(error);
-      throw new ProcessError(
-        code,
-        `diagnostic write failed (${-code}); ${remaining} of ${total} diagnostic bytes unwritten`,
-      );
-    } finally {
-      lease.release();
-    }
-  }
+    };
+    step();
+  });
 }

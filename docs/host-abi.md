@@ -861,7 +861,11 @@ The startup broker and post-entry worker use the same `drainDiagnostic` helper a
 `waffle/browser/diagnostic` to browser and Node hosts without loading browser globals.
 Redirected regular-file stderr uses the same bounded policy: acquire its shared offset
 lock without waiting and use `tryWrite` / `tryAppend` filesystem operations, yielding
-on `EAGAIN` rather than entering a blocking filesystem transaction.
+on `EAGAIN` rather than entering a blocking filesystem transaction. When the backend
+disables direct shared-memory file I/O (such as multi-tab attach), `drainAsyncFileDiagnostic`
+submits bounded (`<= 64 KiB`) asynchronous writes under the shared offset lease, bounding
+each stall by `DIAGNOSTIC_STALL_TIMEOUT_MS` while retaining the offset lease until any
+already-dispatched write reports an authoritative commit or abort.
 The execution failure claims its terminal outcome before delivery begins; signals
 arriving during backpressure cannot replace that outcome. Only the synchronous
 runtime-owned diagnostic write can use the still-owned stderr after that claim,

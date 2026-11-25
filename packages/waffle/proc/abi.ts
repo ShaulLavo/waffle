@@ -34,7 +34,12 @@ import {
   type Stream,
 } from "../core/descriptors.js";
 import type { FileSystem } from "../core/filesystem.js";
-import { withFileOffset } from "../core/open-file.js";
+import {
+  tryClaimFileOffset,
+  withFileOffset,
+  type AsyncFileOffsetLease,
+} from "../core/open-file.js";
+import type { DirectDisabledIOControl, FilesystemCompletion } from "../fs/client.js";
 import { PipeController } from "./pipes.js";
 import { readOutcome } from "./outcome.js";
 import { WasiExit } from "../core/wasi.js";
@@ -103,6 +108,13 @@ export interface ProcessService {
 interface NonblockingFileSystem extends FileSystem {
   readonly signal?: Int32Array;
   readonly directDisabled?: boolean;
+  directDisabledIO?(
+    operation: "read" | "write" | "append",
+    handle: number,
+    bytes: Uint8Array,
+    offset: number,
+    control: DirectDisabledIOControl,
+  ): { written: number; offset: number } | number;
   tryRead?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
   tryWrite?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
   tryAppend?(
@@ -213,9 +225,10 @@ function validWakeWord(word: Int32Array | undefined): Int32Array | undefined {
     : undefined;
 }
 
-/** Guest adapter for the runtime_proc WASM namespace. Only poll and blocking wait_job wait.
- * FileSystem must provide immediate I/O; worker-backed services supply nonblocking file I/O.
- * Streams with potentially blocking read/write must expose tryRead/tryWrite. */
+/** Guest adapter for the runtime_proc WASM namespace. Only poll, blocking wait_job, and
+ * bounded regular-file RPCs on direct-disabled backends wait. FileSystem supplies immediate
+ * nonblocking I/O whenever direct shared-memory access is enabled; streams with potentially
+ * blocking read/write must expose tryRead/tryWrite. */
 export class ProcessABI {
   readonly imports: Record<string, (...args: number[]) => number>;
   private readonly now: () => number;
@@ -577,6 +590,80 @@ export class ProcessABI {
       throw new ProcessError(NOTCAPABLE, "descriptor rights denied");
     return entry;
   }
+  private settleDeferredWriteLease(
+    completion: FilesystemCompletion,
+    lease: AsyncFileOffsetLease,
+    append: boolean,
+  ): void {
+    let settled = false;
+    completion.onReady(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        const result = completion.consumeInline();
+        if (append) lease.commit((result as { written: number; offset: number }).offset);
+        else if (typeof result === "number" && result > 0) lease.commit(lease.position + result);
+      } catch {
+        // Aborted or failed write: leave shared offset unchanged before releasing the lease.
+      } finally {
+        completion.release();
+        lease.release();
+      }
+    });
+  }
+  private directDisabledFileIO(
+    write: boolean,
+    resource: Extract<Descriptor["resource"], { kind: "file" }>,
+    bytes: Uint8Array,
+    fs: NonblockingFileSystem,
+  ): number {
+    this.checkFatal();
+    if (this.pending()) return -ProcessErrno.AGAIN;
+    const claim = tryClaimFileOffset(resource);
+    if (claim?.kind === "failed") {
+      this.checkFatal();
+      return -claim.errno;
+    }
+    if (claim?.kind === "busy") return -ProcessErrno.AGAIN;
+    const lease = claim?.kind === "acquired" ? claim.lease : undefined;
+    let releaseLease = true;
+    let outcome: number;
+    try {
+      const append = write && (lease ? lease.append : resource.append);
+      const position = lease ? lease.position : resource.offset;
+      const op = append ? "append" : write ? "write" : "read";
+      const result = fs.directDisabledIO!(op, resource.handle, bytes, position, {
+        checkFatal: () => this.checkFatal(),
+        pending: () => this.pending(),
+        wait: (ms, word, expected) => {
+          assertTerminalWaitAllowed();
+          if (this.options.wait) this.options.wait(ms, word, expected);
+          else controlWait(word, 0, expected, ms);
+        },
+        deferWrite: lease
+          ? (completion) => {
+              releaseLease = false;
+              this.settleDeferredWriteLease(completion, lease, append);
+            }
+          : undefined,
+      });
+      if (typeof result !== "number") {
+        if (lease) lease.commit(result.offset);
+        else resource.offset = result.offset;
+        outcome = result.written;
+      } else if (result > 0) {
+        if (lease) lease.commit(position + result);
+        else resource.offset = position + result;
+        outcome = result;
+      } else {
+        outcome = result;
+      }
+    } finally {
+      if (lease && releaseLease) lease.release();
+    }
+    this.checkFatal();
+    return outcome;
+  }
   private io(write: boolean, fd: number, ptr: number, length: number): number {
     const entry = this.descriptor(fd, write ? WRITE : READ),
       resource = entry.resource;
@@ -585,28 +672,25 @@ export class ProcessABI {
     if (typedArrayLength(bytes) === 0) return 0;
     if (resource.kind === "file") {
       const fs: NonblockingFileSystem = this.options.fs;
-      // When direct shared-memory file I/O is disabled (e.g. multi-tab attach), regular files
-      // execute their RPC directly under the shared offset lock, matching POSIX/Linux regular-file
-      // semantics without mutating on EAGAIN or releasing the offset lock mid-write.
-      const useImmediate = !fs.directDisabled;
+      if (fs.directDisabled && fs.directDisabledIO)
+        return this.directDisabledFileIO(write, resource, bytes, fs);
       return withFileOffset(
         resource,
         () => {
           if (write && resource.append) {
-            const result =
-              useImmediate && fs.tryAppend
-                ? fs.tryAppend(resource.handle, [bytes])
-                : fs.append(resource.handle, [bytes]);
+            const result = fs.tryAppend
+              ? fs.tryAppend(resource.handle, [bytes])
+              : fs.append(resource.handle, [bytes]);
             if (typeof result === "number") return result;
             resource.offset = result.offset;
             return result.written;
           }
           const position = resource.offset;
           const count = write
-            ? useImmediate && fs.tryWrite
+            ? fs.tryWrite
               ? fs.tryWrite(resource.handle, [bytes], position)
               : fs.write(resource.handle, [bytes], position)
-            : useImmediate && fs.tryRead
+            : fs.tryRead
               ? fs.tryRead(resource.handle, [bytes], position)
               : fs.read(resource.handle, [bytes], position);
           if (count >= 0) resource.offset = position + count;

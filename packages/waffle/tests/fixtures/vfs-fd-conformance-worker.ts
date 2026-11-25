@@ -1,5 +1,6 @@
+import { drainAsyncFileDiagnostic } from "../../browser/diagnostic.js";
 import { bootstrap } from "../../browser/worker.js";
-import { shareFileResource } from "../../core/open-file.js";
+import { claimFileOffset, shareFileResource } from "../../core/open-file.js";
 import { Wasi } from "../../core/wasi.js";
 import { FilesystemClient, type FilesystemConnection } from "../../fs/index.js";
 import { PAGE } from "../../fs/protocol.js";
@@ -21,13 +22,21 @@ const OFLAG_TRUNC = 8;
 const FDFLAG_APPEND = 1;
 
 interface WorkerRequest {
-  readonly scenario: "wasi-fd" | "proc-redirection" | "shared-write" | "diagnostic";
+  readonly scenario:
+    | "wasi-fd"
+    | "proc-redirection"
+    | "shared-write"
+    | "diagnostic"
+    | "live-descriptor"
+    | "poisoned-diagnostic";
   readonly connection: FilesystemConnection;
   readonly seedText?: string;
   readonly sharedOffset?: SharedArrayBuffer;
   readonly sharedHandle?: number;
   readonly barrier?: SharedArrayBuffer;
   readonly byteValue?: number;
+  readonly gate?: SharedArrayBuffer;
+  readonly checkFailoverWrite?: boolean;
 }
 
 function assertEqual(actual: unknown, expected: unknown, label: string): void {
@@ -495,14 +504,7 @@ function runProcRedirectionConformance(fs: FilesystemClient, seedText?: string) 
   }
 }
 
-function runSharedOffsetWrite(
-  fs: FilesystemClient,
-  sharedHandle: number,
-  sharedOffset: SharedArrayBuffer,
-  barrier: SharedArrayBuffer,
-  byteValue: number,
-) {
-  for (const reservation of fs.connection.reservations) fs.adopt(reservation);
+function createProcHost(fs: FilesystemClient, wake?: Int32Array) {
   const g = createGuestHost(fs);
   const supervisor = new ProcessSupervisor({
     registry: new ExecutableRegistry(),
@@ -519,7 +521,20 @@ function runSharedOffsetWrite(
     pid,
     service: supervisor,
     signals: supervisor.get(pid)!,
+    wake,
   });
+  return { g, supervisor, abi };
+}
+
+function runSharedOffsetWrite(
+  fs: FilesystemClient,
+  sharedHandle: number,
+  sharedOffset: SharedArrayBuffer,
+  barrier: SharedArrayBuffer,
+  byteValue: number,
+) {
+  for (const reservation of fs.connection.reservations) fs.adopt(reservation);
+  const { g, supervisor, abi } = createProcHost(fs);
   try {
     const resource = { kind: "file" as const, handle: sharedHandle, offset: 0, append: false };
     shareFileResource(resource, fs.connection, sharedOffset);
@@ -613,16 +628,154 @@ async function runBootstrapDiagnostic(connection: FilesystemConnection) {
   return { ok: true, postedCount: posted.length };
 }
 
-self.onmessage = async ({ data }: MessageEvent<WorkerRequest>) => {
-  if (data.scenario === "diagnostic") {
-    try {
-      const value = await runBootstrapDiagnostic(data.connection);
-      self.postMessage({ value });
-    } catch (error) {
-      self.postMessage({
-        error: error instanceof Error ? (error.stack ?? error.message) : String(error),
-      });
+function runLiveDescriptorTransitions(
+  fs: FilesystemClient,
+  gate: SharedArrayBuffer,
+  checkFailoverWrite: boolean,
+) {
+  const { g, supervisor, abi } = createProcHost(fs, new Int32Array(new SharedArrayBuffer(4)));
+  const cells = new Int32Array(gate);
+  const readFromStart = (fd: number): string => {
+    assertEqual(g.call("fd_seek", fd, 0n, 0, 272), 0, "live fd_seek 0");
+    const parts: Uint8Array[] = [];
+    for (;;) {
+      const n = abi.imports.read!(fd, 16384, 4096);
+      if (n < 0) throw new Error(`live runtime_proc.read failed: ${n}`);
+      if (n === 0) break;
+      parts.push(g.bytes().slice(16384, 16384 + n));
     }
+    const total = parts.reduce((sum, part) => sum + part.length, 0);
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const part of parts) {
+      out.set(part, at);
+      at += part.length;
+    }
+    return decoder.decode(out);
+  };
+  const waitGate = (target: number) => {
+    while (Atomics.load(cells, 0) < target) {
+      Atomics.wait(cells, 0, Atomics.load(cells, 0), 50);
+    }
+  };
+  try {
+    // Keep ONE open regular-file descriptor across cross-tab overwrite (and optional Host failover).
+    const fd = g.open("cross-tab.txt", 0, ALL_RIGHTS, 0);
+    const first = readFromStart(fd);
+    self.postMessage({ step: "ready1", text: first });
+    waitGate(1);
+    const second = readFromStart(fd);
+    let failoverWritten = false;
+    if (checkFailoverWrite) {
+      const wfd = g.open(
+        "after-failover.txt",
+        OFLAG_CREAT | OFLAG_TRUNC,
+        RIGHT_WRITE | RIGHT_POLL,
+        0,
+      );
+      const payload = encoder.encode("survived-failover");
+      g.bytes().set(payload, 16384);
+      const written = abi.imports.write!(wfd, 16384, payload.length);
+      assertEqual(written, payload.length, "write after failover");
+      g.call("fd_close", wfd);
+      failoverWritten = true;
+    }
+    g.call("fd_close", fd);
+    return { ok: true, first, second, failoverWritten };
+  } finally {
+    supervisor.dispose();
+    g.wasi.descriptors.dispose();
+  }
+}
+
+function runPoisonedDiagnostic(
+  connection: FilesystemConnection,
+  sharedHandle: number,
+  sharedOffset: SharedArrayBuffer,
+): void {
+  const fs = new FilesystemClient(connection);
+  const origMin = Math.min;
+  const origIsInt = Number.isInteger;
+  const origThen = Promise.prototype.then;
+  const restore = () => {
+    Math.min = origMin;
+    Number.isInteger = origIsInt;
+    Reflect.set(Promise.prototype, "then", origThen);
+  };
+  try {
+    for (const reservation of connection.reservations) fs.adopt(reservation);
+    const resource = { kind: "file" as const, handle: sharedHandle, offset: 0, append: false };
+    shareFileResource(resource, fs.connection, sharedOffset);
+
+    Math.min = () => {
+      throw new Error("poisoned Math.min");
+    };
+    Number.isInteger = () => {
+      throw new Error("poisoned Number.isInteger");
+    };
+    let thenTouched = 0;
+    Reflect.set(
+      Promise.prototype,
+      "then",
+      function (
+        this: Promise<unknown>,
+        onFulfilled?: ((value: unknown) => unknown) | null,
+        onRejected?: ((reason: unknown) => unknown) | null,
+      ) {
+        thenTouched++;
+        return origThen.call(this, onFulfilled, onRejected);
+      },
+    );
+
+    const drained = drainAsyncFileDiagnostic(fs, resource, encoder.encode("!"), () => true);
+    origThen.call(
+      drained,
+      () => {
+        const touchedDuringDrain = thenTouched;
+        restore();
+        try {
+          const claim = claimFileOffset(resource);
+          const position = claim.kind === "acquired" ? claim.lease.position : -1;
+          if (claim.kind === "acquired") claim.lease.release();
+          self.postMessage({ value: { ok: true, thenTouched: touchedDuringDrain, position } });
+        } catch (error) {
+          self.postMessage({
+            error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+          });
+        } finally {
+          fs.dispose();
+        }
+      },
+      (error) => {
+        restore();
+        fs.dispose();
+        self.postMessage({
+          error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+        });
+      },
+    );
+  } catch (error) {
+    restore();
+    fs.dispose();
+    self.postMessage({
+      error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+    });
+  }
+}
+
+self.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
+  if (data.scenario === "diagnostic") {
+    void runBootstrapDiagnostic(data.connection).then(
+      (value) => self.postMessage({ value }),
+      (error) =>
+        self.postMessage({
+          error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+        }),
+    );
+    return;
+  }
+  if (data.scenario === "poisoned-diagnostic") {
+    runPoisonedDiagnostic(data.connection, data.sharedHandle!, data.sharedOffset!);
     return;
   }
   const fs = new FilesystemClient(data.connection);
@@ -632,13 +785,15 @@ self.onmessage = async ({ data }: MessageEvent<WorkerRequest>) => {
         ? runWasiFdConformance(fs)
         : data.scenario === "proc-redirection"
           ? runProcRedirectionConformance(fs, data.seedText)
-          : runSharedOffsetWrite(
-              fs,
-              data.sharedHandle!,
-              data.sharedOffset!,
-              data.barrier!,
-              data.byteValue!,
-            );
+          : data.scenario === "live-descriptor"
+            ? runLiveDescriptorTransitions(fs, data.gate!, Boolean(data.checkFailoverWrite))
+            : runSharedOffsetWrite(
+                fs,
+                data.sharedHandle!,
+                data.sharedOffset!,
+                data.barrier!,
+                data.byteValue!,
+              );
     self.postMessage({ value: result });
   } catch (error) {
     self.postMessage({
