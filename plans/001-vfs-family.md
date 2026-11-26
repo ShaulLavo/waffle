@@ -398,3 +398,16 @@ and read handlers, and the chunk-get and chunked-upload replies in
 `leaseOnlyLapsed` / `renewLapsedLease` path, with the per-call budget, before the Host replies or
 publishes, so the Peer's guest is not cancelled while the Host still holds its locks. Test it with
 two tabs: the Host's lease lapses behind a long `listFiles` while the Peer reads and writes.
+
+### Follow-up: cross-tab change generation for multitab mode, 2026-11-26
+
+Status: Approved follow-up. Cross-tab change generation for multitab mode. In the playground's
+default persistent mode, `MultiTabBackend` sets `CLIENT_MODE_NO_CLIENT_CACHE`, so
+`FilesystemClient` has no usable change epoch and no client cache, and a guest can't tell whether
+another writer (the page, another tab, a sibling process) changed the namespace since it last
+looked. Measured on a cold Nuxt dev boot (bun-wasm #1092, 2026-11-26): an epoch-backed
+`fs_generation` was unavailable for all 7,000+ resolutions. Wanted: a shared namespace generation
+(bumped on create, unlink, rename, mkdir, rmdir, and content writes to files named `package.json`)
+that every tab's clients can read with an `Atomics` load, kept coherent across tabs by the
+multitab protocol, with `ENOTSUP` as the explicit 'don't cache' answer. Consumers: bun-wasm module
+resolution caches, and Waffle's own client path and stat caches in multitab mode.
