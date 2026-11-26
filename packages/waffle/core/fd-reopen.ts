@@ -55,7 +55,9 @@ export function openInode(
 ): number {
   if (stat.kind === "socket") return -60;
   const access = (base & READ ? 4 : 0) | (base & WRITE ? 2 : 0);
-  const permissions = fs.permissions?.(handle, stat);
+  // An open's stat is its permission snapshot, except before a truncate: the truncate commits
+  // later, so it authorizes from a fresh read rather than combine access from two modes.
+  const permissions = fs.permissions?.(handle, oflags & 8 ? undefined : stat);
   if (permissions && permissions.accessSupported & access & ~permissions.access) return -2;
   if (oflags & 2 && kind !== "directory") return -54;
   if (oflags & 8) {

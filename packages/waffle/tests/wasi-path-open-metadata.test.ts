@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { openInode } from "../core/fd-reopen.js";
 import { DescriptorTable } from "../core/descriptors.js";
-import { type FileStat, type FileSystem } from "../core/filesystem.js";
+import { permissionsFor, type FileStat, type FileSystem } from "../core/filesystem.js";
 import { RIGHT_FD_READ, RIGHT_FD_WRITE } from "../core/rights.js";
 import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
@@ -271,5 +271,33 @@ test("path_permissions_get reuses its decoder across invalid UTF-8, BOM and vali
     expect(constructed).toBe(0);
   } finally {
     globalThis.TextDecoder = Original;
+  }
+});
+
+test("a truncating open authorizes from a fresh read, not the stat it was handed", () => {
+  const mem = new MemFS();
+  mem.writeFile("/f.txt", "abc");
+  const handle = mem.resolve(mem.preopen("/"), "f.txt", false);
+  if (typeof handle === "number" || handle.node === undefined) throw new Error("missing file");
+  const node = handle.node;
+  expect(mem.setMode(node, 0o400)).toBe(0);
+  // The open's stat saw read-only; another client then made the file write-only.
+  const sampled = mem.stat(node);
+  expect(mem.setMode(node, 0o200)).toBe(0);
+  // Like the filesystem client: permissions given a stat answer from that stat alone.
+  const fs = Object.create(mem) as FileSystem;
+  fs.permissions = (target: number, stat?: FileStat) =>
+    stat?.mode !== undefined ? permissionsFor(stat.kind, stat.mode) : mem.permissions(target);
+  const table = new DescriptorTable();
+  try {
+    // Read plus O_TRUNC: neither mode allows both, so the open must fail and keep the bytes.
+    expect(openInode(table, fs, node, "file", O_TRUNC, 0, RIGHT_FD_READ, 0n, sampled)).toBe(-2);
+    expect(mem.stat(node).size).toBe(3);
+    // Without O_TRUNC the open's own stat is its permission snapshot.
+    expect(
+      openInode(table, fs, node, "file", 0, 0, RIGHT_FD_READ, 0n, sampled),
+    ).toBeGreaterThanOrEqual(0);
+  } finally {
+    table.dispose();
   }
 });
