@@ -1,5 +1,21 @@
 # @waffle-os/runtime
 
+## 0.0.154
+
+### Patch Changes
+
+- b24d6b2: `PersistentBackend` now reconciles dirty-admission debt after a commit even when concurrent writes arrived while storage was persisting, maintains namespace metadata bytes incrementally in O(1), and skips idle background checkpoint ticks when nothing changed. Cold package installs no longer accumulate stale dirty debt across completed checkpoints and stall in `waitForDirtyCapacity`.
+- 444fd2e: A filesystem client no longer sends a discard message for a reply the service keeps nothing for: an inline reply to stat, create, write, append, grow, resize, setTimes, setMode, read or readlink. Resolves, stages, walks, watches, workspace reads and overflowing replies are still discarded at once, as before. Requests also omit an absent publication admission, so the service decodes them on the plain JSON path.
+- 18e9436: Listing the registered files of a shared filesystem no longer walks the whole 32,767-slot identity table each time. Persistent checkpoints and clean-cache eviction use that list, and it now comes from a per-state index checked against the table's registered-slot count.
+- 8bd8e78: Filesystem requests no longer wake every connection's revocation watcher. Revocation, reap and transport failure now also bump a second word in the shared signal, and the fs worker's per-session watchers and the clients' revocation monitors wait on that word alone. A package install's fs worker used to take about five extra tasks per request just to re-check revocation.
+- b15d5db: The filesystem service no longer rescans every transient capability after each request. A scan runs only when the set is over its bound, when something was unlinked since the last scan, or while an unlinked capability is still referenced. Unlinked files are still collected as soon as their last reference goes.
+- 423ec71: The first read of a file from a saved IndexedDB workspace takes one transaction instead of one for the manifest plus one per 64 KiB chunk, and looking up a stored file's size no longer scans the whole file tree. Every chunk is still checked against its stored SHA-256 checksum before any byte is returned.
+- e6f8031: Reopening a saved IndexedDB workspace reads every stored file's manifest in one request instead of one transaction per file. A 17,000-file workspace now opens in about 0.4 to 0.7 s instead of 2 to 5 s in Chromium, Firefox and WebKit.
+- b30cf56: A persistent workspace no longer fails running filesystem calls with `ECANCELED` ("host lease expired") when its lease renewal timer runs late behind a long task. The Host renews the lease and retries the call. A call still fails when another tab has taken over, the Host is stepping down, or the workspace is closing.
+- 2954b6f: A page now runs one notification relay Worker for all its processes instead of one per process, and the relay waits on filesystem, network and process words only while a process is blocked in a notification wait. A process that never blocks there, such as Bun on the Browser engine, starts no blocking-wait Workers and costs the relay nothing. Filesystem revocation and reap now advance the watch word as well as notifying it.
+- 07e624e: Guests can ask for a canonical path in one filesystem request with the new `runtime_fs.path_realpath` import, instead of one `path_readlink` per path component.
+- 2522750: `PreviewServer.request()` takes an optional `{ signal }`. Aborting it closes the guest server's connection for that one request, and the sink hears nothing more.
+
 ## 0.0.153
 
 ### Patch Changes
