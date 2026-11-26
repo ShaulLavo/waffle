@@ -32,6 +32,7 @@ import {
   createFilesystemConnection,
 } from "../fs/index.js";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
+import { CHUNK_SIZE } from "../fs/indexeddb-chunks.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { FilesystemError, PAGE } from "../fs/protocol.js";
 import { gatedIndexedDB } from "./gated-indexeddb.js";
@@ -1319,6 +1320,87 @@ function indexedDBCases(
         "payload bytes survive reopen",
       );
     await cold.close();
+  });
+
+  test("IndexedDB cold reads take one transaction and verify every chunk", async (name, open) => {
+    const size = 3 * CHUNK_SIZE + 100;
+    const content = Uint8Array.from({ length: size }, (_, index) => index % 251);
+    const saved = batch(1);
+    saved.upserts[1]!.size = size;
+    saved.data = new Map([["file:1", content]]);
+    const storage = await open();
+    await storage.persist(saved);
+    await storage.close();
+    const cold = await open();
+    await cold.load();
+    const full = await countTransactions(() => cold.read("file:1"));
+    assert(full.count === 1, `a full read used ${full.count} transactions`);
+    assert(
+      full.result.length === size && full.result.every((byte, index) => byte === index % 251),
+      "full read bytes match",
+    );
+    const part = await countTransactions(() =>
+      cold.readRange("file:1", { offset: 10, length: 2 * CHUNK_SIZE }),
+    );
+    assert(part.count === 1, `a range read used ${part.count} transactions`);
+    assert(
+      part.result.length === 2 * CHUNK_SIZE &&
+        part.result.every((byte, index) => byte === (index + 10) % 251),
+      "range bytes match",
+    );
+    await cold.close();
+    // Damage a chunk that a range covers whole, keeping its stored checksum.
+    let middle: { bytes: Uint8Array; checksum: string } | undefined;
+    await raw(name, async (db) => {
+      middle = await request(db.transaction("data").objectStore("data").get(["file:1", 1]));
+    });
+    middle!.bytes[7] = middle!.bytes[7]! ^ 1;
+    await change(name, "data", ["file:1", 1], middle);
+    const damaged = await open();
+    await damaged.load();
+    await rejects(
+      damaged.readRange("file:1", { offset: 0, length: 3 * CHUNK_SIZE }),
+      "Invalid filesystem payload chunks",
+    );
+    await rejects(damaged.read("file:1"), "Invalid filesystem payload chunks");
+    const edge = await damaged.readRange("file:1", { offset: 5, length: 100 });
+    assert(
+      edge.every((byte, index) => byte === (index + 5) % 251),
+      "an undamaged chunk still reads",
+    );
+    await damaged.close();
+  });
+
+  test("IndexedDB payload sizes follow commits, recovery bases and journals", async (_name, open) => {
+    const storage = await open();
+    const retain = (key: string, size: number) => storage.retainPayload(key, size).release();
+    await storage.persist(batch(1, "one"));
+    retain("file:1", 3);
+    await rejects(
+      Promise.resolve().then(() => retain("file:1", 4)),
+      "size mismatch",
+    );
+    for (let generation = 2; generation <= 4; generation++)
+      await storage.persist(batch(generation, "x".repeat(generation)));
+    // Replaced in the tree, file:3 is still named by a recovery base or a kept journal.
+    retain("file:3", 3);
+    retain("file:4", 4);
+    for (let generation = 5; generation <= 8; generation++)
+      await storage.persist(batch(generation, "x".repeat(generation)));
+    await rejects(
+      Promise.resolve().then(() => retain("file:1", 3)),
+      "Missing",
+    );
+    retain("file:8", 8);
+    await storage.close();
+    const reopened = await open();
+    await reopened.load();
+    reopened.retainPayload("file:8", 8).release();
+    await rejects(
+      Promise.resolve().then(() => reopened.retainPayload("file:8", 7)),
+      "size mismatch",
+    );
+    await reopened.close();
   });
 
   test("IndexedDB pin validation does not hydrate cold payloads", async (_name, open) => {
