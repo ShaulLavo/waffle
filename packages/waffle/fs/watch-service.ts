@@ -1,4 +1,4 @@
-import { FilesystemError } from "../core/filesystem.js";
+import { FilesystemError, type WatchDrainEntry } from "../core/filesystem.js";
 import type { LocalMutationPlan, MemoryBackend } from "./backend.js";
 import { captureWatchIndex, indexWatchNode } from "./watch-capture.js";
 import { WatchIndex } from "./watch-index.js";
@@ -6,6 +6,13 @@ import { WatchRouting } from "./watch-routing.js";
 import { WatchSubscriptions, type HeldWatchBatch } from "./watch-subscriptions.js";
 import { WATCH_CAPACITY, type WatchRecord } from "./watch-ring.js";
 import type { WatchBatch, WatchEvent } from "./watch.js";
+
+export interface HeldWatchDrain {
+  readonly entries: readonly WatchDrainEntry[];
+  readonly hasEvents: boolean;
+  release(): void;
+  rollback(): void;
+}
 
 /** One live metadata index and pooled event allocator per backend root. */
 export class WatchService {
@@ -86,6 +93,56 @@ export class WatchService {
     } finally {
       held.release();
     }
+  }
+  drainHeld(owner: number): HeldWatchDrain {
+    return this.backend.shared.mutate(undefined, undefined, () => {
+      this.drain();
+      const entries: WatchDrainEntry[] = [];
+      const held: HeldWatchBatch[] = [];
+      let hasEvents = false;
+      try {
+        this.subscriptions.forReady(owner, (id) => {
+          const root = this.subscriptions.root(owner, id);
+          if (!this.incomplete && !this.subscriptions.overflowed(owner, id)) {
+            try {
+              this.access(root);
+            } catch (error) {
+              if (error instanceof FilesystemError) {
+                entries.push({ id, errno: error.errno });
+                return;
+              }
+              throw error;
+            }
+          }
+          const item = this.subscriptions.batch(owner, id);
+          if (item.batch.kind === "events" && !item.batch.events.length) {
+            item.release();
+            return;
+          }
+          if (item.batch.events.length) hasEvents = true;
+          held.push(item);
+          entries.push({ id, batch: item.batch });
+        });
+      } catch (error) {
+        for (const item of held) item.rollback();
+        throw error;
+      }
+      let settled = false;
+      const finish = (rollback: boolean) => {
+        if (settled) return;
+        settled = true;
+        for (const item of held) {
+          if (rollback) item.rollback();
+          else item.release();
+        }
+      };
+      return {
+        entries,
+        hasEvents,
+        release: () => finish(false),
+        rollback: () => finish(true),
+      };
+    });
   }
   close(owner: number, id: number): void {
     let directory = false;
@@ -209,8 +266,15 @@ export class WatchService {
       return;
     }
     if (!this.index.has(record.file)) return;
-    if (record.kind === "metadata")
-      this.index.upsert(record.file, record.mode, this.index.metadata(record.file).directory);
+    if (record.kind === "metadata") {
+      const directory = this.index.metadata(record.file).directory;
+      this.index.upsert(record.file, record.mode, directory);
+      const required = directory ? 0o500 : 0o400;
+      const inaccessible = (record.mode & required) !== required;
+      this.subscriptions.forRoot(record.file, (owner, id) =>
+        this.subscriptions.setInaccessible(owner, id, inaccessible),
+      );
+    }
     this.deliver(record.file, "change");
   }
   private target(file: bigint, type: WatchEvent["type"]): void {

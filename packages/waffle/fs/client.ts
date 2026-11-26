@@ -495,6 +495,7 @@ function clientWatches(
     },
     open: (handle, recursive) => call("watchOpen", [handle, recursive]),
     read: (id) => call("watchRead", [id]),
+    drain: () => call("watchDrain", []),
     close: (id) => {
       call("watchClose", [id]);
     },

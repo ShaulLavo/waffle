@@ -634,7 +634,9 @@ const OVERFLOW = 3;
 
 /** The real WASI adapter and watch service in one thread; calls are counted at the service.
  * Each call takes a request buffer from a real allocator, as FilesystemClient's calls do. */
-function guestWatches(hooks: { afterOpen?(): void; duringRead?(): void } = {}) {
+function guestWatches(
+  hooks: { afterOpen?(): void; duringRead?(): void; withDrain?: boolean } = {},
+) {
   const backend = new MemoryBackend();
   backend.execute("mkdirp", ["/dir/sub"], new Uint8Array());
   const write = (path: string, byte = 1) =>
@@ -642,7 +644,7 @@ function guestWatches(hooks: { afterOpen?(): void; duringRead?(): void } = {}) {
   write("/dir/a");
   write("/dir/sub/b");
   const service = new WatchService(backend);
-  const calls = { open: 0, read: 0, close: 0 };
+  const calls = { open: 0, read: 0, drain: 0, close: 0 };
   const state = { revoked: false };
   const pool = new FilesystemRequestPool(createRequestBudget());
   const allocator = new FilesystemRequestAllocator(pool.take(new SharedArrayBuffer(4)));
@@ -685,6 +687,21 @@ function guestWatches(hooks: { afterOpen?(): void; duringRead?(): void } = {}) {
         hooks.duringRead?.();
         return batch;
       }),
+    ...(hooks.withDrain
+      ? {
+          drain: () =>
+            request(() => {
+              calls.drain++;
+              const held = service.drainHeld(1);
+              try {
+                hooks.duringRead?.();
+                return held.entries;
+              } finally {
+                held.release();
+              }
+            }),
+        }
+      : {}),
     close: (id) =>
       request(() => {
         calls.close++;
@@ -1066,3 +1083,159 @@ test("a guest watch close refused at request admission keeps its id for a retry"
   expect(Atomics.load(h.backend.shared.watch.cells, 0)).toBe(0);
   expect(h.guest.close(id)).toBe(8);
 });
+
+test("batched watchDrain and watch_next deliver only matching watches in one service call", () => {
+  const h = guestWatches({ withDrain: true });
+  const target = h.guest.open(h.descriptor("/dir/a")).id;
+  const idleIds: number[] = [];
+  const sub = h.descriptor("/dir/sub");
+  for (let index = 0; index < 1500; index++) idleIds.push(h.guest.open(sub).id);
+  expectReady(h, 0);
+  expect(h.guest.next().errno).toBe(6);
+  expect(h.calls.drain).toBe(0);
+  expect(h.calls.read).toBe(0);
+
+  h.write("/dir/a", 2);
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id: target,
+    records: [{ type: CHANGE, name: null }],
+  });
+  expect(h.guest.next().errno).toBe(6);
+  expect(h.calls.drain).toBe(1);
+  expect(h.calls.read).toBe(0);
+  expectReady(h, 0);
+
+  // Unrelated commit makes one drain returning empty and zero per-watch reads.
+  h.backend.execute("writeFile", ["/outside", false], new Uint8Array([1]));
+  expectReady(h, 1);
+  expect(h.guest.next().errno).toBe(6);
+  expect(h.calls.drain).toBe(2);
+  expect(h.calls.read).toBe(0);
+  expectReady(h, 0);
+
+  // Reading any single watch id via watch_read also uses the single drain RPC.
+  h.write("/dir/a", 3);
+  expect(h.guest.read(idleIds[0]!).errno).toBe(6);
+  expect(h.calls.drain).toBe(3);
+  expect(h.calls.read).toBe(0);
+  expect(h.guest.read(target).records).toEqual([{ type: CHANGE, name: null }]);
+  expect(h.calls.drain).toBe(3);
+  expect(h.calls.read).toBe(0);
+  expectReady(h, 0);
+
+  expect(h.guest.close(target)).toBe(0);
+  for (const id of idleIds) expect(h.guest.close(id)).toBe(0);
+  expectReady(h, 0);
+});
+
+test("watch_next preserves ENOBUFS, permission errors, overflow, revocation and reentrant writes", () => {
+  let inject = false;
+  const h = guestWatches({
+    withDrain: true,
+    duringRead() {
+      if (!inject) return;
+      inject = false;
+      h.write("/dir/sub/b", 8);
+    },
+  });
+  const dir = h.guest.open(h.descriptor("/dir"), RECURSIVE).id;
+  const handle = h.backend.fs.handleForNode(h.backend.fs.lookup("/dir")!);
+
+  // ENOBUFS preserves queued records and reports id and needed length.
+  h.write("/dir/a", 2);
+  expect(h.guest.next(7)).toMatchObject({ errno: 42, id: dir, length: 12 });
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id: dir,
+    records: [{ type: CHANGE, name: "a" }],
+  });
+  expectReady(h, 0);
+
+  // Reentrant write during drain stays ready and delivers on the next call.
+  inject = true;
+  h.write("/dir/a", 3);
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id: dir,
+    records: [{ type: CHANGE, name: "a" }],
+  });
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id: dir,
+    records: [{ type: CHANGE, name: "sub/b" }],
+  });
+  expectReady(h, 0);
+
+  // Permission denial surfaces EACCES with watch id, persists while unreadable, and clears on restore.
+  h.backend.execute("setMode", [handle, 0o300], new Uint8Array());
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({ errno: 2, id: dir });
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({ errno: 2, id: dir });
+  h.backend.execute("setMode", [handle, 0o700], new Uint8Array());
+  h.write("/dir/a", 4);
+  const recovered = h.guest.next();
+  expect(recovered.errno).toBe(0);
+  expect(recovered.id).toBe(dir);
+  expect(recovered.records).toContainEqual({ type: CHANGE, name: "a" });
+  expectReady(h, 0);
+
+  // Overflow delivers terminal record then end of stream for that id.
+  for (let index = 0; index <= 128; index++) h.write(`/dir/ov${index}`);
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id: dir,
+    records: [{ type: OVERFLOW, name: null }],
+  });
+  expect(h.guest.next()).toMatchObject({ errno: 0, id: dir, length: 0, records: [] });
+  expect(h.guest.close(dir)).toBe(0);
+  expectReady(h, 0);
+
+  // Revocation reports ECANCELED with the open watch id.
+  const revokedWatch = h.guest.open(h.descriptor("/dir")).id;
+  h.state.revoked = true;
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({ errno: 11, id: revokedWatch });
+  expect(h.guest.close(revokedWatch)).toBe(0);
+  expectReady(h, 0);
+});
+
+test("FilesystemClient watchDrain RPC drains only ready subscriptions for its session", async () => {
+  const f = await fixture();
+  try {
+    await f.page.asyncCall("create", [
+      await f.page.asyncCall("resolve", [f.root, "dirA"]),
+      "directory",
+    ]);
+    await f.page.asyncCall("create", [
+      await f.page.asyncCall("resolve", [f.root, "dirB"]),
+      "directory",
+    ]);
+    const guestA = await f.guest.asyncCall("resolve", [f.guestRoot, "dirA"]);
+    const guestB = await f.guest.asyncCall("resolve", [f.guestRoot, "dirB"]);
+    const a = await f.guest.asyncCall("watchOpen", [guestA.node, false]);
+    const b = await f.guest.asyncCall("watchOpen", [guestB.node, false]);
+    expect(await f.guest.asyncCall("watchDrain", [])).toEqual([]);
+    await f.page.asyncCall("writeFile", ["/dirB/file.txt", false], new Uint8Array([1]));
+    const drained = await f.guest.asyncCall("watchDrain", []);
+    expect(drained).toHaveLength(1);
+    expect(drained[0]).toMatchObject({ id: b, batch: { kind: "events" } });
+    if ("batch" in drained[0]! && drained[0].batch.kind === "events") {
+      expect(
+        drained[0].batch.events.some(
+          (event: { type: string; name: string | null }) =>
+            event.type === "rename" && event.name === "file.txt",
+        ),
+      ).toBe(true);
+    }
+    expect(await f.guest.asyncCall("watchDrain", [])).toEqual([]);
+    await f.guest.asyncCall("watchClose", [a]);
+    await f.guest.asyncCall("watchClose", [b]);
+  } finally {
+    await f.close();
+  }
+}, 10000);

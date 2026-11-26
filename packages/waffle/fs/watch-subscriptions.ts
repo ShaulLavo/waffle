@@ -7,12 +7,16 @@ import { WatchNames, type WatchNameReservation } from "./watch-names.js";
 import { WATCH_CAPACITY } from "./watch-ring.js";
 import type { WatchBatch, WatchEvent } from "./watch.js";
 
-const WIDTH = 48;
+const WIDTH = 56;
 const EVENT = 32;
 const HEAD = 20;
 const TAIL = 24;
 const COUNT = 28;
+const READY_NEXT = 48;
+const READY_PREV = 52;
 const OVERFLOW = 2;
+const READY = 4;
+const INACCESSIBLE = 8;
 const NULL_NAME = 0xffffffff;
 export interface HeldWatchBatch {
   readonly batch: WatchBatch;
@@ -24,6 +28,7 @@ export class WatchSubscriptions {
   private readonly records: WatchArena;
   private readonly ids: WatchIdIndex;
   private readonly owners: WatchIdIndex;
+  private readonly readyOwners: WatchIdIndex;
   private readonly events: WatchArena;
   private readonly names: WatchNames;
   private tail = 0;
@@ -40,6 +45,7 @@ export class WatchSubscriptions {
     this.records = new WatchArena(account);
     this.ids = new WatchIdIndex(account);
     this.owners = new WatchIdIndex(account);
+    this.readyOwners = new WatchIdIndex(account);
     this.events = new WatchArena(account, "events");
     this.names = new WatchNames(account, 12288, "events");
   }
@@ -75,17 +81,23 @@ export class WatchSubscriptions {
     const record = this.records.stage(slot * WIDTH);
     let lookup: WatchGrowth | undefined;
     let owners: WatchGrowth | undefined;
+    let readyOwners: WatchGrowth | undefined;
     try {
       lookup = this.ids.stage();
-      if (!this.owners.get(BigInt(owner))) owners = this.owners.stage();
+      if (!this.owners.get(BigInt(owner))) {
+        owners = this.owners.stage();
+        readyOwners = this.readyOwners.stage();
+      }
       this.index.pin(root);
       record.commit();
       lookup.commit();
       owners?.commit();
+      readyOwners?.commit();
     } catch (error) {
       record.cancel();
       lookup?.cancel();
       owners?.cancel();
+      readyOwners?.cancel();
       throw error;
     }
     const at = (slot - 1) * WIDTH;
@@ -105,16 +117,70 @@ export class WatchSubscriptions {
   }
   private attach(slot: number, root: bigint, owner: number): void {
     const at = (slot - 1) * WIDTH;
-    const ownerHead = this.owners.get(BigInt(owner));
+    const ownerKey = BigInt(owner);
+    const ownerHead = this.owners.get(ownerKey);
     const rootHead = this.index.watchHead(root);
     this.records.view.setUint32(at + 32, ownerHead, true);
     this.records.view.setUint32(at + 40, rootHead, true);
     if (ownerHead) {
       this.records.view.setUint32((ownerHead - 1) * WIDTH + 36, slot, true);
-      this.owners.set(BigInt(owner), slot);
-    } else this.owners.add(BigInt(owner), slot);
+      this.owners.set(ownerKey, slot);
+    } else {
+      this.owners.add(ownerKey, slot);
+      this.readyOwners.add(ownerKey, 0);
+    }
     if (rootHead) this.records.view.setUint32((rootHead - 1) * WIDTH + 44, slot, true);
     this.index.setWatchHead(root, slot);
+  }
+  private markReady(slot: number, owner: number): void {
+    const at = (slot - 1) * WIDTH;
+    const view = this.records.view;
+    const flags = view.getUint32(at + 16, true);
+    if (flags & READY) return;
+    view.setUint32(at + 16, flags | READY, true);
+    const ownerKey = BigInt(owner);
+    const head = this.readyOwners.get(ownerKey);
+    view.setUint32(at + READY_NEXT, head, true);
+    view.setUint32(at + READY_PREV, 0, true);
+    if (head) view.setUint32((head - 1) * WIDTH + READY_PREV, slot, true);
+    this.readyOwners.set(ownerKey, slot);
+  }
+  private unmarkReady(slot: number, owner: number): void {
+    const at = (slot - 1) * WIDTH;
+    const view = this.records.view;
+    const flags = view.getUint32(at + 16, true);
+    if (!(flags & READY)) return;
+    view.setUint32(at + 16, flags & ~READY, true);
+    const next = view.getUint32(at + READY_NEXT, true);
+    const previous = view.getUint32(at + READY_PREV, true);
+    if (previous) view.setUint32((previous - 1) * WIDTH + READY_NEXT, next, true);
+    else this.readyOwners.set(BigInt(owner), next);
+    if (next) view.setUint32((next - 1) * WIDTH + READY_PREV, previous, true);
+    view.setUint32(at + READY_NEXT, 0, true);
+    view.setUint32(at + READY_PREV, 0, true);
+  }
+  setInaccessible(owner: number, id: number, inaccessible: boolean): void {
+    const at = this.at(owner, id);
+    const slot = at / WIDTH + 1;
+    const view = this.records.view;
+    const flags = view.getUint32(at + 16, true);
+    if (inaccessible) {
+      view.setUint32(at + 16, flags | INACCESSIBLE, true);
+      this.markReady(slot, owner);
+      return;
+    }
+    if (!(flags & INACCESSIBLE)) return;
+    view.setUint32(at + 16, flags & ~INACCESSIBLE, true);
+    if (!(flags & OVERFLOW) && !view.getUint32(at + COUNT, true)) this.unmarkReady(slot, owner);
+  }
+  forReady(owner: number, visit: (id: number) => void): void {
+    let slot = this.readyOwners.get(BigInt(owner));
+    while (slot) {
+      const at = (slot - 1) * WIDTH;
+      const next = this.records.view.getUint32(at + READY_NEXT, true);
+      visit(this.records.view.getFloat64(at, true));
+      slot = next;
+    }
   }
   root(owner: number, id: number): bigint {
     const at = this.at(owner, id);
@@ -153,6 +219,7 @@ export class WatchSubscriptions {
       return this.overflow(owner, id);
     try {
       this.append(at, event);
+      this.markReady(at / WIDTH + 1, owner);
     } catch (error) {
       if (!(error instanceof FilesystemError) || (error.errno !== 6 && error.errno !== 48))
         throw error;
@@ -271,6 +338,8 @@ export class WatchSubscriptions {
     this.records.view.setUint32(at + HEAD, 0, true);
     this.records.view.setUint32(at + TAIL, 0, true);
     this.records.view.setUint32(at + COUNT, 0, true);
+    if (!(this.records.view.getUint32(at + 16, true) & (OVERFLOW | INACCESSIBLE)))
+      this.unmarkReady(at / WIDTH + 1, owner);
     let held = true;
     const settle = (rollback: boolean) => {
       if (!held) return;
@@ -303,6 +372,7 @@ export class WatchSubscriptions {
     this.records.view.setUint32(at + HEAD, first, true);
     if (!current) this.records.view.setUint32(at + TAIL, last, true);
     this.records.view.setUint32(at + COUNT, current + count, true);
+    this.markReady(at / WIDTH + 1, owner);
     return true;
   }
 
@@ -330,6 +400,7 @@ export class WatchSubscriptions {
       this.records.view.getUint32(at + 16, true) | OVERFLOW,
       true,
     );
+    this.markReady(at / WIDTH + 1, owner);
   }
   close(owner: number, id: number): boolean {
     if (!this.slot(id)) return false;
@@ -348,12 +419,14 @@ export class WatchSubscriptions {
       this.records.close();
       this.ids.close();
       this.owners.close();
+      this.readyOwners.close();
       this.tail = this.free = 0;
       if (!this.queued) this.resetEvents();
     }
     return true;
   }
   private detach(slot: number, root: bigint, owner: number): void {
+    this.unmarkReady(slot, owner);
     const at = (slot - 1) * WIDTH;
     const ownerNext = this.records.view.getUint32(at + 32, true);
     const ownerPrevious = this.records.view.getUint32(at + 36, true);
@@ -362,7 +435,10 @@ export class WatchSubscriptions {
     if (ownerPrevious)
       this.records.view.setUint32((ownerPrevious - 1) * WIDTH + 32, ownerNext, true);
     else if (ownerNext) this.owners.set(BigInt(owner), ownerNext);
-    else this.owners.delete(BigInt(owner));
+    else {
+      this.owners.delete(BigInt(owner));
+      this.readyOwners.delete(BigInt(owner));
+    }
     if (ownerNext) this.records.view.setUint32((ownerNext - 1) * WIDTH + 36, ownerPrevious, true);
     if (rootPrevious) this.records.view.setUint32((rootPrevious - 1) * WIDTH + 40, rootNext, true);
     else this.index.setWatchHead(root, rootNext);
@@ -387,6 +463,7 @@ export class WatchSubscriptions {
     this.records.close();
     this.ids.close();
     this.owners.close();
+    this.readyOwners.close();
     this.events.close();
     this.names.close();
   }

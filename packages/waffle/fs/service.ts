@@ -1037,6 +1037,33 @@ export class FilesystemService {
       else held.release();
       return held.batch;
     }
+    if (operation === "watchDrain") {
+      if (this.backend.watchDrain) {
+        const register = (held: import("./watch-service.js").HeldWatchDrain) => {
+          if (cancelled()) {
+            held.rollback();
+            throw new FilesystemError(11);
+          }
+          if (held.hasEvents)
+            session.watchTransactions.set(requestId, {
+              cancel: held.rollback,
+              release: held.release,
+            });
+          else held.release();
+          return held.entries;
+        };
+        const draining = this.backend.watchDrain(session.connection.owner, cancelled);
+        return draining instanceof Promise
+          ? this.trackRequestWork(session, draining).then(register)
+          : register(draining);
+      }
+      if (!this.watchService) return [];
+      const held = this.watchService.drainHeld(session.connection.owner);
+      if (held.hasEvents)
+        session.watchTransactions.set(requestId, { cancel: held.rollback, release: held.release });
+      else held.release();
+      return held.entries;
+    }
     if (operation === "watchClose") {
       if (this.backend.watchClose) {
         this.backend.watchClose(session.connection.owner, a);

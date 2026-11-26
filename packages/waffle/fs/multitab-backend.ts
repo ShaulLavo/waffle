@@ -665,6 +665,7 @@ export class MultiTabBackend implements FilesystemBackend {
   private byFileId = new Map<bigint, LocalHandleEntry>();
   private nextLocalWatchId = 1;
   private localWatches = new Map<number, LocalWatchEntry>();
+  private hostWatchToLocal = new Map<number, LocalWatchEntry>();
 
   private constructor(private readonly options: MultiTabBackendOptions) {
     this.scope = multitabScope(options.implementation, options.name);
@@ -1117,7 +1118,7 @@ export class MultiTabBackend implements FilesystemBackend {
       this.watchService ??= new WatchService(this.persistent!);
       const hostWatchId = this.watchService.open(owner, entry.remoteHandle, recursive, cancelled);
       const localWatchId = this.nextLocalWatchId++;
-      this.localWatches.set(localWatchId, {
+      const localEntry: LocalWatchEntry = {
         localWatchId,
         localOwner: owner,
         fileId: entry.fileId,
@@ -1126,7 +1127,9 @@ export class MultiTabBackend implements FilesystemBackend {
         hostWatchId,
         overflowed: false,
         closed: false,
-      });
+      };
+      this.localWatches.set(localWatchId, localEntry);
+      this.hostWatchToLocal.set(hostWatchId, localEntry);
       return localWatchId;
     }
     if (this.needsFailoverWait()) {
@@ -1225,11 +1228,106 @@ export class MultiTabBackend implements FilesystemBackend {
     return this.watchService.readHeld(owner, watch.hostWatchId!);
   }
 
+  watchDrain(
+    owner: number,
+    cancelled: () => boolean,
+  ):
+    | import("./watch-service.js").HeldWatchDrain
+    | Promise<import("./watch-service.js").HeldWatchDrain> {
+    if (this.role === "host") {
+      if (!this.isLeaseValid()) {
+        return this.watchDrainHostAfterRenew(owner, cancelled);
+      }
+      return this.drainHostWatches(owner);
+    }
+    throw new FilesystemError(58);
+  }
+
+  private async watchDrainHostAfterRenew(
+    owner: number,
+    cancelled: () => boolean,
+  ): Promise<import("./watch-service.js").HeldWatchDrain> {
+    if (this.disposing || cancelled()) throw new FilesystemError(11);
+    let ok = false;
+    await raceWithAbort(
+      this.renewLeaseNow().then((renewed) => {
+        ok = renewed;
+      }),
+      this.disposeAbort.signal,
+      cancelled,
+    );
+    if (this.disposing || cancelled()) throw new FilesystemError(11);
+    if (!ok || !this.isLeaseValid() || this.role !== "host") {
+      const entries: import("../core/filesystem.js").WatchDrainEntry[] = [];
+      for (const watch of this.localWatches.values()) {
+        if (watch.closed || watch.localOwner !== owner) continue;
+        watch.overflowed = true;
+        entries.push({ id: watch.localWatchId, batch: { kind: "overflow", events: [] } });
+      }
+      return { entries, hasEvents: false, release() {}, rollback() {} };
+    }
+    return this.drainHostWatches(owner);
+  }
+
+  private drainHostWatches(owner: number): import("./watch-service.js").HeldWatchDrain {
+    if (this.terminalFailure || !this.watchService) {
+      const entries: import("../core/filesystem.js").WatchDrainEntry[] = [];
+      for (const watch of this.localWatches.values()) {
+        if (watch.closed || watch.localOwner !== owner) continue;
+        watch.overflowed = true;
+        entries.push({ id: watch.localWatchId, batch: { kind: "overflow", events: [] } });
+      }
+      return { entries, hasEvents: false, release() {}, rollback() {} };
+    }
+    const entries: import("../core/filesystem.js").WatchDrainEntry[] = [];
+    const seen = new Set<number>();
+    const held = this.watchService.drainHeld(owner);
+    for (const entry of held.entries) {
+      const local = this.hostWatchToLocal.get(entry.id);
+      if (!local || local.closed || local.localOwner !== owner) continue;
+      if (local.overflowed || local.hostTerm !== this.hostTerm) {
+        local.overflowed = true;
+        seen.add(local.localWatchId);
+        entries.push({ id: local.localWatchId, batch: { kind: "overflow", events: [] } });
+        continue;
+      }
+      seen.add(local.localWatchId);
+      entries.push(
+        "batch" in entry
+          ? { id: local.localWatchId, batch: entry.batch }
+          : { id: local.localWatchId, errno: entry.errno },
+      );
+    }
+    // Only scan localWatches when a term change or explicit overflow may exist outside WatchService.
+    if (this.hostWatchToLocal.size !== this.localWatches.size) {
+      for (const watch of this.localWatches.values()) {
+        if (watch.closed || watch.localOwner !== owner || seen.has(watch.localWatchId)) continue;
+        if (
+          watch.overflowed ||
+          watch.hostTerm !== this.hostTerm ||
+          watch.hostWatchId === undefined
+        ) {
+          watch.overflowed = true;
+          entries.push({ id: watch.localWatchId, batch: { kind: "overflow", events: [] } });
+        }
+      }
+    }
+    return {
+      entries,
+      hasEvents: held.hasEvents,
+      release: held.release,
+      rollback: held.rollback,
+    };
+  }
+
   watchClose(owner: number, localWatchId: number): void {
     const watch = this.localWatches.get(localWatchId);
     if (!watch || watch.localOwner !== owner) return;
     watch.closed = true;
     this.localWatches.delete(localWatchId);
+    if (watch.hostWatchId !== undefined && this.hostWatchToLocal.get(watch.hostWatchId) === watch) {
+      this.hostWatchToLocal.delete(watch.hostWatchId);
+    }
     if (
       this.role === "host" &&
       watch.hostTerm === this.hostTerm &&

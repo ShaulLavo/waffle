@@ -150,6 +150,11 @@ export interface FileSystem {
   readonly watches?: WatchFileSystem;
 }
 
+/** One ready subscription returned by a batched owner drain. */
+export type WatchDrainEntry =
+  | { readonly id: number; readonly batch: WatchBatch }
+  | { readonly id: number; readonly errno: number };
+
 /** The opener's filesystem session owns each subscription; session close releases them all. */
 export interface WatchFileSystem {
   /** The root's watch cells. Index 3 counts committed watch records. */
@@ -160,5 +165,7 @@ export interface WatchFileSystem {
   /** Throws FilesystemError. */
   open(handle: FileHandle, recursive: boolean): number;
   read(id: number): WatchBatch;
+  /** Optional batched drain of every ready watch for this session in one round trip. */
+  drain?(): readonly WatchDrainEntry[];
   close(id: number): void;
 }

@@ -1280,10 +1280,17 @@ runtime_fs.watch_read(id: u32, buf_ptr: u32, buf_len: u32, out_len_ptr: u32) -> 
   0        out_len > 0: that many bytes of whole records written
            out_len = 0: end of stream (the overflow record was already returned). Close the id
   6        EAGAIN: open, nothing pending. Nothing written. No service round trip if the
-           filesystem counter hasn't moved since this watch's last service read
+           filesystem counter hasn't moved since the last service drain
   42       ENOBUFS: the first pending record doesn't fit; out_len = its size; nothing consumed
   8        EBADF: unknown or closed id
   11       ECANCELED: the filesystem connection was revoked (the id stays closable)
+
+runtime_fs.watch_next(out_id_ptr: u32, buf_ptr: u32, buf_len: u32, out_len_ptr: u32) -> errno
+  0        out_id = ready watch id; out_len > 0: whole records written; out_len = 0: end of stream
+  6        EAGAIN: no registered watch has pending records, end or an error. out_id = 0
+  42       ENOBUFS: out_id = ready watch id; out_len = first record size; nothing consumed
+  other    watch-scoped service error (e.g. EACCES 2, ECANCELED 11): out_id = affected watch id,
+           out_len = 0; or EFAULT 21 when a pointer range is out of guest memory
 
 runtime_fs.watch_close(id: u32) -> errno       0, or 8 for an unknown or already closed id
 ```

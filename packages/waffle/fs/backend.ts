@@ -55,6 +55,12 @@ export interface FilesystemBackend {
   ):
     | import("./watch-subscriptions.js").HeldWatchBatch
     | Promise<import("./watch-subscriptions.js").HeldWatchBatch>;
+  watchDrain?(
+    owner: number,
+    cancelled: () => boolean,
+  ):
+    | import("./watch-service.js").HeldWatchDrain
+    | Promise<import("./watch-service.js").HeldWatchDrain>;
   watchClose?(owner: number, watchId: number): void;
   closeWatchOwner?(owner: number): void;
   /** Called in FilesystemService.request() finally after finishResult() to settle provisional pins. */

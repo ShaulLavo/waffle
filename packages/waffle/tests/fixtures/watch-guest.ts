@@ -8,9 +8,9 @@ function section(id: number, payload: number[]): number[] {
 }
 const I32 = 0x7f;
 
-/** Imports runtime_fs.watch_open/ready/read/close and re-exports them with its memory. */
+/** Imports runtime_fs.watch_open/ready/read/next/close and re-exports them with its memory. */
 export function watchGuestModule(shared = false): WebAssembly.Module {
-  const imports = [4].concat(
+  const imports = [5].concat(
     text("runtime_fs"),
     text("watch_open"),
     [0, 0],
@@ -23,8 +23,11 @@ export function watchGuestModule(shared = false): WebAssembly.Module {
     text("runtime_fs"),
     text("watch_ready"),
     [0, 4],
+    text("runtime_fs"),
+    text("watch_next"),
+    [0, 1],
   );
-  const exports = [6].concat(
+  const exports = [7].concat(
     text("memory"),
     [2, 0],
     text("watch_open"),
@@ -34,9 +37,11 @@ export function watchGuestModule(shared = false): WebAssembly.Module {
     text("watch_close"),
     [0, 2],
     text("_start"),
-    [0, 4],
+    [0, 5],
     text("watch_ready"),
     [0, 3],
+    text("watch_next"),
+    [0, 4],
   );
   return new WebAssembly.Module(
     Uint8Array.from(
@@ -95,17 +100,19 @@ function decodeRecords(bytes: Uint8Array): WatchRecord[] {
 }
 
 const OUT = 16;
+const OUT_ID = 24;
 const BUFFER = 1024;
 const EAGAIN = 6;
 
 /** Calls the guest's exported runtime_fs functions through the WebAssembly boundary. */
 export function watchGuest(instance: WebAssembly.Instance) {
-  const { memory, watch_open, watch_ready, watch_read, watch_close } = instance.exports;
+  const { memory, watch_open, watch_ready, watch_read, watch_next, watch_close } = instance.exports;
   if (
     !(memory instanceof WebAssembly.Memory) ||
     typeof watch_open !== "function" ||
     typeof watch_ready !== "function" ||
     typeof watch_read !== "function" ||
+    typeof watch_next !== "function" ||
     typeof watch_close !== "function"
   )
     throw new Error("invalid watch guest");
@@ -124,6 +131,18 @@ export function watchGuest(instance: WebAssembly.Instance) {
       errno === 0 ? decodeRecords(new Uint8Array(memory.buffer, buffer, size).slice()) : [];
     return { errno, length: size, records };
   };
+  const next = (length = 60000, buffer = BUFFER, outId = OUT_ID, out = OUT) => {
+    if (out + 4 <= memory.buffer.byteLength)
+      new DataView(memory.buffer).setUint32(out, 0xdeadbeef, true);
+    if (outId + 4 <= memory.buffer.byteLength)
+      new DataView(memory.buffer).setUint32(outId, 0xdeadbeef, true);
+    const errno = Number(watch_next(outId, buffer, length, out));
+    const id = word(outId);
+    const size = word(out);
+    const records =
+      errno === 0 ? decodeRecords(new Uint8Array(memory.buffer, buffer, size).slice()) : [];
+    return { errno, id, length: size, records };
+  };
   /** Consecutive reads until EAGAIN or end, as a Bun watch waiter steps. */
   const drain = (id: number) => {
     let records: WatchRecord[] = [];
@@ -137,5 +156,5 @@ export function watchGuest(instance: WebAssembly.Instance) {
   };
   const close = (id: number) => Number(watch_close(id));
   const ready = () => Number(watch_ready());
-  return { memory, open, ready, read, drain, close };
+  return { memory, open, ready, read, next, drain, close };
 }
