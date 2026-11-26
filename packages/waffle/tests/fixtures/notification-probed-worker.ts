@@ -30,6 +30,7 @@ globalThis.onmessage = (
 ) => {
   const data = event.data;
   if (!("probe" in data)) {
+    if ("port" in data) answerSyncs(data.port);
     if (production) Reflect.apply(production, globalThis, [event]);
     return;
   }
@@ -50,4 +51,31 @@ function report(type: string, elapsed?: number): void {
     sources: Array.from(sources.values()),
     elapsed,
   });
+}
+
+const portHandler = Object.getOwnPropertyDescriptor(MessagePort.prototype, "onmessage")!;
+
+/** Answers `{ type: "probe-sync" }` on a connection's own port, in order with its other
+ * requests: the reply proves the production relay has handled every earlier message. */
+function answerSyncs(port: MessagePort): void {
+  let handler: ((event: MessageEvent) => void) | null = null;
+  Object.defineProperty(port, "onmessage", {
+    configurable: true,
+    get: () => handler,
+    set(value: ((event: MessageEvent) => void) | null) {
+      handler = value;
+      portHandler.set!.call(
+        port,
+        syncing(port, () => handler),
+      );
+    },
+  });
+}
+
+/** Forwards every message except a sync request, which it answers on the same port. */
+function syncing(port: MessagePort, handler: () => ((event: MessageEvent) => void) | null) {
+  return (event: MessageEvent) => {
+    if ((event.data as { type?: unknown } | null)?.type !== "probe-sync") return handler()?.(event);
+    port.postMessage({ type: "synced", registrations });
+  };
 }

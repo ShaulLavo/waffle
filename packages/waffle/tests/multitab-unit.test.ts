@@ -27,6 +27,7 @@ import { FilesystemService, installFilesystemWorker } from "../fs/service.js";
 import {
   FilesystemError,
   createFilesystemConnection,
+  createProcessFilesystemIdentity,
   revokeFilesystemService,
 } from "../fs/protocol.js";
 import { readIndexedDBEpochMetadata } from "../fs/indexeddb.js";
@@ -2636,6 +2637,302 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       await tabA.close();
     }
   });
+
+  test("guest watch_next uses host watchDrain, falls back on peer, upgrades on promotion, and retries late lease renewal", async () => {
+    const clientUrl = new URL("../fs/client.ts", import.meta.url).href;
+    const guestWatchUrl = new URL("../fs/guest-watch.ts", import.meta.url).href;
+    const workerSrc = `
+      import { FilesystemClient } from ${JSON.stringify(clientUrl)};
+      import { GuestWatchTable } from ${JSON.stringify(guestWatchUrl)};
+      let client, table, root;
+      const calls = { read: 0, drain: 0 };
+      const decoder = new TextDecoder();
+      function decode(records) {
+        return records.map((r) => {
+          const view = new DataView(r.buffer, r.byteOffset, r.byteLength);
+          const len = view.getUint32(4, true);
+          return { type: r[0], name: len === 0xffffffff ? null : decoder.decode(r.subarray(8, 8 + len)) };
+        });
+      }
+      self.onmessage = ({ data }) => {
+        try {
+          if (data.cmd === "init") {
+            client = new FilesystemClient(data.connection);
+            const raw = client.watches;
+            const counted = {
+              get cells() { return raw.cells; },
+              get revoked() { return raw.revoked; },
+              get remote() { return raw.remote; },
+              get canDrain() { return raw.canDrain; },
+              open: (h, rec) => raw.open(h, rec),
+              read: (id) => { calls.read++; return raw.read(id); },
+              drain: () => { calls.drain++; return raw.drain(); },
+              close: (id) => raw.close(id),
+            };
+            table = new GuestWatchTable(counted);
+            root = client.preopen("/");
+            self.postMessage({ seq: data.seq, ok: true, canDrain: raw.canDrain, remote: raw.remote });
+            return;
+          }
+          if (data.cmd === "caps") {
+            self.postMessage({ seq: data.seq, ok: true, canDrain: client.watches.canDrain, remote: client.watches.remote, calls: { ...calls } });
+            return;
+          }
+          if (data.cmd === "openDir") {
+            const resolved = client.resolve(root, data.path, true);
+            const id = table.open(resolved.node, !!data.recursive);
+            self.postMessage({ seq: data.seq, ok: true, id });
+            return;
+          }
+          if (data.cmd === "next") {
+            const res = table.readNext(65536);
+            self.postMessage({
+              seq: data.seq,
+              ok: true,
+              result: res.kind === "records" ? { kind: res.kind, id: res.id, records: decode(res.records) } : res,
+              calls: { ...calls },
+            });
+            return;
+          }
+          if (data.cmd === "close") {
+            const rc = table.close(data.id);
+            self.postMessage({ seq: data.seq, ok: true, rc });
+            return;
+          }
+          if (data.cmd === "dispose") {
+            table.drop();
+            client.dispose();
+            self.postMessage({ seq: data.seq, ok: true });
+          }
+        } catch (error) {
+          self.postMessage({ seq: data.seq, ok: false, errno: error?.errno, message: String(error?.message ?? error) });
+        }
+      };
+    `;
+    const workerUrl = URL.createObjectURL(
+      new Blob([workerSrc], { type: "application/javascript" }),
+    );
+    const spawnGuest = (tab: TestTab) => {
+      const conn = createFilesystemConnection(
+        createProcessFilesystemIdentity(tab.connection.client),
+      );
+      tab.service.connect(conn.server);
+      const worker = new Worker(workerUrl);
+      let seq = 0;
+      const pending = new Map<
+        number,
+        { resolve: (v: any) => void; reject: (e: unknown) => void }
+      >();
+      worker.onmessage = ({ data }: MessageEvent<any>) => {
+        const entry = pending.get(data.seq);
+        if (!entry) return;
+        pending.delete(data.seq);
+        if (data.ok) entry.resolve(data);
+        else entry.reject(Object.assign(new Error(data.message), { errno: data.errno }));
+      };
+      const call = (msg: Record<string, unknown>, transfer: Transferable[] = []) => {
+        const id = ++seq;
+        const { promise, resolve, reject } = Promise.withResolvers<any>();
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ ...msg, seq: id }, transfer);
+        return promise;
+      };
+      let disposed = false;
+      return {
+        call,
+        async init() {
+          return call({ cmd: "init", connection: conn.client }, [conn.client.port]);
+        },
+        async dispose() {
+          if (disposed) return;
+          disposed = true;
+          await call({ cmd: "dispose" }).catch(() => {});
+          worker.terminate();
+          conn.server.port.close();
+        },
+      };
+    };
+
+    // Part A: Host uses watchDrain; Peer uses per-watch fallback; Promoted Peer upgrades to watchDrain!
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-guest-drain-${crypto.randomUUID()}`;
+    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+    const tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+    const guestA = spawnGuest(tabA);
+    const guestB = spawnGuest(tabB);
+    try {
+      await tabA.client.asyncCall("mkdirp", ["/d1"]);
+      await tabA.client.asyncCall("mkdirp", ["/d2"]);
+      const initA = await guestA.init();
+      const initB = await guestB.init();
+      expect(initA.remote).toBe(true);
+      expect(initA.canDrain).toBe(true);
+      expect(initB.remote).toBe(true);
+      expect(initB.canDrain).toBe(false);
+
+      // Host A opens 2 watches, writes to /d2/h.txt -> readNext drains in 1 watchDrain RPC, 0 watchRead RPCs!
+      const wA1 = (await guestA.call({ cmd: "openDir", path: "d1" })).id as number;
+      const wA2 = (await guestA.call({ cmd: "openDir", path: "d2" })).id as number;
+      expect(wA1).toBeGreaterThan(0);
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/d2/h.txt", false, false],
+        new TextEncoder().encode("h"),
+      );
+      const nextA = await guestA.call({ cmd: "next" });
+      expect(nextA.result.kind).toBe("records");
+      expect(nextA.result.id).toBe(wA2);
+      expect(nextA.result.records.some((r: { name: string | null }) => r.name === "h.txt")).toBe(
+        true,
+      );
+      expect(nextA.calls.drain).toBe(1);
+      expect(nextA.calls.read).toBe(0);
+
+      // Peer B opens watch on /d1, Host A writes /d1/p.txt -> Peer B delivers via read fallback (0 drain RPCs).
+      const wB1 = (await guestB.call({ cmd: "openDir", path: "d1" })).id as number;
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/d1/p.txt", false, false],
+        new TextEncoder().encode("p"),
+      );
+      const nextB = await guestB.call({ cmd: "next" });
+      expect(nextB.result.kind).toBe("records");
+      expect(nextB.result.id).toBe(wB1);
+      expect(nextB.result.records.some((r: { name: string | null }) => r.name === "p.txt")).toBe(
+        true,
+      );
+      expect(nextB.calls.drain).toBe(0);
+      expect(nextB.calls.read).toBeGreaterThan(0);
+
+      // Takeover: Host A closes gracefully -> Peer B promotes to Host -> canDrain flips true!
+      await guestA.dispose();
+      await tabA.close();
+      await waitUntil(() => tabB.backend.currentRole === "host", 4000, "tabB host promotion");
+      expect((await guestB.call({ cmd: "caps" })).canDrain).toBe(true);
+
+      // Pre-promotion watch wB1 reports honest OVERFLOW through host drain!
+      const ovB = await guestB.call({ cmd: "next" });
+      expect(ovB.result).toMatchObject({
+        kind: "records",
+        id: wB1,
+        records: [{ type: 3, name: null }],
+      });
+      expect(ovB.calls.drain).toBe(1);
+      await guestB.call({ cmd: "close", id: wB1 });
+
+      // New watches on promoted Host B use batched watchDrain (0 additional watchRead RPCs)!
+      const readsBefore = (await guestB.call({ cmd: "caps" })).calls.read as number;
+      const wB2 = (await guestB.call({ cmd: "openDir", path: "d1" })).id as number;
+      const wB3 = (await guestB.call({ cmd: "openDir", path: "d2" })).id as number;
+      await tabB.client.asyncCall(
+        "writeFile",
+        ["/d2/promoted.txt", false, false],
+        new TextEncoder().encode("ok"),
+      );
+      const afterPromote = await guestB.call({ cmd: "next" });
+      expect(afterPromote.result.kind).toBe("records");
+      expect(afterPromote.result.id).toBe(wB3);
+      expect(
+        afterPromote.result.records.some((r: { name: string | null }) => r.name === "promoted.txt"),
+      ).toBe(true);
+      expect(afterPromote.calls.read).toBe(readsBefore);
+      expect(afterPromote.calls.drain).toBeGreaterThanOrEqual(2);
+      await guestB.call({ cmd: "close", id: wB2 });
+      await guestB.call({ cmd: "close", id: wB3 });
+    } finally {
+      await guestA.dispose();
+      await guestB.dispose();
+      await tabB.close();
+      await tabA.close();
+    }
+
+    // Part B: Late lease renewal on Host watchDrain retries via #655's renewLapsedLease and never permanently overflows!
+    let slowChecks = 0;
+    let alwaysLate = false;
+    const cold = await openColdLeaseHost("watch-drain", {
+      async afterLeaseCheck() {
+        if (alwaysLate) {
+          await new Promise((r) => setTimeout(r, 100));
+          return;
+        }
+        if (slowChecks === 0) return;
+        slowChecks--;
+        await new Promise((r) => setTimeout(r, 100));
+      },
+    });
+    const guestC = spawnGuest(cold.tabA);
+    const lapse = async () => {
+      await new Promise((r) => setTimeout(r, 110));
+      expect(cold.tabA.backend.isLeaseValid()).toBe(false);
+    };
+    try {
+      cold.releaseRead.resolve();
+      cold.store.beforeRead = undefined;
+      await cold.tabA.client.asyncCall("mkdirp", ["/w"]);
+      await guestC.init();
+      const wC = (await guestC.call({ cmd: "openDir", path: "w" })).id as number;
+
+      // Single late renewal retries and delivers event without overflowing!
+      await cold.tabA.client.asyncCall(
+        "writeFile",
+        ["/w/one.txt", false, false],
+        new TextEncoder().encode("1"),
+      );
+      await lapse();
+      slowChecks = 1;
+      const res1 = await guestC.call({ cmd: "next" });
+      expect(res1.result.kind).toBe("records");
+      expect(res1.result.id).toBe(wC);
+      expect(res1.result.records.some((r: { name: string | null }) => r.name === "one.txt")).toBe(
+        true,
+      );
+      expect(res1.calls.drain).toBe(1);
+      expect(res1.calls.read).toBe(0);
+      expect(slowChecks).toBe(0);
+
+      // Renewal that exhausts its budget reports one overflow WITHOUT permanently overflowing the service watch!
+      const rootH: number = await cold.tabA.client.asyncCall("preopen", ["/"]);
+      const wSvc: number = await cold.tabA.client.asyncCall("watchOpen", [rootH, true]);
+      await cold.tabA.client.asyncCall(
+        "writeFile",
+        ["/w/two.txt", false, false],
+        new TextEncoder().encode("2"),
+      );
+      await lapse();
+      alwaysLate = true;
+      const lateDrain = await cold.tabA.client.asyncCall("watchDrain", []);
+      expect(
+        lateDrain.entries.some(
+          (e: { id: number; batch?: { kind: string } }) =>
+            e.id === wSvc && e.batch?.kind === "overflow",
+        ),
+      ).toBe(true);
+      alwaysLate = false;
+      // Once the lease recovers, the same watch (wSvc) still delivers events (not permanently overflowed)!
+      await cold.tabA.backend.renewLeaseNow();
+      await cold.tabA.client.asyncCall(
+        "writeFile",
+        ["/w/three.txt", false, false],
+        new TextEncoder().encode("3"),
+      );
+      const recovered = await cold.tabA.client.asyncCall("watchDrain", []);
+      const entry = recovered.entries.find((e: { id: number }) => e.id === wSvc);
+      expect(entry?.batch?.kind).toBe("events");
+      expect(
+        entry?.batch?.events.some((e: { name: string | null }) => e.name === "w/three.txt"),
+      ).toBe(true);
+      await cold.tabA.client.asyncCall("watchClose", [wSvc]);
+      await guestC.call({ cmd: "close", id: wC });
+    } finally {
+      alwaysLate = false;
+      slowChecks = 0;
+      await guestC.dispose();
+      await cold.tabA.close();
+      URL.revokeObjectURL(workerUrl);
+    }
+  }, 15000);
 
   test("Peer lookup enforces directory read permissions (0o100 -> EACCES)", async () => {
     const broker = new MockLockBroker();

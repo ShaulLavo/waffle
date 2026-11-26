@@ -189,20 +189,20 @@ function interceptReply(
     },
   };
 }
-test.each(["watchRead", "watchOpen"] as const)(
+test.each(["watchRead", "watchDrain", "watchOpen"] as const)(
   "request cancellation rolls back %s after execution before reply publication",
   async (operation) => {
     const f = await remote();
     let interception: ReturnType<typeof interceptReply> | undefined;
     try {
       const id =
-        operation === "watchRead"
+        operation === "watchRead" || operation === "watchDrain"
           ? await f.guest.asyncCall("watchOpen", [f.root, false])
           : undefined;
       await f.page.asyncCall("writeFile", ["/a", false], new Uint8Array([1]));
       const completion = f.guest.submit(
         operation,
-        operation === "watchRead" ? [id] : [f.root, false],
+        operation === "watchRead" ? [id] : operation === "watchDrain" ? [] : [f.root, false],
       );
       interception = interceptReply(f.service, completion);
       try {
@@ -213,7 +213,7 @@ test.each(["watchRead", "watchOpen"] as const)(
       }
       expect(interception.intercepted()).toBe(true);
       await f.guest.asyncCall("stat", [f.root]);
-      if (operation === "watchRead") {
+      if (operation === "watchRead" || operation === "watchDrain") {
         const batch = await f.guest.asyncCall("watchRead", [id]);
         expect(batch.events).toContainEqual(expect.objectContaining({ type: "rename", name: "a" }));
       } else expect(f.backend.shared.watch.active).toBe(false);

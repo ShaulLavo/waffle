@@ -1,4 +1,4 @@
-import { FilesystemError } from "../core/filesystem.js";
+import { FilesystemError, type WatchDrainEntry } from "../core/filesystem.js";
 import type { LocalMutationPlan, MemoryBackend } from "./backend.js";
 import { captureWatchIndex, indexWatchNode } from "./watch-capture.js";
 import { WatchIndex } from "./watch-index.js";
@@ -6,6 +6,24 @@ import { WatchRouting } from "./watch-routing.js";
 import { WatchSubscriptions, type HeldWatchBatch } from "./watch-subscriptions.js";
 import { WATCH_CAPACITY, type WatchRecord } from "./watch-ring.js";
 import type { WatchBatch, WatchEvent } from "./watch.js";
+
+const MAX_DRAIN_ITEMS = 128;
+
+export interface HeldWatchDrain {
+  readonly entries: readonly WatchDrainEntry[];
+  readonly more: boolean;
+  readonly hasEvents: boolean;
+  release(): void;
+  rollback(): void;
+}
+
+interface DrainState {
+  readonly entries: WatchDrainEntry[];
+  readonly held: HeldWatchBatch[];
+  events: number;
+  items: number;
+  more: boolean;
+}
 
 /** One live metadata index and pooled event allocator per backend root. */
 export class WatchService {
@@ -86,6 +104,88 @@ export class WatchService {
     } finally {
       held.release();
     }
+  }
+  drainHeld(owner: number): HeldWatchDrain {
+    return this.backend.shared.mutate(undefined, undefined, () => this.collectDrain(owner));
+  }
+  private collectDrain(owner: number): HeldWatchDrain {
+    this.drain();
+    const state: DrainState = { entries: [], held: [], events: 0, items: 0, more: false };
+    try {
+      this.subscriptions.forReady(owner, (id) => this.collectDrainWatch(owner, id, state));
+    } catch (error) {
+      for (let i = state.held.length - 1; i >= 0; i--) state.held[i]!.rollback();
+      throw error;
+    }
+    return this.finishDrain(state);
+  }
+  private collectDrainWatch(owner: number, id: number, state: DrainState): boolean {
+    const denied = this.drainAccess(owner, id);
+    if (denied !== undefined) {
+      if (state.entries.length > 0 && state.items + 1 > MAX_DRAIN_ITEMS) {
+        state.more = true;
+        return false;
+      }
+      state.items++;
+      state.entries.push({ id, errno: denied });
+      return true;
+    }
+    const overflowed = this.subscriptions.overflowed(owner, id);
+    const queued = overflowed ? 0 : this.subscriptions.queuedCount(owner, id);
+    if (!overflowed && queued === 0) return true;
+    const cost = overflowed ? 1 : queued;
+    if (state.entries.length > 0 && state.items + cost > MAX_DRAIN_ITEMS) {
+      state.more = true;
+      return false;
+    }
+    const item = this.subscriptions.batch(owner, id, state.held.length > 0);
+    if (!item) {
+      state.more = true;
+      return false;
+    }
+    if (item.batch.kind === "events" && !item.batch.events.length) {
+      item.release();
+      return true;
+    }
+    if (item.batch.events.length) {
+      state.events += item.batch.events.length;
+      state.items += item.batch.events.length;
+      state.held.push(item);
+    } else {
+      state.items++;
+      item.release();
+    }
+    state.entries.push({ id, batch: item.batch });
+    return true;
+  }
+  private drainAccess(owner: number, id: number): number | undefined {
+    if (this.incomplete || this.subscriptions.overflowed(owner, id)) return undefined;
+    try {
+      this.access(this.subscriptions.root(owner, id));
+      return undefined;
+    } catch (error) {
+      if (error instanceof FilesystemError) return error.errno;
+      throw error;
+    }
+  }
+  private finishDrain(state: DrainState): HeldWatchDrain {
+    let settled = false;
+    const settle = (rollback: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (rollback) {
+        for (let i = state.held.length - 1; i >= 0; i--) state.held[i]!.rollback();
+      } else {
+        for (const item of state.held) item.release();
+      }
+    };
+    return {
+      entries: state.entries,
+      more: state.more,
+      hasEvents: state.events > 0,
+      release: () => settle(false),
+      rollback: () => settle(true),
+    };
   }
   close(owner: number, id: number): void {
     let directory = false;
@@ -209,8 +309,15 @@ export class WatchService {
       return;
     }
     if (!this.index.has(record.file)) return;
-    if (record.kind === "metadata")
-      this.index.upsert(record.file, record.mode, this.index.metadata(record.file).directory);
+    if (record.kind === "metadata") {
+      const directory = this.index.metadata(record.file).directory;
+      this.index.upsert(record.file, record.mode, directory);
+      const required = directory ? 0o500 : 0o400;
+      const inaccessible = (record.mode & required) !== required;
+      this.subscriptions.forRoot(record.file, (owner, id) =>
+        this.subscriptions.setInaccessible(owner, id, inaccessible),
+      );
+    }
     this.deliver(record.file, "change");
   }
   private target(file: bigint, type: WatchEvent["type"]): void {

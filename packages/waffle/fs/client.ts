@@ -501,6 +501,7 @@ function clientWatches(
   cells: () => Int32Array,
   revoked: () => boolean,
   remote: () => boolean,
+  canDrain: () => boolean,
   call: (operation: string, args: unknown[]) => any,
 ): WatchFileSystem {
   return {
@@ -513,8 +514,12 @@ function clientWatches(
     get remote() {
       return remote();
     },
+    get canDrain() {
+      return canDrain();
+    },
     open: (handle, recursive) => call("watchOpen", [handle, recursive]),
     read: (id) => call("watchRead", [id]),
+    drain: () => call("watchDrain", []),
     close: (id) => {
       call("watchClose", [id]);
     },
@@ -648,6 +653,7 @@ export class FilesystemClient implements FileSystem {
       () => this.shared.watch.cells,
       this.revoked,
       () => this.shared.isDirectDisabled(),
+      () => !this.shared.isWatchDrainDisabled(),
       (operation, args) => this.call(operation, args),
     );
     connection.port.onmessage = ({ data }) => {
