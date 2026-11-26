@@ -953,12 +953,12 @@ clear `localNews`; `poll(0)` and normal network drains keep their existing behav
 `NetHost.notification` alone covers GEN0, not local news.
 
 The helper waits on those words only while the guest is parked. Before `wait()` blocks, it
-stores a park id in the connection state and sends the id with the source values it observed,
-once per distinct sample; an unchanged park is reactivated by storing its id again. It
-rechecks the sources after storing the id and clears the id when the blocking call returns.
-The helper publishes on the first difference, or on a wake of a word still at its parked
-value, only by consuming the active id with a compare-exchange, so a retired park never
-publishes. Source traffic while the guest runs costs the helper nothing, and a guest that
+stores a fresh park id in the connection state and sends it with the source values it
+observed. It rechecks the sources after storing the id and clears the id when the blocking
+call returns. Ids are never reused for a later wait. The helper publishes on the first
+difference, or on a wake of a word still at its parked value, only by consuming the active id
+with a compare-exchange. A retired park never publishes, and a failed claim means the guest
+is running or a newer park is on its way, so the helper drops it. Source traffic while the guest runs costs the helper nothing, and a guest that
 never blocks in `wait()` starts no blocking wait Workers. A malformed request fails that
 guest's connection: the guest receives an error reply and the page fences its state.
 

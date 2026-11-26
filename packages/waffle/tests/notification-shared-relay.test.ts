@@ -129,6 +129,8 @@ const malformed: [string, unknown][] = [
   ["a park with no values", { type: "park", id: 1, values: [] }],
   ["a park without an id", { type: "park", values: [0] }],
   ["a park with a fractional value", { type: "park", id: 1, values: [0.5] }],
+  // A hole is not a value; Array.every() would skip it.
+  ["a sparse park", { type: "park", id: 1, values: Object.assign([] as number[], { length: 1 }) }],
   ["a second arm", { type: "arm", words: [] }],
 ];
 

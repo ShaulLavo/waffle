@@ -132,9 +132,10 @@ export async function notificationRevokeParkCase(helperUrl: string) {
     const cells = client.shared.watch.cells;
     const relay = await relayConnection(helperUrl, [{ cells, index: 3 }]);
     try {
+      // A reap follows a revoke; revoke first, so only the reap's own advance can wake here.
+      if (name === "reap") revokeFilesystem(pair.client);
       const observed = Atomics.load(cells, 3);
       const sequence = Atomics.load(relay.state, 0);
-      if (name === "reap") revokeFilesystem(pair.client);
       revoke(pair.client);
       relay.parker(() => [observed]).park();
       if (!(await published(relay.state, sequence, 1000)))

@@ -133,16 +133,12 @@ class RelayConnection {
     const parked = this.parked!;
     this.parked = undefined;
     if (Atomics.load(this.state, 1)) return;
-    if (Atomics.compareExchange(this.state, 2, parked.id, 0) === parked.id) {
-      Atomics.add(this.state, 0, 1);
-      Atomics.notify(this.state, 0);
-      return;
-    }
-    // Retired: the guest is running. A moved word makes its next park differ, so stop here.
-    // Otherwise keep watching, because the guest may reactivate this park unchanged.
-    if (this.moved(parked)) return;
-    this.parked = parked;
-    for (let slot = 0; slot < parked.values.length; slot++) this.watch(slot);
+    // Every wait attempt has a fresh id that the guest never reactivates. A failed claim means
+    // this id is dead: the guest retired it and is running, or a newer park's message carries
+    // the current one. Either way that guest is not asleep on this park.
+    if (Atomics.compareExchange(this.state, 2, parked.id, 0) !== parked.id) return;
+    Atomics.add(this.state, 0, 1);
+    Atomics.notify(this.state, 0);
   }
 
   private reply(value: NotificationRelayReply): void {
@@ -172,9 +168,14 @@ class RelayConnection {
   }
 }
 
+/** Checks every expected index; `every()` would skip the holes of a sparse array. */
 function validValues(values: unknown, length: number): values is readonly number[] {
   if (!Array.isArray(values) || values.length !== length) return false;
-  return values.every((value) => typeof value === "number" && (value | 0) === value);
+  for (let index = 0; index < length; index++) {
+    const value: unknown = values[index];
+    if (typeof value !== "number" || (value | 0) !== value) return false;
+  }
+  return true;
 }
 
 function notice(id: number, type: NotificationRelayNotice["type"]): void {

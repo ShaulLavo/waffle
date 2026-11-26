@@ -160,21 +160,16 @@ export class NotificationWaitScope {
     initialCoverage: boolean,
   ): NotificationWaitSet {
     let covered = initialCoverage;
-    // The relay waits on the source words only while this guest is parked. Each park has an id
-    // that the guest stores in state[2] while it is blocked; the relay publishes only by
-    // consuming it. An unchanged park (same values, no wake since) is reactivated by id alone.
+    // The relay waits on the source words only while this guest is parked. Every wait attempt
+    // posts a fresh park id, stored in state[2] while the guest is blocked; the relay publishes
+    // only by consuming it. Ids are never reactivated, so a relay that fails to claim one can
+    // drop it without stranding a sleeping guest.
     const active = this.connection.state;
-    let parked: { id: number; sequence: number; values: readonly number[] } | undefined;
     let nextPark = 1;
     const park = (observed: NotificationSample): void => {
       const values = parkValues(observed, network !== undefined, process !== undefined);
-      if (parked && parked.sequence === observed.sequence && sameValues(parked.values, values)) {
-        atomicsStore(active, 2, parked.id);
-        return;
-      }
       const id = nextPark;
       nextPark = nextPark === 0x7fffffff ? 1 : nextPark + 1;
-      parked = { id, sequence: observed.sequence, values };
       atomicsStore(active, 2, id);
       this.send({ type: "park", id, values });
     };
@@ -272,12 +267,6 @@ function parkValues(sample: NotificationSample, network: boolean, process: boole
   if (network) return [filesystem, sample.network!];
   if (process) return [filesystem, sample.process!];
   return [filesystem];
-}
-
-function sameValues(before: readonly number[], after: readonly number[]): boolean {
-  for (let index = 0; index < after.length; index++)
-    if (before[index] !== after[index]) return false;
-  return before.length === after.length;
 }
 
 function changed(before: NotificationSample, after: NotificationSample): boolean {
