@@ -168,6 +168,7 @@ async function relayTraffic(
   const notices = new Notices(worker);
   const channel = new MessageChannel();
   const state = new Int32Array(new SharedArrayBuffer(NOTIFICATION_STATE_BYTES));
+  let second: Awaited<ReturnType<typeof secondGuest>> | undefined;
   try {
     channel.port2.onmessage = ({ data }) => notices.accept(data);
     worker.postMessage({ id: 1, port: channel.port1, state }, [channel.port1]);
@@ -204,6 +205,7 @@ async function relayTraffic(
     );
     check(quiet.timers === 0 && Atomics.load(state, 0) === 0, "idle relay polled or published");
     const initialSources = values();
+    second = await secondGuest(worker, sources);
     await start();
     const initial = Atomics.load(progress, 1);
     const sequence = Atomics.load(state, 0);
@@ -222,12 +224,10 @@ async function relayTraffic(
       ),
       "traffic missed a real source",
     );
-    check(
-      Array.isArray(timer.sources) &&
-        timer.sources.length === 3 &&
-        timer.sources.every((count: unknown) => typeof count === "number" && count > 1),
-      "relay did not rearm every real source during traffic",
-    );
+    // Registrations per source are not checked: a park that finds a word already moved
+    // publishes without registering, so under sustained traffic a source rearms only when it
+    // changes and a later park finds everything quiet. Every source must still wake a parked
+    // guest; the second guest checks that once traffic stops.
     Atomics.store(state, 1, 1);
     Atomics.add(state, 0, 1);
     Atomics.notify(state, 0);
@@ -241,6 +241,7 @@ async function relayTraffic(
     await notices.wait("after-dispose");
     await stop();
     check(Atomics.load(state, 0) === disposed, "stale relay completion published after disposal");
+    const coverage = await second.coverage();
     return {
       mode,
       rounds: Atomics.load(progress, 1),
@@ -250,14 +251,77 @@ async function relayTraffic(
       disposeMs,
       timer,
       idle: quiet,
+      coverage,
     };
   } finally {
+    second?.close();
     Atomics.store(state, 1, 1);
     channel.port1.close();
     channel.port2.close();
     await worker.terminate();
     notices.close();
   }
+}
+
+/** A second guest connection on the same relay Worker. It parks and parks again after every
+ * wake throughout the traffic, like a real blocked guest; once traffic stops, each real
+ * source changing alone must still wake it. */
+async function secondGuest(worker: Worker, sources: readonly Int32Array[]) {
+  const channel = new MessageChannel();
+  const state = new Int32Array(new SharedArrayBuffer(NOTIFICATION_STATE_BYTES));
+  const index = (source: number) => (source === 0 ? 3 : 0);
+  const values = () => sources.map((cells, source) => Atomics.load(cells, index(source)));
+  const armed = new Promise<unknown>((resolve) => {
+    channel.port2.onmessage = ({ data }) => resolve(data);
+  });
+  worker.postMessage({ id: 2, port: channel.port1, state }, [channel.port1]);
+  channel.port2.postMessage({
+    type: "arm",
+    words: sources.map((cells, source) => ({ cells, index: index(source) })),
+  });
+  check(
+    ((await armed) as { type?: string }).type === "armed",
+    "second relay connection did not arm",
+  );
+  const parker = notificationParker(state, (request) => channel.port2.postMessage(request), values);
+  let running = true;
+  const loop = (async () => {
+    while (running) {
+      const sequence = Atomics.load(state, 0);
+      parker.park();
+      // Timed: this page loop is not the relay under test.
+      const waiting = Atomics.waitAsync(state, 0, sequence, 20);
+      if (waiting.async) await waiting.value;
+    }
+  })();
+  return {
+    async coverage() {
+      running = false;
+      await loop;
+      const woken: number[] = [];
+      for (let source = 0; source < sources.length; source++) {
+        parker.park();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const before = Atomics.load(state, 0);
+        Atomics.add(sources[source]!, index(source), 1);
+        Atomics.notify(sources[source]!, index(source));
+        const waiting = Atomics.waitAsync(state, 0, before, 2000);
+        if (waiting.async) await waiting.value;
+        check(
+          Atomics.load(state, 0) !== before,
+          `source ${source} did not wake a guest that parked through the traffic`,
+        );
+        woken.push(source);
+      }
+      return { woken };
+    },
+    close() {
+      running = false;
+      Atomics.store(state, 1, 1);
+      channel.port2.postMessage({ type: "dispose" });
+      channel.port2.close();
+    },
+  };
 }
 
 function probe(worker: Worker, notices: Notices, name: string) {
