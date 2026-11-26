@@ -561,12 +561,16 @@ function formatAndManifests(
       keys.onerror = failed(keys);
       values.onerror = failed(values);
       values.onsuccess = () => {
+        // Read each result once: WebKit builds a new array on every `result` access, which made
+        // an indexed loop over 17,000 manifests take 6.5 s.
+        const names = keys.result;
+        const records = values.result;
         const manifests = new Map<IDBValidKey, unknown>();
-        if (keys.result.length !== values.result.length) {
+        if (names.length !== records.length) {
           reject(new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Invalid payload manifests"));
           return;
         }
-        for (const [index, key] of keys.result.entries()) manifests.set(key, values.result[index]);
+        for (const [index, key] of names.entries()) manifests.set(key, records[index]);
         resolve({ format: format.result, manifests });
       };
     };

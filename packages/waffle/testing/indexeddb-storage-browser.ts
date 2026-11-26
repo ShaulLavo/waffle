@@ -1297,9 +1297,22 @@ function indexedDBCases(
     await storage.persist(wideBatch(1, files));
     await storage.close();
     const cold = await open();
-    const reopen = await countTransactions(() => cold.load());
+    const result = Object.getOwnPropertyDescriptor(IDBRequest.prototype, "result")!;
+    let resultReads = 0;
+    Object.defineProperty(IDBRequest.prototype, "result", {
+      ...result,
+      get(this: IDBRequest) {
+        resultReads++;
+        return result.get!.call(this);
+      },
+    });
+    const reopen = await countTransactions(() => cold.load()).finally(() =>
+      Object.defineProperty(IDBRequest.prototype, "result", result),
+    );
     assert(reopen.result?.nodes.length === files + 1, "every file survives reopen");
     assert(reopen.count === 1, `reopen used ${reopen.count} transactions for ${files} payloads`);
+    // WebKit rebuilds a request's whole result array on every read of `result`.
+    assert(resultReads < files, `reopen read IDBRequest.result ${resultReads} times`);
     for (const index of [0, 150, files - 1])
       assert(
         new TextDecoder().decode(await cold.read(`wide:1:${index}`)) === `file ${index}`,
