@@ -388,6 +388,29 @@ test("reusing collision tombstones preserves live slots and reincarnated handles
   expect(state.registeredHandles()).toEqual([]);
 });
 
+test("registered handles stay exact, in slot order, as slots are freed and reused", () => {
+  const state = new SharedFilesystemState();
+  const stride = state.slots.length / SLOT_WORDS - 1;
+  const register = (target: SharedFilesystemState, handle: number) =>
+    target.register(handle, { kind: "file", ino: handle + 1, nlink: 1, size: 0, ...statTimes(1) });
+  for (const handle of [40, 7, 900, 3]) register(state, handle);
+  expect(state.registeredHandles()).toEqual([3, 7, 40, 900]);
+  state.unlink(7);
+  register(state, 12);
+  // 12 + stride collides with 12 and takes the next free slot after it.
+  register(state, 12 + stride);
+  expect(state.registeredHandles()).toEqual([3, 12, 12 + stride, 40, 900]);
+  state.unlink(12);
+  register(state, 7);
+  expect(state.registeredHandles()).toEqual([3, 7, 12 + stride, 40, 900]);
+  // Another state over the same table registers without this one's index knowing.
+  const sibling = new SharedFilesystemState(state.buffer);
+  register(sibling, 500);
+  expect(state.registeredHandles()).toEqual([3, 7, 12 + stride, 40, 500, 900]);
+  sibling.unlink(40);
+  expect(state.registeredHandles()).toEqual([3, 7, 12 + stride, 500, 900]);
+});
+
 test("host namespace edits do not probe shared metadata for an unregistered root", () => {
   const backend = new MemoryBackend();
   const bytes = new Uint8Array();
