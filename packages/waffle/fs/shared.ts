@@ -895,13 +895,6 @@ export class SharedFilesystemState {
       this.slots[this.at(slot, DIRTY_MARK)] = 1;
     }
   }
-  cleanDirty(revision: number, namespace: number): void {
-    if (!this.dirtyAdmission.clean(revision, namespace)) return;
-    for (let slot = 1; slot < MAX_FILES; slot++) {
-      this.slots[this.at(slot, DIRTY_SIZE)] = 0;
-      this.slots[this.at(slot, DIRTY_MARK)] = 0;
-    }
-  }
   reconcileDirty(
     handles: Iterable<FileHandle>,
     namespace: number,
@@ -914,6 +907,7 @@ export class SharedFilesystemState {
     for (const handle of handles) {
       const slot = this.findSlot(handle);
       if (!slot) continue;
+      if (this.staged.size && this.staged.has(slot)) this.settleUnderLock(slot);
       const base = slot * SLOT_WORDS;
       const kind = this.slots[base]!;
       if (!kind || this.slots[base + HANDLE] !== handle + 1) continue;
@@ -2476,9 +2470,15 @@ export class SharedFilesystemState {
     if (this.slots[this.at(slot, UNLINKED)])
       this.publication?.forgetContent(this.slots[this.at(slot, INO)]!);
     this.freePagesLocked(slot);
+    const dirtySize = this.slots[this.at(slot, DIRTY_SIZE)]!;
+    const dirtyMark = this.slots[this.at(slot, DIRTY_MARK)]!;
     this.dirtyAdmission.pin(-1, this.residentBytes());
     this.slots[this.at(slot, DIRTY_SIZE)] = 0;
     this.slots[this.at(slot, DIRTY_MARK)] = 0;
+    if (dirtySize || dirtyMark) {
+      this.dirtyAdmission.releaseSlot(dirtySize * 2, dirtyMark ? DIRTY_NODE_UNITS : 0);
+      Atomics.add(this.cells, CHANGE_SEQUENCE, 1);
+    }
     const revision = this.getRevision(slot);
     const floor =
       (this.cells[FREED_REVISION_HIGH]! >>> 0) * 0x100000000 +

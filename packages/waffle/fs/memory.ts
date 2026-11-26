@@ -365,13 +365,6 @@ export class MemFS implements FileSystem {
     if (deleted) this.onDirEntryDelta?.(parent, -(64 + name.length * 2));
     return deleted;
   }
-  private clearChildren(parent: DirNode): void {
-    if (!parent.children.size) return;
-    let delta = 0;
-    for (const name of parent.children.keys()) delta -= 64 + name.length * 2;
-    parent.children.clear();
-    this.onDirEntryDelta?.(parent, delta);
-  }
   private changed(node: Node): void {
     this.onChange?.(node);
   }
@@ -469,13 +462,17 @@ export class MemFS implements FileSystem {
     if (handle !== undefined && !this.references.has(handle)) this.handles.delete(handle);
     if (node.kind === "dir") {
       this.removedDirectories.add(node);
-      for (const child of node.children.values()) {
+      const trackDelta = this.onDirEntryDelta !== undefined;
+      let delta = 0;
+      for (const [name, child] of node.children) {
+        if (trackDelta) delta -= 64 + name.length * 2;
         this.changeLinkCount(child, -1);
         this.forget(child);
       }
       // Recursive removal removes directory entries, not the bytes of separately open files.
       this.directoryPages(node).clear();
-      this.clearChildren(node);
+      node.children.clear();
+      if (delta) this.onDirEntryDelta?.(node, delta);
     }
   }
   nodeForHandle(handle: FileHandle): Node {
