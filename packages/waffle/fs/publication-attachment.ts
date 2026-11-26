@@ -1012,6 +1012,20 @@ class WorkspaceBridge {
     const state = new Int32Array(reservation.state);
     if (Atomics.load(state, 0) || Atomics.load(state, 1)) throw new FilesystemError(11);
   }
+  private discard(id: number): void {
+    this.pending.get(id)?.abort.abort();
+    this.responses.delete(id);
+  }
+  /** Discards and a trim a client carried on a request, or sent alone with `control: true`. */
+  private control(data: Record<string, unknown>): void {
+    const { discards, trim } = data;
+    if (discards !== undefined) {
+      if (!Array.isArray(discards)) throw new FilesystemError(28, "malformed filesystem control");
+      for (const id of discards) this.discard(integer(id));
+    }
+    if (trim === true) for (const child of this.children) child.cancelTransferred();
+    else if (trim !== undefined) throw new FilesystemError(28, "malformed filesystem control");
+  }
   private receive(value: unknown): void {
     try {
       this.message(record(value));
@@ -1023,21 +1037,19 @@ class WorkspaceBridge {
   }
   private message(data: Record<string, unknown>): void {
     if ("stopWorkspace" in data) return this.replyStopped();
-    if ("discard" in data) {
-      const id = integer(data.discard);
-      this.pending.get(id)?.abort.abort();
-      this.responses.delete(id);
-      return;
-    }
-    if ("sweep" in data || "trim" in data) {
+    if ("discard" in data) return this.discard(integer(data.discard));
+    if ("sweep" in data || ("trim" in data && !("id" in data) && !("control" in data))) {
       for (const child of this.children) child.cancelTransferred();
       return;
     }
+    if ("control" in data) return this.control(data);
     if ("transportClosed" in data) {
       closeRequestMemory(this.connection.requests);
       wake(this.connection);
       return this.replyStopped();
     }
+    // Control the client deferred to this request goes first, in the order it was sent.
+    this.control(data);
     const id = integer(data.id);
     const buffer = receiveRequestBuffer(
       this.connection.requests,
