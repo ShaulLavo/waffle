@@ -193,6 +193,7 @@ const PURE_STATELESS_READ_OPS = new Set<string>([
   "readlink",
   "resolve",
   "realpath",
+  "probe",
   "readdirPage",
 ]);
 

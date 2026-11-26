@@ -41,10 +41,12 @@ import { withFileOffset } from "./open-file.js";
 import {
   FilesystemError,
   fileTimeNow,
+  PROBE_PATH_LIMIT,
   type FileHandle,
   type FileSystem,
   type FileStat,
   type FileTime,
+  type ProbeKind,
   type ResolvedPath,
 } from "./filesystem.js";
 import {
@@ -196,6 +198,24 @@ function guestPathname(bytes: Uint8Array, ptr: number, len: number): string | un
   } catch {
     return undefined;
   }
+}
+
+/** `runtime_fs.path_probe` kinds: 1 a regular file, 2 a directory. */
+const PROBE_KINDS: readonly (ProbeKind | undefined)[] = [undefined, "file", "directory"];
+
+/** A path_probe list: one to PROBE_PATH_LIMIT pathnames, each ended by a NUL, exact UTF-8 bytes
+ * (a leading U+FEFF kept). Undefined for malformed UTF-8, a missing final NUL, an empty list or
+ * too many pathnames. */
+function probePathnames(bytes: Uint8Array, ptr: number, len: number): string[] | undefined {
+  if (len === 0 || bytes[ptr + len - 1] !== 0) return undefined;
+  let text: string;
+  try {
+    text = decodeBytes(bytes, ptr, len - 1, fatalDecoder);
+  } catch {
+    return undefined;
+  }
+  const paths = text.split("\0");
+  return paths.length > PROBE_PATH_LIMIT ? undefined : paths;
 }
 
 function writeUtf8Prefix(target: string, output: Uint8Array): number {
@@ -495,6 +515,7 @@ export class Wasi {
     const filesystem: Record<string, (...args: never[]) => number> = {
       path_permissions_get: this.pathPermissions.bind(this),
       path_realpath: this.pathRealpath.bind(this),
+      path_probe: this.pathProbe.bind(this),
       watch_open: this.watchOpen.bind(this),
       watch_ready: () => (this.watches?.ready() ? 1 : 0),
       watch_read: this.watchRead.bind(this),
@@ -770,6 +791,30 @@ export class Wasi {
     this.view().setUint32(used, encoded.length, true);
     if (encoded.length > capacity) return ENOBUFS;
     this.memory.range(buf, encoded.length).set(encoded);
+    return SUCCESS;
+  }
+
+  /** runtime_fs.path_probe: the index of the first NUL-terminated pathname in `ptr..ptr+len`
+   * that names a regular file (`kind` 1) or a directory (`kind` 2), each looked up from `fd` as
+   * path_filestat_get with the follow flag does, in one filesystem request. Writes the index, or
+   * 0xffffffff when none matches, to the u32 at `found`. See docs/host-abi.md. */
+  private pathProbe(fd: number, ptr: number, len: number, kind: number, found: number): number {
+    ptr >>>= 0;
+    len >>>= 0;
+    found >>>= 0;
+    const bytes = this.bytes();
+    if (ptr + len > bytes.length || found + 4 > bytes.length) return EFAULT;
+    const paths = probePathnames(bytes, ptr, len);
+    if (paths === undefined) return EINVAL;
+    const wanted = PROBE_KINDS[kind >>> 0];
+    if (wanted === undefined) return EINVAL;
+    const entry = this.descriptors.get(fd >>> 0);
+    if (!entry) return EBADF;
+    if (entry.resource.kind !== "directory") return ENOTDIR;
+    if (!(entry.rightsBase & RIGHT_PATH_FILESTAT_GET)) return ENOTCAPABLE;
+    const index = this.opts.fs.probe(entry.resource.handle, paths, wanted, this.rooted);
+    // Reacquire after the service round trip; another thread may have grown shared memory.
+    this.view().setUint32(found, index < 0 ? 0xffffffff : index, true);
     return SUCCESS;
   }
 

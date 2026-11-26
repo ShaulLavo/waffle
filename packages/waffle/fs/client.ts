@@ -41,6 +41,7 @@ import {
   isFileTime,
   permissionsFor,
   type FileTime,
+  type ProbeKind,
   type WatchFileSystem,
 } from "../core/filesystem.js";
 import {
@@ -210,6 +211,7 @@ const PLAIN_REPLIES = new SetConstructor([
   "setMode",
   "read",
   "readlink",
+  "probe",
 ]);
 export class FilesystemCompletion {
   static {
@@ -2611,6 +2613,9 @@ export class FilesystemClient implements FileSystem {
     } catch (error) {
       return errno(error);
     }
+  }
+  probe(directory: FileHandle, paths: readonly string[], kind: ProbeKind, rooted = false): number {
+    return this.call("probe", [directory, paths, kind, rooted]);
   }
   readlink(handle: FileHandle): string {
     this.retain(handle);

@@ -11,6 +11,10 @@ export class FilesystemError extends Error {
 
 /** Opaque filesystem-owned identity. Open handles remain valid across rename and unlink. */
 export type FileHandle = number;
+/** What `FileSystem.probe` looks for: a regular file or a directory. */
+export type ProbeKind = "file" | "directory";
+/** Most pathnames one `probe` call looks up. */
+export const PROBE_PATH_LIMIT = 64;
 export interface FilePermissions {
   mode: number;
   modeSupported: number;
@@ -111,6 +115,10 @@ export interface FileSystem {
    * absolute path from the root; otherwise relative to `directory` ("." for itself). Positive
    * WASI errno on failure. */
   realpath(directory: FileHandle, path: string, rooted?: boolean): string | number;
+  /** The index of the first of `paths` that names a `kind` node, each looked up from `directory`
+   * with every link followed (a stat with the follow flag), or -1 when none does. A path that
+   * fails to resolve does not match. A bad `directory` throws a FilesystemError. */
+  probe(directory: FileHandle, paths: readonly string[], kind: ProbeKind, rooted?: boolean): number;
   symlink(path: ResolvedPath, target: string): number;
   readlink(handle: FileHandle): string;
   stat(handle: FileHandle): FileStat;
