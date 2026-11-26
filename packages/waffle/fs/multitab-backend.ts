@@ -1276,31 +1276,54 @@ export class MultiTabBackend implements FilesystemBackend {
     watch: LocalWatchEntry,
     cancelled: () => boolean,
   ): Promise<HeldWatchBatch> {
-    if (this.disposing || cancelled()) throw new FilesystemError(11);
-    if (this.leaseOnlyLapsed(watch.hostTerm)) {
-      // A renewal that cannot finish in time reports one overflow below, not a failure.
-      await this.renewLapsedLease(watch.hostTerm, cancelled).catch(() => {});
-    } else {
-      await raceWithAbort(this.renewLeaseNow(), this.disposeAbort.signal, cancelled);
-    }
-    if (this.disposing || cancelled()) throw new FilesystemError(11);
     const overflow: HeldWatchBatch = {
       batch: { kind: "overflow", events: [] },
       release() {},
       rollback() {},
     };
-    // Only a term that really ended makes the overflow permanent for this watch.
-    const termEnded =
-      watch.hostTerm !== this.hostTerm ||
-      this.role !== "host" ||
-      this.ownershipLost ||
-      this.leaseClosed;
-    if (watch.overflowed || termEnded || !this.watchService) {
-      watch.overflowed = true;
-      return overflow;
+    const budget: LeaseRenewalBudget = {};
+    await this.renewWatchLeaseOnce(watch.hostTerm, cancelled);
+    for (;;) {
+      if (this.disposing || cancelled()) throw new FilesystemError(11);
+      // Only a term that really ended makes the overflow permanent for this watch.
+      const termEnded =
+        watch.hostTerm !== this.hostTerm ||
+        this.role !== "host" ||
+        this.ownershipLost ||
+        this.leaseClosed;
+      if (watch.overflowed || termEnded || !this.watchService) {
+        watch.overflowed = true;
+        return overflow;
+      }
+      if (this.isLeaseValid()) return this.watchService.readHeld(owner, watch.hostWatchId!);
+      if (!(await this.renewWatchLease(watch.hostTerm, cancelled, budget))) return overflow;
     }
-    if (!this.isLeaseValid()) return overflow;
-    return this.watchService.readHeld(owner, watch.hostWatchId!);
+  }
+
+  /** The first renewal of a watch read or drain whose lease was not held when it arrived. */
+  private async renewWatchLeaseOnce(admittedTerm: bigint, cancelled: () => boolean): Promise<void> {
+    if (this.disposing || cancelled()) throw new FilesystemError(11);
+    if (this.leaseOnlyLapsed(admittedTerm)) return;
+    await raceWithAbort(this.renewLeaseNow(), this.disposeAbort.signal, cancelled);
+  }
+
+  /**
+   * Renews a lapse for a watch read or drain within one budget. False when the lapse is not
+   * renewable or the renewal cannot finish in time: the caller reports one overflow, not a failure.
+   */
+  private async renewWatchLease(
+    admittedTerm: bigint,
+    cancelled: () => boolean,
+    budget: LeaseRenewalBudget,
+  ): Promise<boolean> {
+    if (!this.leaseOnlyLapsed(admittedTerm)) return false;
+    try {
+      await this.renewLapsedLease(admittedTerm, cancelled, budget);
+      return true;
+    } catch {
+      if (this.disposing || cancelled()) throw new FilesystemError(11);
+      return false;
+    }
   }
 
   watchDrain(
@@ -1337,24 +1360,22 @@ export class MultiTabBackend implements FilesystemBackend {
     admittedTerm: bigint,
     cancelled: () => boolean,
   ): Promise<import("./watch-service.js").HeldWatchDrain> {
-    if (this.disposing || cancelled()) throw new FilesystemError(11);
-    if (this.leaseOnlyLapsed(admittedTerm)) {
-      // A renewal that cannot finish in time reports one overflow below, not a failure.
-      await this.renewLapsedLease(admittedTerm, cancelled).catch(() => {});
-    } else {
-      await raceWithAbort(this.renewLeaseNow(), this.disposeAbort.signal, cancelled);
+    const budget: LeaseRenewalBudget = {};
+    await this.renewWatchLeaseOnce(admittedTerm, cancelled);
+    for (;;) {
+      if (this.disposing || cancelled()) throw new FilesystemError(11);
+      const termEnded =
+        admittedTerm !== this.hostTerm ||
+        this.role !== "host" ||
+        this.ownershipLost ||
+        this.leaseClosed ||
+        !!this.terminalFailure ||
+        !this.watchService;
+      if (termEnded) return this.overflowOwnerWatches(owner, true);
+      if (this.isLeaseValid()) return this.drainHostWatches(owner);
+      if (!(await this.renewWatchLease(admittedTerm, cancelled, budget)))
+        return this.overflowOwnerWatches(owner, false);
     }
-    if (this.disposing || cancelled()) throw new FilesystemError(11);
-    const termEnded =
-      admittedTerm !== this.hostTerm ||
-      this.role !== "host" ||
-      this.ownershipLost ||
-      this.leaseClosed ||
-      !!this.terminalFailure ||
-      !this.watchService;
-    if (termEnded) return this.overflowOwnerWatches(owner, true);
-    if (!this.isLeaseValid()) return this.overflowOwnerWatches(owner, false);
-    return this.drainHostWatches(owner);
   }
 
   private drainHostWatches(owner: number): import("./watch-service.js").HeldWatchDrain {
@@ -2040,6 +2061,7 @@ export class MultiTabBackend implements FilesystemBackend {
       !!claimName &&
       !!snap.held?.some((l) => l.name === claimName && l.clientId === this.selfLockClientId);
     if (!hasStorage || !hasClaim) return false;
+    // After the lock query: verifyStorageEpoch may answer from an open commit's epoch read.
     return this.persistent.verifyStorageEpoch();
   }
 
