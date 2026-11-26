@@ -64,13 +64,18 @@ function answerSyncs(port: MessagePort): void {
     get: () => handler,
     set(value: ((event: MessageEvent) => void) | null) {
       handler = value;
-      portHandler.set!.call(port, (event: MessageEvent) => {
-        if ((event.data as { type?: unknown } | null)?.type === "probe-sync") {
-          port.postMessage({ type: "synced", registrations });
-          return;
-        }
-        handler?.(event);
-      });
+      portHandler.set!.call(
+        port,
+        syncing(port, () => handler),
+      );
     },
   });
+}
+
+/** Forwards every message except a sync request, which it answers on the same port. */
+function syncing(port: MessagePort, handler: () => ((event: MessageEvent) => void) | null) {
+  return (event: MessageEvent) => {
+    if ((event.data as { type?: unknown } | null)?.type !== "probe-sync") return handler()?.(event);
+    port.postMessage({ type: "synced", registrations });
+  };
 }
