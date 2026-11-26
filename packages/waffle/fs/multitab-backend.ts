@@ -601,6 +601,9 @@ export class MultiTabBackend implements FilesystemBackend {
 
   // Host authority state
   private persistent?: PersistentBackend;
+  /** Bumped when entries are rebound, and by the outgoing backend's count plus one when the
+   * persistent backend changes, so unlinkGeneration() only ever moves forward. */
+  private unlinkEvents = 0;
   private watchService?: WatchService;
   private hostQueue: Promise<void> = Promise.resolve();
   private readonly barrier = new BarrierGate();
@@ -812,6 +815,19 @@ export class MultiTabBackend implements FilesystemBackend {
       return this.persistent.waitForDirtyCapacity(changed, cancelled);
     }
     return Promise.resolve();
+  }
+
+  private setPersistent(next: PersistentBackend | undefined): void {
+    if (next === this.persistent) return;
+    this.unlinkEvents += (this.persistent?.unlinkGeneration() ?? 0) + 1;
+    this.persistent = next;
+  }
+
+  /** Exact for the host, whose unlinks all go through its persistent backend. Any other role
+   * learns unlinks from the wire, so it reports NaN and every capability trim rescans. */
+  unlinkGeneration(): number {
+    if (this.role !== "host" || !this.persistent) return NaN;
+    return this.unlinkEvents + this.persistent.unlinkGeneration();
   }
 
   isUnlinked(handle: FileHandle): boolean {
@@ -1343,7 +1359,7 @@ export class MultiTabBackend implements FilesystemBackend {
 
     if (this.persistent) {
       const residual = this.persistent;
-      this.persistent = undefined;
+      this.setPersistent(undefined);
       this.watchService = undefined;
       await this.retireFailedMountBackend(residual);
     }
@@ -1688,7 +1704,7 @@ export class MultiTabBackend implements FilesystemBackend {
       }
 
       // Mount fixed hostTerm & bind PersistentBackend
-      this.persistent = backend;
+      this.setPersistent(backend);
       this.watchService = new WatchService(backend);
       this.hostTerm = backend.initialReservationEra;
       this.hostStorageEpoch = storageEpoch;
@@ -1768,7 +1784,7 @@ export class MultiTabBackend implements FilesystemBackend {
   ): Promise<void> {
     if (this.terminalFailure) throw wrapReleaseError(this.terminalFailure.reason, false);
     if (backend) {
-      this.persistent = undefined;
+      this.setPersistent(undefined);
       this.watchService = undefined;
       await this.retireFailedMountBackend(backend);
     } else {
@@ -2185,7 +2201,7 @@ export class MultiTabBackend implements FilesystemBackend {
     }
 
     this.captureRetainedSegments(persistent);
-    this.persistent = undefined;
+    this.setPersistent(undefined);
     this.watchService = undefined;
     if (this.sharedBuffer) persistent.shared.resetForRemount(this.retainedSegments);
     await this.releaseAttemptAndElectionLocks();
@@ -2257,7 +2273,7 @@ export class MultiTabBackend implements FilesystemBackend {
       this.closeAllHostPeerSessions();
       if (this.persistent) {
         const persistent = this.persistent;
-        this.persistent = undefined;
+        this.setPersistent(undefined);
         this.watchService = undefined;
         await persistent.retireFenced().catch(() => {});
         this.captureRetainedSegments(persistent);
@@ -2319,7 +2335,7 @@ export class MultiTabBackend implements FilesystemBackend {
     this.closeAllHostPeerSessions();
     if (this.persistent) {
       const persistent = this.persistent;
-      this.persistent = undefined;
+      this.setPersistent(undefined);
       this.watchService = undefined;
       await persistent.retireFenced().catch(() => {});
       this.captureRetainedSegments(persistent);
@@ -2344,7 +2360,7 @@ export class MultiTabBackend implements FilesystemBackend {
     this.closeAllHostPeerSessions();
     if (this.persistent) {
       const persistent = this.persistent;
-      this.persistent = undefined;
+      this.setPersistent(undefined);
       this.watchService = undefined;
       await persistent.retireFenced().catch(() => {});
       this.captureRetainedSegments(persistent);
@@ -6704,6 +6720,7 @@ export class MultiTabBackend implements FilesystemBackend {
         entry.remoteSessionId = sessionId;
         entry.pinToken = wire.pinToken;
         entry.unlinked = !!wire.unlinked;
+        this.unlinkEvents++;
         entry.stale = false;
       }
     } finally {
@@ -6713,6 +6730,7 @@ export class MultiTabBackend implements FilesystemBackend {
 
   private rebindLocalHandlesOnHost(term: bigint): void {
     const persistent = this.persistent!;
+    this.unlinkEvents++;
     for (const entry of this.byLocalHandle.values()) {
       const node = persistent.nodeByFileId(entry.fileId);
       if (!node) {
@@ -6825,6 +6843,7 @@ export class MultiTabBackend implements FilesystemBackend {
     pinToken: number | undefined,
     unlinked?: boolean,
   ): LocalHandleEntry {
+    if (unlinked) this.unlinkEvents++;
     const existing = this.byFileId.get(fileId);
     if (existing) {
       if (remoteSessionId !== undefined && pinToken !== undefined) {
@@ -6902,6 +6921,7 @@ export class MultiTabBackend implements FilesystemBackend {
   }
 
   private detachHandlesForRemount(): void {
+    this.unlinkEvents++;
     for (const entry of this.byLocalHandle.values()) {
       entry.remoteHandle = undefined;
       entry.remoteTerm = undefined;

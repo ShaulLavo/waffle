@@ -155,6 +155,9 @@ interface Session {
   privateInputs: Map<number, Uint8Array>;
   preparingHandles: Map<number, number>;
   preparations: Set<Promise<void>>;
+  /** The backend's unlink generation when a trim last proved no transient capability was
+   * unlinked. Undefined while one may still become detached, so every trim rescans. */
+  trimmedUnlinks?: number;
   quiescing?: Promise<void>;
   releaseState?: { kind: "running" } | { kind: "failed"; error: unknown };
   closed?: boolean;
@@ -764,21 +767,38 @@ export class FilesystemService {
     }
     return responseHeld;
   }
+  /** NaN, which never equals a recorded value, when the backend cannot say. */
+  private unlinkGeneration(): number {
+    if (this.backend instanceof MemoryBackend) return this.backend.unlinkGeneration();
+    if (!this.backend.isUnlinked) return 0;
+    return this.backend.unlinkGeneration?.() ?? NaN;
+  }
   private trim(session: Session): void {
+    // Only an unlink makes a capability detachable, and idle capabilities exceed the bound only
+    // when the whole set does. Until either changes, a previous scan's answer still holds.
+    const unlinks = this.unlinkGeneration();
+    if (session.trimmedUnlinks === unlinks && session.transient.size <= TRANSIENT_HANDLES) return;
+    session.trimmedUnlinks = undefined;
     let idle = 0,
+      unlinked = 0,
       detached = false;
     const shared = this.backend instanceof MemoryBackend ? this.backend.shared : undefined;
     const isUnlinked = (handle: number) =>
       shared ? shared.isUnlinked(handle) : (this.backend.isUnlinked?.(handle) ?? false);
     const responseHeld = this.responseReferenceCounts(session);
     for (const handle of session.transient.keys()) {
+      const gone = isUnlinked(handle);
+      if (gone) unlinked++;
       const references = Atomics.load(session.capabilities, session.handles.get(handle)! + 1);
       if (session.preparingHandles.has(handle) || references !== (responseHeld.get(handle) ?? 0))
         continue;
       idle++;
-      if (references === 0 && isUnlinked(handle)) detached = true;
+      if (references === 0 && gone) detached = true;
     }
-    if (idle <= TRANSIENT_HANDLES && !detached) return;
+    if (idle <= TRANSIENT_HANDLES && !detached) {
+      if (!unlinked) session.trimmedUnlinks = unlinks;
+      return;
+    }
     // Over the bound, evict the least recently used down to half of it. Each eviction bumps the
     // namespace epoch and so drops every client's cached answers; one handle per new path
     // would do that on every resolve of a build that touches more paths than the bound.
@@ -802,9 +822,11 @@ export class FilesystemService {
           Atomics.store(session.capabilities, key + 1, 0);
           continue;
         }
+        if (isUnlinked(handle)) unlinked--;
         this.forget(session, handle, key);
         idle--;
       }
+      if (!unlinked) session.trimmedUnlinks = unlinks;
     } finally {
       if (invalidate) {
         if (shared) shared.endServiceMutation(epoch);

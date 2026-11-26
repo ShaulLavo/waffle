@@ -71,6 +71,9 @@ export interface FilesystemBackend {
   isPreparedReadValid?(): boolean;
   /** Whether a handle is unlinked (used by service capability trimming when not MemoryBackend). */
   isUnlinked?(handle: FileHandle): boolean;
+  /** Changes whenever `isUnlinked` may have become true for some handle, so capability trimming
+   * can skip rescanning while nothing was unlinked. Without it every trim rescans. */
+  unlinkGeneration?(): number;
   /** Select a bounded cold descriptor range before asynchronous storage work. */
   prepareDescriptorRead?(
     handle: FileHandle,
@@ -162,6 +165,11 @@ export type MemoryBackendSharedRoot = Pick<FilesystemIdentity, "shared" | "maxBy
 
 export class MemoryBackend implements FilesystemBackend {
   private readonly watchOwner: { observer?: WatchMutationObserver };
+  /** Counts this backend's `shared.unlink` calls, the only place a slot becomes unlinked. */
+  private unlinks = 0;
+  unlinkGeneration(): number {
+    return this.unlinks;
+  }
   installWatchObserver(observer: WatchMutationObserver): void {
     if (this.watchOwner.observer && this.watchOwner.observer !== observer)
       throw new Error("filesystem root already has a watch owner");
@@ -817,6 +825,7 @@ export class MemoryBackend implements FilesystemBackend {
   /** Nodes a discarded plan created never existed outside it: drop their slots and times. */
   private discardRegistered(registered: readonly FileHandle[]): void {
     for (const handle of registered) {
+      this.unlinks++;
       this.shared.unlink(handle);
       this.directoryTimes.delete(handle);
     }
@@ -915,6 +924,7 @@ export class MemoryBackend implements FilesystemBackend {
     }
     for (const entry of action.removed) {
       if (this.isLinked(entry.node)) continue;
+      this.unlinks++;
       this.shared.unlink(entry.handle);
       this.pruneDirectoryTimes(entry.handle, entry.node);
       if (this.shared.revision(entry.handle) === undefined)
