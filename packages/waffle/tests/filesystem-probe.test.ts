@@ -201,10 +201,24 @@ describe("runtime_fs.path_probe", () => {
   test("descriptor errors and bad pointers", () => {
     const g = guest();
     expect(g.probe(["app"], 2, 99).errno).toBe(8);
+    expect(g.probe(["app"], 2, 0)).toEqual({ errno: 54, found: 7 });
     expect(g.call(3, g.memory.buffer.byteLength - 2, 4, 2, 32)).toBe(21);
     expect(g.call(3, 64, 4, 2, g.memory.buffer.byteLength - 2)).toBe(21);
     expect(guest(0n).probe(["app"], 2).errno).toBe(76);
     expect(guest(RIGHT_PATH_FILESTAT_GET).probe(["app"], 2)).toEqual({ errno: 0, found: 0 });
+  });
+
+  test("overlapping input/output, empty pathname, and the 64-path limit", () => {
+    const g = guest();
+    const input = encoder.encode("missing\0app\0");
+    new Uint8Array(g.memory.buffer).set(input, 64);
+    expect(g.call(3, 64, input.length, 2, 64)).toBe(0);
+    expect(new DataView(g.memory.buffer).getUint32(64, true)).toBe(1);
+    expect(g.probe([""], 2)).toEqual({ errno: 0, found: NONE });
+    const atLimit = Array.from({ length: PROBE_PATH_LIMIT }, (_, i) =>
+      i === PROBE_PATH_LIMIT - 1 ? "app" : `missing-${i}`,
+    );
+    expect(g.probe(atLimit, 2)).toEqual({ errno: 0, found: PROBE_PATH_LIMIT - 1 });
   });
 
   test("a malformed list or kind is EINVAL before any lookup, with the output untouched", () => {
