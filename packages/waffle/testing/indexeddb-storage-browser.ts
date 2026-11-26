@@ -1539,6 +1539,101 @@ function indexedDBCases(
     assert(settled, "close released the connection before a returned read settled");
   });
 
+  test("IndexedDB cold reads check the caller once more before returning bytes", async (_name, open) => {
+    const storage = await open();
+    await storage.persist(chunkedBatch(3 * CHUNK_SIZE));
+    await storage.close();
+    const cold = await open();
+    await cold.load();
+    const controller = new AbortController();
+    const reason = new Error("cancelled after the last checksum");
+    const original = crypto.subtle.digest.bind(crypto.subtle);
+    let digests = 0;
+    crypto.subtle.digest = async (...args) => {
+      const digest = await original(...args);
+      digests++;
+      return digest;
+    };
+    // The first caller check after every chunk was hashed schedules the cancellation, so it
+    // lands before the read resumes from its verifier.
+    const signal = controller.signal;
+    signal.throwIfAborted = function (this: AbortSignal) {
+      if (digests === 3) queueMicrotask(() => controller.abort(reason));
+      return AbortSignal.prototype.throwIfAborted.call(this);
+    };
+    try {
+      const outcome = await cold
+        .readRange("file:1", { offset: 0, length: 3 * CHUNK_SIZE, signal })
+        .then(
+          (bytes) => bytes,
+          (error: unknown) => error,
+        );
+      assert(
+        outcome === reason,
+        outcome instanceof Uint8Array
+          ? `a read cancelled after its checksums returned ${outcome.length} bytes`
+          : `a read cancelled after its checksums rejected with ${String(outcome)}`,
+      );
+    } finally {
+      crypto.subtle.digest = original;
+      await cold.close();
+    }
+  });
+
+  test("IndexedDB cold reads abort their transaction when setup throws", async (_name, open) => {
+    const storage = await open();
+    await storage.persist(chunkedBatch(CHUNK_SIZE));
+    await storage.close();
+    const cold = await open();
+    await cold.load();
+    const failure = new Error("injected setup failure");
+    const get = IDBObjectStore.prototype.get;
+    const transaction = IDBDatabase.prototype.transaction;
+    const outcomes: string[] = [];
+    IDBObjectStore.prototype.get = function (key: IDBValidKey | IDBKeyRange) {
+      if (this.name === "data" && typeof key === "string") throw failure;
+      return get.call(this, key);
+    };
+    IDBDatabase.prototype.transaction = function (
+      this: IDBDatabase,
+      ...args: Parameters<IDBDatabase["transaction"]>
+    ) {
+      const tx = transaction.apply(this, args);
+      tx.addEventListener("complete", () => outcomes.push("complete"));
+      tx.addEventListener("abort", () => outcomes.push("abort"));
+      return tx;
+    } as IDBDatabase["transaction"];
+    const controller = new AbortController();
+    let listeners = 0;
+    const signal = controller.signal;
+    const add = signal.addEventListener.bind(signal);
+    const remove = signal.removeEventListener.bind(signal);
+    signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => {
+      listeners++;
+      add(...args);
+    }) as AbortSignal["addEventListener"];
+    signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => {
+      listeners--;
+      remove(...args);
+    }) as AbortSignal["removeEventListener"];
+    try {
+      const outcome = await cold.readRange("file:1", { offset: 0, length: 1, signal }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      assert(outcome === failure, `setup failure surfaced as ${String(outcome)}`);
+    } finally {
+      IDBObjectStore.prototype.get = get;
+      IDBDatabase.prototype.transaction = transaction;
+    }
+    await cold.close();
+    assert(
+      outcomes.length === 1 && outcomes[0] === "abort",
+      `the failed read's transaction ended with ${JSON.stringify(outcomes)}`,
+    );
+    assert(listeners === 0, `${listeners} abort listeners left on the caller's signal`);
+  });
+
   test("IndexedDB payload sizes follow commits, recovery bases and journals", async (_name, open) => {
     const storage = await open();
     const retain = (key: string, size: number) => storage.retainPayload(key, size).release();

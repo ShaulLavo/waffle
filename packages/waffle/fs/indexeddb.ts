@@ -1487,6 +1487,9 @@ export class IndexedDBStorage implements StorageBackend {
         const value = await this.readRecord(key, signal);
         if (!(value instanceof Uint8Array)) chunkError(key);
         if (value.length !== this.payloadSize(key)) chunkError(key);
+        // readRecord awaits its transaction again after its own check.
+        signal?.throwIfAborted();
+        this.assertOwner();
         return value;
       }
       return this.readPayload(
@@ -1628,8 +1631,29 @@ export class IndexedDBStorage implements StorageBackend {
         abort();
       },
     };
+    try {
+      // Setup can throw synchronously; the catch then aborts the transaction it opened.
+      this.placePayloadReads(tx, read);
+      await Promise.race([arrival.promise, settled.then(() => arrival.promise)]);
+    } catch (error) {
+      abort();
+      throw signal?.aborted ? signal.reason : (this.ownershipError ?? read.failure?.cause ?? error);
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
+    const admit = () => {
+      signal?.throwIfAborted();
+      this.assertOwner();
+    };
+    await verifyChecksums(key, read.checks, admit);
+    // Revocation can land while the verifier's result is delivered: check once more with no
+    // await between this check and handing out the bytes.
+    admit();
+    return read.result!;
+  }
+  private placePayloadReads(tx: IDBTransaction, read: PayloadRead): void {
     const store = tx.objectStore("data");
-    const manifest = store.get(key);
+    const manifest = store.get(read.key);
     manifest.onsuccess = () => {
       try {
         acceptManifest(store, manifest.result, read);
@@ -1637,19 +1661,7 @@ export class IndexedDBStorage implements StorageBackend {
         read.fail(error);
       }
     };
-    if (expectedSize !== undefined) placeChunkReads(store, expectedSize, read);
-    try {
-      await Promise.race([arrival.promise, settled.then(() => arrival.promise)]);
-    } catch (error) {
-      throw signal?.aborted ? signal.reason : (this.ownershipError ?? read.failure?.cause ?? error);
-    } finally {
-      signal?.removeEventListener("abort", abort);
-    }
-    await verifyChecksums(key, read.checks, () => {
-      signal?.throwIfAborted();
-      this.assertOwner();
-    });
-    return read.result!;
+    if (read.expectedSize !== undefined) placeChunkReads(store, read.expectedSize, read);
   }
   private joinNativeReads(): Promise<unknown> {
     return Promise.all(Array.from(this.nativeReads));
