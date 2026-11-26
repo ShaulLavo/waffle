@@ -237,3 +237,22 @@ callback left by a closed multitab tab (lease, heartbeat or idle timers) that la
 test's window, where it patches `Promise.prototype.then`, `queueMicrotask` and `setTimeout`. Next
 step: count which callback the patch sees in that pairing, then make the test ignore callbacks
 queued before it starts, or make tab close cancel every timer it owns.
+
+## Firefox broker release idle reacquire, 2026-11-26
+
+`packages/waffle/testing/storage-release-browser.ts:123`, case
+`firefox indexeddb: broker release idle immediately reacquires in another Worker`, failed in the
+"Browser and libc" job of main push run 45788497017 at 8bd8e7824 (PR 646) with
+`broker release idle: TransactionInactiveError: A request was placed against a transaction which is currently not active, or which is finished.`
+The same failure hit PR 662's run 45838212343. In main's run the `maintenance` variant and the
+Chromium and WebKit runs of this case passed. The case runs 8 parallel chains of 8 release trials; each trial releases an
+IndexedDB database in one Worker and reopens it at once in another. The error means some request
+was queued on a transaction after it committed, likely an await between a transaction's creation
+and its request inside the release or reacquire path, which Firefox commits sooner than the other
+engines under load. No cause is confirmed.
+
+It did not reproduce on the PC: 18 of 18 Firefox runs passed with PR 662, 8 with
+`STORAGE_TEST_REPEAT=8` and 10 more pinned to 2 cores with `taskset -c 2,3`. Next step: run
+`STORAGE_TEST_FILTER='broker release idle' STORAGE_TEST_REPEAT=50 taskset -c 0 bun packages/waffle/testing/storage-browser-runner.ts firefox`
+and add the trial number and the failing request's stack to the chain's rejection, so the
+request placed on the finished transaction can be found.
