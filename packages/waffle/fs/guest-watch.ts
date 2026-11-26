@@ -184,7 +184,7 @@ export class GuestWatchTable implements GuestWatchReadiness {
     const observed = atomicsLoad(this.#fs.cells, 3);
     const service = this.#fs.open(handle, recursive);
     const id = this.#nextId++;
-    const watch: Watch = { id, service, observed: -1, queue: [], head: 0, ended: false, errno: 0 };
+    const watch: Watch = { id, service, observed: NaN, queue: [], head: 0, ended: false, errno: 0 };
     mapSet(this.#watches, id, watch);
     mapSet(this.#byService, service, watch);
     this.#activeCount++;
@@ -215,7 +215,10 @@ export class GuestWatchTable implements GuestWatchReadiness {
       rotate(this.#watches, first);
       return watchError(first.id, ECANCELED);
     }
-    if (this.#useDrain() && (mapSize(this.#buffered) || !this.#drainService()))
+    if (
+      this.#useDrain() &&
+      (mapSize(this.#buffered) || mapSize(this.#errored) || !this.#drainService())
+    )
       return this.#takeNextReady(capacity);
     return this.#readNextFallback(capacity);
   }
@@ -232,8 +235,17 @@ export class GuestWatchTable implements GuestWatchReadiness {
     const pick = this.#flip ? (ended ?? errored) : (errored ?? ended);
     if (!pick) return failure(EAGAIN);
     this.#flip = !pick.ended;
-    rotate(pick.ended ? this.#ended : this.#errored, pick);
-    return pick.ended ? nextOf(pick.id, END) : watchError(pick.id, pick.errno);
+    if (pick.ended) {
+      rotate(this.#ended, pick);
+      return nextOf(pick.id, END);
+    }
+    const errno = pick.errno;
+    pick.errno = 0;
+    if (pick.observed === this.#observedGen) this.#observedCount--;
+    pick.observed = NaN;
+    this.#drainMore = true;
+    mapDelete(this.#errored, pick.id);
+    return watchError(pick.id, errno);
   }
 
   #readNextFallback(capacity: number): GuestWatchNext {
@@ -328,10 +340,6 @@ export class GuestWatchTable implements GuestWatchReadiness {
       throw error;
     }
     this.#drainMore = drained.more;
-    mapForEach(this.#errored, (watch) => {
-      watch.errno = 0;
-    });
-    this.#errored = new MapConstructor();
     for (let index = 0; index < drained.entries.length; index++) {
       const entry = drained.entries[index]!;
       const watch = mapGet(this.#byService, entry.id);

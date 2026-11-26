@@ -1599,3 +1599,23 @@ test("watchDrain checks queued count before taking a batch and bounds terminal a
   expect(seenOv.size).toBe(150);
   service.closeOwner(1);
 });
+
+test("watch_next delivers every denied watch ID across capped drains without closing them", () => {
+  const h = guestWatches({ withDrain: true });
+  const root = h.backend.execute("preopen", ["/"], new Uint8Array()) as number;
+  const dirHandle = (
+    h.backend.execute("resolve", [root, "dir"], new Uint8Array()) as { node: number }
+  ).node;
+  const ids: number[] = [];
+  for (let i = 0; i < 256; i++) ids.push(h.guest.open(h.descriptor("/dir")).id);
+  h.backend.execute("setMode", [dirHandle, 0o000], new Uint8Array());
+  const seen = new Set<number>();
+  for (let i = 0; i < 512; i++) {
+    const res = h.guest.next();
+    expect(res.errno).toBe(2);
+    seen.add(res.id);
+  }
+  expect(seen.size).toBe(256);
+  h.backend.execute("setMode", [dirHandle, 0o700], new Uint8Array());
+  for (const id of ids) expect(h.guest.close(id)).toBe(0);
+});
