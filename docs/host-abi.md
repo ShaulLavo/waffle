@@ -911,8 +911,10 @@ not to ordinary guest I/O or application-selected blocking pipe semantics.
 
 ## Mixed notification waits
 
-The browser broker can own one notification helper Worker per guest. Pass
-`notificationWorkerUrl` to `BrowserProcessBroker.launchWorker()`. Bundle the
+The browser broker gives each guest a notification connection to one helper Worker that the
+page shares among all guests using the same `notificationWorkerUrl`. The helper starts with the
+first connection and is terminated with the last. Pass `notificationWorkerUrl` to
+`BrowserProcessBroker.launchWorker()`. Bundle the
 `waffle/browser/notification-worker` entry separately as a module Worker, just as
 an embedding bundles its guest Worker. Both Workers require shared memory and
 `Atomics.waitAsync`. The guest remains free to block synchronously.
@@ -963,8 +965,10 @@ existing 10 ms fallback. Changing subscriptions recomputes coverage. Existing
 `runtime_proc.poll` and ordinary local `registerPoll()` behavior are unchanged.
 
 The broker installs external ownership before launch and revocation registration.
-It fences the common state and terminates the helper on revoke, startup failure
-and guest completion, and before physical guest termination. Broker disposal joins
+It fences the common state and removes the guest's connection from the helper on revoke,
+startup failure and guest completion, and before physical guest termination. Removal settles
+once the helper has dropped the connection, or once the helper Worker is terminated when that
+was its last connection. One guest's malformed message fails only its own connection. Broker disposal joins
 its physical stop operations before retiring ownership. On browsers,
 `Worker.terminate()` has no exit-event promise; on hosts returning a termination
 promise, disposal awaits it. No cleanup depends on running a guest closure after

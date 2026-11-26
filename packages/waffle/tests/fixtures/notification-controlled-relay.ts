@@ -17,7 +17,7 @@ export async function controlledNotificationRelay() {
   const context = createContext({
     Atomics,
     Array,
-    connection: { port, state },
+    connection: { id: 1, port, state },
     waits,
     postMessage: (value: unknown) => notices.push(value),
     controlledWaiters: () => ({
@@ -40,7 +40,7 @@ export async function controlledNotificationRelay() {
     .replace(binding, "globalThis.controlledWaiters()");
   runInContext(new Bun.Transpiler({ loader: "ts" }).transformSync(script), context);
   runInContext(
-    "globalThis.onmessage({ data: connection }); globalThis.relay = Array.from(connections)[0];",
+    "globalThis.onmessage({ data: connection }); globalThis.relay = connections.get(1);",
     context,
   );
   const send = (data: NotificationRelayRequest) => port.onmessage({ data });

@@ -4,7 +4,8 @@ import {
   type NotificationBlockingRequest,
 } from "./notification-blocking-wait.js";
 import type {
-  NotificationConnection,
+  NotificationRelayControl,
+  NotificationRelayNotice,
   NotificationRelayReply,
   NotificationRelayRequest,
   NotificationWord,
@@ -30,16 +31,25 @@ class RelayConnection {
   private closed = false;
 
   constructor(
+    private readonly id: number,
     private readonly port: MessagePort,
     private readonly state: Int32Array,
   ) {
-    port.onmessage = ({ data }: MessageEvent<NotificationRelayRequest>) => this.receive(data);
+    // The relay is shared by every guest on the page: one guest's malformed message fails only
+    // its own connection, never the relay Worker.
+    port.onmessage = ({ data }: MessageEvent<NotificationRelayRequest>) => {
+      try {
+        this.receive(data);
+      } catch (error) {
+        this.fail(error);
+      }
+    };
     port.start();
   }
 
   private receive(data: NotificationRelayRequest): void {
     if (this.closed) return;
-    if (data.type === "dispose") return this.dispose();
+    if (data.type === "dispose") return this.dispose(true);
     if (Atomics.load(this.state, 1)) return;
     if (data.type === "park") return this.park(data.values);
     if (this.words) return;
@@ -112,18 +122,20 @@ class RelayConnection {
   private fail(error: unknown): void {
     if (this.closed) return;
     this.reply({ type: "error", message: String(error) });
-    globalThis.postMessage("failed");
+    notice(this.id, "failed");
   }
 
-  private dispose(): void {
+  /** Stops waiting and publishing for this guest. Disposal by the guest also tells the page. */
+  dispose(fromGuest = true): void {
+    if (this.closed) return;
     this.closed = true;
     this.parked = undefined;
     this.waiters.dispose();
     this.outstanding.length = 0;
     this.pendingWaits.length = 0;
     this.port.close();
-    connections.delete(this);
-    globalThis.postMessage("disposed");
+    connections.delete(this.id);
+    if (fromGuest) notice(this.id, "disposed");
   }
 }
 
@@ -132,12 +144,21 @@ function validValues(values: unknown, length: number): values is readonly number
   return values.every((value) => typeof value === "number" && (value | 0) === value);
 }
 
-// Connections stay reachable until disposed, together with their pending waits.
-const connections = new Set<RelayConnection>();
+function notice(id: number, type: NotificationRelayNotice["type"]): void {
+  globalThis.postMessage({ id, type } satisfies NotificationRelayNotice);
+}
+
+// One relay serves every guest bridge on the page. Connections stay reachable until disposed,
+// together with their pending waits.
+const connections = new Map<number, RelayConnection>();
 
 globalThis.onmessage = ({
   data,
-}: MessageEvent<NotificationConnection | NotificationBlockingRequest>) => {
-  if ("type" in data) notificationBlockingWait(data);
-  else connections.add(new RelayConnection(data.port, data.state));
+}: MessageEvent<NotificationRelayControl | NotificationBlockingRequest>) => {
+  if ("type" in data) return notificationBlockingWait(data);
+  if ("drop" in data) {
+    connections.get(data.drop)?.dispose(false);
+    return notice(data.drop, "dropped");
+  }
+  connections.set(data.id, new RelayConnection(data.id, data.port, data.state));
 };

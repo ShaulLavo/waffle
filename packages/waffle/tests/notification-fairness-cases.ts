@@ -169,7 +169,7 @@ async function relayTraffic(
   const state = new Int32Array(new SharedArrayBuffer(8));
   try {
     channel.port2.onmessage = ({ data }) => notices.accept(data);
-    worker.postMessage({ port: channel.port1, state }, [channel.port1]);
+    worker.postMessage({ id: 1, port: channel.port1, state }, [channel.port1]);
     channel.port2.postMessage({
       type: "arm",
       words: [

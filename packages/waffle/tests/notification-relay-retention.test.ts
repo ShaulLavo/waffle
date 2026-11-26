@@ -10,7 +10,7 @@ async function armRelay(url: string, words: readonly Int32Array[]) {
   const worker = new Worker(url, { type: "module" });
   const channel = new MessageChannel();
   const state = new Int32Array(new SharedArrayBuffer(8));
-  worker.postMessage({ port: channel.port1, state }, [channel.port1]);
+  worker.postMessage({ id: 1, port: channel.port1, state }, [channel.port1]);
   const armed = new Promise<unknown>((resolve) => {
     channel.port2.onmessage = ({ data }) => resolve(data);
   });
@@ -179,7 +179,7 @@ test("a fenced relay stops publishing and disposes while its waits are pending",
     await pause(100);
     expect(Atomics.load(state, 0)).toBe(fenced);
     channel.port2.postMessage({ type: "dispose" });
-    expect(await disposed).toBe("disposed");
+    expect(await disposed).toEqual({ id: 1, type: "disposed" });
   } finally {
     channel.port2.close();
     worker.terminate();
@@ -201,14 +201,14 @@ test.each(["resolve", "reject"])(
       relay.dispose();
       const fenced = Atomics.load(relay.state, 0);
       expect(relay.inspect("[relay.pendingWaits.length, connections.size].join(',')")).toBe("0,0");
-      expect(relay.notices).toEqual(["disposed"]);
+      expect(relay.notices).toEqual([{ id: 1, type: "disposed" }]);
       if (outcome === "reject") relay.waits[0]!.reject(new Error("late wait rejection"));
       else relay.waits[0]!.resolve("ok");
       for (const wait of relay.waits.slice(1)) wait.resolve("ok");
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(relay.inspect("[relay.pendingWaits.length, connections.size].join(',')")).toBe("0,0");
       expect(Atomics.load(relay.state, 0)).toBe(fenced);
-      expect(relay.notices).toEqual(["disposed"]);
+      expect(relay.notices).toEqual([{ id: 1, type: "disposed" }]);
       expect(relay.waits).toHaveLength(3);
     } finally {
       await relay.close();

@@ -58,7 +58,7 @@ export async function notificationRelayRaceCase(helperUrl: string) {
   const words = Array.from({ length: 3 }, () => new Int32Array(new SharedArrayBuffer(4)));
   try {
     const ready = armed(channel.port2);
-    worker.postMessage({ port: channel.port1, state }, [channel.port1]);
+    worker.postMessage({ id: 1, port: channel.port1, state }, [channel.port1]);
     channel.port2.postMessage({ type: "arm", words: words.map((cells) => ({ cells, index: 0 })) });
     await ready;
     // Each handoff parks like a guest about to block on the values it observed.
