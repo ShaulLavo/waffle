@@ -104,3 +104,32 @@ test("an unlink through a backend wrapper over the same table is seen by the nex
   await client.asyncCall("stat", [root]);
   await eventually(() => !transient().has(handle));
 });
+
+test("an unlink through a separately attached alias of the same table is seen by the next trim", async () => {
+  const memory = new MemoryBackend();
+  // An alias made before the owner connects keeps its own state object.
+  const alias = new MemoryBackend(undefined, undefined, memory);
+  const service = new FilesystemService(memory);
+  const pair = createFilesystemConnection();
+  service.connect(pair.server);
+  const client = new FilesystemClient(pair.client);
+  cleanups.push(async () => {
+    client.dispose();
+    await service.drainForOwner();
+    service.dispose();
+  });
+  alias.attachShared(structuredClone(pair.server.shared), pair.server.maxBytes);
+  expect(alias.shared).not.toBe(memory.shared);
+  const sessions = Reflect.get(service, "sessions") as Set<{ transient: Map<number, true> }>;
+  await client.asyncCall("writeFile", ["/x"], new Uint8Array([5]));
+  const root = await client.asyncCall("preopen", ["/"]);
+  const path = await client.asyncCall("resolve", [root, "x"]);
+  const handle = path.node as number;
+  client.retain(handle);
+  await client.asyncCall("stat", [root]);
+  await alias.execute("removePath", [path, false], new Uint8Array());
+  expect(memory.unlinkGeneration()).toBe(alias.unlinkGeneration());
+  client.release(handle);
+  await client.asyncCall("stat", [root]);
+  await eventually(() => !Array.from(sessions)[0]!.transient.has(handle));
+});
