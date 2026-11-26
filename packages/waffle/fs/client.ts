@@ -780,9 +780,14 @@ export class FilesystemClient implements FileSystem {
   /** A deferred write needs the backend's terminal state even if its port reply is lost, and
    * that state wakes word 0 only. Move a waiter parked on the transport word over to it. */
   watchBackendSettlement(): void {
+    this.backendWaiterVersion++;
     if (this.revocationWord === this.transportSignal) atomicsNotify(this.transportSignal, 0);
   }
+  /** The word the monitor is parked on, or undefined while it runs or is stopped. */
   private revocationWord: Int32Array | undefined;
+  /** Bumped by every backend-waiter registration. A pass that saw it change, for example a
+   * settlement callback registering the next deferred write, chooses its word again. */
+  private backendWaiterVersion = 0;
   private unsettledBackendWaiter(): boolean {
     let found = false;
     mapForEach(this.completions, (completion) => {
@@ -808,18 +813,19 @@ export class FilesystemClient implements FileSystem {
       this.revocationWord = undefined;
       try {
         while (mapSize(this.completions)) {
+          const version = this.backendWaiterVersion;
           const signal = this.revocationSignal();
           const observed = atomicsLoad(signal, 0);
-          if (this.revoked()) {
-            if (!this.sweepRevokedCompletions()) break;
-          } else {
-            this.notifySettledBackendWaiters();
-          }
-          if (!mapSize(this.completions)) break;
-          const waiting = atomicsWaitAsync(signal, 0, observed);
-          if (waiting.async) {
+          let waiting = true;
+          if (this.revoked()) waiting = this.sweepRevokedCompletions();
+          else this.notifySettledBackendWaiters();
+          // Callbacks run above can register waiters; neither park nor stop on a stale choice.
+          if (version !== this.backendWaiterVersion) continue;
+          if (!waiting || !mapSize(this.completions)) break;
+          const parked = atomicsWaitAsync(signal, 0, observed);
+          if (parked.async) {
             this.revocationWord = signal;
-            afterNativePromise(waiting.value, step, stop);
+            afterNativePromise(parked.value, step, stop);
             return;
           }
         }

@@ -6,7 +6,7 @@ import {
   createFilesystemConnection,
   revokeFilesystem,
 } from "../fs";
-import { SIGNAL_TRANSPORT } from "../fs/protocol";
+import { SIGNAL_TRANSPORT, State, wake } from "../fs/protocol";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -117,8 +117,8 @@ test("a deferred write settles during shutdown even when its completion reply is
   const execute = backend.execute.bind(backend);
   const paused = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();
-  backend.execute = (operation, args, data, cancelled) => {
-    const result = execute(operation, args, data, cancelled);
+  backend.execute = (operation, args, data) => {
+    const result = execute(operation, args, data);
     if (operation !== "write") return result;
     paused.resolve();
     return gate.promise.then(() => result);
@@ -161,4 +161,29 @@ test("a deferred write settles during shutdown even when its completion reply is
   section.exit();
   completion.release();
   await stopping;
+});
+
+test("a deferred write registered by another's settlement callback still settles", async () => {
+  // No service: the test publishes each terminal state the way the service does, on word 0,
+  // and sends no { completed } reply.
+  const { pair, client } = fixture(false);
+  const first = client.submit("writeFile", ["/a"], new Uint8Array([1]));
+  const second = client.submit("writeFile", ["/b"], new Uint8Array([2]));
+  let settled = false;
+  first.onBackendSettled(() =>
+    second.onBackendSettled(() => {
+      settled = true;
+    }),
+  );
+  await tick();
+  // The monitor wakes, sees no unsettled waiter and would park on the transport word, but the
+  // first callback registers the second waiter during that pass.
+  Atomics.store(first.cells, 0, State.Complete);
+  wake(pair.client);
+  await tick();
+  Atomics.store(second.cells, 0, State.Complete);
+  wake(pair.client);
+  await eventually(() => settled);
+  first.release();
+  second.release();
 });
