@@ -483,6 +483,7 @@ export class Wasi {
     const impl: Record<string, (...args: never[]) => number | void> = this.functions();
     const filesystem: Record<string, (...args: never[]) => number> = {
       path_permissions_get: this.pathPermissions.bind(this),
+      path_realpath: this.pathRealpath.bind(this),
       watch_open: this.watchOpen.bind(this),
       watch_ready: () => (this.watches?.ready() ? 1 : 0),
       watch_read: this.watchRead.bind(this),
@@ -699,6 +700,38 @@ export class Wasi {
       at += record.length;
     }
     this.view().setUint32(out, result.length, true);
+    return SUCCESS;
+  }
+
+  /** runtime_fs.path_realpath: realpath(3) of `path` from `fd` in one filesystem request. Writes
+   * the UTF-8 result's length to `used`; a result longer than `capacity` is ENOBUFS, with
+   * nothing written to `buf`. See docs/host-abi.md. */
+  private pathRealpath(
+    fd: number,
+    ptr: number,
+    len: number,
+    buf: number,
+    capacity: number,
+    used: number,
+  ): number {
+    ptr >>>= 0;
+    len >>>= 0;
+    buf >>>= 0;
+    capacity >>>= 0;
+    used >>>= 0;
+    const size = this.bytes().length;
+    if (ptr + len > size || buf + capacity > size || used + 4 > size) return EFAULT;
+    const entry = this.descriptors.get(fd >>> 0);
+    if (!entry) return EBADF;
+    if (entry.resource.kind !== "directory") return ENOTDIR;
+    if (!(entry.rightsBase & RIGHT_PATH_FILESTAT_GET)) return ENOTCAPABLE;
+    const real = this.opts.fs.realpath(entry.resource.handle, this.str(ptr, len), this.rooted);
+    if (typeof real === "number") return real;
+    const encoded = encoder.encode(real);
+    // Reacquire after the service round trip; another thread may have grown shared memory.
+    this.view().setUint32(used, encoded.length, true);
+    if (encoded.length > capacity) return ENOBUFS;
+    this.memory.range(buf, encoded.length).set(encoded);
     return SUCCESS;
   }
 

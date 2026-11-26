@@ -939,6 +939,7 @@ export class FilesystemService {
         "readdir",
         "readdirPage",
         "resolve",
+        "realpath",
       ].includes(operation)
     )
       this.check(session, a, held);
