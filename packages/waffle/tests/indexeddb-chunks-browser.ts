@@ -107,8 +107,8 @@ function manifestQuery(query: unknown): boolean {
   return (
     query instanceof IDBKeyRange &&
     query.lower === "" &&
-    Array.isArray(query.upper) &&
-    query.upper.length === 0 &&
+    query.upper instanceof ArrayBuffer &&
+    query.upper.byteLength === 0 &&
     query.upperOpen
   );
 }
@@ -756,17 +756,14 @@ async function coldRecoveryCancellation() {
     const controller = new AbortController();
     const getAll = IDBObjectStore.prototype.getAll;
     let validated = 0;
+    const cancel = () => {
+      validated++;
+      controller.abort(false);
+    };
     IDBObjectStore.prototype.getAll = function (...args: Parameters<IDBObjectStore["getAll"]>) {
       const request = getAll.apply(this, args);
       if (this.name === "data" && manifestQuery(args[0]))
-        request.addEventListener(
-          "success",
-          () => {
-            validated++;
-            controller.abort(false);
-          },
-          { once: true },
-        );
+        request.addEventListener("success", cancel, { once: true });
       return request;
     };
     try {
