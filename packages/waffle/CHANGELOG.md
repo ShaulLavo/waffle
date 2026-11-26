@@ -1,5 +1,13 @@
 # @waffle-os/runtime
 
+## 0.0.155
+
+### Patch Changes
+
+- b9cf302: `IndexedDBStorage` now tracks recovery payload roots in O(1) via `PayloadSizes` instead of rescanning the entire tree, both bases, and every journal on every commit, runs payload chunk SHA-256 digests with bounded concurrency without copying owned single-chunk buffers a third time, clones persistence batches directly instead of calling `structuredClone` over `upserts`, and writes new payload keys directly after the epoch check without per-key `data.get` lookups.
+- 2f96081: A persistent workspace under load no longer fails filesystem calls with `ECANCELED` ("host lease expired") during a large write burst such as `bun install`. The Host's lease check no longer waits for the workspace's own IndexedDB checkpoint to finish, and a call whose lease lapses between two checks renews it instead of failing.
+- 03b4fec: Add bounded batched `watchDrain` and `runtime_fs.watch_next` with O(1) watch readiness tracking so guests with many open watches drain only ready subscriptions without per-watch polling round trips.
+
 ## 0.0.154
 
 ### Patch Changes
