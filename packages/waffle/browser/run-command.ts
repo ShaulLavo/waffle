@@ -1,6 +1,6 @@
 import { allocateSharedControl } from "../memory/control.js";
 import { commandTransferBytes } from "../proc/command-transfer.js";
-import { DescriptorTable } from "../core/descriptors.js";
+import { DescriptorTable, type Stream } from "../core/descriptors.js";
 import type { Runtime } from "../runtime.js";
 import { commandDisposals, commandOwners } from "./command-owner.js";
 import { controlLoad } from "../proc/control.js";
@@ -21,7 +21,7 @@ import {
   type WorkerSpawnTransfer,
 } from "../proc/worker-client.js";
 import type { BrowserProcessBroker } from "./process-broker.js";
-import { createRuntimeTerminalCodec } from "./runtime-terminals.js";
+import { createRuntimeTerminalCodec, hostPipeDestination } from "./runtime-terminals.js";
 import { CommandInput } from "./command-input.js";
 import { yieldTask } from "./yield-task.js";
 
@@ -328,16 +328,22 @@ class Command {
         continue;
       this.descriptors.openAt(
         fd,
-        {
-          kind: "terminal",
-          read: () => 0,
-          write: () => 0,
-          readiness: () => ({ readable: fd === 0, writable: fd !== 0, hangup: fd === 0 }),
-        },
+        this.hostStdio(fd),
         (fd === 0 ? READ : WRITE) | POLL | FD_FILESTAT_GET,
         0n,
       );
     }
+  }
+
+  /** Captured stdio is a pipe, as on Unix, unless the caller asked for a terminal. */
+  private hostStdio(fd: 0 | 1 | 2): Stream {
+    const stream: Stream = {
+      kind: this.options.terminal ? "terminal" : "pipe",
+      read: () => 0,
+      write: () => 0,
+      readiness: () => ({ readable: fd === 0, writable: fd !== 0, hangup: fd === 0 }),
+    };
+    return this.options.terminal ? stream : hostPipeDestination(fd, stream);
   }
 
   private deliver(fd: 1 | 2, bytes: Uint8Array): number {

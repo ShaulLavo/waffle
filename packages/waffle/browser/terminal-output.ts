@@ -458,10 +458,12 @@ export function deliveredTerminalOutput(deliver: TerminalOutputDelivery): Runtim
 }
 
 /** A host terminal description. Without `output`, writes fail with NOSYS. */
+/** A host destination. `kind: "pipe"` presents it to the guest as a pipe rather than a TTY. */
 export function hostTerminalStream(
   target: 0 | 1 | 2,
   output: RuntimeTerminalOutput | undefined,
   checkActive?: () => void,
+  kind: "terminal" | "pipe" = "terminal",
 ): Stream {
   const destination = target === 2 ? 2 : 1;
   const read = () => {
@@ -477,7 +479,7 @@ export function hostTerminalStream(
       : output.tryWrite(destination, chunks);
   };
   return {
-    kind: "terminal",
+    kind,
     read,
     tryRead: read,
     write: (chunks) => send(true, chunks),

@@ -11,6 +11,8 @@ type TerminalTarget = 0 | 1 | 2;
 interface TerminalToken {
   kind: "web-terminal";
   target: TerminalTarget;
+  /** The destination is presented to guests as a pipe, as captured output is on Unix. */
+  pipe?: true;
 }
 interface NullDeviceToken {
   kind: "null-device";
@@ -19,7 +21,18 @@ interface NullDeviceToken {
 // A remapped fd is not a new destination. Imported terminals retain their provenance across
 // codec instances and later generations; WeakMap entries disappear with their local streams.
 const targets = new WeakMapConstructor<Stream, TerminalTarget>();
+// Host destinations a guest sees as pipes. They keep their target, so their writes still reach
+// the same host output, but fd_kind and fdstat report a pipe and isatty is false.
+const pipeDestinations = new WeakMapConstructor<Stream, true>();
 const NOSYS = 52;
+
+/** A pipe-kind stream at fd `target` that a codec exports as that host destination. */
+export function hostPipeDestination(target: TerminalTarget, stream: Stream): Stream {
+  if (stream.kind !== "pipe") throw new TypeError("host pipe destination must be a pipe");
+  weakMapSet(targets, stream, target);
+  weakMapSet(pipeDestinations, stream, true);
+  return stream;
+}
 export interface RuntimeTerminalCodecOptions {
   fallback: WorkerDescriptorCodec;
   /** Initial default stdio only. Existing imported provenance wins over the current fd number. */
@@ -56,6 +69,7 @@ function terminalToken(value: unknown): TerminalToken | undefined {
     return;
   if (!("target" in value) || (value.target !== 0 && value.target !== 1 && value.target !== 2))
     throw new TypeError("invalid browser terminal target");
+  if ("pipe" in value && value.pipe !== true) throw new TypeError("invalid browser terminal kind");
   return value as TerminalToken;
 }
 function resolveTerminal(
@@ -95,6 +109,8 @@ export function createRuntimeTerminalCodec(
       // transfers. A receiving executor may resolve that destination to an interactive stream.
       if (target === undefined)
         throw new ProcessError(NOSYS, "terminal has no transferable browser destination");
+      if (weakMapHas(pipeDestinations, resource))
+        return { kind: "web-terminal", target, pipe: true } satisfies TerminalToken;
       return { kind: "web-terminal", target } satisfies TerminalToken;
     },
     import(value, pid) {
@@ -102,6 +118,16 @@ export function createRuntimeTerminalCodec(
       if (nullDevice) return new OpenDescription(createNullDevice(nullDevice.fdflags));
       const token = terminalToken(value);
       if (!token) return options.fallback.import(value, pid);
+      // A pipe destination is never an interactive terminal, so it never resolves to one.
+      if (token.pipe) {
+        const stream = hostTerminalStream(
+          token.target,
+          options.output,
+          options.checkActive,
+          "pipe",
+        );
+        return new OpenDescription(hostPipeDestination(token.target, stream));
+      }
       const resolved = resolveTerminal(options, token.target);
       if (resolved !== undefined) {
         const remember = (stream: Stream) => {

@@ -26,6 +26,12 @@ export interface CommandOptions {
    * stops them as `kill()` would once the first process has its outcome, which the result keeps.
    */
   readonly onLeaderExit?: CommandLeaderExit;
+  /**
+   * Present the standard descriptors Waffle provides (captured stdout and stderr, and stdin
+   * when it reads end of file) as a terminal. By default they are pipes, as a captured command
+   * sees on Unix: `isatty` is false. Stdin from a byte array or stream is always a pipe.
+   */
+  readonly terminal?: boolean;
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
@@ -94,6 +100,8 @@ function snapshot(executable: string, options: CommandOptions): CommandOptions {
   if (!path(executable)) throw new TypeError("Command executable must be an absolute path");
   const { args, cwd = "/", env, stdin, stdout, stderr, deadlineMs } = options;
   const { programs, onLeaderExit } = policies(options);
+  const { terminal = false } = options;
+  if (typeof terminal !== "boolean") throw new TypeError("Command terminal must be a boolean");
   if (!path(cwd)) throw new TypeError("Command cwd must be an absolute path");
   if (args !== undefined && !Array.isArray(args)) throw new TypeError("Invalid command args");
   const argv = Array.from(args ?? []);
@@ -121,6 +129,7 @@ function snapshot(executable: string, options: CommandOptions): CommandOptions {
     filesystem: "runtime-root",
     programs,
     onLeaderExit,
+    terminal,
     args: argv,
     cwd,
     env: Object.fromEntries(entries),
