@@ -229,3 +229,11 @@ code), then passed 4 times out of 4 alone with
 to scheduler hooks, so other work on the same event loop could plausibly add a count. No cause is
 confirmed and no CI run has shown it yet. Next step: rerun it with `--rerun-each 50` next to a
 CPU-heavy test file and read which callback was counted.
+
+Update 2026-11-26 (PR 655): it fails every time on main, not just under load, when it runs right
+after the multitab file: `bun test ./tests/multitab-unit.test.ts ./tests/net-host-watch.test.ts`
+gives 66 pass and 1 fail, and the file alone passes 8 of 8. The likely cause is a timer or promise
+callback left by a closed multitab tab (lease, heartbeat or idle timers) that lands inside the
+test's window, where it patches `Promise.prototype.then`, `queueMicrotask` and `setTimeout`. Next
+step: count which callback the patch sees in that pairing, then make the test ignore callbacks
+queued before it starts, or make tab close cancel every timer it owns.
