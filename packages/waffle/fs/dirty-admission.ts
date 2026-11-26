@@ -151,10 +151,12 @@ export class DirtyAdmission {
   get revision(): number {
     return this.values[REVISION]!;
   }
-  clean(revision: number, namespace: number): boolean {
-    if (!this.enabled || this.revision !== revision) return false;
-    this.reconcile(namespace, 0, 0, 0);
-    return true;
+  releaseSlot(bytes: number, metadata: number): void {
+    if (!this.enabled || (!bytes && !metadata)) return;
+    this.values[DIRTY_BYTES] = Math.max(0, this.values[DIRTY_BYTES]! - bytes);
+    this.values[DIRTY_METADATA] = Math.max(0, this.values[DIRTY_METADATA]! - metadata);
+    this.values[REVISION]!++;
+    this.notify();
   }
   reconcile(
     namespace: number,

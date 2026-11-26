@@ -77,6 +77,8 @@ const FREED_REVISION_HIGH = 8;
 // signals, 16 to 24 the identity allocator, and 32 onward the dirty-admission ledger.
 const REGISTERED_SLOTS = 11;
 const CHANGE_SEQUENCE = 12;
+// Unlinks of this table, for capability trimming. Kept across remount, so it never repeats.
+const UNLINK_GENERATION = 31;
 // Global-lock accelerators. Nothing below a hint is free; ownership stays authoritative.
 const PHYSICAL_HINT = 27;
 const TABLE_HINT = 28;
@@ -302,7 +304,7 @@ export class SharedFilesystemState {
   }
   /** Reset all per-mount filesystem state in place across Host remount/demotion while preserving
    * tab-lifetime header invariants (`MAGIC`, `maxSegments`, owner/probe words, `WATCH_OFFSET`,
-   * `watch.cells[3]`, `CLIENT_MODE`) and reusing tab-lifetime segments at their exact indexes. */
+   * `watch.cells[3]`, `CLIENT_MODE`, `UNLINK_GENERATION`) and reusing tab-lifetime segments at their exact indexes. */
   resetForRemount(retainedSegments: readonly (SharedArrayBuffer | undefined)[] = []): void {
     Atomics.store(this.cells, GLOBAL_LOCK, 0);
     Atomics.store(this.cells, USED_PAGES, 0);
@@ -895,13 +897,6 @@ export class SharedFilesystemState {
       this.slots[this.at(slot, DIRTY_MARK)] = 1;
     }
   }
-  cleanDirty(revision: number, namespace: number): void {
-    if (!this.dirtyAdmission.clean(revision, namespace)) return;
-    for (let slot = 1; slot < MAX_FILES; slot++) {
-      this.slots[this.at(slot, DIRTY_SIZE)] = 0;
-      this.slots[this.at(slot, DIRTY_MARK)] = 0;
-    }
-  }
   reconcileDirty(
     handles: Iterable<FileHandle>,
     namespace: number,
@@ -914,6 +909,7 @@ export class SharedFilesystemState {
     for (const handle of handles) {
       const slot = this.findSlot(handle);
       if (!slot) continue;
+      if (this.staged.size && this.staged.has(slot)) this.settleUnderLock(slot);
       const base = slot * SLOT_WORDS;
       const kind = this.slots[base]!;
       if (!kind || this.slots[base + HANDLE] !== handle + 1) continue;
@@ -2435,7 +2431,24 @@ export class SharedFilesystemState {
       this.section?.exit();
     }
   }
+  /** Moves on every unlink() of this table, the only place a slot becomes unlinked. It lives in
+   * the table's header, so every state attached to the same backing reads one count.
+   * Capability trimming compares it to skip rescans while nothing was unlinked. */
+  unlinkGeneration(): number {
+    return Atomics.load(this.cells, UNLINK_GENERATION);
+  }
+  /** A table that replaces another starts past its count, so the generation never repeats. */
+  continueUnlinks(previous: SharedFilesystemState): void {
+    const floor = previous.unlinkGeneration() + 1;
+    for (;;) {
+      const current = Atomics.load(this.cells, UNLINK_GENERATION);
+      if (current >= floor) return;
+      if (Atomics.compareExchange(this.cells, UNLINK_GENERATION, current, floor) === current)
+        return;
+    }
+  }
   unlink(handle: FileHandle): void {
+    Atomics.add(this.cells, UNLINK_GENERATION, 1);
     this.section?.enter();
     try {
       const slot = this.findSlot(handle);
@@ -2476,9 +2489,15 @@ export class SharedFilesystemState {
     if (this.slots[this.at(slot, UNLINKED)])
       this.publication?.forgetContent(this.slots[this.at(slot, INO)]!);
     this.freePagesLocked(slot);
+    const dirtySize = this.slots[this.at(slot, DIRTY_SIZE)]!;
+    const dirtyMark = this.slots[this.at(slot, DIRTY_MARK)]!;
     this.dirtyAdmission.pin(-1, this.residentBytes());
     this.slots[this.at(slot, DIRTY_SIZE)] = 0;
     this.slots[this.at(slot, DIRTY_MARK)] = 0;
+    if (dirtySize || dirtyMark) {
+      this.dirtyAdmission.releaseSlot(dirtySize * 2, dirtyMark ? DIRTY_NODE_UNITS : 0);
+      Atomics.add(this.cells, CHANGE_SEQUENCE, 1);
+    }
     const revision = this.getRevision(slot);
     const floor =
       (this.cells[FREED_REVISION_HIGH]! >>> 0) * 0x100000000 +
