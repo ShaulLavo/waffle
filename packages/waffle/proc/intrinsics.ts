@@ -19,6 +19,7 @@ export {
   mapSet,
   mapHas,
   mapDelete,
+  mapFirst,
   mapSize,
   mapForEach,
   objectDefineProperty,
