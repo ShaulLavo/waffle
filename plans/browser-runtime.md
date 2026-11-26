@@ -444,3 +444,10 @@ also a cheap shared-memory touch marker). Test the default path through `Filesys
 Evicting only down to a target with the 1,024 limit kept made no consistent difference, because a
 sequential read of a tree larger than the cache misses under least-recently-used order too. Cold
 reads of small files could also load the whole file instead of one range per request.
+
+Measured on 2026-11-26: on a cold Nuxt `bun run dev` from a saved workspace (Chromium), storage
+served 2,964 manifest reads for 2,896 cold-read cache misses and 3,618 hits. Nearly every storage
+read was a file's first read, so this eviction policy cost the real workload almost no repeated
+storage reads. A cold read now takes one transaction (manifest plus chunks). What remains is a
+re-read of a tree larger than the 32 MiB cold-read cache: reading 17,000 files of 2 KiB twice
+reads all of them from storage again.
