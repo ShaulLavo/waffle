@@ -76,6 +76,9 @@ const FREED_REVISION_HIGH = 8;
 // not scan the whole identity table. Other header words: 9 and 10 are DirtyAdmission's
 // signals, 16 to 24 the identity allocator, and 32 onward the dirty-admission ledger.
 const REGISTERED_SLOTS = 11;
+const CHANGE_SEQUENCE = 12;
+// Unlinks of this table, for capability trimming. Kept across remount, so it never repeats.
+const UNLINK_GENERATION = 31;
 // Global-lock accelerators. Nothing below a hint is free; ownership stays authoritative.
 const PHYSICAL_HINT = 27;
 const TABLE_HINT = 28;
@@ -184,6 +187,11 @@ export class SharedFilesystemState {
   readonly publication?: PublicationDomain;
   readonly watch: WatchRing;
   private readonly pageReaders?: Int32Array;
+  /** Slots this state has registered or seen registered, so listing them need not walk the
+   * whole identity table. Entries whose slot was freed since are dropped as they are found. */
+  private registeredIndex?: Set<number>;
+  /** The index in ascending slot order, rebuilt only after the index changes. */
+  private registeredOrder?: number[];
   onContention?: () => void;
   constructor(
     buffer?: SharedArrayBuffer,
@@ -296,7 +304,7 @@ export class SharedFilesystemState {
   }
   /** Reset all per-mount filesystem state in place across Host remount/demotion while preserving
    * tab-lifetime header invariants (`MAGIC`, `maxSegments`, owner/probe words, `WATCH_OFFSET`,
-   * `watch.cells[3]`, `CLIENT_MODE`) and reusing tab-lifetime segments at their exact indexes. */
+   * `watch.cells[3]`, `CLIENT_MODE`, `UNLINK_GENERATION`) and reusing tab-lifetime segments at their exact indexes. */
   resetForRemount(retainedSegments: readonly (SharedArrayBuffer | undefined)[] = []): void {
     Atomics.store(this.cells, GLOBAL_LOCK, 0);
     Atomics.store(this.cells, USED_PAGES, 0);
@@ -834,11 +842,15 @@ export class SharedFilesystemState {
       (this.slots[base + REVISION]! >>> 0)
     );
   }
+  get changeSequence(): number {
+    return Atomics.load(this.cells, CHANGE_SEQUENCE);
+  }
   private changed(slot: number): void {
     const base = slot * SLOT_WORDS,
       low = this.slots[base + REVISION]!;
     this.slots[base + REVISION] = low + 1;
     if (low === -1) this.slots[base + REVISION_STATE] = this.slots[base + REVISION_STATE]! + 2;
+    Atomics.add(this.cells, CHANGE_SEQUENCE, 1);
   }
   private residentBytes(): number {
     return Atomics.load(this.cells, USED_PAGES) * DATA_PAGE_BYTES;
@@ -885,12 +897,42 @@ export class SharedFilesystemState {
       this.slots[this.at(slot, DIRTY_MARK)] = 1;
     }
   }
-  cleanDirty(revision: number, namespace: number): void {
-    if (!this.dirtyAdmission.clean(revision, namespace)) return;
-    for (let slot = 1; slot < MAX_FILES; slot++) {
-      this.slots[this.at(slot, DIRTY_SIZE)] = 0;
-      this.slots[this.at(slot, DIRTY_MARK)] = 0;
+  reconcileDirty(
+    handles: Iterable<FileHandle>,
+    namespace: number,
+    dirtyNamespace: number,
+    isDirty: (handle: FileHandle, kind: number, revision: number, dirtyMark: number) => boolean,
+  ): void {
+    if (!this.dirtyAdmission.enabled) return;
+    let dirtyBytes = 0;
+    let dirtyMetadata = 0;
+    for (const handle of handles) {
+      const slot = this.findSlot(handle);
+      if (!slot) continue;
+      if (this.staged.size && this.staged.has(slot)) this.settleUnderLock(slot);
+      const base = slot * SLOT_WORDS;
+      const kind = this.slots[base]!;
+      if (!kind || this.slots[base + HANDLE] !== handle + 1) continue;
+      const revision = this.getRevision(slot);
+      const dirtyMark = this.slots[base + DIRTY_MARK]!;
+      if (!isDirty(handle, kind, revision, dirtyMark)) {
+        this.slots[base + DIRTY_SIZE] = 0;
+        this.slots[base + DIRTY_MARK] = 0;
+        continue;
+      }
+      if (kind === 1) {
+        const resident = (this.slots[base + REVISION_STATE]! & RESIDENT) !== 0;
+        const size = resident ? this.slots[base + FILE_SIZE]! : 0;
+        this.slots[base + DIRTY_SIZE] = size;
+        this.slots[base + DIRTY_MARK] = 1;
+        dirtyBytes += size * 2;
+      } else {
+        this.slots[base + DIRTY_SIZE] = 0;
+        this.slots[base + DIRTY_MARK] = 1;
+      }
+      dirtyMetadata += DIRTY_NODE_UNITS;
     }
+    this.dirtyAdmission.reconcile(namespace, dirtyNamespace, dirtyBytes, dirtyMetadata);
   }
   private checkFile(slot: number, handle: FileHandle): void {
     if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
@@ -1013,7 +1055,7 @@ export class SharedFilesystemState {
         this.slots[this.at(slot, REVISION_STATE)] =
           Math.floor(revision / 0x100000000) * 2 + (loaded ? RESIDENT : 0);
         if (identity) this.installIdentity(slot, identity);
-        Atomics.store(this.slots, this.at(slot, HANDLE), handle + 1);
+        this.publishHandle(slot, handle);
       } catch (error) {
         if (pinned) this.dirtyAdmission.pin(-1, this.residentBytes());
         throw error;
@@ -1113,12 +1155,44 @@ export class SharedFilesystemState {
       this.unlock(this.at(slot, FILE_LOCK));
     }
   }
-  /** Bounded by the resident identity table, not the size of the persisted namespace. */
+  /** Publishes a registered slot's handle, then adds the slot to this state's index. */
+  private publishHandle(slot: number, handle: FileHandle): void {
+    Atomics.store(this.slots, this.at(slot, HANDLE), handle + 1);
+    if (!this.registeredIndex || this.registeredIndex.has(slot)) return;
+    this.registeredIndex.add(slot);
+    this.registeredOrder = undefined;
+  }
+  /** Bounded by the resident identity table, not the size of the persisted namespace. In slot
+   * order. Another agent's registration, or one racing this read, makes the indexed count differ
+   * from the header's, and then the whole table is walked and the index rebuilt. */
   registeredHandles(): FileHandle[] {
+    const expected = Atomics.load(this.cells, REGISTERED_SLOTS);
+    const indexed = this.indexedHandles();
+    if (indexed?.length === expected) return indexed;
     const handles: FileHandle[] = [];
+    const index = new Set<number>();
     for (let slot = 1; slot < MAX_FILES; slot++) {
       const handle = Atomics.load(this.slots, this.at(slot, HANDLE)) - 1;
+      if (handle < 0) continue;
+      handles.push(handle);
+      index.add(slot);
+    }
+    this.registeredIndex = index;
+    this.registeredOrder = undefined;
+    return handles;
+  }
+  private indexedHandles(): FileHandle[] | undefined {
+    const index = this.registeredIndex;
+    if (!index) return undefined;
+    const order = (this.registeredOrder ??= Array.from(index).sort((a, b) => a - b));
+    const handles: FileHandle[] = [];
+    for (const slot of order) {
+      const handle = Atomics.load(this.slots, this.at(slot, HANDLE)) - 1;
       if (handle >= 0) handles.push(handle);
+      else {
+        index.delete(slot);
+        this.registeredOrder = undefined;
+      }
     }
     return handles;
   }
@@ -2006,6 +2080,7 @@ export class SharedFilesystemState {
       if (slots[base + REVISION_STATE]! & RESIDENT) this.changed(stage.slot);
     }
     slots[base + REVISION_STATE] = slots[base + REVISION_STATE]! | RESIDENT;
+    Atomics.add(this.cells, CHANGE_SEQUENCE, 1);
   }
   /** Caller owns the global mutation lock. Undefined asks for service growth after unlock. */
   tryWrite(
@@ -2356,7 +2431,24 @@ export class SharedFilesystemState {
       this.section?.exit();
     }
   }
+  /** Moves on every unlink() of this table, the only place a slot becomes unlinked. It lives in
+   * the table's header, so every state attached to the same backing reads one count.
+   * Capability trimming compares it to skip rescans while nothing was unlinked. */
+  unlinkGeneration(): number {
+    return Atomics.load(this.cells, UNLINK_GENERATION);
+  }
+  /** A table that replaces another starts past its count, so the generation never repeats. */
+  continueUnlinks(previous: SharedFilesystemState): void {
+    const floor = previous.unlinkGeneration() + 1;
+    for (;;) {
+      const current = Atomics.load(this.cells, UNLINK_GENERATION);
+      if (current >= floor) return;
+      if (Atomics.compareExchange(this.cells, UNLINK_GENERATION, current, floor) === current)
+        return;
+    }
+  }
   unlink(handle: FileHandle): void {
+    Atomics.add(this.cells, UNLINK_GENERATION, 1);
     this.section?.enter();
     try {
       const slot = this.findSlot(handle);
@@ -2397,9 +2489,15 @@ export class SharedFilesystemState {
     if (this.slots[this.at(slot, UNLINKED)])
       this.publication?.forgetContent(this.slots[this.at(slot, INO)]!);
     this.freePagesLocked(slot);
+    const dirtySize = this.slots[this.at(slot, DIRTY_SIZE)]!;
+    const dirtyMark = this.slots[this.at(slot, DIRTY_MARK)]!;
     this.dirtyAdmission.pin(-1, this.residentBytes());
     this.slots[this.at(slot, DIRTY_SIZE)] = 0;
     this.slots[this.at(slot, DIRTY_MARK)] = 0;
+    if (dirtySize || dirtyMark) {
+      this.dirtyAdmission.releaseSlot(dirtySize * 2, dirtyMark ? DIRTY_NODE_UNITS : 0);
+      Atomics.add(this.cells, CHANGE_SEQUENCE, 1);
+    }
     const revision = this.getRevision(slot);
     const floor =
       (this.cells[FREED_REVISION_HIGH]! >>> 0) * 0x100000000 +

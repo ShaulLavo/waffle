@@ -60,6 +60,8 @@ import {
   pack,
   unpack,
   wake,
+  wakeTransport,
+  SIGNAL_BYTES,
   type FilesystemIdentity,
   CONNECTION_SHARED_BYTES,
   MAX_CONNECTION_OWNERS,
@@ -863,7 +865,7 @@ function workspaceConnection(value: unknown, parent: FilesystemConnection): File
     requestBudget: workspaceBuffer(data.requestBudget, REQUEST_BUDGET_BYTES),
     port: data.port,
     epoch: workspaceBuffer(data.epoch, 4),
-    signal: workspaceBuffer(data.signal, 4),
+    signal: workspaceBuffer(data.signal, SIGNAL_BYTES),
     revocations,
     shared: workspaceBuffer(data.shared, CONNECTION_SHARED_BYTES + 4),
     segments,
@@ -908,7 +910,7 @@ class WorkspaceBridge {
     connection.port.onmessage = ({ data }: MessageEvent<unknown>) => this.receive(data);
     connection.port.onmessageerror = () => {
       closeRequestMemory(connection.requests);
-      wake(connection);
+      wakeTransport(connection);
       this.replyStopped();
     };
     connection.port.start();
@@ -1017,7 +1019,7 @@ class WorkspaceBridge {
       this.message(record(value));
     } catch {
       closeRequestMemory(this.connection.requests);
-      wake(this.connection);
+      wakeTransport(this.connection);
       this.replyStopped();
     }
   }
@@ -1035,7 +1037,7 @@ class WorkspaceBridge {
     }
     if ("transportClosed" in data) {
       closeRequestMemory(this.connection.requests);
-      wake(this.connection);
+      wakeTransport(this.connection);
       return this.replyStopped();
     }
     const id = integer(data.id);
@@ -1165,14 +1167,14 @@ class WorkspaceBridge {
     void this.stop().then(
       () => {
         retireRequestMemory(this.connection.requests);
-        wake(this.connection);
+        wakeTransport(this.connection);
       },
       (error: unknown) => {
         retireRequestMemory(
           this.connection.requests,
           error instanceof FilesystemError ? error.errno : 29,
         );
-        wake(this.connection);
+        wakeTransport(this.connection);
       },
     );
   }
@@ -1197,7 +1199,7 @@ class WorkspaceBridge {
     if (this.endpoint.kind === "live") this.endpoint.channel.close();
     this.connection.port.close();
     retireRequestMemory(this.connection.requests);
-    wake(this.connection);
+    wakeTransport(this.connection);
     if (!this.bindingStarted) this.transfer.resolve();
   }
   private async execute(

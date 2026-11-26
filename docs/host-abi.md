@@ -911,11 +911,14 @@ not to ordinary guest I/O or application-selected blocking pipe semantics.
 
 ## Mixed notification waits
 
-The browser broker can own one notification helper Worker per guest. Pass
-`notificationWorkerUrl` to `BrowserProcessBroker.launchWorker()`. Bundle the
+The browser broker gives each guest a notification connection to one helper Worker that the
+page shares among all guests using the same `notificationWorkerUrl`. The helper starts with the
+first connection and is terminated with the last. Pass `notificationWorkerUrl` to
+`BrowserProcessBroker.launchWorker()`. Bundle the
 `waffle/browser/notification-worker` entry separately as a module Worker, just as
-an embedding bundles its guest Worker. Both Workers require shared memory and
-`Atomics.waitAsync`. The guest remains free to block synchronously.
+an embedding bundles its guest Worker. Both Workers require shared memory. The guest
+Worker's lifetime observer also needs `Atomics.waitAsync`; the helper uses only blocking
+waits in its own child Workers. The guest remains free to block synchronously.
 
 `bootstrap()` supplies `context.notifications: NotificationWaitScope | undefined`
 and `context.signal: AbortSignal`. Arm the scope in the awaited `instantiated`
@@ -949,6 +952,20 @@ host-local news synchronously and returns a detach function. Forwarding does not
 clear `localNews`; `poll(0)` and normal network drains keep their existing behavior.
 `NetHost.notification` alone covers GEN0, not local news.
 
+The helper waits on those words only while the guest is parked. Before `wait()` blocks, it
+stores a fresh park id in the connection state and sends it with the source values it
+observed. It rechecks the sources after storing the id and clears the id when the blocking
+call returns. Ids are never reused for a later wait. The helper publishes on the first
+difference, or on a wake of a word still at its parked value, only by consuming the active id
+with a compare-exchange. A retired park never publishes, and a failed claim means the guest
+is running or a newer park is on its way, so the helper drops it. Source traffic while the guest runs costs the helper nothing, and a guest that
+never blocks in `wait()` starts no blocking wait Workers. A malformed request fails that
+guest's connection: the guest receives an error reply and the page fences its state.
+
+Filesystem revocation and reap advance the watch word as well as notifying it, because they
+can make a watch readable. A park taken before a revocation therefore differs by value, even
+when the notify landed before the helper registered its wait.
+
 `covered` is conservative. Process registration with `registerPoll(subscriptions,
 "shared")` owns no guest-local release callbacks and covers only sources already
 publishing to the process common word. Independent streams, terminal/resize
@@ -957,8 +974,10 @@ existing 10 ms fallback. Changing subscriptions recomputes coverage. Existing
 `runtime_proc.poll` and ordinary local `registerPoll()` behavior are unchanged.
 
 The broker installs external ownership before launch and revocation registration.
-It fences the common state and terminates the helper on revoke, startup failure
-and guest completion, and before physical guest termination. Broker disposal joins
+It fences the common state and removes the guest's connection from the helper on revoke,
+startup failure and guest completion, and before physical guest termination. Removal settles
+once the helper has dropped the connection, or once the helper Worker is terminated when that
+was its last connection. One guest's malformed message fails only its own connection. Broker disposal joins
 its physical stop operations before retiring ownership. On browsers,
 `Worker.terminate()` has no exit-event promise; on hosts returning a termination
 promise, disposal awaits it. No cleanup depends on running a guest closure after
@@ -1254,6 +1273,37 @@ Unsupported adapter metadata returns `ENOTSUP`, errno 58. Invalid pointers retur
 errno 21. Errors leave the output unchanged. This import does not extend or reinterpret the
 standard 64-byte Preview1 filestat record, perform open-based inference, or fetch payloads.
 
+## Canonical path query
+
+`runtime_fs.path_realpath(dirfd: u32, path_ptr: u32, path_len: u32, buf_ptr: u32, buf_len: u32, used_ptr: u32) -> i32`
+is `realpath(3)` in one filesystem request. Preview 1 has no such call, so a libc `realpath`
+issues one `path_readlink` per path component, each a round trip to the filesystem worker. The
+import returns zero or a positive WASI errno. The WASI adapter supplies it without activating
+process services.
+
+It checks the directory descriptor's `PATH_FILESTAT_GET` right and resolves the relative
+pathname from that capability as `path_open` does. The pathname is its exact UTF-8 bytes,
+including a leading U+FEFF; malformed UTF-8 or a NUL returns `EINVAL`, errno 28. Resolution
+follows every symbolic link, including the
+final component, with the same 40-expansion limit. In the guest's root namespace (the root
+preopen names the filesystem root) the result is an absolute path from the root, with `.`, `..`
+and every link resolved, as Linux reports it. Otherwise lookups cannot leave the descriptor, and
+the result is relative to it, `.` for the descriptor's directory itself.
+
+Success writes the result's UTF-8 byte length to the u32 at `used_ptr` and the result, with no
+NUL terminator, to `buf_ptr`. A result longer than `buf_len` returns `ENOBUFS`, errno 42, with the
+needed length at `used_ptr` and nothing written to the buffer, so the guest can retry with a
+larger one. The result buffer and the four bytes at `used_ptr` must not overlap: overlapping
+spans return `EINVAL` before any lookup or write.
+
+Errors match `realpath(3)`: a missing component returns `ENOENT`, errno 44, a non-directory
+component or a trailing slash after a non-directory returns `ENOTDIR`, errno 54, too many link
+expansions return `ELOOP`, errno 32, and denied ancestor search returns `EACCES`, errno 2. An
+absolute pathname, or an escape from a capability outside the root namespace, returns `EPERM`,
+errno 63. A bad descriptor returns `EBADF`, errno 8, a descriptor that is not a directory returns
+`ENOTDIR`, and a missing right returns `ENOTCAPABLE`, errno 76. Invalid pointers return
+`EFAULT`, errno 21. The import never fetches file payloads.
+
 ## Guest filesystem watches
 
 A synchronous guest reads committed watch events through four `runtime_fs` imports. The WASI
@@ -1315,7 +1365,8 @@ notification index), `ENOMEM` 48 (native backing allocation failure), `ENOTSUP` 
 descriptor rights are required. The authority is the caller's own open description plus the
 service's capability and inode checks.
 
-Each watch keeps its own `observed` copy of the root's commit counter (`cells[3]`), sampled before
+Each watch keeps its own `observed` copy of the root's commit counter (`cells[3]`, which
+revocation and reap also advance), sampled before
 the open's service call. `watch_read` first copies whole records from the watch's local queue.
 With an empty queue, an unchanged counter returns `EAGAIN` without a service call. A moved counter
 updates `observed` before one synchronous service read, whose batch fills the queue; an overflow

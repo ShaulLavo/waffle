@@ -32,11 +32,17 @@ import {
   createFilesystemConnection,
 } from "../fs/index.js";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
+import { CHUNK_SIZE } from "../fs/indexeddb-chunks.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { FilesystemError, PAGE } from "../fs/protocol.js";
 import { gatedIndexedDB } from "./gated-indexeddb.js";
 import { assertRuntimeStartupTrace } from "./runtime-startup-proof.js";
-import type { ChecksummedRecord, PersistedNode, StorageBackend } from "../fs/storage.js";
+import type {
+  ChecksummedRecord,
+  PersistenceBatch,
+  PersistedNode,
+  StorageBackend,
+} from "../fs/storage.js";
 import { storedTimes } from "./fixtures/file-times.js";
 import {
   busyDeletesNothingCase,
@@ -50,6 +56,133 @@ function request<T>(value: IDBRequest<T>): Promise<T> {
     value.onsuccess = () => resolve(value.result);
     value.onerror = () => reject(value.error);
   });
+}
+/** One directory of `files` small files, each with its own payload. */
+function wideBatch(generation: number, files: number): PersistenceBatch {
+  const saved = batch(generation);
+  const file = saved.upserts[1]!;
+  const root = { ...saved.upserts[0]!, children: [] as [string, number][] };
+  const upserts: PersistedNode[] = [root];
+  const data = new Map<string, Uint8Array>();
+  for (let index = 0; index < files; index++) {
+    const content = bytes(`file ${index}`);
+    const key = `wide:${generation}:${index}`;
+    root.children.push([`f${index}`, index + 2]);
+    upserts.push({ ...file, ino: index + 2, size: content.length, data: key });
+    data.set(key, content);
+  }
+  return { ...saved, upserts, data };
+}
+async function countTransactions<T>(
+  action: () => Promise<T>,
+): Promise<{ result: T; count: number }> {
+  const transaction = IDBDatabase.prototype.transaction;
+  let count = 0;
+  IDBDatabase.prototype.transaction = function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    count++;
+    return transaction.apply(this, args);
+  } as IDBDatabase["transaction"];
+  try {
+    return { result: await action(), count };
+  } finally {
+    IDBDatabase.prototype.transaction = transaction;
+  }
+}
+/** One file of `size` bytes, each byte its index modulo 251. */
+function chunkedBatch(size: number): PersistenceBatch {
+  const saved = batch(1);
+  saved.upserts[1]!.size = size;
+  saved.data = new Map([["file:1", Uint8Array.from({ length: size }, (_, index) => index % 251)]]);
+  return saved;
+}
+/** Chunk gets the action placed, and the most that were unanswered at once. */
+async function observeChunkGets<T>(
+  action: () => Promise<T>,
+): Promise<{ result: T; gets: number; inFlight: number }> {
+  const get = IDBObjectStore.prototype.get;
+  let gets = 0;
+  let open = 0;
+  let inFlight = 0;
+  const answered = () => open--;
+  IDBObjectStore.prototype.get = function (key: IDBValidKey | IDBKeyRange) {
+    const request = get.call(this, key);
+    if (this.name !== "data" || !Array.isArray(key)) return request;
+    gets++;
+    inFlight = Math.max(inFlight, ++open);
+    request.addEventListener("success", answered);
+    request.addEventListener("error", answered);
+    return request;
+  };
+  try {
+    return { result: await action(), gets, inFlight };
+  } finally {
+    IDBObjectStore.prototype.get = get;
+  }
+}
+/** Runs a read, closes the storage as soon as it returns, and reports whether every readonly
+ * transaction had settled when the connection closed. */
+async function settledBeforeClose(
+  storage: IndexedDBStorage,
+  read: () => Promise<unknown>,
+): Promise<boolean> {
+  const transaction = IDBDatabase.prototype.transaction;
+  const close = IDBDatabase.prototype.close;
+  let unsettled = 0;
+  let settled = true;
+  const done = () => unsettled--;
+  IDBDatabase.prototype.transaction = function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    const tx = transaction.apply(this, args);
+    if (tx.mode !== "readonly") return tx;
+    unsettled++;
+    tx.addEventListener("complete", done);
+    tx.addEventListener("abort", done);
+    return tx;
+  } as IDBDatabase["transaction"];
+  IDBDatabase.prototype.close = function (this: IDBDatabase) {
+    settled &&= unsettled === 0;
+    close.call(this);
+  };
+  try {
+    await read();
+    await storage.close();
+    return settled;
+  } finally {
+    IDBDatabase.prototype.transaction = transaction;
+    IDBDatabase.prototype.close = close;
+  }
+}
+function binaryBytes(values: readonly unknown[]): number {
+  let total = 0;
+  for (const value of values) if (value instanceof Uint8Array) total += value.byteLength;
+  return total;
+}
+/** Bytes of Uint8Array values that bulk data-store reads returned while `action` ran. */
+async function bulkBytesDuring(
+  action: () => Promise<unknown>,
+): Promise<{ bytes: number; failure: unknown }> {
+  const getAll = IDBObjectStore.prototype.getAll;
+  let bytes = 0;
+  IDBObjectStore.prototype.getAll = function (...args: Parameters<IDBObjectStore["getAll"]>) {
+    const request = getAll.apply(this, args);
+    if (this.name !== "data") return request;
+    request.addEventListener("success", () => (bytes += binaryBytes(request.result)));
+    return request;
+  };
+  try {
+    const failure = await action().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    return { bytes, failure };
+  } finally {
+    IDBObjectStore.prototype.getAll = getAll;
+  }
 }
 async function raw(name: string, work: (db: IDBDatabase) => Promise<void>): Promise<void> {
   const db = await request(indexedDB.open(name));
@@ -1251,6 +1384,307 @@ function indexedDBCases(
     },
     128,
   );
+
+  test("IndexedDB reopen reads every payload manifest in one transaction", async (_name, open) => {
+    const files = 300;
+    const storage = await open();
+    await storage.persist(wideBatch(1, files));
+    await storage.close();
+    const cold = await open();
+    const result = Object.getOwnPropertyDescriptor(IDBRequest.prototype, "result")!;
+    let resultReads = 0;
+    Object.defineProperty(IDBRequest.prototype, "result", {
+      ...result,
+      get(this: IDBRequest) {
+        resultReads++;
+        return result.get!.call(this);
+      },
+    });
+    const reopen = await countTransactions(() => cold.load()).finally(() =>
+      Object.defineProperty(IDBRequest.prototype, "result", result),
+    );
+    assert(reopen.result?.nodes.length === files + 1, "every file survives reopen");
+    assert(reopen.count === 1, `reopen used ${reopen.count} transactions for ${files} payloads`);
+    // WebKit rebuilds a request's whole result array on every read of `result`.
+    assert(resultReads < files, `reopen read IDBRequest.result ${resultReads} times`);
+    for (const index of [0, 150, files - 1])
+      assert(
+        new TextDecoder().decode(await cold.read(`wide:1:${index}`)) === `file ${index}`,
+        "payload bytes survive reopen",
+      );
+    await cold.close();
+  });
+
+  test("IndexedDB cold reads take one transaction and verify every chunk", async (name, open) => {
+    const size = 3 * CHUNK_SIZE + 100;
+    const content = Uint8Array.from({ length: size }, (_, index) => index % 251);
+    const saved = batch(1);
+    saved.upserts[1]!.size = size;
+    saved.data = new Map([["file:1", content]]);
+    const storage = await open();
+    await storage.persist(saved);
+    await storage.close();
+    const cold = await open();
+    await cold.load();
+    const full = await countTransactions(() => cold.read("file:1"));
+    assert(full.count === 1, `a full read used ${full.count} transactions`);
+    assert(
+      full.result.length === size && full.result.every((byte, index) => byte === index % 251),
+      "full read bytes match",
+    );
+    const part = await countTransactions(() =>
+      cold.readRange("file:1", { offset: 10, length: 2 * CHUNK_SIZE }),
+    );
+    assert(part.count === 1, `a range read used ${part.count} transactions`);
+    assert(
+      part.result.length === 2 * CHUNK_SIZE &&
+        part.result.every((byte, index) => byte === (index + 10) % 251),
+      "range bytes match",
+    );
+    await cold.close();
+    // Damage a chunk that a range covers whole, keeping its stored checksum.
+    let middle: { bytes: Uint8Array; checksum: string } | undefined;
+    await raw(name, async (db) => {
+      middle = await request(db.transaction("data").objectStore("data").get(["file:1", 1]));
+    });
+    middle!.bytes[7] = middle!.bytes[7]! ^ 1;
+    await change(name, "data", ["file:1", 1], middle);
+    const damaged = await open();
+    await damaged.load();
+    await rejects(
+      damaged.readRange("file:1", { offset: 0, length: 3 * CHUNK_SIZE }),
+      "Invalid filesystem payload chunks",
+    );
+    await rejects(damaged.read("file:1"), "Invalid filesystem payload chunks");
+    const edge = await damaged.readRange("file:1", { offset: 5, length: 100 });
+    assert(
+      edge.every((byte, index) => byte === (index + 5) % 251),
+      "an undamaged chunk still reads",
+    );
+    await damaged.close();
+  });
+
+  test("IndexedDB cold reads of empty ranges and large files stay bounded", async (_name, open) => {
+    const chunks = 40;
+    const size = chunks * CHUNK_SIZE + 10;
+    const storage = await open();
+    await storage.persist(chunkedBatch(size));
+    await storage.close();
+    const cold = await open();
+    await cold.load();
+    const empty = await observeChunkGets(() =>
+      Promise.all([
+        cold.readRange("file:1", { offset: 17, length: 0 }),
+        cold.readRange("file:1", { offset: size, length: 1 }),
+        cold.readRange("file:1", { offset: size + 5 * CHUNK_SIZE, length: 1 }),
+      ]),
+    );
+    assert(
+      empty.result.every((bytes) => bytes.length === 0),
+      "empty ranges return no bytes",
+    );
+    assert(empty.gets === 0, `empty ranges requested ${empty.gets} chunks`);
+    const whole = await observeChunkGets(() => cold.read("file:1"));
+    assert(
+      whole.result.length === size && whole.result.every((byte, index) => byte === index % 251),
+      "large read bytes match",
+    );
+    assert(whole.gets === chunks + 1, `large read requested ${whole.gets} chunks`);
+    assert(
+      whole.inFlight < chunks / 2,
+      `large read kept ${whole.inFlight} of ${chunks + 1} chunk requests in flight`,
+    );
+    await cold.close();
+  });
+
+  test("IndexedDB cold reads stop checksums on takeover and settle before close", async (name) => {
+    const chunks = 40;
+    const stale = await IndexedDBStorage.open(name);
+    await stale.persist(chunkedBatch(chunks * CHUNK_SIZE));
+    const original = crypto.subtle.digest.bind(crypto.subtle);
+    const entered = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    let digests = 0;
+    crypto.subtle.digest = async (...args) => {
+      if (++digests === 1) {
+        entered.resolve();
+        await held.promise;
+      }
+      return original(...args);
+    };
+    const reading = stale.read("file:1").then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    let newest: IndexedDBStorage | undefined;
+    try {
+      await entered.promise;
+      newest = await IndexedDBStorage.open(name);
+      held.resolve();
+      const outcome = await reading;
+      assert(
+        String(outcome).includes("opened in another tab"),
+        `stale read got ${String(outcome)}`,
+      );
+      assert(digests < chunks, `the displaced read still hashed ${digests} of ${chunks} chunks`);
+    } finally {
+      crypto.subtle.digest = original;
+      held.resolve();
+      await reading;
+      await stale.close();
+    }
+    const settled = await settledBeforeClose(newest!, () =>
+      newest!.readRange("file:1", { offset: 0, length: 0 }),
+    );
+    assert(settled, "close released the connection before a returned read settled");
+  });
+
+  test("IndexedDB cold reads check the caller once more before returning bytes", async (_name, open) => {
+    const storage = await open();
+    await storage.persist(chunkedBatch(3 * CHUNK_SIZE));
+    await storage.close();
+    const cold = await open();
+    await cold.load();
+    const controller = new AbortController();
+    const reason = new Error("cancelled after the last checksum");
+    const original = crypto.subtle.digest.bind(crypto.subtle);
+    let digests = 0;
+    crypto.subtle.digest = async (...args) => {
+      const digest = await original(...args);
+      digests++;
+      return digest;
+    };
+    // The first caller check after every chunk was hashed schedules the cancellation, so it
+    // lands before the read resumes from its verifier.
+    const signal = controller.signal;
+    signal.throwIfAborted = function (this: AbortSignal) {
+      if (digests === 3) queueMicrotask(() => controller.abort(reason));
+      return AbortSignal.prototype.throwIfAborted.call(this);
+    };
+    try {
+      const outcome = await cold
+        .readRange("file:1", { offset: 0, length: 3 * CHUNK_SIZE, signal })
+        .then(
+          (bytes) => bytes,
+          (error: unknown) => error,
+        );
+      assert(
+        outcome === reason,
+        outcome instanceof Uint8Array
+          ? `a read cancelled after its checksums returned ${outcome.length} bytes`
+          : `a read cancelled after its checksums rejected with ${String(outcome)}`,
+      );
+    } finally {
+      crypto.subtle.digest = original;
+      await cold.close();
+    }
+  });
+
+  test("IndexedDB cold reads abort their transaction when setup throws", async (_name, open) => {
+    const storage = await open();
+    await storage.persist(chunkedBatch(CHUNK_SIZE));
+    await storage.close();
+    const cold = await open();
+    await cold.load();
+    const failure = new Error("injected setup failure");
+    const get = IDBObjectStore.prototype.get;
+    const transaction = IDBDatabase.prototype.transaction;
+    const outcomes: string[] = [];
+    IDBObjectStore.prototype.get = function (key: IDBValidKey | IDBKeyRange) {
+      if (this.name === "data" && typeof key === "string") throw failure;
+      return get.call(this, key);
+    };
+    IDBDatabase.prototype.transaction = function (
+      this: IDBDatabase,
+      ...args: Parameters<IDBDatabase["transaction"]>
+    ) {
+      const tx = transaction.apply(this, args);
+      tx.addEventListener("complete", () => outcomes.push("complete"));
+      tx.addEventListener("abort", () => outcomes.push("abort"));
+      return tx;
+    } as IDBDatabase["transaction"];
+    const controller = new AbortController();
+    let listeners = 0;
+    const signal = controller.signal;
+    const add = signal.addEventListener.bind(signal);
+    const remove = signal.removeEventListener.bind(signal);
+    signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => {
+      listeners++;
+      add(...args);
+    }) as AbortSignal["addEventListener"];
+    signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => {
+      listeners--;
+      remove(...args);
+    }) as AbortSignal["removeEventListener"];
+    try {
+      const outcome = await cold.readRange("file:1", { offset: 0, length: 1, signal }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      assert(outcome === failure, `setup failure surfaced as ${String(outcome)}`);
+    } finally {
+      IDBObjectStore.prototype.get = get;
+      IDBDatabase.prototype.transaction = transaction;
+    }
+    await cold.close();
+    assert(
+      outcomes.length === 1 && outcomes[0] === "abort",
+      `the failed read's transaction ended with ${JSON.stringify(outcomes)}`,
+    );
+    assert(listeners === 0, `${listeners} abort listeners left on the caller's signal`);
+  });
+
+  test("IndexedDB payload sizes follow commits, recovery bases and journals", async (_name, open) => {
+    const storage = await open();
+    const retain = (key: string, size: number) => storage.retainPayload(key, size).release();
+    await storage.persist(batch(1, "one"));
+    retain("file:1", 3);
+    await rejects(
+      Promise.resolve().then(() => retain("file:1", 4)),
+      "size mismatch",
+    );
+    for (let generation = 2; generation <= 4; generation++)
+      await storage.persist(batch(generation, "x".repeat(generation)));
+    // Replaced in the tree, file:3 is still named by a recovery base or a kept journal.
+    retain("file:3", 3);
+    retain("file:4", 4);
+    for (let generation = 5; generation <= 8; generation++)
+      await storage.persist(batch(generation, "x".repeat(generation)));
+    await rejects(
+      Promise.resolve().then(() => retain("file:1", 3)),
+      "Missing",
+    );
+    retain("file:8", 8);
+    await storage.close();
+    const reopened = await open();
+    await reopened.load();
+    reopened.retainPayload("file:8", 8).release();
+    await rejects(
+      Promise.resolve().then(() => reopened.retainPayload("file:8", 7)),
+      "size mismatch",
+    );
+    await reopened.close();
+  });
+
+  test("IndexedDB reopen rejects binary data keys without loading their values", async (name, open) => {
+    const storage = await open();
+    await storage.persist(batch(1));
+    await storage.close();
+    const binary = new Uint8Array([1, 2, 3]).buffer;
+    await change(name, "data", binary, new Uint8Array(8 * 1024 * 1024));
+    const reopened = await open();
+    const loaded = await bulkBytesDuring(() => reopened.load());
+    await reopened.close();
+    assert(
+      String(loaded.failure).includes("Invalid"),
+      `binary key must stay fatal, got ${String(loaded.failure)}`,
+    );
+    assert(loaded.bytes === 0, `reopen loaded ${loaded.bytes} bytes under invalid keys`);
+    await raw(name, async (db) => {
+      const kept = await request(db.transaction("data").objectStore("data").getKey(binary));
+      assert(kept !== undefined, "fatal reopen keeps the invalid record");
+    });
+  });
 
   test("IndexedDB pin validation does not hydrate cold payloads", async (_name, open) => {
     const storage = await open();

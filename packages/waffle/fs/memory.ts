@@ -92,9 +92,14 @@ export function nodeSize(node: Node): number {
 }
 interface MemoryPath extends ResolvedPath {
   readonly canonicalPath: string;
+  readonly base: PathBase;
 }
+/** What a walk's `canonicalPath` is relative to: the start directory, the rooted walk's root
+ * (after an absolute link target), or neither (a rooted `..` climbed above the start). */
+type PathBase = "start" | "root" | "lost";
 interface TreePath {
   canonicalPath: string;
+  base: PathBase;
   parent: DirNode | undefined;
   node: Node | undefined;
   name: string;
@@ -160,6 +165,14 @@ function expandTreeLink(
     }
   );
 }
+/** A rooted `..` above the start leaves names that no longer start anywhere known. */
+function climbedBase(base: PathBase, aboveStart: boolean): PathBase {
+  return aboveStart && base === "start" ? "lost" : base;
+}
+/** An absolute link target restarts the names at the rooted walk's root. */
+function restartedBase(base: PathBase, options: TreeWalk): PathBase {
+  return options.rooted ? "root" : base;
+}
 /** Expand links against actual parent edges, never a lexically normalized pathname. */
 export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePath | number {
   const error = treePathError(path, options.pathUnits, options.pathBytes);
@@ -168,6 +181,7 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
   const names: string[] = [];
   let node: Node = root;
   let parent: DirNode | undefined;
+  let base: PathBase = "start";
   let name = "",
     terminalDot = false,
     expansions = 0,
@@ -186,8 +200,10 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
     terminalDot = part === "." || part === "..";
     if (part === ".") continue;
     if (part === "..") {
-      const up: DirNode | number = dirs.pop() ?? climbAbove(node, root, options);
+      const popped = dirs.pop();
+      const up: DirNode | number = popped ?? climbAbove(node, root, options);
       if (typeof up === "number") return up;
+      base = climbedBase(base, popped === undefined && up !== node);
       node = up;
       names.pop();
       parent = undefined;
@@ -203,6 +219,7 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
     if (!child)
       return {
         canonicalPath: "/" + names.concat(part).join("/"),
+        base,
         parent,
         name,
         node: undefined,
@@ -214,6 +231,7 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
     if (link?.absolute) {
       dirs.length = 0;
       names.length = 0;
+      base = restartedBase(base, options);
     }
     if (link) {
       expansions++;
@@ -230,7 +248,25 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
   }
   const trailingSlash = path.endsWith("/");
   if (trailingSlash && node.kind !== "dir") return 54;
-  return { parent, name, node, trailingSlash, terminalDot, canonicalPath: "/" + names.join("/") };
+  return {
+    parent,
+    name,
+    node,
+    trailingSlash,
+    terminalDot,
+    canonicalPath: "/" + names.join("/"),
+    base,
+  };
+}
+
+/** `below` ("/" or "/a/b") appended to the absolute directory path `prefix`, or its errno. */
+function joinBelow(prefix: string | number, below: string): string | number {
+  if (typeof prefix === "number" || below === "/") return prefix;
+  return (prefix === "/" ? "" : prefix) + below;
+}
+function childName(parent: DirNode, child: Node): string | undefined {
+  for (const [name, entry] of parent.children) if (entry === child) return name;
+  return undefined;
 }
 
 export interface NamespaceEdge {
@@ -315,8 +351,20 @@ export function decode(data: Uint8Array): string {
 
 export class MemFS implements FileSystem {
   onChange?: (node: Node) => void;
+  /** Fires when a directory gains or loses a child name (bytes = 64 + name.length * 2). */
+  onDirEntryDelta?: (dir: DirNode, deltaBytes: number) => void;
   /** Namespace edge changes; moving an existing edge leaves its count unchanged. */
   onLinkChange?: (node: Node, delta: 1 | -1) => void;
+  private setChild(parent: DirNode, name: string, child: Node): void {
+    const existed = parent.children.has(name);
+    parent.children.set(name, child);
+    if (!existed) this.onDirEntryDelta?.(parent, 64 + name.length * 2);
+  }
+  private deleteChild(parent: DirNode, name: string): boolean {
+    const deleted = parent.children.delete(name);
+    if (deleted) this.onDirEntryDelta?.(parent, -(64 + name.length * 2));
+    return deleted;
+  }
   private changed(node: Node): void {
     this.onChange?.(node);
   }
@@ -414,13 +462,17 @@ export class MemFS implements FileSystem {
     if (handle !== undefined && !this.references.has(handle)) this.handles.delete(handle);
     if (node.kind === "dir") {
       this.removedDirectories.add(node);
-      for (const child of node.children.values()) {
+      const trackDelta = this.onDirEntryDelta !== undefined;
+      let delta = 0;
+      for (const [name, child] of node.children) {
+        if (trackDelta) delta -= 64 + name.length * 2;
         this.changeLinkCount(child, -1);
         this.forget(child);
       }
       // Recursive removal removes directory entries, not the bytes of separately open files.
       this.directoryPages(node).clear();
       node.children.clear();
+      if (delta) this.onDirEntryDelta?.(node, delta);
     }
   }
   nodeForHandle(handle: FileHandle): Node {
@@ -509,7 +561,34 @@ export class MemFS implements FileSystem {
     pathBytes?: number,
     rooted = false,
   ): MemoryPath | number {
-    const resolved = walkTree(this.directory(directory), path, {
+    const resolved = this.walkNodes(
+      this.directory(directory),
+      path,
+      clampRoot,
+      followFinal,
+      pathBytes,
+      rooted,
+    );
+    if (typeof resolved === "number") return resolved;
+    return {
+      canonicalPath: resolved.canonicalPath,
+      base: resolved.base,
+      name: resolved.name,
+      trailingSlash: resolved.trailingSlash,
+      terminalDot: resolved.terminalDot,
+      parent: resolved.parent ? this.handle(resolved.parent) : undefined,
+      node: resolved.node ? this.handle(resolved.node) : undefined,
+    };
+  }
+  private walkNodes(
+    start: DirNode,
+    path: string,
+    clampRoot: boolean,
+    followFinal: boolean,
+    pathBytes?: number,
+    rooted = false,
+  ): TreePath | number {
+    return walkTree(start, path, {
       clampRoot,
       followFinal,
       pathBytes,
@@ -520,15 +599,37 @@ export class MemFS implements FileSystem {
         return child;
       },
     });
+  }
+  /** realpath(3) from `directory`: what `path` names with every link followed, in one lookup.
+   * A rooted lookup answers with an absolute path from the root. Any other lookup cannot leave
+   * `directory`, and answers relative to it ("." for the directory itself). Errors are the
+   * lookup's positive WASI errno: ENOENT for a missing component, ENOTDIR, ELOOP, EACCES. */
+  realpath(directory: FileHandle, path: string, rooted = false): string | number {
+    if (path.startsWith("/")) return 63;
+    const start = this.directory(directory);
+    const resolved = this.walkNodes(start, path, false, true, undefined, rooted);
     if (typeof resolved === "number") return resolved;
-    return {
-      canonicalPath: resolved.canonicalPath,
-      name: resolved.name,
-      trailingSlash: resolved.trailingSlash,
-      terminalDot: resolved.terminalDot,
-      parent: resolved.parent ? this.handle(resolved.parent) : undefined,
-      node: resolved.node ? this.handle(resolved.node) : undefined,
-    };
+    if (resolved.node === undefined) return 44;
+    if (!rooted) return resolved.canonicalPath.slice(1) || ".";
+    if (resolved.base === "root" || (resolved.base === "start" && start === this.root))
+      return resolved.canonicalPath;
+    if (resolved.base === "start") return joinBelow(this.pathOf(start), resolved.canonicalPath);
+    // A `..` above the start left the walk's names behind: name the result by its ancestry.
+    if (resolved.node.kind === "dir") return this.pathOf(resolved.node);
+    return joinBelow(this.pathOf(resolved.parent!), "/" + resolved.name);
+  }
+  /** The absolute path of a live directory, by its parent edges up to the root. */
+  private pathOf(dir: DirNode): string | number {
+    const names: string[] = [];
+    for (let at = dir; at !== this.root;) {
+      const parent = this.liveParent(at);
+      if (typeof parent === "number") return parent === 63 ? 44 : parent;
+      const name = childName(parent, at);
+      if (name === undefined) return 44;
+      names.push(name);
+      at = parent;
+    }
+    return "/" + names.reverse().join("/");
   }
   symlink(path: ResolvedPath, target: string): number {
     const prepared = this.planSymlink(path, target, 4);
@@ -690,7 +791,7 @@ export class MemFS implements FileSystem {
     const node = kind === "file" ? newFile() : kind === "socket" ? newSocket() : newDir();
     this.directoryPages(parent).reserve(1);
     this.pageEntry(parent, path.name, node);
-    parent.children.set(path.name, node);
+    this.setChild(parent, path.name, node);
     this.changeLinkCount(node, 1);
     this.onLinkChange?.(node, 1);
     modified(parent, node.ctime);
@@ -829,7 +930,7 @@ export class MemFS implements FileSystem {
     if (typeof parent === "number") return parent;
     this.directoryPages(parent).reserve(1);
     this.pageEntry(parent, to.name, node);
-    parent.children.set(to.name, node);
+    this.setChild(parent, to.name, node);
     this.changeLinkCount(node, 1);
     this.onLinkChange?.(node, 1);
     const time = fileTimeNow();
@@ -850,7 +951,7 @@ export class MemFS implements FileSystem {
     const parent = this.directory(path.parent);
     if ((parent.mode & 0o300) !== 0o300) return 2;
     this.pageEntry(parent, path.name, undefined);
-    parent.children.delete(path.name);
+    this.deleteChild(parent, path.name);
     this.changeLinkCount(node, -1);
     this.onLinkChange?.(node, -1);
     const time = fileTimeNow();
@@ -886,11 +987,11 @@ export class MemFS implements FileSystem {
     this.directoryPages(parent).reserve(1);
     this.pageEntry(sourceParent, from.name, undefined);
     this.pageEntry(parent, to.name, node);
-    sourceParent.children.delete(from.name);
+    this.deleteChild(sourceParent, from.name);
     const time = fileTimeNow();
     modified(sourceParent, time);
     node.ctime = time;
-    parent.children.set(to.name, node);
+    this.setChild(parent, to.name, node);
     if (node.kind === "dir") this.directoryParents.set(node, parent);
     if (target) {
       this.forget(target);
@@ -1176,8 +1277,8 @@ export class MemFS implements FileSystem {
       this.pageEntry(edge.parent, edge.name, edge.after);
       if (edge.before) this.changeLinkCount(edge.before, -1);
       if (edge.after) this.changeLinkCount(edge.after, 1);
-      if (edge.after) edge.parent.children.set(edge.name, edge.after);
-      else edge.parent.children.delete(edge.name);
+      if (edge.after) this.setChild(edge.parent, edge.name, edge.after);
+      else this.deleteChild(edge.parent, edge.name);
       if (edge.after?.kind === "dir") this.directoryParents.set(edge.after, edge.parent);
       if (edge.after && created.has(edge.after)) this.onLinkChange?.(edge.after, 1);
     }
@@ -1266,7 +1367,7 @@ export class MemFS implements FileSystem {
     if (!edge) return false;
     const { parent, name, node } = edge;
     this.pageEntry(parent, name, undefined);
-    const removed = parent.children.delete(name);
+    const removed = this.deleteChild(parent, name);
     if (removed) {
       this.changeLinkCount(node, -1);
       this.onLinkChange?.(node, -1);

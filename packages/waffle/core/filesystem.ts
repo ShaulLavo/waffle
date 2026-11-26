@@ -107,6 +107,10 @@ export interface FileSystem {
     followFinal?: boolean,
     rooted?: boolean,
   ): ResolvedPath | number;
+  /** realpath(3) in one lookup: `path` from `directory` with every link followed. Rooted, an
+   * absolute path from the root; otherwise relative to `directory` ("." for itself). Positive
+   * WASI errno on failure. */
+  realpath(directory: FileHandle, path: string, rooted?: boolean): string | number;
   symlink(path: ResolvedPath, target: string): number;
   readlink(handle: FileHandle): string;
   stat(handle: FileHandle): FileStat;

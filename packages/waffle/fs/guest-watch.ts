@@ -32,7 +32,7 @@ const encoder = new TextEncoder();
 export interface GuestWatchReadiness {
   /** At least one open watch has not reached its end. */
   readonly active: boolean;
-  /** The root's watch cells; index 3 moves on every committed watch record. */
+  /** The root's watch cells; index 3 moves on every committed watch record and revocation. */
   readonly word: Int32Array;
   /** Unrevoked, unended watches have queued records or an unobserved commit. */
   pending(): boolean;

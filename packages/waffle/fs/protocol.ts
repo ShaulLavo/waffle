@@ -87,6 +87,9 @@ export function normalizeSharedMaxBytes(maxBytes: number): number {
 }
 export const HEADER = REQUEST_HEADER;
 export const TRANSIENT_HANDLES = 256;
+/** The `signal` word that changes only on revocation, reap or transport failure. */
+export const SIGNAL_TRANSPORT = 1;
+export const SIGNAL_BYTES = 8;
 export const CAPABILITY_SLOTS = 4096;
 // One candidate-count word, then reusable [handle, open-reference count, transfer count] records. A negative
 // reference count revokes an entry. Handles never recycle, but these per-session entries do.
@@ -113,6 +116,10 @@ export interface FilesystemConnection {
   requests: FilesystemRequestMemory;
   requestBudget: SharedArrayBuffer;
   epoch: SharedArrayBuffer;
+  /** Shared by the whole identity tree. Word 0 changes on every completion, release and
+   * revocation, and blocked guests wait on it. Word 1 (`SIGNAL_TRANSPORT`) changes only when an
+   * identity in the tree is revoked or reaped or loses its transport, so watchers that need only
+   * those events are not woken once per request. */
   signal: SharedArrayBuffer;
   /** This connection's revocation word, then its ancestors. Never reused. */
   revocations: SharedArrayBuffer[];
@@ -158,7 +165,9 @@ export function filesystemOwnerPlan(publication: PublicationConfiguration) {
     bytes:
       MAX_CONNECTION_OWNERS * 4 +
       CAPABILITY_LENGTH * 4 +
-      12 +
+      // Epoch and revocation words, then the signal.
+      8 +
+      SIGNAL_BYTES +
       FILESYSTEM_SECTION_BYTES +
       arena.bytes +
       REQUEST_BUDGET_BYTES +
@@ -219,7 +228,7 @@ function constructFilesystemIdentity(
     epoch: parent?.epoch ?? allocate(4),
     requestBudget: parent?.requestBudget ?? createRequestBudget(construction),
     // Every descendant waits here too, so root revocation can wake blocked guests after a crash.
-    signal: parent?.signal ?? allocate(4),
+    signal: parent?.signal ?? allocate(SIGNAL_BYTES),
     revocations: [allocate(4)].concat(parent?.revocations ?? []),
     shared,
     // An independent identity starts with no extra backing at all. A fork shares its parent's
@@ -410,13 +419,15 @@ export function createFilesystemConnection(
 export function revokeFilesystemService(connection: FilesystemIdentity): void {
   Atomics.store(new Int32Array(connection.ownerStates), 0, 1);
   wakeFilesystemWatch(connection.shared, true);
-  wake(connection);
+  wakeTransport(connection);
 }
 export function revokeFilesystem(connection: FilesystemIdentity): void {
   Atomics.compareExchange(new Int32Array(connection.revocations[0]!), 0, 0, 1);
   Atomics.compareExchange(new Int32Array(connection.ownerStates), connection.owner, 0, 1);
-  wakeFilesystemWatch(connection.shared);
-  wake(connection);
+  // Revocation can make a watch readable, so it moves the observed watch generation: a waiter
+  // that registers after this notify still sees the change by value.
+  wakeFilesystemWatch(connection.shared, true);
+  wakeTransport(connection);
 }
 /** Revokes synchronously, then waits without blocking the supervisor's event loop. Resolving
  * proves this identity cannot touch filesystem storage again, even if its worker is still alive.
@@ -450,18 +461,26 @@ export async function waitForFilesystemQuiescence(connection: FilesystemIdentity
 export function reapFilesystem(connection: FilesystemIdentity): void {
   Atomics.store(new Int32Array(connection.revocations[0]!), 0, 2);
   Atomics.store(new Int32Array(connection.ownerStates), connection.owner, 2);
-  wakeFilesystemWatch(connection.shared);
+  wakeFilesystemWatch(connection.shared, true);
   if (connection.publication)
     new PublicationDomain(connection.publication.buffers).retireSession(
       connection.publication.session,
     );
   Atomics.notify(new Int32Array(connection.sections), 0);
-  wake(connection);
+  wakeTransport(connection);
 }
 export function wake(connection: FilesystemIdentity): void {
   const signal = new Int32ArrayConstructor(connection.signal);
   atomicsAdd(signal, 0, 1);
   atomicsNotify(signal, 0);
+}
+/** For a revocation, reap or transport failure already stored: wakes the transport watchers on
+ * word 1, then everything waiting on word 0. */
+export function wakeTransport(connection: FilesystemIdentity): void {
+  const signal = new Int32ArrayConstructor(connection.signal);
+  atomicsAdd(signal, SIGNAL_TRANSPORT, 1);
+  atomicsNotify(signal, SIGNAL_TRANSPORT);
+  wake(connection);
 }
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

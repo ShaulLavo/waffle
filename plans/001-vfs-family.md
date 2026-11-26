@@ -371,4 +371,30 @@ and Next.js builds (cold rereads, the client path cache, transport admission).
 - **`trim` scans every transient handle after every operation** (`fs/service.ts`, about 256 map
   entries and one atomic load each). That cost blocks raising `TRANSIENT_HANDLES`, which bounds
   how many distinct resolved paths a client can keep cached. A fast path needs a proof that no
-  idle handle can have become unlinked since the last full scan.
+  idle handle can have become unlinked since the last full scan. The host and memory backends now report an
+  unlink generation (`SharedFilesystemState.unlinkGeneration`), and `trim` skips its scan while
+  it is unchanged (#647). A multi-tab peer still reports NaN and rescans every time; see below.
+- **A multi-tab peer never learns that the host unlinked a file it holds** (found 2026-11-26 in
+  review of #647; also on main). `MultiTabBackend.isUnlinked` on a peer reads `entry.unlinked`,
+  which is set only when the entry is created or rebound. Repro: open a file on the peer, remove
+  it on the host, check that the peer's stat reports `nlink: 0`, release it on the peer, then make
+  another peer request. The peer's local handle and its host pin both remain. Fix: the host sends
+  an authoritative unlink (or rename-over) invalidation to each peer holding a pin for that remote
+  handle. The peer sets `entry.unlinked`, bumps its unlink generation (it can then report a real
+  generation instead of NaN) and asks its service to trim, including for a handle already idle,
+  which no later request would visit. Test both the peer's final release and the idle case in
+  `tests/multitab-unit.test.ts`.
+
+### Follow-up: a lapsed Host lease still fails Peer requests, 2026-11-26
+
+Status: Approved follow-up, found in the review of PR 655. That PR makes the Host's own calls
+renew a lease that lapsed only because renewal ran late (a long serial-queue task or a loaded
+device), with one renewal budget per call. Requests a Host serves for Peer tabs still check
+`isLeaseValid()` or `assertHostOpStillValid` and fail with errno 11 ("host lease expired") on the
+same lapse: `handleHostPeerReq` (including its stepping-down gate), `handleHostPeerRead`,
+`handleHostPeerGeneral`, `handleHostPeerReadFile`, `handleHostPeerReaddirPage`, the watch open
+and read handlers, and the chunk-get and chunked-upload replies in
+`packages/waffle/fs/multitab-backend.ts`. Use the same
+`leaseOnlyLapsed` / `renewLapsedLease` path, with the per-call budget, before the Host replies or
+publishes, so the Peer's guest is not cancelled while the Host still holds its locks. Test it with
+two tabs: the Host's lease lapses behind a long `listFiles` while the Peer reads and writes.

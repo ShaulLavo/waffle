@@ -49,6 +49,7 @@ import {
   CAPABILITY_WORDS,
   PAGE,
   TRANSIENT_HANDLES,
+  SIGNAL_TRANSPORT,
   State,
   FilesystemError,
   errno,
@@ -59,6 +60,7 @@ import {
   waitForFilesystemQuiescence,
   unpack,
   wake,
+  wakeTransport,
   sameFilesystemIdentity,
   reserveIdentityCapability,
   releaseFilesystemReservation,
@@ -155,6 +157,9 @@ interface Session {
   privateInputs: Map<number, Uint8Array>;
   preparingHandles: Map<number, number>;
   preparations: Set<Promise<void>>;
+  /** The backend's unlink generation when a trim last proved no transient capability was
+   * unlinked. Undefined while one may still become detached, so every trim rescans. */
+  trimmedUnlinks?: number;
   quiescing?: Promise<void>;
   releaseState?: { kind: "running" } | { kind: "failed"; error: unknown };
   closed?: boolean;
@@ -397,18 +402,21 @@ export class FilesystemService {
     reason: "messageerror" | "protocol" = "messageerror",
   ): void {
     closeRequestMemory(session.requests, reason);
-    wake(session.connection);
+    wakeTransport(session.connection);
   }
   private async watchTransport(session: Session): Promise<void> {
     const signal = new Int32Array(session.connection.signal);
+    // Revocation, reap and transport failure all wake SIGNAL_TRANSPORT. A publication domain's
+    // stop wakes nothing itself, so a publishing session keeps watching every change.
+    const word = session.connection.publication ? 0 : SIGNAL_TRANSPORT;
     while (!session.closed) {
-      const observed = Atomics.load(signal, 0);
+      const observed = Atomics.load(signal, word);
       if (sessionRevoked(session)) {
         if (requestTransportError(session.requests)) session.transportFailed = true;
         this.close(session);
         return;
       }
-      const waiting = atomicsWaitAsync(signal, 0, observed);
+      const waiting = atomicsWaitAsync(signal, word, observed);
       if (waiting.async) await waiting.value;
     }
   }
@@ -462,7 +470,7 @@ export class FilesystemService {
       .map((entry) => entry[0]);
     if (!pending.length) {
       retireRequestMemory(session.requests);
-      wake(session.connection);
+      wakeTransport(session.connection);
       return;
     }
     session.transportRetirement = Promise.allSettled(pending).then(() => {
@@ -764,21 +772,38 @@ export class FilesystemService {
     }
     return responseHeld;
   }
+  /** NaN, which never equals a recorded value, when the backend cannot say. */
+  private unlinkGeneration(): number {
+    if (this.backend instanceof MemoryBackend) return this.backend.unlinkGeneration();
+    if (!this.backend.isUnlinked) return 0;
+    return this.backend.unlinkGeneration?.() ?? NaN;
+  }
   private trim(session: Session): void {
+    // Only an unlink makes a capability detachable, and idle capabilities exceed the bound only
+    // when the whole set does. Until either changes, a previous scan's answer still holds.
+    const unlinks = this.unlinkGeneration();
+    if (session.trimmedUnlinks === unlinks && session.transient.size <= TRANSIENT_HANDLES) return;
+    session.trimmedUnlinks = undefined;
     let idle = 0,
+      unlinked = 0,
       detached = false;
     const shared = this.backend instanceof MemoryBackend ? this.backend.shared : undefined;
     const isUnlinked = (handle: number) =>
       shared ? shared.isUnlinked(handle) : (this.backend.isUnlinked?.(handle) ?? false);
     const responseHeld = this.responseReferenceCounts(session);
     for (const handle of session.transient.keys()) {
+      const gone = isUnlinked(handle);
+      if (gone) unlinked++;
       const references = Atomics.load(session.capabilities, session.handles.get(handle)! + 1);
       if (session.preparingHandles.has(handle) || references !== (responseHeld.get(handle) ?? 0))
         continue;
       idle++;
-      if (references === 0 && isUnlinked(handle)) detached = true;
+      if (references === 0 && gone) detached = true;
     }
-    if (idle <= TRANSIENT_HANDLES && !detached) return;
+    if (idle <= TRANSIENT_HANDLES && !detached) {
+      if (!unlinked) session.trimmedUnlinks = unlinks;
+      return;
+    }
     // Over the bound, evict the least recently used down to half of it. Each eviction bumps the
     // namespace epoch and so drops every client's cached answers; one handle per new path
     // would do that on every resolve of a build that touches more paths than the bound.
@@ -802,9 +827,11 @@ export class FilesystemService {
           Atomics.store(session.capabilities, key + 1, 0);
           continue;
         }
+        if (isUnlinked(handle)) unlinked--;
         this.forget(session, handle, key);
         idle--;
       }
+      if (!unlinked) session.trimmedUnlinks = unlinks;
     } finally {
       if (invalidate) {
         if (shared) shared.endServiceMutation(epoch);
@@ -939,6 +966,7 @@ export class FilesystemService {
         "readdir",
         "readdirPage",
         "resolve",
+        "realpath",
       ].includes(operation)
     )
       this.check(session, a, held);
@@ -2247,7 +2275,7 @@ export class FilesystemService {
     const failure = requestTransportError(session.requests);
     if (failure?.reason !== "stale" && !requestMemoryRetired(session.requests))
       retireRequestMemory(session.requests);
-    wake(session.connection);
+    wakeTransport(session.connection);
   }
   private async drainShutdown(owner: ShutdownOwner, fences: Promise<void>[]): Promise<void> {
     const failures: unknown[] = [];

@@ -151,14 +151,25 @@ export class DirtyAdmission {
   get revision(): number {
     return this.values[REVISION]!;
   }
-  clean(revision: number, namespace: number): boolean {
-    if (!this.enabled || this.revision !== revision) return false;
-    this.values[DIRTY_BYTES] = 0;
-    this.values[DIRTY_METADATA] = 0;
-    this.values[NAMESPACE] = namespace;
-    this.values[BASE_NAMESPACE] = namespace;
+  releaseSlot(bytes: number, metadata: number): void {
+    if (!this.enabled || (!bytes && !metadata)) return;
+    this.values[DIRTY_BYTES] = Math.max(0, this.values[DIRTY_BYTES]! - bytes);
+    this.values[DIRTY_METADATA] = Math.max(0, this.values[DIRTY_METADATA]! - metadata);
+    this.values[REVISION]!++;
     this.notify();
-    return true;
+  }
+  reconcile(
+    namespace: number,
+    dirtyNamespace: number,
+    dirtyBytes: number,
+    dirtyMetadata: number,
+  ): void {
+    if (!this.enabled) return;
+    this.values[DIRTY_BYTES] = dirtyBytes;
+    this.values[DIRTY_METADATA] = dirtyMetadata;
+    this.values[NAMESPACE] = namespace;
+    this.values[BASE_NAMESPACE] = namespace - dirtyNamespace;
+    this.notify();
   }
   private notify(): void {
     Atomics.add(this.signals, 0, 1);
@@ -183,7 +194,11 @@ export class DirtyAdmission {
     }
   }
   get hasDebt(): boolean {
-    return this.values[DIRTY_BYTES]! > 0 || this.values[DIRTY_METADATA]! > 0;
+    return (
+      this.values[DIRTY_BYTES]! > 0 ||
+      this.values[DIRTY_METADATA]! > 0 ||
+      this.values[NAMESPACE]! > this.values[BASE_NAMESPACE]!
+    );
   }
   capacityReleased(): void {
     if (this.enabled) this.notify();

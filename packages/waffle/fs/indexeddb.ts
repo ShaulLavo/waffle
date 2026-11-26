@@ -422,7 +422,33 @@ interface State extends TreeState {
   journals: Map<number, Journal>;
   journalKeys: IDBValidKey[];
   payloadKeys: Set<string>;
+  /** Payload sizes named by `nodes`, `bases` and `journals`, kept with every change to them. */
+  payloadSizes: PayloadSizes;
   sinceCompaction: number;
+}
+/** The size of each payload that a node of the current tree, a recovery base or a kept journal
+ * names, counted per naming node so a lookup never scans the tree. Validation keeps every node
+ * naming one key at the size of its stored manifest. */
+class PayloadSizes {
+  private readonly entries = new Map<string, { size: number; count: number }>();
+  add(nodes: Iterable<PersistedNode>): void {
+    for (const node of nodes) {
+      if (node.data === undefined) continue;
+      const entry = this.entries.get(node.data);
+      if (entry) entry.count++;
+      else this.entries.set(node.data, { size: node.size, count: 1 });
+    }
+  }
+  remove(nodes: Iterable<PersistedNode>): void {
+    for (const node of nodes) {
+      if (node.data === undefined) continue;
+      const entry = this.entries.get(node.data);
+      if (entry && --entry.count === 0) this.entries.delete(node.data);
+    }
+  }
+  size(key: string): number | undefined {
+    return this.entries.get(key)?.size;
+  }
 }
 interface CommittedTransaction {
   group: PreparedDurableGroup;
@@ -527,11 +553,186 @@ function request<T>(value: IDBRequest<T>): Promise<T> {
   void result.catch(() => {});
   return result;
 }
+/** Every string key in the data store, which in chunked formats names a payload manifest. Keys
+ * order numbers, dates, strings, binary, arrays: the empty binary key is the least binary key, so
+ * values under invalid number, date or binary keys are never loaded. Layout validation still
+ * rejects those keys from the key listing. */
+function manifestKeyRange(): IDBKeyRange {
+  return IDBKeyRange.bound("", new ArrayBuffer(0), false, true);
+}
+/** Pairs a bulk manifest read; each result is read once (see formatAndManifests). */
+function pairManifests(
+  names: readonly IDBValidKey[],
+  records: readonly unknown[],
+): Map<IDBValidKey, unknown> {
+  if (names.length !== records.length)
+    throw new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Invalid payload manifests");
+  const manifests = new Map<IDBValidKey, unknown>();
+  for (const [index, key] of names.entries()) manifests.set(key, records[index]);
+  return manifests;
+}
+interface FormatRecords {
+  readonly format: unknown;
+  /** Manifest records by payload key, read only for chunked formats. */
+  readonly manifests?: ReadonlyMap<IDBValidKey, unknown>;
+}
+/** Reads the format and, for chunked formats, every manifest in the same snapshot. Legacy
+ * formats keep whole payloads at string keys, so those are never read here. */
+function formatAndManifests(
+  metadata: IDBObjectStore,
+  data: IDBObjectStore,
+): Promise<FormatRecords> {
+  return new Promise<FormatRecords>((resolve, reject) => {
+    const format = metadata.get("format");
+    format.onerror = requestFailed(format, reject);
+    format.onsuccess = () => {
+      if (format.result !== INDEXEDDB_FORMAT && format.result !== STAGED_FORMAT) {
+        resolve({ format: format.result });
+        return;
+      }
+      // Placed from the format's success callback, so they read the same snapshot.
+      placeManifestReads(data, format.result, resolve, reject);
+    };
+  });
+}
+function requestFailed(failure: IDBRequest, reject: (error: unknown) => void): () => void {
+  return () => reject(failure.error ?? new Error("IndexedDB request failed"));
+}
+/** Requests complete in order, so the keys are ready when the values arrive. */
+function placeManifestReads(
+  data: IDBObjectStore,
+  format: unknown,
+  resolve: (records: FormatRecords) => void,
+  reject: (error: unknown) => void,
+): void {
+  const range = manifestKeyRange();
+  const keys = data.getAllKeys(range);
+  const values = data.getAll(range);
+  keys.onerror = requestFailed(keys, reject);
+  values.onerror = requestFailed(values, reject);
+  values.onsuccess = () => {
+    // Read each result once: WebKit builds a new array on every `result` access, which made an
+    // indexed loop over 17,000 manifests take 6.5 s.
+    try {
+      resolve({ format, manifests: pairManifests(keys.result, values.result) });
+    } catch (error) {
+      reject(error);
+    }
+  };
+}
 function completed(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onabort = () => reject(tx.error ?? new Error("IndexedDB transaction aborted"));
   });
+}
+interface ChunkCheck {
+  readonly bytes: Uint8Array<ArrayBuffer>;
+  readonly checksum: string;
+}
+/** One range read in progress: bytes copied as chunks arrive and the checksums still owed. */
+interface PayloadRead {
+  readonly key: string;
+  readonly range: IndexedDBRange;
+  /** The payload size the read expects, when the caller or the index knows it. */
+  readonly expectedSize: number | undefined;
+  manifest?: ChunkManifest;
+  result?: Uint8Array<ArrayBuffer>;
+  /** End of the clamped range, and the next chunk index to request. */
+  end: number;
+  next: number;
+  readonly checks: ChunkCheck[];
+  /** Chunk requests placed and not yet answered. */
+  pending: number;
+  failure?: { cause: unknown };
+  /** Called once the manifest and every chunk have arrived. */
+  arrived: () => void;
+  fail: (error: unknown) => void;
+}
+function corruption<T>(parse: () => T, fallback: string): T {
+  try {
+    return parse();
+  } catch (error) {
+    throw new PayloadCorruption(error instanceof Error ? error.message : fallback);
+  }
+}
+/** Chunk gets one read keeps in flight. Each answer places the next from its success callback,
+ * so a large read stays one transaction without queueing every chunk at once. */
+const CHUNK_READ_WINDOW = 16;
+/** Starts the gets for every chunk the range touches in a payload of `size` bytes. */
+function placeChunkReads(store: IDBObjectStore, size: number, read: PayloadRead): void {
+  const range = read.range;
+  const length = Math.max(0, Math.min(range.length, size - range.offset));
+  read.result = new Uint8Array(length);
+  read.end = range.offset + length;
+  read.next = Math.floor(range.offset / CHUNK_SIZE);
+  // An empty range, or one past the end, takes no byte from any chunk.
+  if (length) placeMoreChunks(store, read);
+}
+function placeMoreChunks(store: IDBObjectStore, read: PayloadRead): void {
+  while (read.pending < CHUNK_READ_WINDOW && read.next * CHUNK_SIZE < read.end)
+    placeChunk(store, read, read.next++);
+}
+function placeChunk(store: IDBObjectStore, read: PayloadRead, index: number): void {
+  read.pending++;
+  const get = store.get([read.key, index]);
+  get.onsuccess = () => {
+    try {
+      copyChunk(get.result, index, read);
+      read.pending--;
+      placeMoreChunks(store, read);
+      if (read.pending === 0 && read.manifest) read.arrived();
+    } catch (error) {
+      read.fail(error);
+    }
+  };
+}
+/** Runs first among the read's requests, which complete in the order they were placed. */
+function acceptManifest(store: IDBObjectStore, value: unknown, read: PayloadRead): void {
+  const key = read.key;
+  if (value === undefined) throw new Error(`Missing filesystem payload: ${key}`);
+  const manifest = corruption(() => parseManifest(value, key), "Invalid payload manifest");
+  if (read.expectedSize !== undefined && manifest.size !== read.expectedSize)
+    throw new PayloadCorruption("Retained payload size mismatch");
+  read.manifest = manifest;
+  // Without a known size, the chunk requests wait for the manifest, still in this transaction.
+  if (read.expectedSize === undefined) placeChunkReads(store, manifest.size, read);
+  if (read.pending === 0) read.arrived();
+}
+/** Copies the chunk's part of the range now and keeps what its checksum covers. A chunk the
+ * range covers whole is checked from the copy, so only the two edge chunks stay alive. */
+function copyChunk(record: unknown, index: number, read: PayloadRead): void {
+  const offset = read.range.offset;
+  const length = chunkLength(read.manifest!, index);
+  const chunk = corruption(() => parseChunk(record, length, read.key), "Invalid payload chunk");
+  const base = index * CHUNK_SIZE;
+  const start = Math.max(offset, base);
+  const stop = Math.min(read.end, base + length);
+  const result = read.result!;
+  result.set(chunk.bytes.subarray(start - base, stop - base), start - offset);
+  const whole = start === base && stop === base + length;
+  read.checks.push({
+    checksum: chunk.checksum,
+    bytes: whole ? result.subarray(start - offset, stop - offset) : chunk.bytes,
+  });
+}
+/** Digests run concurrently in small batches: digest() copies its input, so a batch bounds the
+ * extra memory while the browser overlaps the work. `admit` runs before each batch, so a read
+ * that lost its owner or its caller starts no further checksum work. */
+const CHECKSUM_BATCH = 16;
+async function verifyChecksums(
+  key: string,
+  checks: readonly ChunkCheck[],
+  admit: () => void,
+): Promise<void> {
+  for (let start = 0; start < checks.length; start += CHECKSUM_BATCH) {
+    admit();
+    const batch = checks.slice(start, start + CHECKSUM_BATCH);
+    const digests = await Promise.all(batch.map((check) => chunkChecksum(check.bytes)));
+    if (digests.some((digest, index) => digest !== batch[index]!.checksum))
+      throw new PayloadCorruption(`Invalid filesystem payload chunks: ${key}`);
+  }
+  admit();
 }
 function payloads(nodes: Iterable<PersistedNode>, keys: Set<string>): void {
   for (const node of nodes) if (node.data !== undefined) keys.add(node.data);
@@ -545,6 +746,42 @@ function recoveryManifest(value: unknown, key: string): ChunkManifest | undefine
   } catch {
     return undefined;
   }
+}
+/** Manifests whose chunk keys are exactly 0 to count - 1. `records` holds every manifest record
+ * read in the same snapshot as `keys`. */
+function validateChunks(
+  keys: readonly IDBValidKey[],
+  records: ReadonlyMap<IDBValidKey, unknown>,
+): Map<string, ChunkManifest> {
+  const manifests = new Map<string, ChunkManifest>();
+  const chunks = new Map<string, Set<number>>();
+  for (const key of keys) {
+    if (typeof key === "string") {
+      const manifest = recoveryManifest(records.get(key), key);
+      if (manifest) manifests.set(key, manifest);
+      continue;
+    }
+    if (
+      !Array.isArray(key) ||
+      key.length !== 2 ||
+      typeof key[0] !== "string" ||
+      !validInteger(key[1])
+    )
+      chunkError(String(key));
+    const indices = chunks.get(key[0]) ?? new Set<number>();
+    indices.add(key[1]);
+    chunks.set(key[0], indices);
+  }
+  for (const [key, manifest] of manifests) {
+    const indices = chunks.get(key);
+    if ((indices?.size ?? 0) !== manifest.count) {
+      manifests.delete(key);
+      continue;
+    }
+    if (indices && Array.from(indices).some((index) => index >= manifest.count))
+      manifests.delete(key);
+  }
+  return manifests;
 }
 function referenceIndex(nodes: Iterable<PersistedNode>): Pick<State, "references" | "parents"> {
   const references = new Map<number, number>(),
@@ -729,6 +966,29 @@ function applyChanges(
   state.publication = selection.publication;
 }
 
+/** Moves payload sizes from the nodes a commit replaces or removes to the ones it writes. */
+function replaceNodes(state: State, staged: StagedChanges): void {
+  for (const ino of Array.from(staged.removes).concat(Array.from(staged.upserts.keys()))) {
+    const previous = state.nodes.get(ino);
+    if (previous) state.payloadSizes.remove([previous]);
+  }
+  state.payloadSizes.add(staged.upserts.values());
+}
+function installBases(state: State, bases: State["bases"]): void {
+  for (const slot of [0, 1] as const) {
+    if (state.bases[slot] === bases[slot]) continue;
+    state.payloadSizes.remove(state.bases[slot]?.nodes ?? []);
+    state.payloadSizes.add(bases[slot]?.nodes ?? []);
+  }
+  state.bases = bases;
+}
+function dropJournal(state: State, generation: number): void {
+  const journal = state.journals.get(generation);
+  if (!journal) return;
+  state.journals.delete(generation);
+  state.payloadSizes.remove(journal.upserts);
+}
+
 /** Recover newest-first, copying the full tree only for a candidate with a complete chain. */
 export function recoverIndex(
   bases: readonly (PersistedIndex | undefined)[],
@@ -785,6 +1045,8 @@ export class IndexedDBStorage implements StorageBackend {
   private tail: Promise<void> = Promise.resolve();
   private readonly readers = new PayloadRetentions();
   private readonly readerWork = new Set<Promise<unknown>>();
+  /** Read transactions whose bytes may already be returned but which have not settled. */
+  private readonly nativeReads = new Set<Promise<void>>();
   private readonly deletingPayloads = new Set<string>();
   private persistenceError: unknown;
   private initialized = false;
@@ -1149,9 +1411,9 @@ export class IndexedDBStorage implements StorageBackend {
       } catch {}
     }
     this.db.close();
-    this.ownershipRetirement = Promise.allSettled(
-      Array.from(this.readerWork).concat([this.tail]),
-    ).then(() => this.retireMaintenance());
+    this.ownershipRetirement = Promise.allSettled(Array.from(this.readerWork).concat([this.tail]))
+      .then(() => this.joinNativeReads())
+      .then(() => this.retireMaintenance());
     void this.ownershipRetirement.catch(() => {});
     this.onOwnershipLost?.();
     return error;
@@ -1225,10 +1487,16 @@ export class IndexedDBStorage implements StorageBackend {
         const value = await this.readRecord(key, signal);
         if (!(value instanceof Uint8Array)) chunkError(key);
         if (value.length !== this.payloadSize(key)) chunkError(key);
+        // readRecord awaits its transaction again after its own check.
+        signal?.throwIfAborted();
+        this.assertOwner();
         return value;
       }
-      const manifest = await this.manifest(key, signal);
-      return this.readChunks(key, manifest, { offset: 0, length: manifest.size, signal });
+      return this.readPayload(
+        key,
+        { offset: 0, length: Number.MAX_SAFE_INTEGER, signal },
+        this.knownSize(key),
+      );
     });
   }
 
@@ -1251,27 +1519,22 @@ export class IndexedDBStorage implements StorageBackend {
       throw new Error("Missing retained filesystem payload");
   }
   private payloadSize(key: string): number | undefined {
-    const retained = this.readers.size(key);
-    if (retained !== undefined) return retained;
-    for (const node of this.state!.nodes.values()) if (node.data === key) return node.size;
-    for (const base of this.state!.bases) {
-      for (const node of base?.nodes ?? []) if (node.data === key) return node.size;
-    }
-    for (const journal of this.state!.journals.values()) {
-      for (const node of journal.upserts) if (node.data === key) return node.size;
-    }
-    return undefined;
+    return this.readers.size(key) ?? this.state!.payloadSizes.size(key);
+  }
+  /** The size a read can expect before its manifest arrives, when anything names the payload. */
+  private knownSize(key: string): number | undefined {
+    return this.readers.size(key) ?? this.state?.payloadSizes.size(key);
   }
   resources(): Record<string, number> {
     return { ...this.readers.resources(), indexeddbReaderWork: this.readerWork.size };
   }
   private retainedRange(key: string, range: IndexedDBRange): Promise<Uint8Array> {
     if (this.closed) return Promise.reject(new Error("Filesystem storage is closed"));
-    const work = this.manifest(key, range.signal).then((manifest) => {
-      if (manifest.size !== this.readers.size(key))
-        throw new PayloadCorruption("Retained payload size mismatch");
-      return this.readChunks(key, manifest, range);
-    });
+    const size = this.readers.size(key);
+    const work =
+      size === undefined
+        ? Promise.reject(new PayloadCorruption("Retained payload size mismatch"))
+        : this.readPayload(key, range, size);
     this.readerWork.add(work);
     void work.then(
       () => this.readerWork.delete(work),
@@ -1290,8 +1553,7 @@ export class IndexedDBStorage implements StorageBackend {
     return this.enqueue(async () => {
       range.signal?.throwIfAborted();
       await this.initialize(range.signal);
-      const manifest = await this.manifest(key, range.signal);
-      return this.readChunks(key, manifest, range);
+      return this.readPayload(key, range, this.knownSize(key));
     }).catch((error: unknown) => {
       range.signal?.throwIfAborted();
       throw error;
@@ -1326,52 +1588,87 @@ export class IndexedDBStorage implements StorageBackend {
     }
   }
 
-  private async manifest(key: string, signal?: AbortSignal): Promise<ChunkManifest> {
-    const value = await this.readRecord(key, signal);
-    if (value === undefined) throw new Error(`Missing filesystem payload: ${key}`);
-    try {
-      return parseManifest(value, key);
-    } catch (error) {
-      throw new PayloadCorruption(
-        error instanceof Error ? error.message : "Invalid payload manifest",
-      );
-    }
-  }
-
-  private async readChunks(
+  /** One readonly transaction for the manifest and every chunk the range touches. With a known
+   * size (`expectedSize`) all requests go out together, so the read costs one round trip; the
+   * manifest must then match that size. The bytes are returned once every request has answered,
+   * without waiting for the transaction's commit, and only after every checksum is verified. */
+  private async readPayload(
     key: string,
-    manifest: ChunkManifest,
     range: IndexedDBRange,
+    expectedSize: number | undefined,
   ): Promise<Uint8Array> {
-    const length = Math.max(0, Math.min(range.length, manifest.size - range.offset));
-    const result = new Uint8Array(length);
-    range.signal?.throwIfAborted();
-    if (!length) return result;
-    const end = range.offset + length;
-    for (let index = Math.floor(range.offset / CHUNK_SIZE); index * CHUNK_SIZE < end; index++) {
-      const record = await this.readRecord([key, index], range.signal);
-      const chunk = this.validChunk(record, chunkLength(manifest, index), key);
-      if ((await chunkChecksum(chunk.bytes)) !== chunk.checksum)
-        throw new PayloadCorruption(`Invalid filesystem payload chunks: ${key}`);
-      range.signal?.throwIfAborted();
-      this.assertOwner();
-      const start = Math.max(range.offset, index * CHUNK_SIZE);
-      const stop = Math.min(end, (index + 1) * CHUNK_SIZE);
-      result.set(
-        chunk.bytes.subarray(start - index * CHUNK_SIZE, stop - index * CHUNK_SIZE),
-        start - range.offset,
-      );
-    }
-    range.signal?.throwIfAborted();
-    return result;
-  }
-
-  private validChunk(record: unknown, length: number, key: string) {
+    const signal = range.signal;
+    signal?.throwIfAborted();
+    this.assertOwner();
+    const tx = this.db.transaction("data", "readonly");
+    this.transactions.add(tx);
+    const abort = () => {
+      try {
+        tx.abort();
+      } catch {}
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    const settled = completed(tx);
+    // The bytes may be returned before the native transaction settles. Ownership loss aborts it
+    // and close and ownership retirement join it until then.
+    const native: Promise<void> = settled.then(
+      (): void => this.nativeSettled(tx, native),
+      (): void => this.nativeSettled(tx, native),
+    );
+    this.nativeReads.add(native);
+    const arrival = Promise.withResolvers<void>();
+    const read: PayloadRead = {
+      key,
+      range,
+      expectedSize,
+      end: 0,
+      next: 0,
+      checks: [],
+      pending: 0,
+      arrived: arrival.resolve,
+      fail: (error) => {
+        read.failure ??= { cause: error };
+        abort();
+      },
+    };
     try {
-      return parseChunk(record, length, key);
+      // Setup can throw synchronously; the catch then aborts the transaction it opened.
+      this.placePayloadReads(tx, read);
+      await Promise.race([arrival.promise, settled.then(() => arrival.promise)]);
     } catch (error) {
-      throw new PayloadCorruption(error instanceof Error ? error.message : "Invalid payload chunk");
+      abort();
+      throw signal?.aborted ? signal.reason : (this.ownershipError ?? read.failure?.cause ?? error);
+    } finally {
+      signal?.removeEventListener("abort", abort);
     }
+    const admit = () => {
+      signal?.throwIfAborted();
+      this.assertOwner();
+    };
+    await verifyChecksums(key, read.checks, admit);
+    // Revocation can land while the verifier's result is delivered: check once more with no
+    // await between this check and handing out the bytes.
+    admit();
+    return read.result!;
+  }
+  private placePayloadReads(tx: IDBTransaction, read: PayloadRead): void {
+    const store = tx.objectStore("data");
+    const manifest = store.get(read.key);
+    manifest.onsuccess = () => {
+      try {
+        acceptManifest(store, manifest.result, read);
+      } catch (error) {
+        read.fail(error);
+      }
+    };
+    if (read.expectedSize !== undefined) placeChunkReads(store, read.expectedSize, read);
+  }
+  private joinNativeReads(): Promise<unknown> {
+    return Promise.all(Array.from(this.nativeReads));
+  }
+  private nativeSettled(tx: IDBTransaction, native: Promise<void>): void {
+    this.transactions.delete(tx);
+    this.nativeReads.delete(native);
   }
 
   recoverCommitted(): Promise<CommittedRecovery> {
@@ -1486,6 +1783,8 @@ export class IndexedDBStorage implements StorageBackend {
     if (!this.closing) {
       this.closed = true;
       this.closing = Promise.all(Array.from(this.readerWork).concat([this.tail])).then(async () => {
+        // Admitted work has finished; reads it started may still be settling natively.
+        await this.joinNativeReads();
         this.db.close();
         if (this.readOnly) {
           this.state = undefined;
@@ -1522,7 +1821,8 @@ export class IndexedDBStorage implements StorageBackend {
     void settled.catch(() => {});
     signal?.addEventListener("abort", abort, { once: true });
     const metadata = tx.objectStore("metadata"),
-      journal = tx.objectStore("journal");
+      journal = tx.objectStore("journal"),
+      data = tx.objectStore("data");
     try {
       const records = await Promise.all([
         request(metadata.get(0)),
@@ -1530,8 +1830,8 @@ export class IndexedDBStorage implements StorageBackend {
         request(metadata.getAllKeys()),
         request(journal.getAll()),
         request(journal.getAllKeys()),
-        request(tx.objectStore("data").getAllKeys()),
-        request(metadata.get("format")),
+        request(data.getAllKeys()),
+        formatAndManifests(metadata, data),
         request(metadata.get("commit")),
         request(metadata.get("active")),
         settled,
@@ -1558,7 +1858,7 @@ export class IndexedDBStorage implements StorageBackend {
       journalValues,
       journalKeys,
       dataKeys,
-      format,
+      { format, manifests },
       storedCommit,
       active,
     ] = await this.indexRecords(signal);
@@ -1574,10 +1874,7 @@ export class IndexedDBStorage implements StorageBackend {
       if (typeof key === "string") payloadKeys.add(key);
       else if (Array.isArray(key) && typeof key[0] === "string") payloadKeys.add(key[0]);
     }
-    const physical =
-      format === INDEXEDDB_FORMAT || format === STAGED_FORMAT
-        ? await this.validateChunks(dataKeys, signal)
-        : undefined;
+    const physical = manifests && validateChunks(dataKeys, manifests);
     const available = physical ? new Set(physical.keys()) : payloadKeys;
     const decoded = await Promise.all([decodeIndex(first), decodeIndex(second)]);
     signal?.throwIfAborted();
@@ -1626,6 +1923,10 @@ export class IndexedDBStorage implements StorageBackend {
     }
     if (newest) {
       const nodes = new Map(newest.nodes.map((node) => [node.ino, node]));
+      const payloadSizes = new PayloadSizes();
+      payloadSizes.add(nodes.values());
+      for (const base of bases) if (base) payloadSizes.add(base.nodes);
+      for (const journal of journals.values()) payloadSizes.add(journal.upserts);
       const lastBase = Math.max(
         ...bases.filter((base): base is PersistedIndex => !!base).map((base) => base.generation),
       );
@@ -1639,6 +1940,7 @@ export class IndexedDBStorage implements StorageBackend {
         journals,
         journalKeys,
         payloadKeys,
+        payloadSizes,
         sinceCompaction: Array.from(journals.values()).filter(
           (entry) => entry.generation > lastBase,
         ).length,
@@ -1710,42 +2012,6 @@ export class IndexedDBStorage implements StorageBackend {
       !manifests ||
       nodes.every((node) => node.data === undefined || manifests.get(node.data)?.size === node.size)
     );
-  }
-
-  private async validateChunks(
-    keys: IDBValidKey[],
-    signal?: AbortSignal,
-  ): Promise<Map<string, ChunkManifest>> {
-    const manifests = new Map<string, ChunkManifest>();
-    const chunks = new Map<string, Set<number>>();
-    for (const key of keys) {
-      signal?.throwIfAborted();
-      if (typeof key === "string") {
-        const manifest = recoveryManifest(await this.readRecord(key, signal), key);
-        if (manifest) manifests.set(key, manifest);
-        continue;
-      }
-      if (
-        !Array.isArray(key) ||
-        key.length !== 2 ||
-        typeof key[0] !== "string" ||
-        !validInteger(key[1])
-      )
-        chunkError(String(key));
-      const indices = chunks.get(key[0]) ?? new Set<number>();
-      indices.add(key[1]);
-      chunks.set(key[0], indices);
-    }
-    for (const [key, manifest] of manifests) {
-      const indices = chunks.get(key);
-      if ((indices?.size ?? 0) !== manifest.count) {
-        manifests.delete(key);
-        continue;
-      }
-      if (indices && Array.from(indices).some((index) => index >= manifest.count))
-        manifests.delete(key);
-    }
-    return manifests;
   }
 
   private async fencedWrite(
@@ -1988,23 +2254,26 @@ export class IndexedDBStorage implements StorageBackend {
       nodes: new Map(),
       references: new Map(),
       parents: new Map(),
-      bases,
+      bases: [undefined, undefined],
       journals: new Map(),
       journalKeys: [],
       payloadKeys: new Set(),
+      payloadSizes: new PayloadSizes(),
       sinceCompaction: 0,
     };
-    for (const key of discarded) if (typeof key === "number") state.journals.delete(key);
+    for (const key of discarded) if (typeof key === "number") dropJournal(state, key);
     state.journalKeys = state.journalKeys.filter((key) => !discarded.has(key));
+    replaceNodes(state, staged);
     applyChanges(state, staged, batch);
-    state.bases = bases;
+    installBases(state, bases);
     if (entry) {
       state.journals.set(entry.generation, entry);
       state.journalKeys.push(entry.generation);
+      state.payloadSizes.add(entry.upserts);
     }
     for (const key of batch.data.keys()) state.payloadKeys.add(key);
     if (compact) {
-      for (const key of state.journals.keys()) if (key <= cutoff) state.journals.delete(key);
+      for (const key of state.journals.keys()) if (key <= cutoff) dropJournal(state, key);
       state.journalKeys = state.journalKeys.filter(
         (key) => typeof key !== "number" || key > cutoff,
       );

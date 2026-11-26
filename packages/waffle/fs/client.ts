@@ -103,6 +103,8 @@ import {
   reapFilesystem,
   unpack,
   wake,
+  wakeTransport,
+  SIGNAL_TRANSPORT,
   releaseFilesystemReservation,
   type FilesystemIdentity,
   type FilesystemReservation,
@@ -196,6 +198,19 @@ export interface DirectDisabledIOControl {
   deferWrite?(completion: FilesystemCompletion): void;
 }
 
+/** Operations whose inline replies the service keeps nothing for. */
+const PLAIN_REPLIES = new SetConstructor([
+  "stat",
+  "create",
+  "write",
+  "append",
+  "grow",
+  "resize",
+  "setTimes",
+  "setMode",
+  "read",
+  "readlink",
+]);
 export class FilesystemCompletion {
   static {
     waitForObservedResolve = (completion, cancellation) => completion.#wait(cancellation);
@@ -209,6 +224,8 @@ export class FilesystemCompletion {
   private loading?: Promise<unknown>;
   private consumed = false;
   private released = false;
+  /** Whether the service may keep state for this reply until its discard. */
+  retained = true;
   constructor(
     readonly id: number,
     readonly buffer: FilesystemRequestBuffer,
@@ -275,7 +292,9 @@ export class FilesystemCompletion {
     // release cancels that value and notifies its waiters before removing the completion.
     if (!this.consumed) this.cancel();
     else {
-      this.client.connection.port.postMessage({ discard: this.id });
+      // The service keeps nothing for a plain inline reply, so its discard would do nothing.
+      if (this.retained || atomicsLoad(this.cells, 0) !== State.Complete)
+        this.client.connection.port.postMessage({ discard: this.id });
       this.notify();
     }
     mapDelete(this.client.completions, this.id);
@@ -291,6 +310,7 @@ export class FilesystemCompletion {
     }
     arrayAppend(this.backendWaiters, callback);
     this.client.watchRevocation();
+    this.client.watchBackendSettlement();
     if (this.backendSettled) this.notify();
   }
   /** If the service already published State.Complete, decode and return the inline result even
@@ -588,7 +608,9 @@ export class FilesystemClient implements FileSystem {
   private capabilities: Int32Array;
   private epoch: Int32Array;
   /** Shared wake counter, viewed once: a blocking wait reads it on every loop. */
+  /** Word 0 of the shared signal, one word long, as poll's wake-word checks require. */
   readonly signal: Int32Array;
+  private readonly transportSignal: Int32Array;
   private revoked: () => boolean;
   private readonly section: FilesystemSection;
   readonly shared: SharedFilesystemState;
@@ -608,7 +630,8 @@ export class FilesystemClient implements FileSystem {
     this.requests = new FilesystemRequestAllocator(connection.requests);
     this.capabilities = new Int32ArrayConstructor(connection.capabilities, 0, CAPABILITY_LENGTH);
     this.epoch = new Int32ArrayConstructor(connection.epoch);
-    this.signal = new Int32ArrayConstructor(connection.signal);
+    this.signal = new Int32ArrayConstructor(connection.signal, 0, 1);
+    this.transportSignal = new Int32ArrayConstructor(connection.signal, SIGNAL_TRANSPORT * 4, 1);
     const revoked = sharedRevoked(connection);
     this.revoked = () => this.disposed || revoked() || !!this.transportError();
     if (connection.residentPublication)
@@ -634,7 +657,7 @@ export class FilesystemClient implements FileSystem {
     };
     connection.port.onmessageerror = () => {
       closeRequestMemory(this.requests.memory);
-      wake(connection);
+      wakeTransport(connection);
       mapForEach(this.completions, (completion) => completion.notify());
       connection.port.postMessage({ transportClosed: true });
       connection.port.close();
@@ -697,7 +720,9 @@ export class FilesystemClient implements FileSystem {
     return client;
   }
   /** A single shared-signal waiter handles service death without a port completion message.
-   * Normal replies still use the port; the watcher exits when the last completion is released.
+   * Normal replies still use the port. The waiter parks on the transport word, or on word 0
+   * while a deferred write waits for its backend, and is checked again on each wake; one left
+   * parked after the last completion is released serves the next request.
    */
   private disposed = false;
   private finishedDispose = false;
@@ -770,24 +795,55 @@ export class FilesystemClient implements FileSystem {
     this.watchingRevocation = true;
     this.monitorRevocation();
   }
+  /** A deferred write needs the backend's terminal state even if its port reply is lost, and
+   * that state wakes word 0 only. Move a waiter parked on the transport word over to it. */
+  watchBackendSettlement(): void {
+    this.backendWaiterVersion++;
+    if (this.revocationWord === this.transportSignal) atomicsNotify(this.transportSignal, 0);
+  }
+  /** The word the monitor is parked on, or undefined while it runs or is stopped. */
+  private revocationWord: Int32Array | undefined;
+  /** Bumped by every backend-waiter registration. A pass that saw it change, for example a
+   * settlement callback registering the next deferred write, chooses its word again. */
+  private backendWaiterVersion = 0;
+  private unsettledBackendWaiter(): boolean {
+    let found = false;
+    mapForEach(this.completions, (completion) => {
+      if (completion.hasBackendWaiters && !completion.backendSettled) found = true;
+    });
+    return found;
+  }
+  /** Completions arrive as port messages, so the waiter needs only revocation, reap, retirement
+   * and transport failure, which all wake SIGNAL_TRANSPORT. Two cases keep word 0: a deferred
+   * write's backend settlement publishes only there, and a publication domain's stop wakes
+   * nothing itself. */
+  private revocationSignal(): Int32Array {
+    return this.connection.publication || this.unsettledBackendWaiter()
+      ? this.signal
+      : this.transportSignal;
+  }
   private monitorRevocation(): void {
-    const signal = this.signal;
     const stop = () => {
+      this.revocationWord = undefined;
       this.watchingRevocation = false;
     };
     const step = () => {
+      this.revocationWord = undefined;
       try {
         while (mapSize(this.completions)) {
+          const version = this.backendWaiterVersion;
+          const signal = this.revocationSignal();
           const observed = atomicsLoad(signal, 0);
-          if (this.revoked()) {
-            if (!this.sweepRevokedCompletions()) break;
-          } else {
-            this.notifySettledBackendWaiters();
-          }
-          if (!mapSize(this.completions)) break;
-          const waiting = atomicsWaitAsync(signal, 0, observed);
-          if (waiting.async) {
-            afterNativePromise(waiting.value, step, stop);
+          let waiting = true;
+          if (this.revoked()) waiting = this.sweepRevokedCompletions();
+          else this.notifySettledBackendWaiters();
+          // Callbacks run above can register waiters; neither park nor stop on a stale choice.
+          if (version !== this.backendWaiterVersion) continue;
+          if (!waiting || !mapSize(this.completions)) break;
+          const parked = atomicsWaitAsync(signal, 0, observed);
+          if (parked.async) {
+            this.revocationWord = signal;
+            afterNativePromise(parked.value, step, stop);
             return;
           }
         }
@@ -958,13 +1014,27 @@ export class FilesystemClient implements FileSystem {
     capacity: number,
     publication?: PublicationAdmission,
   ): FilesystemCompletion {
-    const input = pack({ operation, args, publication });
+    // An absent admission stays absent: encoding undefined would tag the envelope and send every
+    // request down the service's tagged-value decode.
+    const input = pack(publication ? { operation, args, publication } : { operation, args });
     this.section.enter();
     try {
-      return this.postRequest(input, data, capacity, publication);
+      const completion = this.postRequest(input, data, capacity, publication);
+      completion.retained = this.retainsReply(operation);
+      return completion;
     } finally {
       this.section.exit();
     }
+  }
+  /** The service keeps a reply until its discard for a resolve (its held references), a stage,
+   * a walk, a watch, a workspace read and any overflowing reply. Only these operations are known
+   * to keep nothing for an inline reply; the caller still checks overflow from the reply state. */
+  private retainsReply(operation: string): boolean {
+    return (
+      !setHas(PLAIN_REPLIES, operation) ||
+      this.connection.residentPublication !== undefined ||
+      this.shared.publication !== undefined
+    );
   }
   private postRequest(
     input: Uint8Array,
@@ -2526,6 +2596,13 @@ export class FilesystemClient implements FileSystem {
   symlink(path: ResolvedPath, target: string): number {
     try {
       return this.call("symlink", [path, target]);
+    } catch (error) {
+      return errno(error);
+    }
+  }
+  realpath(directory: FileHandle, path: string, rooted = false): string | number {
+    try {
+      return this.call("realpath", [directory, path, rooted]);
     } catch (error) {
       return errno(error);
     }
