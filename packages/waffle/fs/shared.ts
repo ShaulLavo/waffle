@@ -86,6 +86,7 @@ const PINNED_PAGES = 29;
 export const CLIENT_MODE = 30;
 export const CLIENT_MODE_NO_DIRECT_IO = 1;
 export const CLIENT_MODE_NO_CLIENT_CACHE = 2;
+export const CLIENT_MODE_NO_WATCH_DRAIN = 4;
 const MODE = 12;
 const FILE_SIZE = 1;
 // File times are unsigned 64-bit nanoseconds in two words each, starting on an even word.
@@ -301,6 +302,9 @@ export class SharedFilesystemState {
   }
   isClientCacheDisabled(): boolean {
     return (atomicsLoad(this.cells, CLIENT_MODE) & CLIENT_MODE_NO_CLIENT_CACHE) !== 0;
+  }
+  isWatchDrainDisabled(): boolean {
+    return (atomicsLoad(this.cells, CLIENT_MODE) & CLIENT_MODE_NO_WATCH_DRAIN) !== 0;
   }
   /** Reset all per-mount filesystem state in place across Host remount/demotion while preserving
    * tab-lifetime header invariants (`MAGIC`, `maxSegments`, owner/probe words, `WATCH_OFFSET`,

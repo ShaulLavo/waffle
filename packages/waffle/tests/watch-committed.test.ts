@@ -16,8 +16,14 @@ import {
   type FilesystemConnection,
 } from "../fs/protocol.js";
 import { WatchService } from "../fs/watch-service.js";
+import { ORDINARY_WATCH_LIMITS, type WatchResourceLimits } from "../fs/watch-account.js";
 import { Wasi } from "../core/wasi.js";
-import { FilesystemError, type FileSystem, type WatchFileSystem } from "../core/filesystem.js";
+import {
+  FilesystemError,
+  type FileSystem,
+  type WatchDrainEntry,
+  type WatchFileSystem,
+} from "../core/filesystem.js";
 import type { Resource } from "../core/descriptors.js";
 import { RIGHTS_ALL } from "../core/rights.js";
 import { watchGuest, watchGuestModule } from "./fixtures/watch-guest.js";
@@ -634,16 +640,29 @@ const OVERFLOW = 3;
 
 /** The real WASI adapter and watch service in one thread; calls are counted at the service.
  * Each call takes a request buffer from a real allocator, as FilesystemClient's calls do. */
-function guestWatches(hooks: { afterOpen?(): void; duringRead?(): void } = {}) {
-  const backend = new MemoryBackend();
+function guestWatches(
+  hooks: {
+    afterOpen?(): void;
+    duringRead?(): void;
+    withDrain?: boolean;
+    watchLimits?: WatchResourceLimits;
+    failDrain?: () => number | undefined;
+  } = {},
+) {
+  const backend = new MemoryBackend(
+    new MemFS(),
+    nextReservation(undefined),
+    undefined,
+    hooks.watchLimits,
+  );
   backend.execute("mkdirp", ["/dir/sub"], new Uint8Array());
   const write = (path: string, byte = 1) =>
     backend.execute("writeFile", [path, false], new Uint8Array([byte]));
   write("/dir/a");
   write("/dir/sub/b");
   const service = new WatchService(backend);
-  const calls = { open: 0, read: 0, close: 0 };
-  const state = { revoked: false };
+  const calls = { open: 0, read: 0, drain: 0, close: 0 };
+  const state = { revoked: false, remote: false };
   const pool = new FilesystemRequestPool(createRequestBudget());
   const allocator = new FilesystemRequestAllocator(pool.take(new SharedArrayBuffer(4)));
   const release = (buffer: FilesystemRequestBuffer) => {
@@ -670,6 +689,12 @@ function guestWatches(hooks: { afterOpen?(): void; duringRead?(): void } = {}) {
     get revoked() {
       return state.revoked;
     },
+    get remote() {
+      return state.remote;
+    },
+    get canDrain() {
+      return !!hooks.withDrain && !state.remote;
+    },
     open: (handle, recursive) =>
       request(() => {
         calls.open++;
@@ -685,6 +710,23 @@ function guestWatches(hooks: { afterOpen?(): void; duringRead?(): void } = {}) {
         hooks.duringRead?.();
         return batch;
       }),
+    ...(hooks.withDrain
+      ? {
+          drain: () =>
+            request(() => {
+              calls.drain++;
+              const fail = hooks.failDrain?.();
+              if (fail !== undefined) throw new FilesystemError(fail);
+              const held = service.drainHeld(1);
+              try {
+                hooks.duringRead?.();
+                return { entries: held.entries, more: held.more };
+              } finally {
+                held.release();
+              }
+            }),
+        }
+      : {}),
     close: (id) =>
       request(() => {
         calls.close++;
@@ -1065,4 +1107,515 @@ test("a guest watch close refused at request admission keeps its id for a retry"
   expectReady(h, 0);
   expect(Atomics.load(h.backend.shared.watch.cells, 0)).toBe(0);
   expect(h.guest.close(id)).toBe(8);
+});
+
+test("batched watchDrain and watch_next deliver only matching watches in one service call", () => {
+  const h = guestWatches({ withDrain: true });
+  const target = h.guest.open(h.descriptor("/dir/a")).id;
+  const idleIds: number[] = [];
+  const sub = h.descriptor("/dir/sub");
+  for (let index = 0; index < 1500; index++) idleIds.push(h.guest.open(sub).id);
+  expectReady(h, 0);
+  expect(h.guest.next().errno).toBe(6);
+  expect(h.calls.drain).toBe(0);
+  expect(h.calls.read).toBe(0);
+
+  h.write("/dir/a", 2);
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id: target,
+    records: [{ type: CHANGE, name: null }],
+  });
+  expect(h.guest.next().errno).toBe(6);
+  expect(h.calls.drain).toBe(1);
+  expect(h.calls.read).toBe(0);
+  expectReady(h, 0);
+
+  // Unrelated commit makes one drain returning empty and zero per-watch reads.
+  h.backend.execute("writeFile", ["/outside", false], new Uint8Array([1]));
+  expectReady(h, 1);
+  expect(h.guest.next().errno).toBe(6);
+  expect(h.calls.drain).toBe(2);
+  expect(h.calls.read).toBe(0);
+  expectReady(h, 0);
+
+  // Reading a single watch id via watch_read stays scoped to that watch (never drains others).
+  h.write("/dir/a", 3);
+  expect(h.guest.read(idleIds[0]!).errno).toBe(6);
+  expect(h.calls.drain).toBe(2);
+  expect(h.calls.read).toBe(1);
+  expect(h.guest.read(target).records).toEqual([{ type: CHANGE, name: null }]);
+  expect(h.calls.drain).toBe(2);
+  expect(h.calls.read).toBe(2);
+  expectReady(h, 1);
+  // Final watch_next drains remaining unobserved idle watches in one call.
+  expect(h.guest.next().errno).toBe(6);
+  expect(h.calls.drain).toBe(3);
+  expectReady(h, 0);
+
+  expect(h.guest.close(target)).toBe(0);
+  for (const id of idleIds) expect(h.guest.close(id)).toBe(0);
+  expectReady(h, 0);
+});
+
+test("per-ID watch_read keeps coalescing and bounded overflow; interleaved watch_next bounds guest cache", () => {
+  // Repro 1a: writing two watched files twice while reading only the second between writes
+  // coalesces the first file's changes to a single record.
+  const h = guestWatches({ withDrain: true });
+  h.write("/dir/b", 1);
+  const first = h.guest.open(h.descriptor("/dir/a")).id;
+  const second = h.guest.open(h.descriptor("/dir/b")).id;
+  h.write("/dir/a", 2);
+  h.write("/dir/b", 2);
+  expect(h.guest.read(second).records).toEqual([{ type: CHANGE, name: null }]);
+  expect(h.calls.drain).toBe(0);
+  h.write("/dir/a", 3);
+  h.write("/dir/b", 3);
+  expect(h.guest.read(second).records).toEqual([{ type: CHANGE, name: null }]);
+  expect(h.guest.read(first).records).toEqual([{ type: CHANGE, name: null }]);
+  expect(h.calls.drain).toBe(0);
+  expectReady(h, 0);
+
+  // Repro 1b: 130 distinct creates in an unread directory while reading another watch
+  // yields one terminal overflow instead of accumulating unbounded records.
+  const unreadDir = h.guest.open(h.descriptor("/dir/sub")).id;
+  for (let i = 0; i < 130; i++) {
+    h.write(`/dir/sub/f${i}`, i & 0xff);
+    if (i % 40 === 39) {
+      h.write("/dir/b", i & 0xff);
+      expect(h.guest.read(second).records).toEqual([{ type: CHANGE, name: null }]);
+    }
+  }
+  expect(h.guest.read(unreadDir).records).toEqual([{ type: OVERFLOW, name: null }]);
+  expect(h.guest.read(unreadDir)).toMatchObject({ errno: 0, length: 0, records: [] });
+  expect(h.guest.close(unreadDir)).toBe(0);
+
+  // Repro 1c: interleaved watch_next delivers buffered batches before starting another drain,
+  // so an unread watch cannot evade per-watch overflow across drains.
+  const dir2 = h.guest.open(h.descriptor("/dir/sub")).id;
+  h.write("/dir/a", 10);
+  h.write("/dir/sub/seed", 1);
+  // First watch_next drains both watches and returns one, leaving the other buffered.
+  const firstNext = h.guest.next();
+  expect(firstNext.errno).toBe(0);
+  const drainsBeforeBurst = h.calls.drain;
+  const pendingId = firstNext.id === first ? dir2 : first;
+  // While pendingId is still buffered, 130 creates happen in /dir/sub; reading an unrelated
+  // watch (`second`) by ID does not drain /dir/sub again before its buffer is consumed.
+  for (let i = 0; i < 130; i++) {
+    h.write(`/dir/sub/g${i}`, i & 0xff);
+    if (i === 64) {
+      h.write("/dir/b", 11);
+      expect(h.guest.read(second).records).toEqual([{ type: CHANGE, name: null }]);
+    }
+  }
+  // Consuming the remaining buffered entry uses zero extra drains.
+  const secondNext = h.guest.next();
+  expect(secondNext.errno).toBe(0);
+  expect(secondNext.id).toBe(pendingId);
+  expect(h.calls.drain).toBe(drainsBeforeBurst);
+  // Next watch_next drains the service and receives dir2's single terminal overflow.
+  let sawOverflow = false;
+  for (let step = 0; step < 5; step++) {
+    const res = h.guest.next();
+    if (res.errno === 6) break;
+    if (res.id === dir2 && res.records.some((r) => r.type === OVERFLOW)) sawOverflow = true;
+  }
+  expect(sawOverflow).toBe(true);
+  expect(h.guest.close(dir2)).toBe(0);
+  expect(h.guest.close(first)).toBe(0);
+  expect(h.guest.close(second)).toBe(0);
+  expectReady(h, 0);
+});
+
+test("bounded watchDrain never overflows healthy watches under a 40,000-unit control budget and rolls back in order", () => {
+  // Repro 2: 40,000-unit root control budget, 20 watches on /dir, 16 creates.
+  const h = guestWatches({
+    withDrain: true,
+    watchLimits: { ...ORDINARY_WATCH_LIMITS, controlUnits: 40_000 },
+  });
+  const ids: number[] = [];
+  for (let i = 0; i < 20; i++) ids.push(h.guest.open(h.descriptor("/dir")).id);
+  for (let i = 0; i < 16; i++) h.write(`/dir/c${i}`, i);
+
+  const delivered = new Map<number, string[]>();
+  for (;;) {
+    const res = h.guest.next();
+    if (res.errno === 6) break;
+    expect(res.errno).toBe(0);
+    expect(res.records.some((r) => r.type === OVERFLOW)).toBe(false);
+    const list = delivered.get(res.id) ?? [];
+    for (const r of res.records) if (r.name) list.push(r.name);
+    delivered.set(res.id, list);
+  }
+  // Multiple drains ran without any extra commit, and every watch received all 16 creates.
+  expect(h.calls.drain).toBeGreaterThan(1);
+  expect(delivered.size).toBe(20);
+  for (const id of ids) {
+    const names = new Set(delivered.get(id));
+    for (let i = 0; i < 16; i++) expect(names.has(`c${i}`)).toBe(true);
+  }
+  expectReady(h, 0);
+  for (const id of ids) expect(h.guest.close(id)).toBe(0);
+
+  // Service-level rollback preserves event order before subsequent writes and fetches remainder.
+  const backend = new MemoryBackend(new MemFS(), nextReservation(undefined), undefined, {
+    ...ORDINARY_WATCH_LIMITS,
+    controlUnits: 40_000,
+  });
+  backend.execute("mkdirp", ["/d"], new Uint8Array());
+  const svc = new WatchService(backend);
+  const rootHandle = backend.fs.handleForNode(backend.fs.lookup("/d")!);
+  const svcIds = Array.from({ length: 20 }, () => svc.open(1, rootHandle, false, () => false));
+  for (let i = 0; i < 16; i++)
+    backend.execute("writeFile", [`/d/k${i}`, false], new Uint8Array([1]));
+  const cancelled = svc.drainHeld(1);
+  expect(cancelled.more).toBe(true);
+  expect(cancelled.entries.length).toBeGreaterThan(0);
+  expect(cancelled.entries.length).toBeLessThan(20);
+  // A new commit arrives before cancellation rolls back the first partial drain.
+  backend.execute("writeFile", ["/d/after", false], new Uint8Array([2]));
+  cancelled.rollback();
+
+  const seen = new Map<number, string[]>();
+  const recordEvents = (entries: readonly WatchDrainEntry[]) => {
+    for (const entry of entries) {
+      expect("batch" in entry && entry.batch.kind === "events").toBe(true);
+      if ("batch" in entry && entry.batch.kind === "events") {
+        seen.set(
+          entry.id,
+          entry.batch.events.map((e) => e.name ?? ""),
+        );
+      }
+    }
+  };
+  let more = true;
+  let rounds = 0;
+  while (more) {
+    rounds++;
+    const held = svc.drainHeld(1);
+    try {
+      recordEvents(held.entries);
+      more = held.more;
+    } finally {
+      held.release();
+    }
+  }
+  expect(rounds).toBeGreaterThan(1);
+  expect(seen.size).toBe(20);
+  for (const id of svcIds) {
+    const names = seen.get(id)!;
+    // Earlier k0..k15 were restored ahead of "after".
+    const firstK = names.indexOf("k0");
+    const afterIdx = names.indexOf("after");
+    expect(firstK).toBeGreaterThanOrEqual(0);
+    expect(afterIdx).toBeGreaterThan(firstK);
+  }
+  svc.closeOwner(1);
+});
+
+test("watch_next initializes out_id on empty/unscoped errors and rejects overlapping spans with EINVAL", () => {
+  let injectErrno: number | undefined;
+  const h = guestWatches({ withDrain: true, failDrain: () => injectErrno });
+
+  // Before any watch has opened: EAGAIN must clear sentinel 0xdeadbeef in out_id to 0.
+  expect(h.guest.next()).toMatchObject({ errno: 6, id: 0 });
+
+  // Open a watch and queue an event.
+  const { id } = h.guest.open(h.descriptor("/dir"));
+  h.write("/dir/a", 2);
+
+  // Overlapping out_id and out_len (both at offset 16) -> EINVAL without consuming the event.
+  const overlapWords = h.guest.next(64, 1024, 16, 16);
+  expect(overlapWords.errno).toBe(28);
+  // Partial overlap between out_id (16..20) and out_len (18..22) -> EINVAL.
+  expect(h.guest.next(64, 1024, 16, 18).errno).toBe(28);
+  // Buffer overlapping out_id or out_len when len > 0 -> EINVAL.
+  expect(h.guest.next(64, 16, 24, 32).errno).toBe(28);
+  expect(h.guest.next(64, 28, 16, 32).errno).toBe(28);
+  // Non-overlapping out_id/out_len with empty buf (len === 0) is valid (returns ENOBUFS, nothing consumed).
+  expect(h.guest.next(0, 16, 16, 24)).toMatchObject({ errno: 42, id, length: 12 });
+
+  // Event was never consumed by rejected overlapping calls and still returns with exact id.
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id,
+    records: [{ type: CHANGE, name: "a" }],
+  });
+  expectReady(h, 0);
+
+  // Unscoped FilesystemError during drain clears out_id to 0.
+  h.write("/dir/a", 3);
+  injectErrno = 29;
+  expect(h.guest.next()).toMatchObject({ errno: 29, id: 0 });
+  injectErrno = undefined;
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id,
+    records: [{ type: CHANGE, name: "a" }],
+  });
+  expect(h.guest.close(id)).toBe(0);
+});
+
+test("watch_next preserves ENOBUFS, permission errors, overflow, revocation and reentrant writes", () => {
+  let inject = false;
+  const h = guestWatches({
+    withDrain: true,
+    duringRead() {
+      if (!inject) return;
+      inject = false;
+      h.write("/dir/sub/b", 8);
+    },
+  });
+  const dir = h.guest.open(h.descriptor("/dir"), RECURSIVE).id;
+  const handle = h.backend.fs.handleForNode(h.backend.fs.lookup("/dir")!);
+
+  // ENOBUFS preserves queued records and reports id and needed length.
+  h.write("/dir/a", 2);
+  expect(h.guest.next(7)).toMatchObject({ errno: 42, id: dir, length: 12 });
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id: dir,
+    records: [{ type: CHANGE, name: "a" }],
+  });
+  expectReady(h, 0);
+
+  // Reentrant write during drain stays ready and delivers on the next call.
+  inject = true;
+  h.write("/dir/a", 3);
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id: dir,
+    records: [{ type: CHANGE, name: "a" }],
+  });
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id: dir,
+    records: [{ type: CHANGE, name: "sub/b" }],
+  });
+  expectReady(h, 0);
+
+  // Permission denial surfaces EACCES with watch id, persists while unreadable, and clears on restore.
+  h.backend.execute("setMode", [handle, 0o300], new Uint8Array());
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({ errno: 2, id: dir });
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({ errno: 2, id: dir });
+  h.backend.execute("setMode", [handle, 0o700], new Uint8Array());
+  h.write("/dir/a", 4);
+  const recovered = h.guest.next();
+  expect(recovered.errno).toBe(0);
+  expect(recovered.id).toBe(dir);
+  expect(recovered.records).toContainEqual({ type: CHANGE, name: "a" });
+  expectReady(h, 0);
+
+  // Overflow delivers terminal record then end of stream for that id.
+  for (let index = 0; index <= 128; index++) h.write(`/dir/ov${index}`);
+  expect(h.guest.next()).toMatchObject({
+    errno: 0,
+    id: dir,
+    records: [{ type: OVERFLOW, name: null }],
+  });
+  expect(h.guest.next()).toMatchObject({ errno: 0, id: dir, length: 0, records: [] });
+  expect(h.guest.close(dir)).toBe(0);
+  expectReady(h, 0);
+
+  // Revocation reports ECANCELED with the open watch id.
+  const revokedWatch = h.guest.open(h.descriptor("/dir")).id;
+  h.state.revoked = true;
+  expectReady(h, 1);
+  expect(h.guest.next()).toMatchObject({ errno: 11, id: revokedWatch });
+  expect(h.guest.close(revokedWatch)).toBe(0);
+  expectReady(h, 0);
+});
+
+test("FilesystemClient watchDrain RPC drains only ready subscriptions for its session", async () => {
+  const f = await fixture();
+  try {
+    await f.page.asyncCall("create", [
+      await f.page.asyncCall("resolve", [f.root, "dirA"]),
+      "directory",
+    ]);
+    await f.page.asyncCall("create", [
+      await f.page.asyncCall("resolve", [f.root, "dirB"]),
+      "directory",
+    ]);
+    const guestA = await f.guest.asyncCall("resolve", [f.guestRoot, "dirA"]);
+    const guestB = await f.guest.asyncCall("resolve", [f.guestRoot, "dirB"]);
+    const a = await f.guest.asyncCall("watchOpen", [guestA.node, false]);
+    const b = await f.guest.asyncCall("watchOpen", [guestB.node, false]);
+    expect(await f.guest.asyncCall("watchDrain", [])).toEqual({ entries: [], more: false });
+    await f.page.asyncCall("writeFile", ["/dirB/file.txt", false], new Uint8Array([1]));
+    const drained = await f.guest.asyncCall("watchDrain", []);
+    expect(drained.more).toBe(false);
+    expect(drained.entries).toHaveLength(1);
+    expect(drained.entries[0]).toMatchObject({ id: b, batch: { kind: "events" } });
+    if ("batch" in drained.entries[0]! && drained.entries[0].batch.kind === "events") {
+      expect(
+        drained.entries[0].batch.events.some(
+          (event: { type: string; name: string | null }) =>
+            event.type === "rename" && event.name === "file.txt",
+        ),
+      ).toBe(true);
+    }
+    expect(await f.guest.asyncCall("watchDrain", [])).toEqual({ entries: [], more: false });
+    await f.guest.asyncCall("watchClose", [a]);
+    await f.guest.asyncCall("watchClose", [b]);
+  } finally {
+    await f.close();
+  }
+}, 10000);
+
+test("peer fallback rotates watch_next across busy, permission-denied, and ended watches", () => {
+  const h = guestWatches({ withDrain: false });
+  h.state.remote = true;
+  h.backend.execute("mkdirp", ["/dir1"], new Uint8Array());
+  h.backend.execute("mkdirp", ["/dir2"], new Uint8Array());
+  const w1 = h.guest.open(h.descriptor("/dir1")).id;
+  const w2 = h.guest.open(h.descriptor("/dir2")).id;
+
+  // Busy watch 1 must not starve a ready record queued on watch 2.
+  h.write("/dir2/ready", 1);
+  const seenBusy: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    h.write(`/dir1/busy${i}`, i);
+    const res = h.guest.next();
+    expect(res.errno).toBe(0);
+    seenBusy.push(res.id);
+  }
+  expect(seenBusy).toContain(w1);
+  expect(seenBusy).toContain(w2);
+
+  // Permission-denied watch 1 must not starve watch 2.
+  const rootHandle = h.backend.execute("preopen", ["/"], new Uint8Array()) as number;
+  const dir1Handle = (
+    h.backend.execute("resolve", [rootHandle, "dir1"], new Uint8Array()) as { node: number }
+  ).node;
+  h.backend.execute("setMode", [dir1Handle, 0o000], new Uint8Array());
+  h.write("/dir2/after-eacces", 2);
+  const seenEacces = [h.guest.next(), h.guest.next()];
+  expect(seenEacces.some((r) => r.id === w1 && r.errno === 2)).toBe(true);
+  expect(seenEacces.some((r) => r.id === w2 && r.errno === 0 && r.records.length > 0)).toBe(true);
+  h.backend.execute("setMode", [dir1Handle, 0o700], new Uint8Array());
+
+  // Drain any stale records, then overflow watch 1 to END and verify watch 2 still makes progress.
+  while (h.guest.next().errno === 0) {}
+  for (let i = 0; i <= 128; i++) h.write(`/dir1/ov${i}`, i & 0xff);
+  const ov = h.guest.read(w1);
+  expect(ov.records).toEqual([{ type: OVERFLOW, name: null }]);
+  h.write("/dir2/after-end", 3);
+  const seenEnd = [h.guest.next(), h.guest.next()];
+  expect(seenEnd.some((r) => r.id === w1 && r.errno === 0 && r.length === 0)).toBe(true);
+  expect(seenEnd.some((r) => r.id === w2 && r.errno === 0 && r.records.length > 0)).toBe(true);
+
+  expect(h.guest.close(w1)).toBe(0);
+  expect(h.guest.close(w2)).toBe(0);
+});
+
+test("watchDrain checks queued count before taking a batch and bounds terminal and permission replies", () => {
+  const backend = new MemoryBackend();
+  const service = new WatchService(backend);
+  backend.execute("mkdirp", ["/d1"], new Uint8Array());
+  backend.execute("mkdirp", ["/d2"], new Uint8Array());
+  const root = backend.execute("preopen", ["/"], new Uint8Array()) as number;
+  const h1 = (backend.execute("resolve", [root, "d1"], new Uint8Array()) as { node: number }).node;
+  const h2 = (backend.execute("resolve", [root, "d2"], new Uint8Array()) as { node: number }).node;
+  const w1 = service.open(1, h1, false, () => false);
+  const w2 = service.open(1, h2, false, () => false);
+
+  // Two watches with 91 events each must not exceed the 128-event reply cap.
+  for (let i = 0; i < 45; i++) {
+    backend.execute("writeFile", [`/d1/f${i}`, false], new Uint8Array([1]));
+    backend.execute("writeFile", [`/d2/f${i}`, false], new Uint8Array([1]));
+  }
+  backend.execute("writeFile", ["/d1/f0", false], new Uint8Array([2]));
+  backend.execute("writeFile", ["/d2/f0", false], new Uint8Array([2]));
+  const first = service.drainHeld(1);
+  const firstEvents = first.entries.reduce(
+    (sum, entry) =>
+      sum + ("batch" in entry && entry.batch.kind === "events" ? entry.batch.events.length : 0),
+    0,
+  );
+  expect(first.entries).toHaveLength(1);
+  expect(firstEvents).toBeLessThanOrEqual(128);
+  expect(firstEvents).toBeGreaterThan(80);
+  expect(first.more).toBe(true);
+  first.release();
+
+  const second = service.drainHeld(1);
+  const secondEvents = second.entries.reduce(
+    (sum, entry) =>
+      sum + ("batch" in entry && entry.batch.kind === "events" ? entry.batch.events.length : 0),
+    0,
+  );
+  expect(second.entries).toHaveLength(1);
+  expect(secondEvents).toBeGreaterThan(80);
+  expect(second.more).toBe(false);
+  second.release();
+  service.close(1, w1);
+  service.close(1, w2);
+
+  // 150 permission-denied watches must be bounded per drain and rotate to cover all 150 IDs.
+  backend.execute("mkdirp", ["/denied"], new Uint8Array());
+  const deniedHandle = (
+    backend.execute("resolve", [root, "denied"], new Uint8Array()) as { node: number }
+  ).node;
+  const deniedIds: number[] = [];
+  for (let i = 0; i < 150; i++) deniedIds.push(service.open(1, deniedHandle, false, () => false));
+  backend.execute("setMode", [deniedHandle, 0o000], new Uint8Array());
+  const d1 = service.drainHeld(1);
+  expect(d1.entries.length).toBeLessThanOrEqual(128);
+  expect(d1.more).toBe(true);
+  d1.release();
+  const seenDenied = new Set(d1.entries.map((e) => e.id));
+  const d2 = service.drainHeld(1);
+  expect(d2.entries.length).toBeLessThanOrEqual(128);
+  for (const e of d2.entries) seenDenied.add(e.id);
+  d2.release();
+  expect(seenDenied.size).toBe(150);
+  backend.execute("setMode", [deniedHandle, 0o700], new Uint8Array());
+  for (const id of deniedIds) service.close(1, id);
+
+  // 150 overflowed watches must be bounded per drain and rotate to cover all 150 IDs.
+  backend.execute("mkdirp", ["/ov"], new Uint8Array());
+  const ovHandle = (backend.execute("resolve", [root, "ov"], new Uint8Array()) as { node: number })
+    .node;
+  const ovIds: number[] = [];
+  for (let i = 0; i < 150; i++) ovIds.push(service.open(1, ovHandle, false, () => false));
+  for (let i = 0; i <= 128; i++)
+    backend.execute("writeFile", [`/ov/x${i}`, false], new Uint8Array([1]));
+  const o1 = service.drainHeld(1);
+  expect(o1.entries.length).toBeLessThanOrEqual(128);
+  expect(o1.more).toBe(true);
+  o1.release();
+  const seenOv = new Set(o1.entries.map((e) => e.id));
+  const o2 = service.drainHeld(1);
+  expect(o2.entries.length).toBeLessThanOrEqual(128);
+  for (const e of o2.entries) seenOv.add(e.id);
+  o2.release();
+  expect(seenOv.size).toBe(150);
+  service.closeOwner(1);
+});
+
+test("watch_next delivers every denied watch ID across capped drains without closing them", () => {
+  const h = guestWatches({ withDrain: true });
+  const root = h.backend.execute("preopen", ["/"], new Uint8Array()) as number;
+  const dirHandle = (
+    h.backend.execute("resolve", [root, "dir"], new Uint8Array()) as { node: number }
+  ).node;
+  const ids: number[] = [];
+  for (let i = 0; i < 256; i++) ids.push(h.guest.open(h.descriptor("/dir")).id);
+  h.backend.execute("setMode", [dirHandle, 0o000], new Uint8Array());
+  const seen = new Set<number>();
+  for (let i = 0; i < 512; i++) {
+    const res = h.guest.next();
+    expect(res.errno).toBe(2);
+    seen.add(res.id);
+  }
+  expect(seen.size).toBe(256);
+  h.backend.execute("setMode", [dirHandle, 0o700], new Uint8Array());
+  for (const id of ids) expect(h.guest.close(id)).toBe(0);
 });

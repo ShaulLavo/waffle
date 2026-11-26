@@ -1,10 +1,16 @@
-import { FilesystemError, type FileHandle, type WatchFileSystem } from "../core/filesystem.js";
-import type { WatchBatch, WatchEvent } from "./watch.js";
+import {
+  FilesystemError,
+  type FileHandle,
+  type WatchDrainResult,
+  type WatchFileSystem,
+} from "../core/filesystem.js";
+import type { WatchBatch } from "./watch.js";
 import {
   arrayAppend,
   atomicsLoad,
   MapConstructor,
   mapDelete,
+  mapFirst,
   mapForEach,
   mapGet,
   mapSet,
@@ -15,6 +21,7 @@ import {
 const EAGAIN = 6;
 const EBADF = 8;
 const ECANCELED = 11;
+const ENOTSUP = 58;
 const CHANGE = 1;
 const RENAME = 2;
 const OVERFLOW = 3;
@@ -33,177 +40,366 @@ export interface GuestWatchReadiness {
 }
 
 export type GuestWatchRead =
-  /** Whole records in order; no records means end of stream. */
   | { readonly kind: "records"; readonly records: readonly Uint8Array[]; readonly length: number }
-  /** The first pending record needs `needed` bytes. Nothing was consumed. */
   | { readonly kind: "short"; readonly needed: number }
   | { readonly kind: "error"; readonly errno: number };
 
+export type GuestWatchNext =
+  | {
+      readonly kind: "records";
+      readonly id: number;
+      readonly records: readonly Uint8Array[];
+      readonly length: number;
+    }
+  | { readonly kind: "short"; readonly id: number; readonly needed: number }
+  | { readonly kind: "watch_error"; readonly id: number; readonly errno: number }
+  | { readonly kind: "error"; readonly errno: number };
+
 interface Watch {
+  readonly id: number;
   readonly service: number;
-  /** cells[3] before this watch's latest service read, or before its open RPC. */
   observed: number;
-  /** Encoded records of at most one service batch, consumed from `head`. */
   queue: Uint8Array[];
   head: number;
   ended: boolean;
+  errno: number;
 }
 
 const END: GuestWatchRead = { kind: "records", records: [], length: 0 };
 
-function failure(errno: number): GuestWatchRead {
+function failure(errno: number): { readonly kind: "error"; readonly errno: number } {
   return { kind: "error", errno };
+}
+
+function watchError(id: number, errno: number): GuestWatchNext {
+  return { kind: "watch_error", id, errno };
+}
+
+function nextOf(id: number, result: GuestWatchRead): GuestWatchNext {
+  return result.kind === "error" ? watchError(id, result.errno) : { ...result, id };
+}
+
+function rotate(map: Map<number, Watch>, watch: Watch): void {
+  mapDelete(map, watch.id);
+  mapSet(map, watch.id, watch);
 }
 
 /** Process-local watch ids over the opener's filesystem session. Ids are never reused. */
 export class GuestWatchTable implements GuestWatchReadiness {
-  private watches = new MapConstructor<number, Watch>();
-  private nextId = 1;
-  private revocationNotified = false;
+  #fs: WatchFileSystem;
+  #watches!: Map<number, Watch>;
+  #byService!: Map<number, Watch>;
+  #buffered!: Map<number, Watch>;
+  #errored!: Map<number, Watch>;
+  #ended!: Map<number, Watch>;
+  #nextId = 1;
+  #revocationNotified = false;
+  #activeCount = 0;
+  #observedGen = 0;
+  #observedCount = 0;
+  #tableObserved: number | undefined;
+  #drainMore = false;
+  #noDrain = false;
+  #flip = false;
 
-  constructor(private readonly fs: WatchFileSystem) {}
+  constructor(fs: WatchFileSystem) {
+    this.#fs = fs;
+    this.drop();
+  }
 
   get word(): Int32Array {
-    return this.fs.cells;
+    return this.#fs.cells;
   }
 
   get active(): boolean {
-    let active = false;
-    mapForEach(this.watches, (watch) => {
-      if (!watch.ended) active = true;
-    });
-    return active;
+    return this.#activeCount > 0;
+  }
+
+  #useDrain(): boolean {
+    if (typeof this.#fs.drain !== "function" || this.#noDrain) return false;
+    if (this.#fs.canDrain === false) {
+      this.#tableObserved = undefined;
+      this.#drainMore = false;
+      return false;
+    }
+    return true;
+  }
+
+  #allObserved(generation: number): boolean {
+    return (
+      (this.#observedCount === this.#activeCount && this.#observedGen === generation) ||
+      (this.#useDrain() && !this.#drainMore && this.#tableObserved === generation)
+    );
   }
 
   pending(): boolean {
-    if (this.fs.revoked) return !!this.fs.remote && !this.revocationNotified && this.active;
-    return this.hasPending(false);
+    if (this.#fs.revoked)
+      return !!this.#fs.remote && !this.#revocationNotified && this.#activeCount > 0;
+    return (
+      this.#activeCount > 0 &&
+      (mapSize(this.#buffered) > 0 ||
+        mapSize(this.#errored) > 0 ||
+        !this.#allObserved(atomicsLoad(this.#fs.cells, 3)))
+    );
   }
 
   /** A read may return records, end or an error; never consumes watch state. */
   ready(): boolean {
-    if (!mapSize(this.watches)) return false;
-    return this.fs.revoked || this.hasPending(true);
+    if (!mapSize(this.#watches)) return false;
+    return (
+      this.#fs.revoked ||
+      mapSize(this.#buffered) > 0 ||
+      mapSize(this.#errored) > 0 ||
+      mapSize(this.#ended) > 0 ||
+      (this.#activeCount > 0 && !this.#allObserved(atomicsLoad(this.#fs.cells, 3)))
+    );
   }
 
-  private hasPending(includeEnded: boolean): boolean {
-    const generation = atomicsLoad(this.fs.cells, 3);
-    let pending = false;
-    mapForEach(this.watches, (watch) => {
-      if (
-        watch.ended
-          ? includeEnded
-          : watch.head < watch.queue.length || watch.observed !== generation
-      )
-        pending = true;
-    });
-    return pending;
+  #setObserved(watch: Watch, generation: number): void {
+    if (watch.observed === generation) return;
+    if (!watch.ended) {
+      if (watch.observed === this.#observedGen) this.#observedCount--;
+      if (generation !== this.#observedGen) {
+        this.#observedGen = generation;
+        this.#observedCount = 1;
+      } else this.#observedCount++;
+    }
+    watch.observed = generation;
+  }
+
+  #markEnded(watch: Watch): void {
+    if (watch.ended) return;
+    watch.ended = true;
+    this.#activeCount--;
+    if (watch.observed === this.#observedGen) this.#observedCount--;
+    watch.errno = 0;
+    mapDelete(this.#buffered, watch.id);
+    mapDelete(this.#errored, watch.id);
+    mapSet(this.#ended, watch.id, watch);
   }
 
   /** Throws FilesystemError from the service. */
   open(handle: FileHandle, recursive: boolean): number {
-    if (this.nextId > LAST_ID) throw new FilesystemError(EAGAIN, "watch ids exhausted");
-    // Sampled before the RPC: a commit after the service activates the subscription must
-    // move the counter past this value, so the first read cannot skip its service call.
-    const observed = atomicsLoad(this.fs.cells, 3);
-    const service = this.fs.open(handle, recursive);
-    const id = this.nextId++;
-    mapSet(this.watches, id, { service, observed, queue: [], head: 0, ended: false });
+    if (this.#nextId > LAST_ID) throw new FilesystemError(EAGAIN, "watch ids exhausted");
+    const observed = atomicsLoad(this.#fs.cells, 3);
+    const service = this.#fs.open(handle, recursive);
+    const id = this.#nextId++;
+    const watch: Watch = { id, service, observed: NaN, queue: [], head: 0, ended: false, errno: 0 };
+    mapSet(this.#watches, id, watch);
+    mapSet(this.#byService, service, watch);
+    this.#activeCount++;
+    this.#setObserved(watch, observed);
     return id;
   }
 
-  /** Throws FilesystemError when the service read fails. */
+  /** Scoped to `id`; never drains other watches. Throws FilesystemError when the service read fails. */
   read(id: number, capacity: number): GuestWatchRead {
-    const watch = mapGet(this.watches, id);
+    const watch = mapGet(this.#watches, id);
     if (!watch) return failure(EBADF);
     if (watch.ended) return END;
-    if (watch.head === watch.queue.length) {
-      const refused = this.refill(watch);
-      if (refused) return refused;
+    if (watch.head < watch.queue.length) return this.#takeFrom(watch, capacity);
+    const force = watch.errno !== 0;
+    if (force) {
+      watch.errno = 0;
+      mapDelete(this.#errored, id);
     }
-    return take(watch, capacity);
+    return this.#refillSingle(watch, force) ?? this.#takeFrom(watch, capacity);
+  }
+
+  /** Read the next ready watch without scanning idle ones. Returns EAGAIN when nothing is ready. */
+  readNext(capacity: number): GuestWatchNext {
+    if (!mapSize(this.#watches)) return failure(EAGAIN);
+    if (this.#fs.revoked) {
+      if (this.#fs.remote) this.#revocationNotified = true;
+      const first = mapFirst(this.#watches)!;
+      rotate(this.#watches, first);
+      return watchError(first.id, ECANCELED);
+    }
+    if (
+      this.#useDrain() &&
+      (mapSize(this.#buffered) || mapSize(this.#errored) || !this.#drainService())
+    )
+      return this.#takeNextReady(capacity);
+    return this.#readNextFallback(capacity);
+  }
+
+  #takeNextReady(capacity: number): GuestWatchNext {
+    const buffered = mapFirst(this.#buffered);
+    if (buffered) {
+      const read = this.#takeFrom(buffered, capacity);
+      if (buffered.head < buffered.queue.length) rotate(this.#buffered, buffered);
+      return nextOf(buffered.id, read);
+    }
+    const ended = mapFirst(this.#ended);
+    const errored = mapFirst(this.#errored);
+    const pick = this.#flip ? (ended ?? errored) : (errored ?? ended);
+    if (!pick) return failure(EAGAIN);
+    this.#flip = !pick.ended;
+    if (pick.ended) {
+      rotate(this.#ended, pick);
+      return nextOf(pick.id, END);
+    }
+    const errno = pick.errno;
+    pick.errno = 0;
+    if (pick.observed === this.#observedGen) this.#observedCount--;
+    pick.observed = NaN;
+    this.#drainMore = true;
+    mapDelete(this.#errored, pick.id);
+    return watchError(pick.id, errno);
+  }
+
+  #readNextFallback(capacity: number): GuestWatchNext {
+    let result: GuestWatchNext | undefined;
+    let reported: Watch | undefined;
+    mapForEach(this.#watches, (watch) => {
+      if (result) return;
+      try {
+        const read = this.read(watch.id, capacity);
+        if (read.kind !== "error" || read.errno !== EAGAIN) {
+          result = nextOf(watch.id, read);
+          reported = watch;
+        }
+      } catch (error) {
+        if (!(error instanceof FilesystemError)) throw error;
+        result = watchError(watch.id, error.errno);
+        reported = watch;
+      }
+    });
+    if (reported) rotate(this.#watches, reported);
+    return result ?? failure(EAGAIN);
   }
 
   /** Throws FilesystemError when the service close fails; the id then stays open for a retry. */
   close(id: number): number {
-    const watch = mapGet(this.watches, id);
+    const watch = mapGet(this.#watches, id);
     if (!watch) return EBADF;
-    if (!this.fs.revoked) this.closeService(watch.service);
-    mapDelete(this.watches, id);
-    return 0;
-  }
-
-  private closeService(service: number): void {
-    try {
-      this.fs.close(service);
-    } catch (error) {
-      // Revoked meanwhile: the session's close releases the subscription.
-      if (!(error instanceof FilesystemError) || error.errno !== ECANCELED) throw error;
+    if (!this.#fs.revoked) {
+      try {
+        this.#fs.close(watch.service);
+      } catch (error) {
+        if (!(error instanceof FilesystemError) || error.errno !== ECANCELED) throw error;
+      }
     }
+    if (!watch.ended) {
+      this.#activeCount--;
+      if (watch.observed === this.#observedGen) this.#observedCount--;
+    }
+    mapDelete(this.#buffered, id);
+    mapDelete(this.#errored, id);
+    mapDelete(this.#ended, id);
+    mapDelete(this.#watches, id);
+    mapDelete(this.#byService, watch.service);
+    if (!mapSize(this.#watches)) {
+      this.#tableObserved = undefined;
+      this.#drainMore = false;
+    }
+    return 0;
   }
 
   /** Forget every id without service calls; the session's close releases subscriptions. */
   drop(): void {
-    this.watches = new MapConstructor();
+    this.#watches = new MapConstructor();
+    this.#byService = new MapConstructor();
+    this.#buffered = new MapConstructor();
+    this.#errored = new MapConstructor();
+    this.#ended = new MapConstructor();
+    this.#activeCount = this.#observedCount = 0;
+    this.#tableObserved = undefined;
+    this.#drainMore = false;
   }
 
-  private refill(watch: Watch): GuestWatchRead | undefined {
-    if (this.fs.revoked) {
-      if (this.fs.remote) this.revocationNotified = true;
-      return failure(ECANCELED);
-    }
-    const generation = atomicsLoad(this.fs.cells, 3);
-    if (!this.fs.remote && generation === watch.observed) return failure(EAGAIN);
-    // Set before the call: a commit after the service drains moves the counter again. A failed
-    // call drained nothing, so the watch stays pending for the retry.
-    const previous = watch.observed;
-    watch.observed = generation;
-    let batch: WatchBatch;
-    try {
-      batch = this.fs.read(watch.service);
-    } catch (error) {
-      watch.observed = previous;
-      throw error;
-    }
+  #applyBatch(watch: Watch, batch: WatchBatch, generation: number): boolean {
     if (batch.kind === "closed") {
-      watch.ended = true;
-      return END;
+      this.#markEnded(watch);
+      return true;
     }
+    this.#setObserved(watch, generation);
     watch.queue = encodeBatch(batch);
     watch.head = 0;
+    if (watch.queue.length) mapSet(this.#buffered, watch.id, watch);
+    return false;
+  }
+
+  /** Drain ready watches in one service RPC. Returns true if drain is unsupported. */
+  #drainService(): boolean {
+    const generation = atomicsLoad(this.#fs.cells, 3);
+    if (!this.#drainMore && this.#allObserved(generation)) return false;
+    const previous = this.#tableObserved;
+    this.#tableObserved = generation;
+    let drained: WatchDrainResult;
+    try {
+      drained = this.#fs.drain!();
+    } catch (error) {
+      if (error instanceof FilesystemError && error.errno === ENOTSUP) {
+        this.#tableObserved = undefined;
+        this.#drainMore = false;
+        if (this.#fs.canDrain === undefined) this.#noDrain = true;
+        return true;
+      }
+      this.#tableObserved = previous;
+      throw error;
+    }
+    this.#drainMore = drained.more;
+    for (let index = 0; index < drained.entries.length; index++) {
+      const entry = drained.entries[index]!;
+      const watch = mapGet(this.#byService, entry.id);
+      if (!watch || watch.ended) continue;
+      if ("errno" in entry) {
+        watch.errno = entry.errno;
+        mapSet(this.#errored, watch.id, watch);
+      } else {
+        this.#applyBatch(watch, entry.batch, generation);
+      }
+    }
+    return false;
+  }
+
+  #refillSingle(watch: Watch, force: boolean): GuestWatchRead | undefined {
+    if (this.#fs.revoked) {
+      if (this.#fs.remote) this.#revocationNotified = true;
+      return failure(ECANCELED);
+    }
+    const generation = atomicsLoad(this.#fs.cells, 3);
+    if (
+      !force &&
+      !this.#fs.remote &&
+      (generation === watch.observed ||
+        (this.#useDrain() && !this.#drainMore && generation === this.#tableObserved))
+    )
+      return failure(EAGAIN);
+    if (this.#applyBatch(watch, this.#fs.read(watch.service), generation)) return END;
     if (!watch.queue.length) return failure(EAGAIN);
   }
-}
 
-function take(watch: Watch, capacity: number): GuestWatchRead {
-  const records: Uint8Array[] = [];
-  let length = 0;
-  while (watch.head < watch.queue.length) {
-    const record = watch.queue[watch.head]!;
-    if (length + record.length > capacity) break;
-    arrayAppend(records, record);
-    length += record.length;
-    watch.head++;
-    if (record[0] === OVERFLOW) watch.ended = true;
+  #takeFrom(watch: Watch, capacity: number): GuestWatchRead {
+    const records: Uint8Array[] = [];
+    let length = 0;
+    while (watch.head < watch.queue.length) {
+      const record = watch.queue[watch.head]!;
+      if (length + record.length > capacity) break;
+      arrayAppend(records, record);
+      length += record.length;
+      watch.head++;
+      if (record[0] === OVERFLOW) this.#markEnded(watch);
+    }
+    if (!length) return { kind: "short", needed: watch.queue[watch.head]!.length };
+    if (watch.head === watch.queue.length) {
+      watch.queue = [];
+      watch.head = 0;
+      mapDelete(this.#buffered, watch.id);
+    }
+    return { kind: "records", records, length };
   }
-  if (!length) return { kind: "short", needed: watch.queue[watch.head]!.length };
-  if (watch.head === watch.queue.length) {
-    watch.queue = [];
-    watch.head = 0;
-  }
-  return { kind: "records", records, length };
 }
 
 function encodeBatch(batch: Exclude<WatchBatch, { kind: "closed" }>): Uint8Array[] {
   if (batch.kind === "overflow") return [encodeRecord(OVERFLOW, null)];
   const records: Uint8Array[] = [];
-  for (let index = 0; index < batch.events.length; index++)
-    arrayAppend(records, encodeEvent(batch.events[index]!));
+  for (let index = 0; index < batch.events.length; index++) {
+    const event = batch.events[index]!;
+    arrayAppend(records, encodeRecord(event.type === "change" ? CHANGE : RENAME, event.name));
+  }
   return records;
-}
-
-function encodeEvent(event: WatchEvent): Uint8Array {
-  return encodeRecord(event.type === "change" ? CHANGE : RENAME, event.name);
 }
 
 /** u8 type, three zero bytes, u32le name length or NULL_NAME, UTF-8 name padded to 4. */
