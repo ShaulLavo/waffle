@@ -40,6 +40,7 @@ async function cancelledLoad(name: string, phase: "metadata" | "manifest"): Prom
   const controller = new AbortController();
   const reason = new Error(`cancel idle ${phase} validation`);
   const nativeGet = IDBObjectStore.prototype.get;
+  const nativeGetAll = IDBObjectStore.prototype.getAll;
   const nativeClose = IDBDatabase.prototype.close;
   const nativeOpen = IDBFactory.prototype.open;
   let settled = false,
@@ -54,27 +55,34 @@ async function cancelledLoad(name: string, phase: "metadata" | "manifest"): Prom
     event.preventDefault();
   };
   globalThis.addEventListener("unhandledrejection", observeRejection);
-  IDBObjectStore.prototype.get = function (key) {
-    if (this.name === "data" && typeof key === "string" && controller.signal.aborted)
-      manifestsAfterAbort++;
-    const result = nativeGet.call(this, key);
-    const selected =
-      phase === "metadata"
-        ? this.name === "metadata" && key === 0
-        : this.name === "data" && typeof key === "string";
-    if (!selected || controller.signal.aborted) return result;
-    const aborted = this.transaction.onabort;
-    const completed = this.transaction.oncomplete;
-    this.transaction.onabort = function (event) {
+  /** Cancels once, right after the selected native request was placed. */
+  const cancelAfter = (store: IDBObjectStore, selected: boolean) => {
+    if (!selected || controller.signal.aborted) return;
+    const aborted = store.transaction.onabort;
+    const completed = store.transaction.oncomplete;
+    store.transaction.onabort = function (event) {
       settled = true;
       aborted?.call(this, event);
     };
-    this.transaction.oncomplete = function (event) {
+    store.transaction.oncomplete = function (event) {
       settled = true;
       completed?.call(this, event);
     };
     successor = IndexedDBStorage.open(name);
     controller.abort(reason);
+  };
+  IDBObjectStore.prototype.get = function (key) {
+    if (this.name === "data" && typeof key === "string" && controller.signal.aborted)
+      manifestsAfterAbort++;
+    const result = nativeGet.call(this, key);
+    cancelAfter(this, phase === "metadata" && this.name === "metadata" && key === 0);
+    return result;
+  };
+  // Manifests are validated from one bulk read of the data store's string keys.
+  IDBObjectStore.prototype.getAll = function (...args: Parameters<IDBObjectStore["getAll"]>) {
+    if (this.name === "data" && controller.signal.aborted) manifestsAfterAbort++;
+    const result = nativeGetAll.apply(this, args);
+    cancelAfter(this, phase === "manifest" && this.name === "data");
     return result;
   };
   IDBDatabase.prototype.close = function () {
@@ -114,6 +122,7 @@ async function cancelledLoad(name: string, phase: "metadata" | "manifest"): Prom
     assert(unhandled.length === 0, "cancelled native requests have rejection observers");
   } finally {
     IDBObjectStore.prototype.get = nativeGet;
+    IDBObjectStore.prototype.getAll = nativeGetAll;
     IDBDatabase.prototype.close = nativeClose;
     IDBFactory.prototype.open = nativeOpen;
     globalThis.removeEventListener("unhandledrejection", observeRejection);
