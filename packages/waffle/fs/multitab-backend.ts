@@ -233,6 +233,7 @@ interface HostPeerSession {
   readonly pendingSettledUnpins: number[];
   readonly pendingSettledWatchAcks: number[];
   readonly pendingSettledWatchCloses: number[];
+  readonly pendingSettledUploadAborts: string[];
   settledFlushTimer?: ReturnType<typeof setTimeout>;
   latestWakeSeq: number;
   wakeInFlightSeq?: number;
@@ -286,7 +287,8 @@ interface QueuedPeerOp {
 type SettlementItem =
   | { readonly kind: "unpin"; readonly pinToken: number }
   | { readonly kind: "watch-ack"; readonly ackId: number; readonly accepted: boolean }
-  | { readonly kind: "watch-close"; readonly hostWatchId: number };
+  | { readonly kind: "watch-close"; readonly hostWatchId: number }
+  | { readonly kind: "chunk-abort"; readonly uploadId: string };
 
 function abortError(): FilesystemError {
   return new FilesystemError(11, "operation cancelled");
@@ -642,6 +644,7 @@ export class MultiTabBackend implements FilesystemBackend {
   private peerPendingUnpins = new Set<number>();
   private peerPendingWatchAcks = new Map<number, boolean>();
   private peerPendingWatchCloses = new Set<number>();
+  private peerPendingUploadAborts = new Set<string>();
   readonly supportsSockets = false;
   readonly asyncErrorsAreClientResults = true;
   private peerFailoverInFlight?: Promise<void>;
@@ -2645,6 +2648,7 @@ export class MultiTabBackend implements FilesystemBackend {
     this.peerPendingUnpins.clear();
     this.peerPendingWatchAcks.clear();
     this.peerPendingWatchCloses.clear();
+    this.peerPendingUploadAborts.clear();
 
     const attachedGate = Promise.withResolvers<PeerCreditLimit | "failed" | "rejected">();
     let newerHostReady = false;
@@ -3671,6 +3675,7 @@ export class MultiTabBackend implements FilesystemBackend {
       pendingSettledUnpins: [],
       pendingSettledWatchAcks: [],
       pendingSettledWatchCloses: [],
+      pendingSettledUploadAborts: [],
       latestWakeSeq: 0,
       wakeDirty: false,
       lastActivityAt: Date.now(),
@@ -3898,6 +3903,7 @@ export class MultiTabBackend implements FilesystemBackend {
         const settledUnpins: number[] = [];
         const settledWatchAcks: number[] = [];
         const settledWatchCloses: number[] = [];
+        const settledUploadAborts: string[] = [];
         for (const token of msg.pendingUnpins ?? []) {
           this.hostProcessUnpin(session, token, false);
           settledUnpins.push(token);
@@ -3909,6 +3915,10 @@ export class MultiTabBackend implements FilesystemBackend {
         for (const watchId of msg.pendingWatchCloses ?? []) {
           this.hostProcessWatchClose(session, watchId, false);
           settledWatchCloses.push(watchId);
+        }
+        for (const uploadId of msg.pendingUploadAborts ?? []) {
+          this.hostProcessUploadAbort(session, uploadId, false);
+          settledUploadAborts.push(uploadId);
         }
         const slot = this.hostCreditSlots.get(session.peerId);
         const creditLimit = slot
@@ -3924,6 +3934,7 @@ export class MultiTabBackend implements FilesystemBackend {
           ...(settledUnpins.length ? { settledUnpins } : {}),
           ...(settledWatchAcks.length ? { settledWatchAcks } : {}),
           ...(settledWatchCloses.length ? { settledWatchCloses } : {}),
+          ...(settledUploadAborts.length ? { settledUploadAborts } : {}),
           creditLimit,
           hostState: this.hostHealthState(),
         });
@@ -3936,7 +3947,7 @@ export class MultiTabBackend implements FilesystemBackend {
       }
 
       case "chunk-abort": {
-        this.discardHostStagedUpload(session, msg.uploadId);
+        this.hostProcessUploadAbort(session, msg.uploadId, true);
         return;
       }
 
@@ -3997,11 +4008,20 @@ export class MultiTabBackend implements FilesystemBackend {
     }
   }
 
+  private hostProcessUploadAbort(session: HostPeerSession, uploadId: string, batch = true): void {
+    this.discardHostStagedUpload(session, uploadId);
+    if (batch) {
+      session.pendingSettledUploadAborts.push(uploadId);
+      this.maybeScheduleHostSettledFlush(session);
+    }
+  }
+
   private maybeScheduleHostSettledFlush(session: HostPeerSession): void {
     const total =
       session.pendingSettledUnpins.length +
       session.pendingSettledWatchAcks.length +
-      session.pendingSettledWatchCloses.length;
+      session.pendingSettledWatchCloses.length +
+      session.pendingSettledUploadAborts.length;
     if (total >= SETTLEMENT_BATCH_SIZE) {
       this.flushHostSettled(session);
       return;
@@ -4023,12 +4043,14 @@ export class MultiTabBackend implements FilesystemBackend {
     if (
       !session.pendingSettledUnpins.length &&
       !session.pendingSettledWatchAcks.length &&
-      !session.pendingSettledWatchCloses.length
+      !session.pendingSettledWatchCloses.length &&
+      !session.pendingSettledUploadAborts.length
     )
       return;
     const unpins = session.pendingSettledUnpins.splice(0);
     const watchAcks = session.pendingSettledWatchAcks.splice(0);
     const watchCloses = session.pendingSettledWatchCloses.splice(0);
+    const uploadAborts = session.pendingSettledUploadAborts.splice(0);
     this.sendPeerFrame(session.peerId, session.channel, {
       kind: "settled",
       hostTerm: formatTerm(session.hostTerm),
@@ -4036,6 +4058,7 @@ export class MultiTabBackend implements FilesystemBackend {
       ...(unpins.length ? { unpins } : {}),
       ...(watchAcks.length ? { watchAcks } : {}),
       ...(watchCloses.length ? { watchCloses } : {}),
+      ...(uploadAborts.length ? { uploadAborts } : {}),
     });
   }
 
@@ -5615,7 +5638,8 @@ export class MultiTabBackend implements FilesystemBackend {
     return (
       this.peerPendingUnpins.size +
       this.peerPendingWatchAcks.size +
-      this.peerPendingWatchCloses.size
+      this.peerPendingWatchCloses.size +
+      this.peerPendingUploadAborts.size
     );
   }
 
@@ -5628,7 +5652,8 @@ export class MultiTabBackend implements FilesystemBackend {
     const alreadyPresent =
       (item.kind === "unpin" && this.peerPendingUnpins.has(item.pinToken)) ||
       (item.kind === "watch-ack" && this.peerPendingWatchAcks.has(item.ackId)) ||
-      (item.kind === "watch-close" && this.peerPendingWatchCloses.has(item.hostWatchId));
+      (item.kind === "watch-close" && this.peerPendingWatchCloses.has(item.hostWatchId)) ||
+      (item.kind === "chunk-abort" && this.peerPendingUploadAborts.has(item.uploadId));
 
     if (!alreadyPresent && this.totalPendingSettlements() >= MAX_PENDING_SETTLEMENTS) {
       // Pre-insertion cap: trigger session reset instead of exceeding 1024!
@@ -5654,13 +5679,21 @@ export class MultiTabBackend implements FilesystemBackend {
         ackId: item.ackId,
         accepted: item.accepted,
       });
-    } else {
+    } else if (item.kind === "watch-close") {
       this.peerPendingWatchCloses.add(item.hostWatchId);
       this.postToPeerChannel({
         kind: "watch-close",
         hostTerm: termStr,
         sessionId,
         hostWatchId: item.hostWatchId,
+      });
+    } else {
+      this.peerPendingUploadAborts.add(item.uploadId);
+      this.postToPeerChannel({
+        kind: "chunk-abort",
+        hostTerm: termStr,
+        sessionId,
+        uploadId: item.uploadId,
       });
     }
   }
@@ -5710,14 +5743,8 @@ export class MultiTabBackend implements FilesystemBackend {
     this.wakePeerCreditWaiters();
   }
 
-  private abortPeerUpload(sessionId: string, term: bigint, uploadId: string): void {
-    if (this.peerSessionId !== sessionId || !this.peerAttached) return;
-    this.postToPeerChannel({
-      kind: "chunk-abort",
-      hostTerm: formatTerm(term),
-      sessionId,
-      uploadId,
-    });
+  private abortPeerUpload(sessionId: string, _term: bigint, uploadId: string): void {
+    this.enqueueSettlement(sessionId, { kind: "chunk-abort", uploadId });
   }
 
   private async reservePeerCredits(
@@ -5786,6 +5813,10 @@ export class MultiTabBackend implements FilesystemBackend {
       0,
       PONG_SETTLEMENT_LIMIT,
     );
+    const pendingUploadAborts = Array.from(this.peerPendingUploadAborts).slice(
+      0,
+      PONG_SETTLEMENT_LIMIT,
+    );
     this.postToPeerChannel({
       kind: "ping",
       hostTerm: formatTerm(this.peerHostTerm),
@@ -5795,6 +5826,7 @@ export class MultiTabBackend implements FilesystemBackend {
       ...(pendingUnpins.length ? { pendingUnpins } : {}),
       ...(pendingWatchAcks.length ? { pendingWatchAcks } : {}),
       ...(pendingWatchCloses.length ? { pendingWatchCloses } : {}),
+      ...(pendingUploadAborts.length ? { pendingUploadAborts } : {}),
     });
   }
 
@@ -5827,7 +5859,7 @@ export class MultiTabBackend implements FilesystemBackend {
         });
         return;
       case "settled":
-        this.applyPeerSettledLists(msg.unpins, msg.watchAcks, msg.watchCloses);
+        this.applyPeerSettledLists(msg.unpins, msg.watchAcks, msg.watchCloses, msg.uploadAborts);
         return;
       case "pong":
         this.onPeerPong(msg);
@@ -5842,15 +5874,22 @@ export class MultiTabBackend implements FilesystemBackend {
     unpins?: readonly number[],
     watchAcks?: readonly number[],
     watchCloses?: readonly number[],
+    uploadAborts?: readonly string[],
   ): void {
     for (const token of unpins ?? []) this.peerPendingUnpins.delete(token);
     for (const ackId of watchAcks ?? []) this.peerPendingWatchAcks.delete(ackId);
     for (const watchId of watchCloses ?? []) this.peerPendingWatchCloses.delete(watchId);
+    for (const uploadId of uploadAborts ?? []) this.peerPendingUploadAborts.delete(uploadId);
   }
 
   private onPeerPong(msg: Extract<PeerMessage, { kind: "pong" }>): void {
     this.applyPeerCreditLimit(msg.creditLimit);
-    this.applyPeerSettledLists(msg.settledUnpins, msg.settledWatchAcks, msg.settledWatchCloses);
+    this.applyPeerSettledLists(
+      msg.settledUnpins,
+      msg.settledWatchAcks,
+      msg.settledWatchCloses,
+      msg.settledUploadAborts,
+    );
 
     if (msg.latestWakeSeq > this.peerLatestSeenWakeSeq) {
       this.peerLatestSeenWakeSeq = msg.latestWakeSeq;
@@ -6225,7 +6264,7 @@ export class MultiTabBackend implements FilesystemBackend {
       throw abortError();
     }
     const reqId = this.peerNextReqId++;
-    await new Promise<void>((resolve, reject) => {
+    const ack = new Promise<void>((resolve, reject) => {
       this.peerInFlightRpcs.set(reqId, {
         reqId,
         op: "chunk-put",
@@ -6246,6 +6285,8 @@ export class MultiTabBackend implements FilesystemBackend {
         chunk,
       });
     });
+    void ack.catch(() => {});
+    await awaitUnlessCancelled(ack, cancelled);
   }
 
   private async fetchPeerChunkedDownload(
@@ -6506,6 +6547,7 @@ export class MultiTabBackend implements FilesystemBackend {
     this.peerPendingUnpins.clear();
     this.peerPendingWatchAcks.clear();
     this.peerPendingWatchCloses.clear();
+    this.peerPendingUploadAborts.clear();
     this.settleInFlightOnSessionBreak();
     this.markLocalWatchesOverflow();
     this.detachHandlesForRemount();
