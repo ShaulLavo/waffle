@@ -592,21 +592,8 @@ function transportBytes(value: unknown): Uint8Array {
   }
   return new Uint8ArrayConstructor(value);
 }
-/** Answerless control a client sends on its next request, or alone with `control: true`: replies
- * it has consumed and may be discarded, and whether a capability trim is wanted. */
-export interface RequestControl {
-  discards?: number[];
-  trim?: true;
-}
 export type RequestMessage =
-  | ({
-      id: number;
-      generation: number;
-      offset: number;
-      length: number;
-      payload?: ArrayBuffer;
-    } & RequestControl)
-  | ({ control: true } & RequestControl)
+  | { id: number; generation: number; offset: number; length: number; payload?: ArrayBuffer }
   | { transportClosed: true }
   | { sweep: true }
   | { trim: true }
