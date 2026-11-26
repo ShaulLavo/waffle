@@ -293,6 +293,7 @@ export class FilesystemCompletion {
     }
     arrayAppend(this.backendWaiters, callback);
     this.client.watchRevocation();
+    this.client.watchBackendSettlement();
     if (this.backendSettled) this.notify();
   }
   /** If the service already published State.Complete, decode and return the inline result even
@@ -701,7 +702,9 @@ export class FilesystemClient implements FileSystem {
     return client;
   }
   /** A single shared-signal waiter handles service death without a port completion message.
-   * Normal replies still use the port; the watcher exits when the last completion is released.
+   * Normal replies still use the port. The waiter parks on the transport word, or on word 0
+   * while a deferred write waits for its backend, and is checked again on each wake; one left
+   * parked after the last completion is released serves the next request.
    */
   private disposed = false;
   private finishedDispose = false;
@@ -774,17 +777,38 @@ export class FilesystemClient implements FileSystem {
     this.watchingRevocation = true;
     this.monitorRevocation();
   }
+  /** A deferred write needs the backend's terminal state even if its port reply is lost, and
+   * that state wakes word 0 only. Move a waiter parked on the transport word over to it. */
+  watchBackendSettlement(): void {
+    if (this.revocationWord === this.transportSignal) atomicsNotify(this.transportSignal, 0);
+  }
+  private revocationWord: Int32Array | undefined;
+  private unsettledBackendWaiter(): boolean {
+    let found = false;
+    mapForEach(this.completions, (completion) => {
+      if (completion.hasBackendWaiters && !completion.backendSettled) found = true;
+    });
+    return found;
+  }
+  /** Completions arrive as port messages, so the waiter needs only revocation, reap, retirement
+   * and transport failure, which all wake SIGNAL_TRANSPORT. Two cases keep word 0: a deferred
+   * write's backend settlement publishes only there, and a publication domain's stop wakes
+   * nothing itself. */
+  private revocationSignal(): Int32Array {
+    return this.connection.publication || this.unsettledBackendWaiter()
+      ? this.signal
+      : this.transportSignal;
+  }
   private monitorRevocation(): void {
-    // Completions arrive as port messages; this loop needs only revocation, reap, retirement and
-    // transport failure, which all wake SIGNAL_TRANSPORT. A publication domain's stop wakes
-    // nothing itself, so a publishing connection keeps watching every change.
-    const signal = this.connection.publication ? this.signal : this.transportSignal;
     const stop = () => {
+      this.revocationWord = undefined;
       this.watchingRevocation = false;
     };
     const step = () => {
+      this.revocationWord = undefined;
       try {
         while (mapSize(this.completions)) {
+          const signal = this.revocationSignal();
           const observed = atomicsLoad(signal, 0);
           if (this.revoked()) {
             if (!this.sweepRevokedCompletions()) break;
@@ -794,6 +818,7 @@ export class FilesystemClient implements FileSystem {
           if (!mapSize(this.completions)) break;
           const waiting = atomicsWaitAsync(signal, 0, observed);
           if (waiting.async) {
+            this.revocationWord = signal;
             afterNativePromise(waiting.value, step, stop);
             return;
           }
