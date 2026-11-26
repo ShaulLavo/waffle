@@ -143,9 +143,9 @@ function project(
       live();
       return helper.listenerFor(port);
     },
-    request(port, request, sink) {
+    request(port, request, sink, options) {
       live();
-      return helper.request(port, request, sink);
+      return helper.request(port, request, sink, options);
     },
     connect(port, sink) {
       live();
