@@ -2398,43 +2398,93 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     });
   }
 
-  test("Host-local write queued behind a long synchronous listFiles renews its lapsed lease", async () => {
+  // In the boundary case the write's first look at the lease in the queue still sees it valid,
+  // and the next look sees it lapsed.
+  for (const boundary of [false, true])
+    test(`Host-local write queued behind a long synchronous listFiles renews its lapsed lease${boundary ? " that lapses between two checks" : ""}`, async () => {
+      const broker = new MockLockBroker();
+      const hub = new MockBroadcastHub();
+      const store = new MockSharedStore();
+      const name = `ws-lease-serial-${crypto.randomUUID()}`;
+      const tabA = await openTab(broker, hub, store, {
+        clientId: "tab-A",
+        name,
+        timings: { leaseDurationMs: 80, leaseRenewMs: 5000 },
+      });
+      try {
+        await tabA.client.asyncCall(
+          "writeFile",
+          ["/a.txt", false, false],
+          new TextEncoder().encode("a"),
+        );
+        await tabA.backend.renewLeaseNow();
+        const backend = tabA.backend as unknown as { isLeaseValid(): boolean };
+        const isLeaseValid = backend.isLeaseValid.bind(backend);
+        let stale = false;
+        backend.isLeaseValid = () => {
+          if (!stale) return isLeaseValid();
+          stale = false;
+          return true;
+        };
+        const persistent = Reflect.get(tabA.backend, "persistent") as {
+          execute(operation: string, args: unknown[], data: Uint8Array): unknown;
+        };
+        const execute = persistent.execute.bind(persistent);
+        let write: unknown;
+        // A walk of a large tree: one synchronous task longer than the lease, while another
+        // client's write, admitted with a valid lease, waits behind it in the Host queue.
+        persistent.execute = (operation, args, data) => {
+          if (operation === "listFiles" && write === undefined) {
+            write = tabA.backend.execute(
+              "writeFile",
+              ["/b.txt", false, false],
+              new TextEncoder().encode("b"),
+            );
+            Bun.sleepSync(120);
+            stale = boundary;
+          }
+          return execute(operation, args, data);
+        };
+        expect(await tabA.client.asyncCall("listFiles", ["/"])).toContain("/a.txt");
+        await write;
+        expect(stale).toBe(false);
+        const read = await tabA.client.asyncCall("readFile", ["/b.txt"]);
+        expect(new TextDecoder().decode(read)).toBe("b");
+      } finally {
+        await tabA.close();
+      }
+    });
+
+  test("Host-local write whose lease lapses between two lease checks renews instead of failing", async () => {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();
     const store = new MockSharedStore();
-    const name = `ws-lease-serial-${crypto.randomUUID()}`;
+    const name = `ws-lease-boundary-${crypto.randomUUID()}`;
     const tabA = await openTab(broker, hub, store, {
       clientId: "tab-A",
       name,
       timings: { leaseDurationMs: 80, leaseRenewMs: 5000 },
     });
     try {
-      await tabA.client.asyncCall(
-        "writeFile",
-        ["/a.txt", false, false],
-        new TextEncoder().encode("a"),
-      );
       await tabA.backend.renewLeaseNow();
-      const persistent = Reflect.get(tabA.backend, "persistent") as {
-        execute(operation: string, args: unknown[], data: Uint8Array): unknown;
+      await new Promise((r) => setTimeout(r, 110));
+      const backend = tabA.backend as unknown as { isLeaseValid(): boolean };
+      const isLeaseValid = backend.isLeaseValid.bind(backend);
+      expect(isLeaseValid()).toBe(false);
+      // The deadline passes right after the call's first look at the lease, as it does when a
+      // late renewal leaves a few milliseconds of validity on a loaded device.
+      let stale = true;
+      backend.isLeaseValid = () => {
+        if (!stale) return isLeaseValid();
+        stale = false;
+        return true;
       };
-      const execute = persistent.execute.bind(persistent);
-      let write: unknown;
-      // A walk of a large tree: one synchronous task longer than the lease, while another
-      // client's write, admitted with a valid lease, waits behind it in the Host queue.
-      persistent.execute = (operation, args, data) => {
-        if (operation === "listFiles" && write === undefined) {
-          write = tabA.backend.execute(
-            "writeFile",
-            ["/b.txt", false, false],
-            new TextEncoder().encode("b"),
-          );
-          Bun.sleepSync(120);
-        }
-        return execute(operation, args, data);
-      };
-      expect(await tabA.client.asyncCall("listFiles", ["/"])).toContain("/a.txt");
-      await write;
+      await tabA.backend.execute(
+        "writeFile",
+        ["/b.txt", false, false],
+        new TextEncoder().encode("b"),
+      );
+      expect(stale).toBe(false);
       const read = await tabA.client.asyncCall("readFile", ["/b.txt"]);
       expect(new TextDecoder().decode(read)).toBe("b");
     } finally {

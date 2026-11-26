@@ -148,6 +148,12 @@ export class PersistentBackend extends MemoryBackend {
   get hasLoadedIndex(): boolean {
     return this.loadedIndex;
   }
+  /**
+   * Whether the storage still belongs to this connection's epoch. IndexedDB may answer from an
+   * epoch read made by one of its own open commits (see IndexedDBStorage.verifyEpoch). That is
+   * sound only because the caller, the multitab lease renewal, confirms it still holds the
+   * storage Web Lock first: keep the lock query before this call.
+   */
   async verifyStorageEpoch(signal?: AbortSignal): Promise<boolean> {
     if ("verifyEpoch" in this.storage && typeof this.storage.verifyEpoch === "function") {
       return (this.storage as { verifyEpoch(s?: AbortSignal): Promise<boolean> }).verifyEpoch(

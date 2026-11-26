@@ -398,6 +398,8 @@ and read handlers, and the chunk-get and chunked-upload replies in
 `leaseOnlyLapsed` / `renewLapsedLease` path, with the per-call budget, before the Host replies or
 publishes, so the Peer's guest is not cancelled while the Host still holds its locks. Test it with
 two tabs: the Host's lease lapses behind a long `listFiles` while the Peer reads and writes.
+Check the lease with `hostReadyForLocal`, which samples it once: a second `isLeaseValid()` call
+can see a lapse the first did not, which is how local calls still failed after PR 655.
 
 ### Follow-up: cross-tab change generation for multitab mode, 2026-11-26
 
