@@ -632,9 +632,19 @@ interface ChunkCheck {
 }
 /** One range read in progress: bytes copied as chunks arrive and the checksums still owed. */
 interface PayloadRead {
+  readonly key: string;
+  readonly range: IndexedDBRange;
+  /** The payload size the read expects, when the caller or the index knows it. */
+  readonly expectedSize: number | undefined;
+  manifest?: ChunkManifest;
   result?: Uint8Array<ArrayBuffer>;
   readonly checks: ChunkCheck[];
+  /** Chunk requests placed and not yet answered. */
+  pending: number;
   failure?: { cause: unknown };
+  /** Called once the manifest and every chunk have arrived. */
+  arrived: () => void;
+  fail: (error: unknown) => void;
 }
 function corruption<T>(parse: () => T, fallback: string): T {
   try {
@@ -643,47 +653,43 @@ function corruption<T>(parse: () => T, fallback: string): T {
     throw new PayloadCorruption(error instanceof Error ? error.message : fallback);
   }
 }
-/** Runs in the manifest's success callback, so every chunk request joins its transaction. */
-function placeChunkReads(
-  store: IDBObjectStore,
-  key: string,
-  value: unknown,
-  range: IndexedDBRange,
-  retainedSize: number | undefined,
-  read: PayloadRead,
-  fail: (error: unknown) => void,
-): void {
-  if (value === undefined) throw new Error(`Missing filesystem payload: ${key}`);
-  const manifest = corruption(() => parseManifest(value, key), "Invalid payload manifest");
-  if (retainedSize !== undefined && manifest.size !== retainedSize)
-    throw new PayloadCorruption("Retained payload size mismatch");
-  const length = Math.max(0, Math.min(range.length, manifest.size - range.offset));
+/** Places a get for every chunk the range touches in a payload of `size` bytes. */
+function placeChunkReads(store: IDBObjectStore, size: number, read: PayloadRead): void {
+  const { key, range } = read;
+  const length = Math.max(0, Math.min(range.length, size - range.offset));
   read.result = new Uint8Array(length);
   const end = range.offset + length;
   for (let index = Math.floor(range.offset / CHUNK_SIZE); index * CHUNK_SIZE < end; index++) {
+    read.pending++;
     const get = store.get([key, index]);
     get.onsuccess = () => {
       try {
-        copyChunk(get.result, manifest, index, key, range.offset, end, read);
+        copyChunk(get.result, index, end, read);
+        if (--read.pending === 0 && read.manifest) read.arrived();
       } catch (error) {
-        fail(error);
+        read.fail(error);
       }
     };
   }
 }
+/** Runs first among the read's requests, which complete in the order they were placed. */
+function acceptManifest(store: IDBObjectStore, value: unknown, read: PayloadRead): void {
+  const key = read.key;
+  if (value === undefined) throw new Error(`Missing filesystem payload: ${key}`);
+  const manifest = corruption(() => parseManifest(value, key), "Invalid payload manifest");
+  if (read.expectedSize !== undefined && manifest.size !== read.expectedSize)
+    throw new PayloadCorruption("Retained payload size mismatch");
+  read.manifest = manifest;
+  // Without a known size, the chunk requests wait for the manifest, still in this transaction.
+  if (read.expectedSize === undefined) placeChunkReads(store, manifest.size, read);
+  if (read.pending === 0) read.arrived();
+}
 /** Copies the chunk's part of the range now and keeps what its checksum covers. A chunk the
  * range covers whole is checked from the copy, so only the two edge chunks stay alive. */
-function copyChunk(
-  record: unknown,
-  manifest: ChunkManifest,
-  index: number,
-  key: string,
-  offset: number,
-  end: number,
-  read: PayloadRead,
-): void {
-  const length = chunkLength(manifest, index);
-  const chunk = corruption(() => parseChunk(record, length, key), "Invalid payload chunk");
+function copyChunk(record: unknown, index: number, end: number, read: PayloadRead): void {
+  const offset = read.range.offset;
+  const length = chunkLength(read.manifest!, index);
+  const chunk = corruption(() => parseChunk(record, length, read.key), "Invalid payload chunk");
   const base = index * CHUNK_SIZE;
   const start = Math.max(offset, base);
   const stop = Math.min(end, base + length);
@@ -1464,7 +1470,11 @@ export class IndexedDBStorage implements StorageBackend {
         if (value.length !== this.payloadSize(key)) chunkError(key);
         return value;
       }
-      return this.readPayload(key, { offset: 0, length: Number.MAX_SAFE_INTEGER, signal });
+      return this.readPayload(
+        key,
+        { offset: 0, length: Number.MAX_SAFE_INTEGER, signal },
+        this.knownSize(key),
+      );
     });
   }
 
@@ -1488,6 +1498,10 @@ export class IndexedDBStorage implements StorageBackend {
   }
   private payloadSize(key: string): number | undefined {
     return this.readers.size(key) ?? this.state!.payloadSizes.size(key);
+  }
+  /** The size a read can expect before its manifest arrives, when anything names the payload. */
+  private knownSize(key: string): number | undefined {
+    return this.readers.size(key) ?? this.state?.payloadSizes.size(key);
   }
   resources(): Record<string, number> {
     return { ...this.readers.resources(), indexeddbReaderWork: this.readerWork.size };
@@ -1517,7 +1531,7 @@ export class IndexedDBStorage implements StorageBackend {
     return this.enqueue(async () => {
       range.signal?.throwIfAborted();
       await this.initialize(range.signal);
-      return this.readPayload(key, range);
+      return this.readPayload(key, range, this.knownSize(key));
     }).catch((error: unknown) => {
       range.signal?.throwIfAborted();
       throw error;
@@ -1552,12 +1566,14 @@ export class IndexedDBStorage implements StorageBackend {
     }
   }
 
-  /** One readonly transaction: the manifest, then every chunk the range touches, placed from the
-   * manifest's success callback. Checksums are verified after it, before any byte is returned. */
+  /** One readonly transaction for the manifest and every chunk the range touches. With a known
+   * size (`expectedSize`) all requests go out together, so the read costs one round trip; the
+   * manifest must then match that size. The bytes are returned once every request has answered,
+   * without waiting for the transaction's commit, and only after every checksum is verified. */
   private async readPayload(
     key: string,
     range: IndexedDBRange,
-    retainedSize?: number,
+    expectedSize: number | undefined,
   ): Promise<Uint8Array> {
     const signal = range.signal;
     signal?.throwIfAborted();
@@ -1571,28 +1587,40 @@ export class IndexedDBStorage implements StorageBackend {
     };
     signal?.addEventListener("abort", abort, { once: true });
     const settled = completed(tx);
-    void settled.catch(() => {});
-    const read: PayloadRead = { checks: [] };
-    const fail = (error: unknown) => {
-      read.failure ??= { cause: error };
-      abort();
+    // Ownership loss aborts every tracked transaction until it settles.
+    void settled.then(
+      () => this.transactions.delete(tx),
+      () => this.transactions.delete(tx),
+    );
+    const arrival = Promise.withResolvers<void>();
+    const read: PayloadRead = {
+      key,
+      range,
+      expectedSize,
+      checks: [],
+      pending: 0,
+      arrived: arrival.resolve,
+      fail: (error) => {
+        read.failure ??= { cause: error };
+        abort();
+      },
     };
     const store = tx.objectStore("data");
     const manifest = store.get(key);
     manifest.onsuccess = () => {
       try {
-        placeChunkReads(store, key, manifest.result, range, retainedSize, read, fail);
+        acceptManifest(store, manifest.result, read);
       } catch (error) {
-        fail(error);
+        read.fail(error);
       }
     };
+    if (expectedSize !== undefined) placeChunkReads(store, expectedSize, read);
     try {
-      await settled;
+      await Promise.race([arrival.promise, settled.then(() => arrival.promise)]);
     } catch (error) {
       throw signal?.aborted ? signal.reason : (this.ownershipError ?? read.failure?.cause ?? error);
     } finally {
       signal?.removeEventListener("abort", abort);
-      this.transactions.delete(tx);
     }
     signal?.throwIfAborted();
     this.assertOwner();
