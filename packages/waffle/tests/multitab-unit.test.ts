@@ -2467,6 +2467,88 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     }
   });
 
+  for (const failure of ["late", "throwing"] as const) {
+    test(`a renewal that is always ${failure} fails the call with ECANCELED instead of waiting forever`, async () => {
+      let failing = false;
+      const cold = await openColdLeaseHost(`renewal-${failure}`, {
+        async afterLeaseCheck() {
+          if (!failing) return;
+          if (failure === "throwing") throw new Error("injected lock query failure");
+          await new Promise((r) => setTimeout(r, 100));
+        },
+      });
+      const { tabA, releaseRead, node } = cold;
+      try {
+        releaseRead.resolve();
+        await new Promise((r) => setTimeout(r, 110));
+        expect(tabA.backend.isLeaseValid()).toBe(false);
+        failing = true;
+        await expect(tabA.client.asyncCall("read", [node, 32, 0])).rejects.toMatchObject({
+          errno: 11,
+        });
+      } finally {
+        failing = false;
+        cold.store.beforeRead = undefined;
+        await tabA.close();
+      }
+    });
+  }
+
+  test("a watch opened and read across lapsed leases and a late renewal keeps delivering events", async () => {
+    let slowChecks = 0;
+    const cold = await openColdLeaseHost("watch", {
+      async afterLeaseCheck() {
+        if (slowChecks === 0) return;
+        slowChecks--;
+        await new Promise((r) => setTimeout(r, 100));
+      },
+    });
+    const { tabA, releaseRead } = cold;
+    const lapse = async () => {
+      await new Promise((r) => setTimeout(r, 110));
+      expect(tabA.backend.isLeaseValid()).toBe(false);
+    };
+    try {
+      releaseRead.resolve();
+      cold.store.beforeRead = undefined;
+      const root: number = await tabA.client.asyncCall("preopen", ["/"]);
+      await lapse();
+      const watchId: number = await tabA.client.asyncCall("watchOpen", [root, true]);
+      for (const name of ["first.txt", "second.txt"]) {
+        await tabA.client.asyncCall(
+          "writeFile",
+          [`/${name}`, false, false],
+          new TextEncoder().encode(name),
+        );
+        await lapse();
+        // The read's first renewal lands past its own deadline, as on a loaded worker.
+        slowChecks = 1;
+        const batch = await tabA.client.asyncCall("watchRead", [watchId]);
+        expect(batch.kind).toBe("events");
+        expect(batch.events.some((e: { name: string | null }) => e.name === name)).toBe(true);
+      }
+      await tabA.client.asyncCall("watchClose", [watchId]);
+    } finally {
+      slowChecks = 0;
+      await tabA.close();
+    }
+  });
+
+  test("flush() on a Host whose lease lapsed renews and flushes", async () => {
+    const cold = await openColdLeaseHost("flush");
+    const { tabA, releaseRead } = cold;
+    try {
+      releaseRead.resolve();
+      cold.store.beforeRead = undefined;
+      await new Promise((r) => setTimeout(r, 110));
+      expect(tabA.backend.isLeaseValid()).toBe(false);
+      await tabA.backend.flush();
+      expect(tabA.backend.isLeaseValid()).toBe(true);
+    } finally {
+      await tabA.close();
+    }
+  });
+
   test("Host-local write whose lease lapses while another tab takes over never writes", async () => {
     const leasePause = Promise.withResolvers<void>();
     const leasePaused = Promise.withResolvers<void>();
