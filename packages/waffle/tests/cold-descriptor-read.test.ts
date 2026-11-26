@@ -456,3 +456,32 @@ test("takeover and rewrite still fence pages populated by readahead", async () =
     await fixture.close();
   }
 });
+
+test("a failure only in speculative readahead bytes retries the requested range", async () => {
+  const fixture = await coldDescriptorFixture();
+  try {
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0])).toEqual(pageBytes(0));
+    const readRange = fixture.storage.readRange;
+    const attempted: { offset: number; length: number }[] = [];
+    fixture.storage.readRange = async (key, range) => {
+      attempted.push({ offset: range.offset, length: range.length });
+      if (range.offset + range.length > 2 * PAGE) throw new Error("speculative chunk corrupt");
+      return readRange(key, range);
+    };
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, PAGE])).toEqual(
+      pageBytes(1),
+    );
+    expect(attempted).toEqual([
+      { offset: PAGE, length: READAHEAD_BYTES },
+      { offset: PAGE, length: PAGE },
+    ]);
+    expect(fixture.counters.retained).toBe(0);
+    // Page 1 from the exact fallback is cached; rereading it makes no storage call.
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, PAGE])).toEqual(
+      pageBytes(1),
+    );
+    expect(attempted).toHaveLength(2);
+  } finally {
+    await fixture.close();
+  }
+});

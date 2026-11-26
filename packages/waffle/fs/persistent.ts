@@ -422,18 +422,37 @@ export class PersistentBackend extends MemoryBackend {
     this.coldReads.noteRead(key, offset + count);
     const drained = Promise.withResolvers<void>();
     this.ownWork(drained.promise);
-    const range = this.readDescriptorRange(backing, window.offset, window.length, cancelled);
-    const reply =
-      window.offset === offset && window.length === count
-        ? range
-        : range.then((bytes) =>
-            bytes.slice(offset - window.offset, offset - window.offset + count),
-          );
+    const reply = this.readDescriptorWindow(backing, offset, count, window, cancelled);
     return reply.finally(() => {
       const release = Promise.resolve().then(() => backing.retention.release());
       void release.then(drained.resolve, drained.reject);
       return release;
     });
+  }
+  private async readDescriptorWindow(
+    backing: Extract<ReadBacking, { kind: "cold" }>,
+    offset: number,
+    count: number,
+    window: { offset: number; length: number },
+    cancelled: () => boolean,
+  ): Promise<Uint8Array> {
+    if (window.offset === offset && window.length === count)
+      return this.readDescriptorRange(backing, offset, count, cancelled);
+    try {
+      const bytes = await this.readDescriptorRange(
+        backing,
+        window.offset,
+        window.length,
+        cancelled,
+      );
+      return bytes.slice(offset - window.offset, offset - window.offset + count);
+    } catch (error) {
+      if (cancelled() || this.stopped) throw new FilesystemError(11);
+      if (error instanceof FilesystemError && error.errno === 11) throw error;
+      // An error in speculative readahead bytes must not fail a valid read; retry only the
+      // caller's requested range, which still enforces ownership and cancellation.
+      return this.readDescriptorRange(backing, offset, count, cancelled);
+    }
   }
   private async readDescriptorRange(
     backing: Extract<ReadBacking, { kind: "cold" }>,
