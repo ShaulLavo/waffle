@@ -17,7 +17,7 @@ import {
   requestMemoryRetired,
   waitForFilesystemTransportRetirement,
 } from "../fs/request-memory.ts";
-import { createProcessFilesystemIdentity, wake } from "../fs/protocol.ts";
+import { createProcessFilesystemIdentity, wakeTransport } from "../fs/protocol.ts";
 
 function terminalFixture() {
   const outcome = outcomeWord();
@@ -255,7 +255,7 @@ test("failed transport retirement cannot become a successful service safety rece
     });
     await value.event("held");
     retireRequestMemory(value.pair.client.requests, 29);
-    wake(value.pair.client);
+    wakeTransport(value.pair.client);
     void pending.catch(() => {});
     const safety = value.service.quiesce();
     const failure = await safety.catch((error: unknown) => error);

@@ -114,7 +114,8 @@ test("an empty identity constructs no growable buffer and no data segment", asyn
     { bytes: 49_156, maximum: null },
     { bytes: 4, maximum: null },
     { bytes: 32, maximum: null },
-    { bytes: 4, maximum: null },
+    // The signal: a wake word and a transport word.
+    { bytes: 8, maximum: null },
     { bytes: 4, maximum: null },
     { bytes: 8, maximum: null },
   ]);
