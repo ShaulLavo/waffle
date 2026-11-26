@@ -7,7 +7,7 @@ import { WatchSubscriptions, type HeldWatchBatch } from "./watch-subscriptions.j
 import { WATCH_CAPACITY, type WatchRecord } from "./watch-ring.js";
 import type { WatchBatch, WatchEvent } from "./watch.js";
 
-const MAX_DRAIN_EVENTS = 128;
+const MAX_DRAIN_ITEMS = 128;
 
 export interface HeldWatchDrain {
   readonly entries: readonly WatchDrainEntry[];
@@ -21,6 +21,7 @@ interface DrainState {
   readonly entries: WatchDrainEntry[];
   readonly held: HeldWatchBatch[];
   events: number;
+  items: number;
   more: boolean;
 }
 
@@ -109,7 +110,7 @@ export class WatchService {
   }
   private collectDrain(owner: number): HeldWatchDrain {
     this.drain();
-    const state: DrainState = { entries: [], held: [], events: 0, more: false };
+    const state: DrainState = { entries: [], held: [], events: 0, items: 0, more: false };
     try {
       this.subscriptions.forReady(owner, (id) => this.collectDrainWatch(owner, id, state));
     } catch (error) {
@@ -121,14 +122,19 @@ export class WatchService {
   private collectDrainWatch(owner: number, id: number, state: DrainState): boolean {
     const denied = this.drainAccess(owner, id);
     if (denied !== undefined) {
+      if (state.entries.length > 0 && state.items + 1 > MAX_DRAIN_ITEMS) {
+        state.more = true;
+        return false;
+      }
+      state.items++;
       state.entries.push({ id, errno: denied });
       return true;
     }
-    if (
-      state.events >= MAX_DRAIN_EVENTS &&
-      state.held.length > 0 &&
-      this.subscriptions.hasQueued(owner, id)
-    ) {
+    const overflowed = this.subscriptions.overflowed(owner, id);
+    const queued = overflowed ? 0 : this.subscriptions.queuedCount(owner, id);
+    if (!overflowed && queued === 0) return true;
+    const cost = overflowed ? 1 : queued;
+    if (state.entries.length > 0 && state.items + cost > MAX_DRAIN_ITEMS) {
       state.more = true;
       return false;
     }
@@ -143,8 +149,10 @@ export class WatchService {
     }
     if (item.batch.events.length) {
       state.events += item.batch.events.length;
+      state.items += item.batch.events.length;
       state.held.push(item);
     } else {
+      state.items++;
       item.release();
     }
     state.entries.push({ id, batch: item.batch });

@@ -662,7 +662,7 @@ function guestWatches(
   write("/dir/sub/b");
   const service = new WatchService(backend);
   const calls = { open: 0, read: 0, drain: 0, close: 0 };
-  const state = { revoked: false };
+  const state = { revoked: false, remote: false };
   const pool = new FilesystemRequestPool(createRequestBudget());
   const allocator = new FilesystemRequestAllocator(pool.take(new SharedArrayBuffer(4)));
   const release = (buffer: FilesystemRequestBuffer) => {
@@ -688,6 +688,12 @@ function guestWatches(
     cells: backend.shared.watch.cells,
     get revoked() {
       return state.revoked;
+    },
+    get remote() {
+      return state.remote;
+    },
+    get canDrain() {
+      return !!hooks.withDrain && !state.remote;
     },
     open: (handle, recursive) =>
       request(() => {
@@ -1462,3 +1468,134 @@ test("FilesystemClient watchDrain RPC drains only ready subscriptions for its se
     await f.close();
   }
 }, 10000);
+
+test("peer fallback rotates watch_next across busy, permission-denied, and ended watches", () => {
+  const h = guestWatches({ withDrain: false });
+  h.state.remote = true;
+  h.backend.execute("mkdirp", ["/dir1"], new Uint8Array());
+  h.backend.execute("mkdirp", ["/dir2"], new Uint8Array());
+  const w1 = h.guest.open(h.descriptor("/dir1")).id;
+  const w2 = h.guest.open(h.descriptor("/dir2")).id;
+
+  // Busy watch 1 must not starve a ready record queued on watch 2.
+  h.write("/dir2/ready", 1);
+  const seenBusy: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    h.write(`/dir1/busy${i}`, i);
+    const res = h.guest.next();
+    expect(res.errno).toBe(0);
+    seenBusy.push(res.id);
+  }
+  expect(seenBusy).toContain(w1);
+  expect(seenBusy).toContain(w2);
+
+  // Permission-denied watch 1 must not starve watch 2.
+  const rootHandle = h.backend.execute("preopen", ["/"], new Uint8Array()) as number;
+  const dir1Handle = (
+    h.backend.execute("resolve", [rootHandle, "dir1"], new Uint8Array()) as { node: number }
+  ).node;
+  h.backend.execute("setMode", [dir1Handle, 0o000], new Uint8Array());
+  h.write("/dir2/after-eacces", 2);
+  const seenEacces = [h.guest.next(), h.guest.next()];
+  expect(seenEacces.some((r) => r.id === w1 && r.errno === 2)).toBe(true);
+  expect(seenEacces.some((r) => r.id === w2 && r.errno === 0 && r.records.length > 0)).toBe(true);
+  h.backend.execute("setMode", [dir1Handle, 0o700], new Uint8Array());
+
+  // Drain any stale records, then overflow watch 1 to END and verify watch 2 still makes progress.
+  while (h.guest.next().errno === 0) {}
+  for (let i = 0; i <= 128; i++) h.write(`/dir1/ov${i}`, i & 0xff);
+  const ov = h.guest.read(w1);
+  expect(ov.records).toEqual([{ type: OVERFLOW, name: null }]);
+  h.write("/dir2/after-end", 3);
+  const seenEnd = [h.guest.next(), h.guest.next()];
+  expect(seenEnd.some((r) => r.id === w1 && r.errno === 0 && r.length === 0)).toBe(true);
+  expect(seenEnd.some((r) => r.id === w2 && r.errno === 0 && r.records.length > 0)).toBe(true);
+
+  expect(h.guest.close(w1)).toBe(0);
+  expect(h.guest.close(w2)).toBe(0);
+});
+
+test("watchDrain checks queued count before taking a batch and bounds terminal and permission replies", () => {
+  const backend = new MemoryBackend();
+  const service = new WatchService(backend);
+  backend.execute("mkdirp", ["/d1"], new Uint8Array());
+  backend.execute("mkdirp", ["/d2"], new Uint8Array());
+  const root = backend.execute("preopen", ["/"], new Uint8Array()) as number;
+  const h1 = (backend.execute("resolve", [root, "d1"], new Uint8Array()) as { node: number }).node;
+  const h2 = (backend.execute("resolve", [root, "d2"], new Uint8Array()) as { node: number }).node;
+  const w1 = service.open(1, h1, false, () => false);
+  const w2 = service.open(1, h2, false, () => false);
+
+  // Two watches with 91 events each must not exceed the 128-event reply cap.
+  for (let i = 0; i < 45; i++) {
+    backend.execute("writeFile", [`/d1/f${i}`, false], new Uint8Array([1]));
+    backend.execute("writeFile", [`/d2/f${i}`, false], new Uint8Array([1]));
+  }
+  backend.execute("writeFile", ["/d1/f0", false], new Uint8Array([2]));
+  backend.execute("writeFile", ["/d2/f0", false], new Uint8Array([2]));
+  const first = service.drainHeld(1);
+  const firstEvents = first.entries.reduce(
+    (sum, entry) =>
+      sum + ("batch" in entry && entry.batch.kind === "events" ? entry.batch.events.length : 0),
+    0,
+  );
+  expect(first.entries).toHaveLength(1);
+  expect(firstEvents).toBeLessThanOrEqual(128);
+  expect(firstEvents).toBeGreaterThan(80);
+  expect(first.more).toBe(true);
+  first.release();
+
+  const second = service.drainHeld(1);
+  const secondEvents = second.entries.reduce(
+    (sum, entry) =>
+      sum + ("batch" in entry && entry.batch.kind === "events" ? entry.batch.events.length : 0),
+    0,
+  );
+  expect(second.entries).toHaveLength(1);
+  expect(secondEvents).toBeGreaterThan(80);
+  expect(second.more).toBe(false);
+  second.release();
+  service.close(1, w1);
+  service.close(1, w2);
+
+  // 150 permission-denied watches must be bounded per drain and rotate to cover all 150 IDs.
+  backend.execute("mkdirp", ["/denied"], new Uint8Array());
+  const deniedHandle = (
+    backend.execute("resolve", [root, "denied"], new Uint8Array()) as { node: number }
+  ).node;
+  const deniedIds: number[] = [];
+  for (let i = 0; i < 150; i++) deniedIds.push(service.open(1, deniedHandle, false, () => false));
+  backend.execute("setMode", [deniedHandle, 0o000], new Uint8Array());
+  const d1 = service.drainHeld(1);
+  expect(d1.entries.length).toBeLessThanOrEqual(128);
+  expect(d1.more).toBe(true);
+  d1.release();
+  const seenDenied = new Set(d1.entries.map((e) => e.id));
+  const d2 = service.drainHeld(1);
+  expect(d2.entries.length).toBeLessThanOrEqual(128);
+  for (const e of d2.entries) seenDenied.add(e.id);
+  d2.release();
+  expect(seenDenied.size).toBe(150);
+  backend.execute("setMode", [deniedHandle, 0o700], new Uint8Array());
+  for (const id of deniedIds) service.close(1, id);
+
+  // 150 overflowed watches must be bounded per drain and rotate to cover all 150 IDs.
+  backend.execute("mkdirp", ["/ov"], new Uint8Array());
+  const ovHandle = (backend.execute("resolve", [root, "ov"], new Uint8Array()) as { node: number })
+    .node;
+  const ovIds: number[] = [];
+  for (let i = 0; i < 150; i++) ovIds.push(service.open(1, ovHandle, false, () => false));
+  for (let i = 0; i <= 128; i++)
+    backend.execute("writeFile", [`/ov/x${i}`, false], new Uint8Array([1]));
+  const o1 = service.drainHeld(1);
+  expect(o1.entries.length).toBeLessThanOrEqual(128);
+  expect(o1.more).toBe(true);
+  o1.release();
+  const seenOv = new Set(o1.entries.map((e) => e.id));
+  const o2 = service.drainHeld(1);
+  expect(o2.entries.length).toBeLessThanOrEqual(128);
+  for (const e of o2.entries) seenOv.add(e.id);
+  o2.release();
+  expect(seenOv.size).toBe(150);
+  service.closeOwner(1);
+});

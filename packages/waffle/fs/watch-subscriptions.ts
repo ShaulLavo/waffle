@@ -140,10 +140,18 @@ export class WatchSubscriptions {
     view.setUint32(at + 16, flags | READY, true);
     const ownerKey = BigInt(owner);
     const head = this.readyOwners.get(ownerKey);
+    if (!head) {
+      view.setUint32(at + READY_NEXT, slot, true);
+      view.setUint32(at + READY_PREV, slot, true);
+      this.readyOwners.set(ownerKey, slot);
+      return;
+    }
+    const headAt = (head - 1) * WIDTH;
+    const tail = view.getUint32(headAt + READY_PREV, true);
     view.setUint32(at + READY_NEXT, head, true);
-    view.setUint32(at + READY_PREV, 0, true);
-    if (head) view.setUint32((head - 1) * WIDTH + READY_PREV, slot, true);
-    this.readyOwners.set(ownerKey, slot);
+    view.setUint32(at + READY_PREV, tail, true);
+    view.setUint32((tail - 1) * WIDTH + READY_NEXT, slot, true);
+    view.setUint32(headAt + READY_PREV, slot, true);
   }
   private unmarkReady(slot: number, owner: number): void {
     const at = (slot - 1) * WIDTH;
@@ -153,9 +161,14 @@ export class WatchSubscriptions {
     view.setUint32(at + 16, flags & ~READY, true);
     const next = view.getUint32(at + READY_NEXT, true);
     const previous = view.getUint32(at + READY_PREV, true);
-    if (previous) view.setUint32((previous - 1) * WIDTH + READY_NEXT, next, true);
-    else this.readyOwners.set(BigInt(owner), next);
-    if (next) view.setUint32((next - 1) * WIDTH + READY_PREV, previous, true);
+    const ownerKey = BigInt(owner);
+    if (next === slot) {
+      this.readyOwners.set(ownerKey, 0);
+    } else {
+      view.setUint32((previous - 1) * WIDTH + READY_NEXT, next, true);
+      view.setUint32((next - 1) * WIDTH + READY_PREV, previous, true);
+      if (this.readyOwners.get(ownerKey) === slot) this.readyOwners.set(ownerKey, next);
+    }
     view.setUint32(at + READY_NEXT, 0, true);
     view.setUint32(at + READY_PREV, 0, true);
   }
@@ -174,20 +187,28 @@ export class WatchSubscriptions {
     if (!(flags & OVERFLOW) && !view.getUint32(at + COUNT, true)) this.unmarkReady(slot, owner);
   }
   forReady(owner: number, visit: (id: number) => boolean | void): void {
-    let slot = this.readyOwners.get(BigInt(owner));
+    const ownerKey = BigInt(owner);
+    const start = this.readyOwners.get(ownerKey);
+    if (!start) return;
+    const last = this.records.view.getUint32((start - 1) * WIDTH + READY_PREV, true);
+    let slot = start;
     while (slot) {
       const at = (slot - 1) * WIDTH;
+      const done = slot === last;
       const next = this.records.view.getUint32(at + READY_NEXT, true);
-      if (visit(this.records.view.getFloat64(at, true)) === false) return;
+      const keepGoing = visit(this.records.view.getFloat64(at, true));
+      if (keepGoing === false) return;
+      if (this.records.view.getUint32(at + 16, true) & READY && next !== slot) {
+        this.readyOwners.set(ownerKey, next);
+      }
+      if (done) return;
       slot = next;
     }
   }
-  hasQueued(owner: number, id: number): boolean {
+  queuedCount(owner: number, id: number): number {
     const at = this.at(owner, id);
-    return (
-      !(this.records.view.getUint32(at + 16, true) & OVERFLOW) &&
-      this.records.view.getUint32(at + HEAD, true) !== 0
-    );
+    if (this.records.view.getUint32(at + 16, true) & OVERFLOW) return 0;
+    return this.records.view.getUint32(at + COUNT, true);
   }
   root(owner: number, id: number): bigint {
     const at = this.at(owner, id);

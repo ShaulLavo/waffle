@@ -71,10 +71,12 @@ function failure(errno: number): { readonly kind: "error"; readonly errno: numbe
   return { kind: "error", errno };
 }
 
+function watchError(id: number, errno: number): GuestWatchNext {
+  return { kind: "watch_error", id, errno };
+}
+
 function nextOf(id: number, result: GuestWatchRead): GuestWatchNext {
-  return result.kind === "error"
-    ? { kind: "watch_error", id, errno: result.errno }
-    : { ...result, id };
+  return result.kind === "error" ? watchError(id, result.errno) : { ...result, id };
 }
 
 function rotate(map: Map<number, Watch>, watch: Watch): void {
@@ -97,7 +99,8 @@ export class GuestWatchTable implements GuestWatchReadiness {
   #observedCount = 0;
   #tableObserved: number | undefined;
   #drainMore = false;
-  #drainUnsupported = false;
+  #noDrain = false;
+  #flip = false;
 
   constructor(fs: WatchFileSystem) {
     this.#fs = fs;
@@ -113,7 +116,7 @@ export class GuestWatchTable implements GuestWatchReadiness {
   }
 
   #useDrain(): boolean {
-    if (typeof this.#fs.drain !== "function" || this.#drainUnsupported) return false;
+    if (typeof this.#fs.drain !== "function" || this.#noDrain) return false;
     if (this.#fs.canDrain === false) {
       this.#tableObserved = undefined;
       this.#drainMore = false;
@@ -185,7 +188,6 @@ export class GuestWatchTable implements GuestWatchReadiness {
     mapSet(this.#watches, id, watch);
     mapSet(this.#byService, service, watch);
     this.#activeCount++;
-    if (this.#activeCount === 1) this.#observedCount = 0;
     this.#setObserved(watch, observed);
     return id;
   }
@@ -209,46 +211,49 @@ export class GuestWatchTable implements GuestWatchReadiness {
     if (!mapSize(this.#watches)) return failure(EAGAIN);
     if (this.#fs.revoked) {
       if (this.#fs.remote) this.#revocationNotified = true;
-      const first = mapFirst(this.#watches);
-      return first ? { kind: "watch_error", id: first.id, errno: ECANCELED } : failure(EAGAIN);
+      const first = mapFirst(this.#watches)!;
+      rotate(this.#watches, first);
+      return watchError(first.id, ECANCELED);
     }
-    if (mapSize(this.#buffered) || (this.#useDrain() && !this.#drainService()))
+    if (this.#useDrain() && (mapSize(this.#buffered) || !this.#drainService()))
       return this.#takeNextReady(capacity);
     return this.#readNextFallback(capacity);
   }
 
   #takeNextReady(capacity: number): GuestWatchNext {
     const buffered = mapFirst(this.#buffered);
-    if (buffered) return nextOf(buffered.id, this.#takeFrom(buffered, capacity));
-    const errored = mapFirst(this.#errored);
-    if (errored) {
-      rotate(this.#errored, errored);
-      return { kind: "watch_error", id: errored.id, errno: errored.errno };
+    if (buffered) {
+      const read = this.#takeFrom(buffered, capacity);
+      if (buffered.head < buffered.queue.length) rotate(this.#buffered, buffered);
+      return nextOf(buffered.id, read);
     }
     const ended = mapFirst(this.#ended);
-    if (ended) {
-      rotate(this.#ended, ended);
-      return nextOf(ended.id, END);
-    }
-    return failure(EAGAIN);
+    const errored = mapFirst(this.#errored);
+    const pick = this.#flip ? (ended ?? errored) : (errored ?? ended);
+    if (!pick) return failure(EAGAIN);
+    this.#flip = !pick.ended;
+    rotate(pick.ended ? this.#ended : this.#errored, pick);
+    return pick.ended ? nextOf(pick.id, END) : watchError(pick.id, pick.errno);
   }
 
   #readNextFallback(capacity: number): GuestWatchNext {
-    const ready = this.#takeNextReady(capacity);
-    if (ready.kind !== "error") return ready;
-    const generation = atomicsLoad(this.#fs.cells, 3);
     let result: GuestWatchNext | undefined;
+    let reported: Watch | undefined;
     mapForEach(this.#watches, (watch) => {
-      if (result || watch.ended || (!this.#fs.remote && watch.observed === generation)) return;
+      if (result) return;
       try {
         const read = this.read(watch.id, capacity);
-        if (read.kind !== "error" || read.errno !== EAGAIN) result = nextOf(watch.id, read);
+        if (read.kind !== "error" || read.errno !== EAGAIN) {
+          result = nextOf(watch.id, read);
+          reported = watch;
+        }
       } catch (error) {
-        if (error instanceof FilesystemError)
-          result = { kind: "watch_error", id: watch.id, errno: error.errno };
-        else throw error;
+        if (!(error instanceof FilesystemError)) throw error;
+        result = watchError(watch.id, error.errno);
+        reported = watch;
       }
     });
+    if (reported) rotate(this.#watches, reported);
     return result ?? failure(EAGAIN);
   }
 
@@ -308,7 +313,6 @@ export class GuestWatchTable implements GuestWatchReadiness {
     const generation = atomicsLoad(this.#fs.cells, 3);
     if (!this.#drainMore && this.#allObserved(generation)) return false;
     const previous = this.#tableObserved;
-    const previousMore = this.#drainMore;
     this.#tableObserved = generation;
     let drained: WatchDrainResult;
     try {
@@ -317,11 +321,10 @@ export class GuestWatchTable implements GuestWatchReadiness {
       if (error instanceof FilesystemError && error.errno === ENOTSUP) {
         this.#tableObserved = undefined;
         this.#drainMore = false;
-        if (this.#fs.canDrain === undefined) this.#drainUnsupported = true;
+        if (this.#fs.canDrain === undefined) this.#noDrain = true;
         return true;
       }
       this.#tableObserved = previous;
-      this.#drainMore = previousMore;
       throw error;
     }
     this.#drainMore = drained.more;
