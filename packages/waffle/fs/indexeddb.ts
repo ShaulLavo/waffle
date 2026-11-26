@@ -638,6 +638,9 @@ interface PayloadRead {
   readonly expectedSize: number | undefined;
   manifest?: ChunkManifest;
   result?: Uint8Array<ArrayBuffer>;
+  /** End of the clamped range, and the next chunk index to request. */
+  end: number;
+  next: number;
   readonly checks: ChunkCheck[];
   /** Chunk requests placed and not yet answered. */
   pending: number;
@@ -653,24 +656,36 @@ function corruption<T>(parse: () => T, fallback: string): T {
     throw new PayloadCorruption(error instanceof Error ? error.message : fallback);
   }
 }
-/** Places a get for every chunk the range touches in a payload of `size` bytes. */
+/** Chunk gets one read keeps in flight. Each answer places the next from its success callback,
+ * so a large read stays one transaction without queueing every chunk at once. */
+const CHUNK_READ_WINDOW = 16;
+/** Starts the gets for every chunk the range touches in a payload of `size` bytes. */
 function placeChunkReads(store: IDBObjectStore, size: number, read: PayloadRead): void {
-  const { key, range } = read;
+  const range = read.range;
   const length = Math.max(0, Math.min(range.length, size - range.offset));
   read.result = new Uint8Array(length);
-  const end = range.offset + length;
-  for (let index = Math.floor(range.offset / CHUNK_SIZE); index * CHUNK_SIZE < end; index++) {
-    read.pending++;
-    const get = store.get([key, index]);
-    get.onsuccess = () => {
-      try {
-        copyChunk(get.result, index, end, read);
-        if (--read.pending === 0 && read.manifest) read.arrived();
-      } catch (error) {
-        read.fail(error);
-      }
-    };
-  }
+  read.end = range.offset + length;
+  read.next = Math.floor(range.offset / CHUNK_SIZE);
+  // An empty range, or one past the end, takes no byte from any chunk.
+  if (length) placeMoreChunks(store, read);
+}
+function placeMoreChunks(store: IDBObjectStore, read: PayloadRead): void {
+  while (read.pending < CHUNK_READ_WINDOW && read.next * CHUNK_SIZE < read.end)
+    placeChunk(store, read, read.next++);
+}
+function placeChunk(store: IDBObjectStore, read: PayloadRead, index: number): void {
+  read.pending++;
+  const get = store.get([read.key, index]);
+  get.onsuccess = () => {
+    try {
+      copyChunk(get.result, index, read);
+      read.pending--;
+      placeMoreChunks(store, read);
+      if (read.pending === 0 && read.manifest) read.arrived();
+    } catch (error) {
+      read.fail(error);
+    }
+  };
 }
 /** Runs first among the read's requests, which complete in the order they were placed. */
 function acceptManifest(store: IDBObjectStore, value: unknown, read: PayloadRead): void {
@@ -686,13 +701,13 @@ function acceptManifest(store: IDBObjectStore, value: unknown, read: PayloadRead
 }
 /** Copies the chunk's part of the range now and keeps what its checksum covers. A chunk the
  * range covers whole is checked from the copy, so only the two edge chunks stay alive. */
-function copyChunk(record: unknown, index: number, end: number, read: PayloadRead): void {
+function copyChunk(record: unknown, index: number, read: PayloadRead): void {
   const offset = read.range.offset;
   const length = chunkLength(read.manifest!, index);
   const chunk = corruption(() => parseChunk(record, length, read.key), "Invalid payload chunk");
   const base = index * CHUNK_SIZE;
   const start = Math.max(offset, base);
-  const stop = Math.min(end, base + length);
+  const stop = Math.min(read.end, base + length);
   const result = read.result!;
   result.set(chunk.bytes.subarray(start - base, stop - base), start - offset);
   const whole = start === base && stop === base + length;
@@ -702,20 +717,22 @@ function copyChunk(record: unknown, index: number, end: number, read: PayloadRea
   });
 }
 /** Digests run concurrently in small batches: digest() copies its input, so a batch bounds the
- * extra memory while the browser overlaps the work. */
+ * extra memory while the browser overlaps the work. `admit` runs before each batch, so a read
+ * that lost its owner or its caller starts no further checksum work. */
 const CHECKSUM_BATCH = 16;
 async function verifyChecksums(
   key: string,
   checks: readonly ChunkCheck[],
-  signal?: AbortSignal,
+  admit: () => void,
 ): Promise<void> {
   for (let start = 0; start < checks.length; start += CHECKSUM_BATCH) {
+    admit();
     const batch = checks.slice(start, start + CHECKSUM_BATCH);
     const digests = await Promise.all(batch.map((check) => chunkChecksum(check.bytes)));
     if (digests.some((digest, index) => digest !== batch[index]!.checksum))
       throw new PayloadCorruption(`Invalid filesystem payload chunks: ${key}`);
-    signal?.throwIfAborted();
   }
+  admit();
 }
 function payloads(nodes: Iterable<PersistedNode>, keys: Set<string>): void {
   for (const node of nodes) if (node.data !== undefined) keys.add(node.data);
@@ -1028,6 +1045,8 @@ export class IndexedDBStorage implements StorageBackend {
   private tail: Promise<void> = Promise.resolve();
   private readonly readers = new PayloadRetentions();
   private readonly readerWork = new Set<Promise<unknown>>();
+  /** Read transactions whose bytes may already be returned but which have not settled. */
+  private readonly nativeReads = new Set<Promise<void>>();
   private readonly deletingPayloads = new Set<string>();
   private persistenceError: unknown;
   private initialized = false;
@@ -1392,9 +1411,9 @@ export class IndexedDBStorage implements StorageBackend {
       } catch {}
     }
     this.db.close();
-    this.ownershipRetirement = Promise.allSettled(
-      Array.from(this.readerWork).concat([this.tail]),
-    ).then(() => this.retireMaintenance());
+    this.ownershipRetirement = Promise.allSettled(Array.from(this.readerWork).concat([this.tail]))
+      .then(() => this.joinNativeReads())
+      .then(() => this.retireMaintenance());
     void this.ownershipRetirement.catch(() => {});
     this.onOwnershipLost?.();
     return error;
@@ -1587,16 +1606,20 @@ export class IndexedDBStorage implements StorageBackend {
     };
     signal?.addEventListener("abort", abort, { once: true });
     const settled = completed(tx);
-    // Ownership loss aborts every tracked transaction until it settles.
-    void settled.then(
-      () => this.transactions.delete(tx),
-      () => this.transactions.delete(tx),
+    // The bytes may be returned before the native transaction settles. Ownership loss aborts it
+    // and close and ownership retirement join it until then.
+    const native: Promise<void> = settled.then(
+      (): void => this.nativeSettled(tx, native),
+      (): void => this.nativeSettled(tx, native),
     );
+    this.nativeReads.add(native);
     const arrival = Promise.withResolvers<void>();
     const read: PayloadRead = {
       key,
       range,
       expectedSize,
+      end: 0,
+      next: 0,
       checks: [],
       pending: 0,
       arrived: arrival.resolve,
@@ -1622,11 +1645,18 @@ export class IndexedDBStorage implements StorageBackend {
     } finally {
       signal?.removeEventListener("abort", abort);
     }
-    signal?.throwIfAborted();
-    this.assertOwner();
-    await verifyChecksums(key, read.checks, signal);
-    this.assertOwner();
+    await verifyChecksums(key, read.checks, () => {
+      signal?.throwIfAborted();
+      this.assertOwner();
+    });
     return read.result!;
+  }
+  private joinNativeReads(): Promise<unknown> {
+    return Promise.all(Array.from(this.nativeReads));
+  }
+  private nativeSettled(tx: IDBTransaction, native: Promise<void>): void {
+    this.transactions.delete(tx);
+    this.nativeReads.delete(native);
   }
 
   recoverCommitted(): Promise<CommittedRecovery> {
@@ -1741,6 +1771,8 @@ export class IndexedDBStorage implements StorageBackend {
     if (!this.closing) {
       this.closed = true;
       this.closing = Promise.all(Array.from(this.readerWork).concat([this.tail])).then(async () => {
+        // Admitted work has finished; reads it started may still be settling natively.
+        await this.joinNativeReads();
         this.db.close();
         if (this.readOnly) {
           this.state = undefined;
