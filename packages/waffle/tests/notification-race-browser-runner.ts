@@ -18,7 +18,12 @@ try {
   const result = await page.evaluate(async () => {
     const path = "/cases.js";
     const cases: typeof import("./notification-race-cases.js") = await import(path);
-    return cases.notificationRelayRaceCase(new URL("/helper.js", location.href).href);
+    const helper = new URL("/helper.js", location.href).href;
+    return {
+      revoke: await cases.notificationRevokeParkCase(helper),
+      retired: await cases.notificationRetiredParkCase(helper),
+      race: await cases.notificationRelayRaceCase(helper),
+    };
   });
   console.log(JSON.stringify({ engine: "webkit", version: browser.version(), result }));
 } finally {
