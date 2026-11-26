@@ -625,6 +625,50 @@ async function openTab(
   };
 }
 
+/** A Host tab over a flushed `/cold.txt` whose first storage read waits for `releaseRead`, with
+ * an 80 ms lease and no background renewal. */
+async function openColdLeaseHost(label: string, hooks?: MultiTabTestHooks) {
+  const broker = new MockLockBroker();
+  const hub = new MockBroadcastHub();
+  const store = new MockSharedStore();
+  const name = `ws-lease-${label}-${crypto.randomUUID()}`;
+
+  const seed = await openTab(broker, hub, store, { clientId: "seed", name });
+  await seed.client.asyncCall(
+    "writeFile",
+    ["/cold.txt", false, false],
+    new TextEncoder().encode("secret-cold"),
+  );
+  await seed.client.asyncCall("flush", []);
+  await seed.close();
+
+  const readEntered = Promise.withResolvers<void>();
+  const releaseRead = Promise.withResolvers<void>();
+  store.beforeRead = async () => {
+    readEntered.resolve();
+    await releaseRead.promise;
+  };
+
+  const tabA = await openTab(broker, hub, store, {
+    clientId: "tab-A",
+    name,
+    timings: { leaseDurationMs: 80, leaseRenewMs: 5000 },
+    hooks,
+  });
+  const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
+  const resolved = await tabA.client.asyncCall("resolve", [rootA, "cold.txt", true]);
+  return {
+    broker,
+    hub,
+    store,
+    name,
+    tabA,
+    readEntered,
+    releaseRead,
+    node: resolved.node as number,
+  };
+}
+
 async function waitUntil(
   predicate: () => boolean,
   timeoutMs = 3000,
@@ -2305,36 +2349,9 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
   });
 
   test("Host-local cold descriptor read and chunk-get enforce lease and terminal state at reply time", async () => {
-    const broker = new MockLockBroker();
-    const hub = new MockBroadcastHub();
-    const store = new MockSharedStore();
-    const name = `ws-lease-read-${crypto.randomUUID()}`;
-
-    const seed = await openTab(broker, hub, store, { clientId: "seed", name });
-    await seed.client.asyncCall(
-      "writeFile",
-      ["/cold.txt", false, false],
-      new TextEncoder().encode("secret-cold"),
-    );
-    await seed.client.asyncCall("flush", []);
-    await seed.close();
-
-    const readEntered = Promise.withResolvers<void>();
-    const releaseRead = Promise.withResolvers<void>();
-    store.beforeRead = async () => {
-      readEntered.resolve();
-      await releaseRead.promise;
-    };
-
-    const tabA = await openTab(broker, hub, store, {
-      clientId: "tab-A",
-      name,
-      timings: { leaseDurationMs: 80, leaseRenewMs: 5000 },
-    });
+    const { store, tabA, readEntered, releaseRead, node } = await openColdLeaseHost("read");
     try {
-      const rootA: number = await tabA.client.asyncCall("preopen", ["/"]);
-      const resolved = await tabA.client.asyncCall("resolve", [rootA, "cold.txt", true]);
-      const pendingRead = tabA.client.asyncCall("read", [resolved.node, 32, 0]);
+      const pendingRead = tabA.client.asyncCall("read", [node, 32, 0]);
       await readEntered.promise;
       // Expire lease AND latch beginDispose() so renewal cannot extend it!
       await new Promise((r) => setTimeout(r, 110));
@@ -2346,6 +2363,157 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     } finally {
       store.beforeRead = undefined;
       releaseRead.resolve();
+      await tabA.close();
+    }
+  });
+
+  // A long task on the Host's worker delays the renewal timer past the lease. The Host still
+  // holds its locks, so a running operation renews and finishes instead of failing ECANCELED
+  // (bun install in bun-wasm failed this way: "Operation canceled (os error 11)").
+  for (const operation of ["read", "write"] as const) {
+    test(`Host-local ${operation} whose lease lapses while it waits renews and completes`, async () => {
+      const { store, tabA, readEntered, releaseRead, node } = await openColdLeaseHost(operation);
+      try {
+        const pending =
+          operation === "read"
+            ? tabA.client.asyncCall("read", [node, 32, 0])
+            : tabA.client.asyncCall("write", [node, 0], new TextEncoder().encode("SECRET"));
+        await readEntered.promise;
+        await new Promise((r) => setTimeout(r, 110));
+        expect(tabA.backend.isLeaseValid()).toBe(false);
+        releaseRead.resolve();
+
+        const value = await pending;
+        if (operation === "read") expect(new TextDecoder().decode(value)).toBe("secret-cold");
+        const after = await tabA.client.asyncCall("readFile", ["/cold.txt"]);
+        const expected = operation === "read" ? "secret-cold" : "SECRET-cold";
+        expect(new TextDecoder().decode(after)).toBe(expected);
+        expect(tabA.backend.isLeaseValid()).toBe(true);
+      } finally {
+        store.beforeRead = undefined;
+        releaseRead.resolve();
+        await tabA.close();
+      }
+    });
+  }
+
+  test("Host-local write queued behind a long synchronous listFiles renews its lapsed lease", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-lease-serial-${crypto.randomUUID()}`;
+    const tabA = await openTab(broker, hub, store, {
+      clientId: "tab-A",
+      name,
+      timings: { leaseDurationMs: 80, leaseRenewMs: 5000 },
+    });
+    try {
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/a.txt", false, false],
+        new TextEncoder().encode("a"),
+      );
+      await tabA.backend.renewLeaseNow();
+      const persistent = Reflect.get(tabA.backend, "persistent") as {
+        execute(operation: string, args: unknown[], data: Uint8Array): unknown;
+      };
+      const execute = persistent.execute.bind(persistent);
+      let write: unknown;
+      // A walk of a large tree: one synchronous task longer than the lease, while another
+      // client's write, admitted with a valid lease, waits behind it in the Host queue.
+      persistent.execute = (operation, args, data) => {
+        if (operation === "listFiles" && write === undefined) {
+          write = tabA.backend.execute(
+            "writeFile",
+            ["/b.txt", false, false],
+            new TextEncoder().encode("b"),
+          );
+          Bun.sleepSync(120);
+        }
+        return execute(operation, args, data);
+      };
+      expect(await tabA.client.asyncCall("listFiles", ["/"])).toContain("/a.txt");
+      await write;
+      const read = await tabA.client.asyncCall("readFile", ["/b.txt"]);
+      expect(new TextDecoder().decode(read)).toBe("b");
+    } finally {
+      await tabA.close();
+    }
+  });
+
+  test("a renewal that finishes after its own deadline is retried, not failed", async () => {
+    let slowChecks = 0;
+    const cold = await openColdLeaseHost("slow-renewal", {
+      async afterLeaseCheck() {
+        if (slowChecks === 0) return;
+        slowChecks--;
+        await new Promise((r) => setTimeout(r, 100));
+      },
+    });
+    const { tabA, releaseRead, node } = cold;
+    try {
+      releaseRead.resolve();
+      await new Promise((r) => setTimeout(r, 110));
+      expect(tabA.backend.isLeaseValid()).toBe(false);
+      // Every check takes longer than the 80 ms lease, twice, as on a loaded phone.
+      slowChecks = 2;
+      const read = await tabA.client.asyncCall("read", [node, 32, 0]);
+      expect(new TextDecoder().decode(read)).toBe("secret-cold");
+      expect(slowChecks).toBe(0);
+      expect(tabA.backend.isLeaseValid()).toBe(true);
+    } finally {
+      cold.store.beforeRead = undefined;
+      await tabA.close();
+    }
+  });
+
+  test("Host-local write whose lease lapses while another tab takes over never writes", async () => {
+    const leasePause = Promise.withResolvers<void>();
+    const leasePaused = Promise.withResolvers<void>();
+    let pauseNextLeaseCheck = false;
+    const cold = await openColdLeaseHost("takeover", {
+      async beforeLeaseCheck() {
+        if (!pauseNextLeaseCheck) return;
+        pauseNextLeaseCheck = false;
+        leasePaused.resolve();
+        await leasePause.promise;
+      },
+    });
+    const { hub, store, tabA, readEntered, releaseRead, node } = cold;
+    const tabB = await openTab(cold.broker, hub, store, { clientId: "tab-B", name: cold.name });
+    try {
+      const write = tabA.client
+        .asyncCall("write", [node, 0], new TextEncoder().encode("STALE!"))
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      await readEntered.promise;
+      await new Promise((r) => setTimeout(r, 110));
+      expect(tabA.backend.isLeaseValid()).toBe(false);
+      // The write's retry starts a renewal; hold it while B steals storage and promotes.
+      pauseNextLeaseCheck = true;
+      store.beforeRead = undefined;
+      releaseRead.resolve();
+      await leasePaused.promise;
+      let muteA = true;
+      hub.interceptor = (_ch, sender) => {
+        if (muteA && sender.ownerTag === "tab-A") return false;
+      };
+      await waitUntil(() => tabB.backend.currentRole === "host", 4000, "tabB promoted");
+      muteA = false;
+      hub.interceptor = undefined;
+      leasePause.resolve();
+
+      expect(await write).toMatchObject({ errno: 11 });
+      const onB = await tabB.client.asyncCall("readFile", ["/cold.txt"]);
+      expect(new TextDecoder().decode(onB)).toBe("secret-cold");
+    } finally {
+      hub.interceptor = undefined;
+      store.beforeRead = undefined;
+      releaseRead.resolve();
+      leasePause.resolve();
+      await tabB.close();
       await tabA.close();
     }
   });

@@ -337,6 +337,10 @@ function waitForAbortOrCancel(
   return { promise, cleanup };
 }
 
+/** Ends one local Host attempt whose only problem is a lapsed lease; the caller renews and retries. */
+class LeaseLapsedError extends Error {}
+const LEASE_LAPSED = new LeaseLapsedError("host lease lapsed");
+
 async function raceWithAbort(
   promise: Promise<unknown>,
   signal: AbortSignal,
@@ -867,11 +871,16 @@ export class MultiTabBackend implements FilesystemBackend {
     const admittedTerm = this.hostTerm;
     const entry = this.byLocalHandle.get(handle);
     if (!entry || entry.stale || entry.remoteHandle === undefined) return undefined;
+    // A lease that lapsed only because renewal ran late keeps the read going; execute() renews
+    // it before the bytes are used.
     return this.persistent!.prepareDescriptorRead(
       entry.remoteHandle,
       offset,
       length,
-      () => cancelled() || !this.isPreparedReadValid() || this.hostTerm !== admittedTerm,
+      () =>
+        cancelled() ||
+        this.hostTerm !== admittedTerm ||
+        (!this.isPreparedReadValid() && !this.leaseOnlyLapsed(admittedTerm)),
     );
   }
 
@@ -5409,6 +5418,75 @@ export class MultiTabBackend implements FilesystemBackend {
     }
   }
 
+  /**
+   * The lease lapsed only because renewal ran late, for example behind a long task on this
+   * worker. This tab is still the Host of this term, so a local operation renews and retries.
+   */
+  private leaseOnlyLapsed(admittedTerm: bigint): boolean {
+    return (
+      !this.isLeaseValid() &&
+      !this.leaseClosed &&
+      !this.ownershipLost &&
+      !this.terminalFailure &&
+      !this.persistent?.isTerminallyFailed() &&
+      !!this.persistent &&
+      this.role === "host" &&
+      this.hostTerm === admittedTerm &&
+      !this.steppingDown &&
+      !this.disposing
+    );
+  }
+
+  private assertLocalAttempt(admittedTerm: bigint, cancelled?: () => boolean): void {
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
+    if (this.leaseOnlyLapsed(admittedTerm)) throw LEASE_LAPSED;
+    this.assertHostReadyForLocal(admittedTerm);
+  }
+
+  /** Abandon a local attempt's wait: cancelled, a new term, or a lease renewal cannot restore. */
+  private localAttemptStale(admittedTerm: bigint, cancelled?: () => boolean): boolean {
+    if (cancelled?.() || this.hostTerm !== admittedTerm) return true;
+    return !this.isLeaseValid() && !this.leaseOnlyLapsed(admittedTerm);
+  }
+
+  /** Runs a local attempt; a lapsed lease is renewed, then the whole attempt runs again. */
+  private async retryAfterLeaseRenewal<T>(
+    admittedTerm: bigint,
+    cancelled: (() => boolean) | undefined,
+    attempt: () => Promise<T>,
+  ): Promise<T> {
+    for (;;) {
+      try {
+        return await attempt();
+      } catch (error) {
+        if (error !== LEASE_LAPSED) throw error;
+      }
+      // A lost term or a step-down fails in the next attempt's assertHostReadyForLocal.
+      await this.renewLapsedLease(admittedTerm, cancelled);
+    }
+  }
+
+  /**
+   * Renews until the lease holds or this tab stops being the Host of the term. On a loaded
+   * worker a renewal can confirm the locks yet finish past its own deadline, which proves
+   * nothing about now, so it tries again one poll interval later.
+   */
+  private async renewLapsedLease(admittedTerm: bigint, cancelled?: () => boolean): Promise<void> {
+    for (let attempt = 0; this.leaseOnlyLapsed(admittedTerm); attempt++) {
+      if (attempt > 0) {
+        await raceWithAbort(delay(this.timings.waitPollMs), this.disposeAbort.signal, cancelled);
+        if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
+        if (!this.leaseOnlyLapsed(admittedTerm)) return;
+      }
+      await raceWithAbort(
+        this.renewLeaseNow(this.currentAttemptId),
+        this.disposeAbort.signal,
+        cancelled,
+      );
+      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
+    }
+  }
+
   private async executeLocalOnHost(
     operation: string,
     args: any[],
@@ -5422,17 +5500,15 @@ export class MultiTabBackend implements FilesystemBackend {
     // If lease expired before execution: renew first (or fail ECANCELED if disposing!)
     if (!this.isLeaseValid()) {
       if (this.disposing) throw new FilesystemError(11, "host lease expired during dispose");
-      let ok = false;
       await raceWithAbort(
-        this.renewLeaseNow(this.currentAttemptId).then((renewed) => {
-          ok = renewed;
-        }),
+        this.renewLeaseNow(this.currentAttemptId),
         this.disposeAbort.signal,
         cancelled,
       );
       if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
+      await this.renewLapsedLease(admittedTerm, cancelled);
       if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
-      if (!ok || !this.isLeaseValid()) {
+      if (!this.isLeaseValid()) {
         await this.awaitPendingFenceLoss(cancelled);
         if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
         if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
@@ -5464,22 +5540,27 @@ export class MultiTabBackend implements FilesystemBackend {
         const target =
           operation === "sync" ? (translated[0] as number) : (translated[0] as string | undefined);
         await this.hostQueue;
-        if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
-        this.assertHostReadyForLocal(admittedTerm);
+        await this.retryAfterLeaseRenewal(admittedTerm, cancelled, async () =>
+          this.assertLocalAttempt(admittedTerm, cancelled),
+        );
         await persistent.flush(target);
         return operation === "sync" ? 0 : undefined;
       }
       if (operation === "read") {
-        return await this.executeLocalHostRead(persistent, admittedTerm, translated, cancelled);
+        return await this.retryAfterLeaseRenewal(admittedTerm, cancelled, () =>
+          this.executeLocalHostRead(persistent, admittedTerm, translated, cancelled),
+        );
       }
-      const result = await this.executeLocalHostGeneral(
-        persistent,
-        admittedTerm,
-        operation,
-        translated,
-        data,
-        responseCookieTag,
-        cancelled,
+      const result = await this.retryAfterLeaseRenewal(admittedTerm, cancelled, () =>
+        this.executeLocalHostGeneral(
+          persistent,
+          admittedTerm,
+          operation,
+          translated,
+          data,
+          responseCookieTag,
+          cancelled,
+        ),
       );
       return this.mapLocalHostHandles(persistent, admittedTerm, operation, result);
     } finally {
@@ -5494,18 +5575,12 @@ export class MultiTabBackend implements FilesystemBackend {
     cancelled?: () => boolean,
   ): Promise<Uint8Array> {
     const [remoteHandle, length, offset] = translated as [number, number, number];
-    const assertValid = () => {
-      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
-      this.assertHostReadyForLocal(admittedTerm);
-    };
+    const assertValid = () => this.assertLocalAttempt(admittedTerm, cancelled);
     for (;;) {
       assertValid();
       const startVer = this.readVersion();
-      const prep = persistent.prepareDescriptorRead(
-        remoteHandle,
-        offset,
-        length,
-        () => !!cancelled?.() || this.hostTerm !== admittedTerm || !this.isLeaseValid(),
+      const prep = persistent.prepareDescriptorRead(remoteHandle, offset, length, () =>
+        this.localAttemptStale(admittedTerm, cancelled),
       );
       if (prep) {
         const accepted = await this.revalidateColdReadBytes(prep, startVer, assertValid);
@@ -5534,10 +5609,7 @@ export class MultiTabBackend implements FilesystemBackend {
     responseCookieTag?: bigint,
     cancelled?: () => boolean,
   ): Promise<unknown> {
-    const assertValid = () => {
-      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
-      this.assertHostReadyForLocal(admittedTerm);
-    };
+    const assertValid = () => this.assertLocalAttempt(admittedTerm, cancelled);
     for (;;) {
       assertValid();
       const preparing = persistent.prepare(operation, translated);
@@ -5562,9 +5634,8 @@ export class MultiTabBackend implements FilesystemBackend {
         result = step.result;
       });
       if (dirtyRetryChange !== undefined) {
-        await persistent.waitForDirtyCapacity(
-          dirtyRetryChange,
-          () => !!cancelled?.() || this.hostTerm !== admittedTerm || !this.isLeaseValid(),
+        await persistent.waitForDirtyCapacity(dirtyRetryChange, () =>
+          this.localAttemptStale(admittedTerm, cancelled),
         );
         continue;
       }
