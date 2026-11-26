@@ -6,7 +6,9 @@ import {
   permissionsFor,
   FilesystemError,
   fileTimeNow,
+  PROBE_PATH_LIMIT,
   type FileTime,
+  type ProbeKind,
   type SocketBinding,
 } from "../core/filesystem.js";
 import {
@@ -617,6 +619,22 @@ export class MemFS implements FileSystem {
     // A `..` above the start left the walk's names behind: name the result by its ancestry.
     if (resolved.node.kind === "dir") return this.pathOf(resolved.node);
     return joinBelow(this.pathOf(resolved.parent!), "/" + resolved.name);
+  }
+  /** The index of the first of `paths` naming a `kind` node, each walked from `directory` with
+   * every link followed, as a stat with the follow flag would; -1 when none does. A path that
+   * fails to resolve (missing, ENOTDIR, ELOOP, EACCES, an escape or an absolute path) does not
+   * match. Only the start directory can fail the call. */
+  probe(directory: FileHandle, paths: readonly string[], kind: ProbeKind, rooted = false): number {
+    if (paths.length > PROBE_PATH_LIMIT) throw new FilesystemError(28);
+    const start = this.directory(directory);
+    const wanted = kind === "directory" ? "dir" : "file";
+    for (let index = 0; index < paths.length; index++) {
+      const path = paths[index]!;
+      if (path.startsWith("/")) continue;
+      const resolved = this.walkNodes(start, path, false, true, undefined, rooted);
+      if (typeof resolved !== "number" && resolved.node?.kind === wanted) return index;
+    }
+    return -1;
   }
   /** The absolute path of a live directory, by its parent edges up to the root. */
   private pathOf(dir: DirNode): string | number {

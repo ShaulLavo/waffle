@@ -1,23 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { FilesystemError } from "../core/filesystem.js";
+import { describe, expect, test } from "bun:test";
 import { RIGHT_PATH_FILESTAT_GET } from "../core/rights.js";
-import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
-import { guestFunction, guestModule } from "./fixtures/publication-wasm.js";
+import { link, runtimeFsGuest } from "./fixtures/runtime-fs-guest.js";
 import { openVfsBackend, VFS_BACKEND_KINDS } from "./fixtures/vfs-backends.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const stops: (() => void)[] = [];
-afterEach(() => {
-  for (const stop of stops.splice(0).reverse()) stop();
-});
-
-function link(fs: MemFS, path: string, target: string): void {
-  const resolved = fs.resolveAbsolute(path);
-  if (typeof resolved === "number") throw new FilesystemError(resolved);
-  expect(fs.symlink(resolved, target)).toBe(0);
-}
 
 /** /real/dir/file.txt, /real/dir/sub/, and links that reach them relatively and absolutely. */
 function tree(): { fs: MemFS; root: number } {
@@ -139,28 +127,7 @@ describe("runtime_fs.path_realpath", () => {
     fs.writeFile("/real/dir/file.txt", "x");
     fs.mkdirp("/home/user/node_modules");
     link(fs, "/home/user/node_modules/pkg", "/real/dir");
-    const memory = new WebAssembly.Memory({ initial: 4 });
-    const wasi = new Wasi({
-      args: [],
-      env: {},
-      fs,
-      preopens: { "/": "/" },
-      namespaces: { env: { memory } },
-      stdout() {},
-      stderr() {},
-      sleep() {},
-    });
-    stops.push(() => wasi.descriptors.dispose());
-    const module = guestModule("runtime_fs", [
-      { name: "path_realpath", parameters: ["i32", "i32", "i32", "i32", "i32", "i32"] },
-    ]);
-    const instance = new WebAssembly.Instance(module, wasi.imports(module));
-    wasi.start(instance);
-    if (rights !== undefined) {
-      const entry = wasi.descriptors.get(3)!;
-      (entry as { rightsBase: bigint }).rightsBase = rights;
-    }
-    const call = guestFunction(instance, "path_realpath");
+    const { memory, call } = runtimeFsGuest(fs, "path_realpath", 6, rights);
     const realpath = (path: string, fd = 3, capacity = 256) => {
       const input = encoder.encode(path);
       new Uint8Array(memory.buffer).set(input, 64);

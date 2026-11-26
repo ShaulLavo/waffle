@@ -16,7 +16,14 @@ import {
 import { type FileIdentity, type IdentityReservation, IdentityAllocator } from "./file-identity.js";
 import type { PublicationBuffers } from "./publication-internal.js";
 import { type FileHandle, type FileStat, type ResolvedPath } from "../core/index.js";
-import { fileTimeMs, fileTimeNow, msFileTime, type FileTime } from "../core/filesystem.js";
+import {
+  fileTimeMs,
+  fileTimeNow,
+  msFileTime,
+  PROBE_PATH_LIMIT,
+  type FileTime,
+  type ProbeKind,
+} from "../core/filesystem.js";
 import { MemFS, type Node, type NamespacePlan } from "./memory.js";
 import { FilesystemError, type FilesystemIdentity } from "./protocol.js";
 import { SharedFilesystemState, type SharedSegment } from "./shared.js";
@@ -94,6 +101,16 @@ export interface FilesystemBackend {
   flush?(target?: FileHandle | string): Promise<void>;
   /** Release startup resources when cancellation races backend creation. */
   close?(): Promise<void>;
+}
+/** A `probe` request's pathnames: an array of at most PROBE_PATH_LIMIT strings, or EINVAL. */
+function probePaths(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length > PROBE_PATH_LIMIT) throw new FilesystemError(28);
+  for (const path of value) if (typeof path !== "string") throw new FilesystemError(28);
+  return value as string[];
+}
+function probeKind(value: unknown): ProbeKind {
+  if (value !== "file" && value !== "directory") throw new FilesystemError(28);
+  return value;
 }
 type DirectoryTimes = Pick<FileStat, "atime" | "mtime" | "ctime">;
 function sameTimes(left: DirectoryTimes | undefined, right: DirectoryTimes): boolean {
@@ -465,6 +482,9 @@ export class MemoryBackend implements FilesystemBackend {
       case "realpath":
         this.check(a, "directory");
         return this.fs.realpath(a, b, c === true);
+      case "probe":
+        this.check(a, "directory");
+        return this.fs.probe(a, probePaths(b), probeKind(c), args[3] === true);
       case "readlink":
         this.check(a);
         return this.fs.readlink(a);

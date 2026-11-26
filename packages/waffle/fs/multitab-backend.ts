@@ -7325,7 +7325,8 @@ export class MultiTabBackend implements FilesystemBackend {
       case "readdir":
       case "readdirPage":
       case "resolve":
-      case "realpath": {
+      case "realpath":
+      case "probe": {
         const remote = mapHandle(args[0]);
         if (remote === undefined) return undefined;
         return [remote, ...args.slice(1)];

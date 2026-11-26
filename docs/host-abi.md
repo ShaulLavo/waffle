@@ -1304,6 +1304,34 @@ errno 63. A bad descriptor returns `EBADF`, errno 8, a descriptor that is not a 
 `ENOTDIR`, and a missing right returns `ENOTCAPABLE`, errno 76. Invalid pointers return
 `EFAULT`, errno 21. The import never fetches file payloads.
 
+## Path probe
+
+`runtime_fs.path_probe(dirfd: u32, paths_ptr: u32, paths_len: u32, kind: u32, found_ptr: u32) -> i32`
+finds the first of several pathnames that names a regular file or a directory, in one filesystem
+request. Module resolvers probe many candidates for one specifier (`./x`, `./x.ts`, `./x.js`, ...,
+and `node_modules/name` in every ancestor directory). Each `path_filestat_get` is a round trip to
+the filesystem worker, and most candidates are misses. The import returns zero or a positive WASI
+errno. The WASI adapter supplies it without activating process services.
+
+`paths_ptr` and `paths_len` hold one to 64 pathnames, each followed by a NUL byte. Each pathname
+is its exact UTF-8 bytes, including a leading U+FEFF. `kind` 1 looks for a regular file and 2 for
+a directory. Each pathname is looked up from `dirfd` as `path_filestat_get` with
+`LOOKUPFLAGS_SYMLINK_FOLLOW` looks it up, so every link is followed, including the final one. The
+lookups run in order, in one request, against one state of the tree, and stop at the first match.
+
+Success writes the index of the first pathname that names a `kind` node to the u32 at
+`found_ptr`, or `0xffffffff` when none does. A pathname that a stat could not resolve does not
+match and is not an error: a missing component, `ENOTDIR`, `ELOOP`, a denied ancestor search, an
+absolute pathname, an empty pathname and an escape from a capability outside the root namespace
+all just fail to match. A symbolic link to the wanted kind matches; a dangling link does not.
+
+A list that is empty, does not end in a NUL, holds malformed UTF-8 or holds more than 64
+pathnames returns `EINVAL`, errno 28, as does any other `kind`, before any lookup or write. The
+call checks the directory descriptor's `PATH_FILESTAT_GET` right: a bad descriptor returns
+`EBADF`, errno 8, a descriptor that is not a directory returns `ENOTDIR`, errno 54, and a missing
+right returns `ENOTCAPABLE`, errno 76. Invalid pointers return `EFAULT`, errno 21. Errors leave
+`found_ptr` unchanged. The import never fetches file payloads.
+
 ## Guest filesystem watches
 
 A synchronous guest reads committed watch events through five `runtime_fs` imports. The WASI

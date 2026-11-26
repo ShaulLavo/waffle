@@ -154,6 +154,7 @@ test("core uses only the filesystem contract and accepts a zero-valued opaque ha
     connectSocket: unexpected,
     link: unexpected,
     realpath: unexpected,
+    probe: unexpected,
     symlink: unexpected,
     readlink: unexpected,
     removePath: unexpected,
