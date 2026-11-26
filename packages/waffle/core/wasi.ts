@@ -187,6 +187,17 @@ function lookupFlags(flags: number): FinalLookup {
   return flags & 1 ? "follow" : "nofollow";
 }
 
+/** A guest pathname exactly as its bytes spell it (a leading U+FEFF kept), or undefined for
+ * malformed UTF-8 or a NUL. */
+function guestPathname(bytes: Uint8Array, ptr: number, len: number): string | undefined {
+  try {
+    const path = decodeBytes(bytes, ptr, len, fatalDecoder);
+    return path.includes("\0") ? undefined : path;
+  } catch {
+    return undefined;
+  }
+}
+
 function writeUtf8Prefix(target: string, output: Uint8Array): number {
   if (output.length === 0) return 0;
   // Browser encodeInto rejects resizable backing buffers, including fixed-length views.
@@ -719,13 +730,18 @@ export class Wasi {
     buf >>>= 0;
     capacity >>>= 0;
     used >>>= 0;
-    const size = this.bytes().length;
-    if (ptr + len > size || buf + capacity > size || used + 4 > size) return EFAULT;
+    const bytes = this.bytes();
+    if (ptr + len > bytes.length || buf + capacity > bytes.length || used + 4 > bytes.length)
+      return EFAULT;
+    // Either result would clobber the other.
+    if (capacity > 0 && buf < used + 4 && used < buf + capacity) return EINVAL;
+    const path = guestPathname(bytes, ptr, len);
+    if (path === undefined) return EINVAL;
     const entry = this.descriptors.get(fd >>> 0);
     if (!entry) return EBADF;
     if (entry.resource.kind !== "directory") return ENOTDIR;
     if (!(entry.rightsBase & RIGHT_PATH_FILESTAT_GET)) return ENOTCAPABLE;
-    const real = this.opts.fs.realpath(entry.resource.handle, this.str(ptr, len), this.rooted);
+    const real = this.opts.fs.realpath(entry.resource.handle, path, this.rooted);
     if (typeof real === "number") return real;
     const encoded = encoder.encode(real);
     // Reacquire after the service round trip; another thread may have grown shared memory.

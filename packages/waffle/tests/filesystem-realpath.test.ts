@@ -202,4 +202,40 @@ describe("runtime_fs.path_realpath", () => {
     expect(guest(0n).realpath("real").errno).toBe(76);
     expect(guest(RIGHT_PATH_FILESTAT_GET).realpath("real").errno).toBe(0);
   });
+
+  test("the pathname is its exact bytes: a leading U+FEFF is kept, malformed UTF-8 is EINVAL", () => {
+    const g = guest();
+    g.fs.writeFile("/plain", "");
+    g.fs.writeFile("/﻿plain", "");
+    g.fs.writeFile("/�", "");
+    const bom = g.realpath("﻿plain");
+    expect(bom.errno).toBe(0);
+    expect(Array.from(new Uint8Array(g.memory.buffer, 1024, bom.used))).toEqual(
+      Array.from(encoder.encode("/﻿plain")),
+    );
+    new Uint8Array(g.memory.buffer).set([0xff], 64);
+    expect(g.call(3, 64, 1, 1024, 256, 32)).toBe(28);
+    new Uint8Array(g.memory.buffer).set([0x61, 0x00], 64);
+    expect(g.call(3, 64, 2, 1024, 256, 32)).toBe(28);
+    expect(g.fs.realpaths).toBe(1);
+  });
+
+  test.each([2, 32])(
+    "overlapping output spans are EINVAL before any write (capacity %d)",
+    (capacity) => {
+      const g = guest();
+      g.fs.writeFile("/plain", "");
+      const memory = new Uint8Array(g.memory.buffer);
+      memory.set(encoder.encode("plain"), 64);
+      memory.fill(7, 1024, 1024 + 40);
+      const before = memory.slice(1024, 1024 + 40);
+      expect(g.call(3, 64, 5, 1024, capacity, 1024)).toBe(28);
+      expect(g.call(3, 64, 5, 1024, capacity, 1024 + capacity - 1)).toBe(28);
+      expect(g.call(3, 64, 5, 1026, capacity, 1024)).toBe(28);
+      expect(new Uint8Array(g.memory.buffer).slice(1024, 1024 + 40)).toEqual(before);
+      expect(g.fs.realpaths).toBe(0);
+      // Adjacent spans are fine.
+      expect(g.call(3, 64, 5, 1028, capacity, 1024)).toBe(capacity < 6 ? 42 : 0);
+    },
+  );
 });

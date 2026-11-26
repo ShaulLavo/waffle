@@ -1262,8 +1262,10 @@ issues one `path_readlink` per path component, each a round trip to the filesyst
 import returns zero or a positive WASI errno. The WASI adapter supplies it without activating
 process services.
 
-It checks the directory descriptor's `PATH_FILESTAT_GET` right and resolves the UTF-8 relative
-pathname from that capability as `path_open` does, following every symbolic link, including the
+It checks the directory descriptor's `PATH_FILESTAT_GET` right and resolves the relative
+pathname from that capability as `path_open` does. The pathname is its exact UTF-8 bytes,
+including a leading U+FEFF; malformed UTF-8 or a NUL returns `EINVAL`, errno 28. Resolution
+follows every symbolic link, including the
 final component, with the same 40-expansion limit. In the guest's root namespace (the root
 preopen names the filesystem root) the result is an absolute path from the root, with `.`, `..`
 and every link resolved, as Linux reports it. Otherwise lookups cannot leave the descriptor, and
@@ -1272,7 +1274,8 @@ the result is relative to it, `.` for the descriptor's directory itself.
 Success writes the result's UTF-8 byte length to the u32 at `used_ptr` and the result, with no
 NUL terminator, to `buf_ptr`. A result longer than `buf_len` returns `ENOBUFS`, errno 42, with the
 needed length at `used_ptr` and nothing written to the buffer, so the guest can retry with a
-larger one.
+larger one. The result buffer and the four bytes at `used_ptr` must not overlap: overlapping
+spans return `EINVAL` before any lookup or write.
 
 Errors match `realpath(3)`: a missing component returns `ENOENT`, errno 44, a non-directory
 component or a trailing slash after a non-directory returns `ENOTDIR`, errno 54, too many link
