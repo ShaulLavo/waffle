@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { PAGE } from "../fs/protocol";
-import type { ColdReadCache } from "../fs/cold-read-cache";
+import { READAHEAD_BYTES, type ColdReadCache } from "../fs/cold-read-cache";
 import { coldByte, coldDescriptorFixture, coldSize } from "./fixtures/cold-descriptor";
 import { SLOT_WORDS } from "../fs/shared";
 
@@ -252,8 +252,10 @@ test("rereading an unmodified cold file serves its verified pages without storag
   const fixture = await coldDescriptorFixture();
   try {
     const before = fixture.backend.shared.resources().usedBytes;
+    // Out of order, so no read continues the previous one and none fetches a readahead window.
+    const order = [0, 2, 1, 3];
     for (let pass = 0; pass < 3; pass++)
-      for (let index = 0; index < 4; index++)
+      for (const index of order)
         expect(
           await fixture.client.asyncCall("read", [fixture.handle, PAGE, index * PAGE]),
         ).toEqual(pageBytes(index));
@@ -262,7 +264,7 @@ test("rereading an unmodified cold file serves its verified pages without storag
       Uint8Array.from({ length: 5 }, (_, at) => coldByte(PAGE - 2 + at)),
     );
     expect(fixture.counters.ranges).toEqual(
-      [0, 1, 2, 3].map((index) => ({ offset: index * PAGE, length: PAGE })),
+      order.map((index) => ({ offset: index * PAGE, length: PAGE })),
     );
     expect(fixture.counters.wholeBytes).toBe(0);
     expect(fixture.counters.retained).toBe(0);
@@ -328,6 +330,157 @@ test("a rewritten cold file never serves pages cached for its stored payload", a
       new Uint8Array(PAGE).fill(91),
     );
     expect(fixture.counters.ranges).toHaveLength(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a sequential cold scan reads storage in readahead windows and serves the rest from them", async () => {
+  const fixture = await coldDescriptorFixture();
+  try {
+    const before = fixture.backend.shared.resources().usedBytes;
+    for (let index = 0; index < 40; index++)
+      expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, index * PAGE])).toEqual(
+        pageBytes(index),
+      );
+    // The first read cannot know it starts a scan; each later miss fetches 16 pages at once.
+    expect(fixture.counters.ranges).toEqual([
+      { offset: 0, length: PAGE },
+      { offset: PAGE, length: READAHEAD_BYTES },
+      { offset: PAGE + READAHEAD_BYTES, length: READAHEAD_BYTES },
+      { offset: PAGE + 2 * READAHEAD_BYTES, length: READAHEAD_BYTES },
+    ]);
+    expect(fixture.counters.wholeBytes).toBe(0);
+    expect(fixture.counters.retained).toBe(0);
+    expect(fixture.backend.shared.resources().usedBytes).toBe(before);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a readahead window ends at the end of the file", async () => {
+  const fixture = await coldDescriptorFixture();
+  try {
+    const last = coldSize / PAGE - 1;
+    for (const index of [last - 2, last - 1, last])
+      expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, index * PAGE])).toEqual(
+        pageBytes(index),
+      );
+    expect(fixture.counters.ranges).toEqual([
+      { offset: (last - 2) * PAGE, length: PAGE },
+      { offset: (last - 1) * PAGE, length: 2 * PAGE },
+    ]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a failed readahead window reaches its reader and caches nothing", async () => {
+  const fixture = await coldDescriptorFixture();
+  try {
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0])).toEqual(pageBytes(0));
+    const readRange = fixture.storage.readRange;
+    fixture.storage.readRange = async () => {
+      throw new Error("storage unavailable");
+    };
+    const outcome = await fixture.client.asyncCall("read", [fixture.handle, PAGE, PAGE]).then(
+      () => "served",
+      () => "refused",
+    );
+    expect(outcome).toBe("refused");
+    expect(fixture.counters.retained).toBe(0);
+    fixture.storage.readRange = readRange;
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 2 * PAGE])).toEqual(
+      pageBytes(2),
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("small sequential reads populate page zero instead of refetching the readahead window", async () => {
+  const fixture = await coldDescriptorFixture();
+  try {
+    const chunk = 8 * 1024;
+    const totalChunks = (READAHEAD_BYTES / chunk) * 2;
+    for (let index = 0; index < totalChunks; index++) {
+      const offset = index * chunk;
+      expect(await fixture.client.asyncCall("read", [fixture.handle, chunk, offset])).toEqual(
+        Uint8Array.from({ length: chunk }, (_, at) => coldByte(offset + at)),
+      );
+    }
+    expect(fixture.counters.ranges).toEqual([
+      { offset: 0, length: chunk },
+      { offset: 0, length: READAHEAD_BYTES },
+      { offset: READAHEAD_BYTES, length: READAHEAD_BYTES },
+    ]);
+    expect(fixture.counters.wholeBytes).toBe(0);
+    expect(fixture.counters.retained).toBe(0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("takeover and rewrite still fence pages populated by readahead", async () => {
+  const fixture = await coldDescriptorFixture();
+  try {
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0])).toEqual(pageBytes(0));
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, PAGE])).toEqual(
+      pageBytes(1),
+    );
+    // Page 2 is now cached via the readahead window, not read directly yet.
+    const checkPayload = fixture.storage.checkPayload;
+    fixture.storage.checkPayload = () => {
+      throw new Error("This workspace was opened in another tab. Reload to continue here.");
+    };
+    const fenced = await fixture.client.asyncCall("read", [fixture.handle, PAGE, 2 * PAGE]).then(
+      () => "served",
+      () => "refused",
+    );
+    expect(fenced).toBe("refused");
+    fixture.storage.checkPayload = checkPayload;
+    // Truncating and rewriting invalidates the cold key; reading past the new EOF returns empty.
+    await fixture.client.asyncCall("resize", [fixture.handle, 0, true]);
+    await fixture.client.asyncCall("write", [fixture.handle, 0], new Uint8Array(PAGE).fill(77));
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 2 * PAGE])).toEqual(
+      new Uint8Array(),
+    );
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0])).toEqual(
+      new Uint8Array(PAGE).fill(77),
+    );
+    expect(fixture.counters.ranges).toEqual([
+      { offset: 0, length: PAGE },
+      { offset: PAGE, length: READAHEAD_BYTES },
+    ]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a failure only in speculative readahead bytes retries the requested range", async () => {
+  const fixture = await coldDescriptorFixture();
+  try {
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, 0])).toEqual(pageBytes(0));
+    const readRange = fixture.storage.readRange;
+    const attempted: { offset: number; length: number }[] = [];
+    fixture.storage.readRange = async (key, range) => {
+      attempted.push({ offset: range.offset, length: range.length });
+      if (range.offset + range.length > 2 * PAGE) throw new Error("speculative chunk corrupt");
+      return readRange(key, range);
+    };
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, PAGE])).toEqual(
+      pageBytes(1),
+    );
+    expect(attempted).toEqual([
+      { offset: PAGE, length: READAHEAD_BYTES },
+      { offset: PAGE, length: PAGE },
+    ]);
+    expect(fixture.counters.retained).toBe(0);
+    // Page 1 from the exact fallback is cached; rereading it makes no storage call.
+    expect(await fixture.client.asyncCall("read", [fixture.handle, PAGE, PAGE])).toEqual(
+      pageBytes(1),
+    );
+    expect(attempted).toHaveLength(2);
   } finally {
     await fixture.close();
   }
