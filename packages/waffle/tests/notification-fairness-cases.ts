@@ -179,8 +179,18 @@ async function relayTraffic(
       ],
     });
     await notices.wait("armed");
-    worker.postMessage({ probe: "idle-before" });
-    const before = await notices.wait("idle-before");
+    const sources = [fs.shared.watch.cells, new RingReader(ring).notification, wake];
+    const values = () => sources.map((cells, index) => Atomics.load(cells, index === 0 ? 3 : 0));
+    // A blocked guest parks on the values it observed and parks again after every wake.
+    const guest = reparkingGuest(state, () =>
+      channel.port2.postMessage({ type: "park", values: values() }),
+    );
+    // The park and the probe travel on different channels: probe until the park has landed.
+    let before = await probe(worker, notices, "idle-before");
+    for (let attempt = 0; attempt < 100 && before.registrations !== 3; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      before = await probe(worker, notices, "idle-before");
+    }
     worker.postMessage({ probe: "timer" });
     await notices.wait("entered");
     const quiet = await notices.wait("timer");
@@ -189,8 +199,7 @@ async function relayTraffic(
       "idle relay rearmed without source news",
     );
     check(quiet.timers === 0 && Atomics.load(state, 0) === 0, "idle relay polled or published");
-    const sources = [fs.shared.watch.cells, new RingReader(ring).notification, wake];
-    const initialSources = sources.map((cells, index) => Atomics.load(cells, index === 0 ? 3 : 0));
+    const initialSources = values();
     await start();
     const initial = Atomics.load(progress, 1);
     const sequence = Atomics.load(state, 0);
@@ -218,6 +227,7 @@ async function relayTraffic(
     Atomics.store(state, 1, 1);
     Atomics.add(state, 0, 1);
     Atomics.notify(state, 0);
+    await guest.stopped;
     channel.port2.postMessage({ type: "dispose" });
     const disposeStart = performance.now();
     await notices.wait("disposed");
@@ -244,6 +254,26 @@ async function relayTraffic(
     await worker.terminate();
     notices.close();
   }
+}
+
+function probe(worker: Worker, notices: Notices, name: string) {
+  worker.postMessage({ probe: name });
+  return notices.wait(name);
+}
+
+/** Parks once, then again after each publication, until the fence closes. */
+function reparkingGuest(state: Int32Array, park: () => void) {
+  const loop = async () => {
+    while (!Atomics.load(state, 1)) {
+      const sequence = Atomics.load(state, 0);
+      park();
+      // Timed, because this page loop is not the relay under test and WebKit can lose
+      // untimed async wakes; a repeated park on unchanged values registers nothing new.
+      const waiting = Atomics.waitAsync(state, 0, sequence, 50);
+      if (waiting.async) await waiting.value;
+    }
+  };
+  return { stopped: loop() };
 }
 
 async function deadlineFairness(urls: FairnessUrls) {

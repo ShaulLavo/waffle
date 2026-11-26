@@ -160,6 +160,16 @@ export class NotificationWaitScope {
     initialCoverage: boolean,
   ): NotificationWaitSet {
     let covered = initialCoverage;
+    // The relay waits on the source words only while this guest is parked. A park repeats only
+    // when the values changed or a publication (or any other wake) moved the sequence since.
+    let parked: { sequence: number; values: readonly number[] } | undefined;
+    const park = (observed: NotificationSample): void => {
+      const values = parkValues(observed, network !== undefined, process !== undefined);
+      if (parked && parked.sequence === observed.sequence && sameValues(parked.values, values))
+        return;
+      parked = { sequence: observed.sequence, values };
+      this.send({ type: "park", values });
+    };
     const disposed = () => this.status === "closed" || atomicsLoad(this.connection.state, 1) !== 0;
     const sample = (): NotificationSample => ({
       sequence: atomicsLoad(this.wake, 0),
@@ -181,6 +191,13 @@ export class NotificationWaitScope {
         if (changed(observed, current)) return "not-equal";
         const remaining = deadline === Infinity ? Infinity : maximum(0, deadline - now());
         if (remaining === 0) return "timed-out";
+        try {
+          park(observed);
+        } catch {
+          // An unreachable relay cannot wake this guest: close the set instead of sleeping.
+          this.cleanupStep(() => this.dispose());
+          return "closed";
+        }
         const result = atomicsWait(
           this.wake,
           0,
@@ -229,6 +246,21 @@ export class NotificationWaitScope {
       this.cleanupError ??= { error };
     }
   }
+}
+
+/** Values in armed word order: filesystem, then network and process when armed. */
+function parkValues(sample: NotificationSample, network: boolean, process: boolean): number[] {
+  const filesystem = sample.filesystem;
+  if (network && process) return [filesystem, sample.network!, sample.process!];
+  if (network) return [filesystem, sample.network!];
+  if (process) return [filesystem, sample.process!];
+  return [filesystem];
+}
+
+function sameValues(before: readonly number[], after: readonly number[]): boolean {
+  for (let index = 0; index < after.length; index++)
+    if (before[index] !== after[index]) return false;
+  return before.length === after.length;
 }
 
 function changed(before: NotificationSample, after: NotificationSample): boolean {

@@ -949,6 +949,12 @@ host-local news synchronously and returns a detach function. Forwarding does not
 clear `localNews`; `poll(0)` and normal network drains keep their existing behavior.
 `NetHost.notification` alone covers GEN0, not local news.
 
+The helper waits on those words only while the guest is parked. Before `wait()` blocks, it
+sends the source values it observed, once per distinct sample. The helper publishes on the
+first difference, or on a wake of a word still at its parked value, and then stops until the
+next park. Source traffic while the guest runs costs the helper nothing, and a guest that
+never blocks in `wait()` starts no blocking wait Workers.
+
 `covered` is conservative. Process registration with `registerPoll(subscriptions,
 "shared")` owns no guest-local release callbacks and covers only sources already
 publishing to the process common word. Independent streams, terminal/resize

@@ -12,6 +12,8 @@ export interface NotificationWord {
 
 export type NotificationRelayRequest =
   | { readonly type: "arm"; readonly words: readonly NotificationWord[] }
+  /** The guest is about to block having observed `values`, one per armed word. */
+  | { readonly type: "park"; readonly values: readonly number[] }
   | { readonly type: "dispose" };
 
 export type NotificationRelayReply =
