@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { NetHelper, NetNamespace } from "../browser/net/helper.js";
 import { NetHost } from "../browser/net/host.js";
-import { AGAIN, ERROR, OK } from "../browser/net/protocol.js";
-import { createRing } from "../browser/net/ring.js";
+import { AGAIN, ERROR, Kind, OK } from "../browser/net/protocol.js";
+import { createRing, RingReader } from "../browser/net/ring.js";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 function text(value: Uint8Array | number): string {
@@ -395,6 +395,141 @@ test("a preview request whose signal is already aborted sends nothing", async ()
     expect(server.host.accept(listener)).toBeLessThanOrEqual(0);
   } finally {
     f.close();
+  }
+});
+
+/** A signal that counts how often a listener is added to it and removed from it. */
+function countedSignal(controller: AbortController) {
+  const signal = controller.signal;
+  const counts = { added: 0, removed: 0 };
+  const add = signal.addEventListener.bind(signal);
+  const remove = signal.removeEventListener.bind(signal);
+  signal.addEventListener = ((...args: Parameters<typeof add>) => {
+    counts.added++;
+    add(...args);
+  }) as typeof signal.addEventListener;
+  signal.removeEventListener = ((...args: Parameters<typeof remove>) => {
+    counts.removed++;
+    remove(...args);
+  }) as typeof signal.removeEventListener;
+  return { signal, counts };
+}
+
+function recordingSink(events: string[]) {
+  return {
+    head: (head: { status: number }) => void events.push(`head:${head.status}`),
+    data: () => void events.push("data"),
+    end: () => void events.push("end"),
+    error: (message: string) => void events.push(`error:${message}`),
+  };
+}
+
+test("a pre-aborted preview request answers for a server another helper of the runtime owns", async () => {
+  const f = await fixture();
+  try {
+    const server = f.add(),
+      client = f.add();
+    const listener = server.host.listen("localhost", 32131);
+    const request = { method: "GET", target: "/", headers: [], body: null };
+    const aborted = new AbortController();
+    aborted.abort();
+    // The same answer as a live request through that helper, which the namespace accepts.
+    expect(
+      client.helper.request(32131, request, recordingSink([]), { signal: aborted.signal }),
+    ).toBe(true);
+    expect(
+      client.helper.request(32132, request, recordingSink([]), { signal: aborted.signal }),
+    ).toBe(false);
+    const live = new AbortController();
+    expect(client.helper.request(32131, request, recordingSink([]), { signal: live.signal })).toBe(
+      true,
+    );
+    // Only the live request reached the server.
+    await until(
+      () => server.host.accept(listener),
+      (id) => id > 0,
+    );
+    live.abort();
+    await Bun.sleep(5);
+    expect(server.host.accept(listener)).toBeLessThanOrEqual(0);
+  } finally {
+    f.close();
+  }
+});
+
+test("an abort raised while the request is read opens no connection and leaves no listener", async () => {
+  const f = await fixture();
+  try {
+    const server = f.add();
+    const listener = server.host.listen("localhost", 32134);
+    const controller = new AbortController();
+    const { signal, counts } = countedSignal(controller);
+    const events: string[] = [];
+    const request = {
+      get method() {
+        controller.abort();
+        return "GET";
+      },
+      target: "/",
+      headers: [],
+      body: null,
+    };
+    expect(server.helper.request(32134, request, recordingSink(events), { signal })).toBe(true);
+    await Bun.sleep(5);
+    expect(server.host.accept(listener)).toBeLessThanOrEqual(0);
+    expect(events).toEqual([]);
+    expect(counts.added).toBe(0);
+
+    // A request nothing accepts arms its listener and removes it again.
+    const missed = countedSignal(new AbortController());
+    const plain = { method: "GET", target: "/", headers: [], body: null };
+    expect(server.helper.request(32135, plain, recordingSink([]), { signal: missed.signal })).toBe(
+      false,
+    );
+    expect(missed.counts).toEqual({ added: 1, removed: 1 });
+  } finally {
+    f.close();
+  }
+});
+
+test("an aborted request sends none of its queued upload to a ring-backed server", async () => {
+  const sab = createRing();
+  const reader = new RingReader(sab);
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(
+    sab,
+    async () => {
+      throw Error("External fetch");
+    },
+    {},
+    namespace,
+  );
+  try {
+    helper.handle({ type: "listen", id: 1, port: 32133, host: "localhost" });
+    const upload = () => ({
+      method: "POST",
+      target: "/upload",
+      headers: [],
+      body: new Uint8Array(200_000).fill(42),
+    });
+    const events: string[] = [];
+    const controller = new AbortController();
+    expect(
+      helper.request(32133, upload(), recordingSink(events), { signal: controller.signal }),
+    ).toBe(true);
+    controller.abort();
+    await Bun.sleep(5);
+    // The guest is told of the connection and then of its end, with no request bytes between.
+    expect(reader.drain().map((record) => record.kind)).toEqual([Kind.Conn, Kind.End]);
+    expect(events).toEqual([]);
+
+    // Without the abort, the same request reaches the guest.
+    expect(helper.request(32133, upload(), recordingSink([]))).toBe(true);
+    await Bun.sleep(5);
+    expect(reader.drain().map((record) => record.kind)).toContain(Kind.Data);
+  } finally {
+    helper.dispose();
+    namespace.dispose();
   }
 });
 

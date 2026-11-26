@@ -95,6 +95,11 @@ export interface PreviewConnection {
   close(): void;
 }
 
+/** A connection whose `cancel` ends it without sending what was written but not sent yet. */
+interface CancellableConnection extends PreviewConnection {
+  cancel(): void;
+}
+
 export interface ConnectionSink {
   /** Completion releases receive credit; an omitted receipt means synchronous consumption. */
   data(bytes: Uint8Array): void | Promise<void>;
@@ -261,9 +266,10 @@ export class NetHelper {
    * Delivers `req` to the guest server on `port` as a new connection and streams the parsed response
    * into `sink`. Returns false when nothing listens there.
    *
-   * Aborting `options.signal` closes that connection, so the guest server sees its client go away,
-   * and `sink` hears nothing more. A signal that is already aborted sends nothing; the result then
-   * says only whether a server listens on `port`.
+   * Aborting `options.signal` cancels that connection: request bytes not yet sent are dropped,
+   * the guest server sees its client go away, and `sink` hears nothing more. A signal that is
+   * already aborted once the caller's request has been read sends nothing; the result then says
+   * only whether a server in this runtime listens on `port`.
    */
   request(
     port: number,
@@ -273,30 +279,44 @@ export class NetHelper {
   ): boolean {
     const signal = options.signal;
     if (!signal) return this.requestConnection(port, req, sink) !== null;
-    if (signal.aborted) return this.listenerFor(port) !== undefined;
-    let connection: PreviewConnection | null = null;
+    // Caller data is read once, before the abort is checked: a getter that aborts counts.
+    const captured = snapshotPreviewRequest(req);
+    const target = snapshotSink(sink);
+    if (signal.aborted) return this.live() && this.namespace.has(port);
+    let connection: CancellableConnection | null = null;
     let abandoned = false;
     const abort = () => {
       abandoned = true;
-      connection?.close();
+      connection?.cancel();
     };
     const settled = () => signal.removeEventListener("abort", abort);
-    connection = this.requestConnection(port, req, {
-      head: (head) => {
-        if (!abandoned) sink.head(head);
-      },
-      data: (chunk) => (abandoned ? undefined : sink.data(chunk)),
-      end: () => {
-        settled();
-        if (!abandoned) sink.end();
-      },
-      error: (message) => {
-        settled();
-        if (!abandoned) sink.error(message);
-      },
-    });
-    if (!connection) return false;
+    // Armed before dispatch, so an abort during it is not missed.
     signal.addEventListener("abort", abort, { once: true });
+    try {
+      connection = this.requestConnection(port, captured, {
+        head: (head) => {
+          if (!abandoned) target.head(head);
+        },
+        data: (chunk) => (abandoned ? undefined : target.data(chunk)),
+        end: () => {
+          settled();
+          if (!abandoned) target.end();
+        },
+        error: (message) => {
+          settled();
+          if (!abandoned) target.error(message);
+        },
+      });
+    } catch (error) {
+      settled();
+      throw error;
+    }
+    if (!connection) {
+      settled();
+      return false;
+    }
+    // Aborted while the connection was being opened: it is cancelled now that it exists.
+    if (abandoned) connection.cancel();
     return true;
   }
 
@@ -305,13 +325,8 @@ export class NetHelper {
     req: PreviewRequest,
     sink: PreviewSink,
     host?: string,
-  ): PreviewConnection | null {
-    const captured = {
-      method: req.method,
-      target: req.target,
-      headers: req.headers,
-      body: req.body,
-    };
+  ): CancellableConnection | null {
+    const captured = snapshotPreviewRequest(req);
     const request = serializeRequest(captured, `localhost:${port}`);
     const isHead = captured.method === "HEAD";
     const sinkHead = sink.head.bind(sink),
@@ -319,7 +334,7 @@ export class NetHelper {
     const end = sink.end.bind(sink),
       error = sink.error.bind(sink);
     let delivered: Promise<void> | undefined;
-    let connection: PreviewConnection | null = null;
+    let connection: CancellableConnection | null = null;
     let finished = false;
     const finish: PreviewSink = {
       head: (head: ResponseHead) => sinkHead(head),
@@ -341,7 +356,7 @@ export class NetHelper {
       },
     };
     const parser = new ResponseParser(finish, isHead);
-    connection = this.connect(
+    connection = this.openConnection(
       port,
       {
         data: (bytes) => {
@@ -396,6 +411,17 @@ export class NetHelper {
 
   /** Connects a host-side byte stream to the guest without HTTP response framing. */
   connect(port: number, sink: ConnectionSink, host?: string): PreviewConnection | null {
+    const connection = this.openConnection(port, sink, host);
+    if (!connection) return null;
+    return { write: (bytes) => connection.write(bytes), close: () => connection.close() };
+  }
+
+  /** `connect`, plus a `cancel` that drops the bytes not yet sent before the end. */
+  private openConnection(
+    port: number,
+    sink: ConnectionSink,
+    host?: string,
+  ): CancellableConnection | null {
     const captured: ConnectionSink = {
       data: sink.data.bind(sink),
       end: sink.end.bind(sink),
@@ -403,8 +429,11 @@ export class NetHelper {
     };
     const listener = this.listenerFor(port);
     if (!this.live()) return null;
-    if (listener === undefined || this.sharedListeners.has(listener))
-      return this.connectNamespace(port, captured, host);
+    if (listener === undefined || this.sharedListeners.has(listener)) {
+      const socket = this.connectNamespace(port, captured, host);
+      // A namespace socket's close already drops what it has not written yet.
+      return socket && { ...socket, cancel: () => socket.close() };
+    }
     sink = captured;
     const bind = this.namespace.address(port);
     if (!bind) return null;
@@ -422,15 +451,23 @@ export class NetHelper {
       local,
     };
     let sending = this.ring.write(listener, Kind.Conn, json(announce));
+    let cancelled = false;
+    const unsent = () => !cancelled;
+    const close = () => {
+      if (!this.connections.delete(conn)) return;
+      sending = sending.then(() => this.ring.write(conn, Kind.End));
+    };
     return {
       write: (bytes) => {
         if (!this.connections.has(conn)) return;
         const owned = bytes.slice();
-        sending = sending.then(() => this.writeChunks(conn, owned));
+        sending = sending.then(() => this.writeChunks(conn, owned, unsent));
       },
-      close: () => {
-        if (!this.connections.delete(conn)) return;
-        sending = sending.then(() => this.ring.write(conn, Kind.End));
+      // A close sends what was written first; a cancel goes straight to the end.
+      close,
+      cancel: () => {
+        cancelled = true;
+        close();
       },
     };
   }
@@ -1118,6 +1155,21 @@ export class NetHelper {
       await this.ring.write(handle, Kind.Data, bytes.subarray(at, at + MAX_RECORD));
     }
   }
+}
+
+/** A preview request's caller fields, each read once. */
+function snapshotPreviewRequest(req: PreviewRequest): PreviewRequest {
+  return { method: req.method, target: req.target, headers: req.headers, body: req.body };
+}
+
+/** A preview sink's callbacks, each read once and bound to the caller's sink. */
+function snapshotSink(sink: PreviewSink): PreviewSink {
+  return {
+    head: sink.head.bind(sink),
+    data: sink.data.bind(sink),
+    end: sink.end.bind(sink),
+    error: sink.error.bind(sink),
+  };
 }
 
 /** Read caller accessors once, before the final admission check or any allocation. */
