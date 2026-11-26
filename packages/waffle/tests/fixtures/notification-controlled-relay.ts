@@ -1,10 +1,11 @@
 import { createContext, runInContext } from "node:vm";
+import { NOTIFICATION_STATE_BYTES, notificationParker } from "./notification-park.js";
 import type { NotificationRelayRequest } from "../../browser/notification-relay.js";
 
 // Control native settlement order while executing the actual relay source, without adding a
 // production observer API. This checks retained roots, not Safari's garbage collector.
 export async function controlledNotificationRelay() {
-  const state = new Int32Array(new SharedArrayBuffer(8));
+  const state = new Int32Array(new SharedArrayBuffer(NOTIFICATION_STATE_BYTES));
   const words = Array.from({ length: 3 }, () => new Int32Array(new SharedArrayBuffer(4)));
   const waits: ReturnType<typeof Promise.withResolvers<string>>[] = [];
   const notices: unknown[] = [];
@@ -45,7 +46,10 @@ export async function controlledNotificationRelay() {
   );
   const send = (data: NotificationRelayRequest) => port.onmessage({ data });
   send({ type: "arm", words: words.map((cells) => ({ cells, index: 0 })) });
-  const park = () => send({ type: "park", values: words.map((cells) => Atomics.load(cells, 0)) });
+  const parker = notificationParker(state, send, () =>
+    words.map((cells) => Atomics.load(cells, 0)),
+  );
+  const park = () => void parker.park();
   const dispose = () => {
     Atomics.store(state, 1, 1);
     Atomics.add(state, 0, 1);
@@ -58,6 +62,8 @@ export async function controlledNotificationRelay() {
     waits,
     notices,
     park,
+    retire: parker.retire,
+    send,
     dispose,
     inspect: (expression: string): unknown => runInContext(expression, context),
     async close() {

@@ -14,21 +14,31 @@ import type {
 /** A guest sends at most filesystem, network and process words. */
 const MAX_WORDS = 3;
 
+interface Park {
+  readonly id: number;
+  readonly values: readonly number[];
+}
+
 /**
  * One guest's relay state. The relay waits on source words only while the guest is parked:
  * a park names the word values the guest last observed, the first difference (or wake on a
  * word) publishes once, and the relay stops until the guest parks again. Source traffic while
  * the guest runs costs the relay nothing.
+ *
+ * The guest stores the park's id in `state[2]` before its last readiness check and clears it
+ * when its blocking call returns. A publication consumes that id with a compare-exchange, so
+ * a park the guest retired (a timeout or another wake) never publishes.
  */
 class RelayConnection {
   private words: readonly NotificationWord[] | undefined;
-  private parked: readonly number[] | undefined;
+  private parked: Park | undefined;
   /** The value each outstanding blocking wait was registered with, by word slot. */
   private readonly outstanding: (number | undefined)[] = [];
   /** Pending waits stay reachable from the realm; iOS Safari 26.5 lost unreferenced waits. */
   readonly pendingWaits: (Promise<string> | undefined)[] = [];
   private readonly waiters = createNotificationWaiters(import.meta.url);
   private closed = false;
+  private failed = false;
 
   constructor(
     private readonly id: number,
@@ -48,11 +58,12 @@ class RelayConnection {
   }
 
   private receive(data: NotificationRelayRequest): void {
-    if (this.closed) return;
+    if (this.closed || this.failed) return;
+    if (!data || typeof data !== "object") throw new TypeError("malformed notification request");
     if (data.type === "dispose") return this.dispose(true);
     if (Atomics.load(this.state, 1)) return;
-    if (data.type === "park") return this.park(data.values);
-    if (this.words) return;
+    if (data.type === "park") return this.park(data);
+    if (data.type !== "arm" || this.words) throw new TypeError("unexpected notification request");
     try {
       this.arm(data.words);
     } catch (error) {
@@ -67,14 +78,21 @@ class RelayConnection {
     this.reply({ type: "armed" });
   }
 
-  private park(values: readonly number[]): void {
+  private park({ id, values }: { readonly id: unknown; readonly values: unknown }): void {
     const words = this.words;
-    if (!words || !validValues(values, words.length)) return;
-    this.parked = values;
-    for (let slot = 0; slot < words.length; slot++)
-      if (Atomics.load(words[slot]!.cells, words[slot]!.index) !== values[slot])
-        return this.publish();
+    if (!words) throw new TypeError("notification park before arm");
+    if (typeof id !== "number" || (id | 0) !== id || id <= 0 || !validValues(values, words.length))
+      throw new TypeError("malformed notification park");
+    this.parked = { id, values };
+    if (this.moved(this.parked)) return this.publish();
     for (let slot = 0; slot < words.length; slot++) this.watch(slot);
+  }
+
+  private moved(parked: Park): boolean {
+    const words = this.words!;
+    for (let slot = 0; slot < words.length; slot++)
+      if (Atomics.load(words[slot]!.cells, words[slot]!.index) !== parked.values[slot]) return true;
+    return false;
   }
 
   /** Registers one blocking wait for the parked value unless one is outstanding. A stale
@@ -83,7 +101,7 @@ class RelayConnection {
     const parked = this.parked;
     if (!parked || this.outstanding[slot] !== undefined) return;
     const word = this.words![slot]!;
-    const seen = parked[slot]!;
+    const seen = parked.values[slot]!;
     const waiting = this.waiters.wait(word.cells, word.index, seen);
     if (!waiting.async) return this.publish();
     this.outstanding[slot] = seen;
@@ -103,24 +121,39 @@ class RelayConnection {
     if (!parked) return;
     const word = this.words![slot]!;
     // A wake on the parked value publishes even without a change, as a notify asks.
-    if (seen === parked[slot] || Atomics.load(word.cells, word.index) !== parked[slot])
+    if (
+      seen === parked.values[slot] ||
+      Atomics.load(word.cells, word.index) !== parked.values[slot]
+    )
       return this.publish();
     this.watch(slot);
   }
 
   private publish(): void {
+    const parked = this.parked!;
     this.parked = undefined;
     if (Atomics.load(this.state, 1)) return;
-    Atomics.add(this.state, 0, 1);
-    Atomics.notify(this.state, 0);
+    if (Atomics.compareExchange(this.state, 2, parked.id, 0) === parked.id) {
+      Atomics.add(this.state, 0, 1);
+      Atomics.notify(this.state, 0);
+      return;
+    }
+    // Retired: the guest is running. A moved word makes its next park differ, so stop here.
+    // Otherwise keep watching, because the guest may reactivate this park unchanged.
+    if (this.moved(parked)) return;
+    this.parked = parked;
+    for (let slot = 0; slot < parked.values.length; slot++) this.watch(slot);
   }
 
   private reply(value: NotificationRelayReply): void {
     this.port.postMessage(value);
   }
 
+  /** Reports the failure to the guest and the page; the page fences and drops the connection. */
   private fail(error: unknown): void {
-    if (this.closed) return;
+    if (this.closed || this.failed) return;
+    this.failed = true;
+    this.parked = undefined;
     this.reply({ type: "error", message: String(error) });
     notice(this.id, "failed");
   }

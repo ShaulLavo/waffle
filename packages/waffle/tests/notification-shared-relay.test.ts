@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { notificationParker } from "./fixtures/notification-park.js";
 import {
   createNotificationBridge,
   type NotificationBridge,
@@ -50,13 +51,18 @@ async function guest(): Promise<Guest> {
       resolve(data);
     };
   });
+  const parker = notificationParker(
+    bridge.connection.state,
+    (request) => port.postMessage(request),
+    () => [Atomics.load(word, 0)],
+  );
   port.postMessage({ type: "arm", words: [{ cells: word, index: 0 }] });
   expect(await armed).toEqual({ type: "armed" });
   return {
     bridge,
     word,
     replies,
-    park: () => port.postMessage({ type: "park", values: [Atomics.load(word, 0)] }),
+    park: () => void parker.park(),
   };
 }
 
@@ -106,19 +112,79 @@ test("bridges on one page share one relay Worker, which stops with the last brid
   }
 });
 
-test("a malformed guest message fails only that guest's connection", async () => {
-  const healthy = await guest();
-  const broken = await guest();
+/** Resolves "settled" or "pending" after `ms`, without hanging the test on a lost settlement. */
+function within(promise: Promise<unknown>, ms: number): Promise<string> {
+  return Promise.race([
+    promise.then(
+      () => "settled",
+      () => "rejected",
+    ),
+    new Promise<string>((resolve) => setTimeout(() => resolve("pending"), ms)),
+  ]);
+}
+
+const malformed: [string, unknown][] = [
+  ["null", null],
+  ["an unknown type", { type: "bogus" }],
+  ["a park with no values", { type: "park", id: 1, values: [] }],
+  ["a park without an id", { type: "park", values: [0] }],
+  ["a park with a fractional value", { type: "park", id: 1, values: [0.5] }],
+  ["a second arm", { type: "arm", words: [] }],
+];
+
+for (const [name, message] of malformed)
+  test(`${name} fails only that guest's connection, while another guest stays parked`, async () => {
+    const healthy = await guest();
+    const broken = await guest();
+    try {
+      // The healthy guest is blocked on its park while the other connection fails.
+      const state = healthy.bridge.connection.state;
+      const sequence = Atomics.load(state, 0);
+      healthy.park();
+      broken.bridge.connection.port.postMessage(message);
+      expect(await within(broken.bridge.closed, 1000)).toBe("settled");
+      expect(Atomics.load(broken.bridge.connection.state, 1)).toBe(1);
+      expect(broken.replies.at(-1)).toMatchObject({ type: "error" });
+      expect(Atomics.load(state, 1)).toBe(0);
+      Atomics.add(healthy.word, 0, 1);
+      Atomics.notify(healthy.word, 0);
+      const waiting = Atomics.waitAsync(state, 0, sequence, 1000);
+      expect(waiting.async ? await waiting.value : waiting.value).not.toBe("timed-out");
+    } finally {
+      await broken.bridge.dispose();
+      await healthy.bridge.dispose();
+    }
+  });
+
+test("termination of the last connection settles earlier unacknowledged drops with its result", async () => {
+  // This relay never acknowledges drops, so the first removal waits on termination.
+  const stalled = new URL("./fixtures/notification-stalled-worker.ts", import.meta.url).href;
+  const gate = Promise.withResolvers<void>();
+  const Patched = globalThis.Worker;
+  globalThis.Worker = class extends Patched {
+    override terminate(): void {
+      super.terminate();
+      return gate.promise as unknown as void;
+    }
+  } as typeof Worker;
+  const first = createNotificationBridge(stalled);
+  const last = createNotificationBridge(stalled);
+  const failure = new Error("relay termination failed");
   try {
-    broken.bridge.connection.port.postMessage(null);
-    await broken.bridge.closed;
-    expect(Atomics.load(broken.bridge.connection.state, 1)).toBe(1);
-    expect(broken.replies.at(-1)).toMatchObject({ type: "error" });
-    expect(Atomics.load(healthy.bridge.connection.state, 1)).toBe(0);
-    expect(await forwarded(healthy)).toBe(true);
+    const firstClosed = first.dispose();
+    expect(await within(firstClosed, 50)).toBe("pending");
+    const lastClosed = last.dispose();
+    // Shutdown supersedes the acknowledgment, but only once termination itself settles.
+    expect(await within(firstClosed, 50)).toBe("pending");
+    const outcomes = Promise.allSettled([firstClosed, lastClosed]);
+    gate.reject(failure);
+    expect(await outcomes).toEqual([
+      { status: "rejected", reason: failure },
+      { status: "rejected", reason: failure },
+    ]);
   } finally {
-    await broken.bridge.dispose();
-    await healthy.bridge.dispose();
+    gate.resolve();
+    globalThis.Worker = Patched;
   }
 });
 

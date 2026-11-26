@@ -1,7 +1,7 @@
 import { allocateSharedControl } from "../memory/control.js";
 export interface NotificationConnection {
   readonly port: MessagePort;
-  /** Sequence, then external lifetime fence. */
+  /** Sequence, external lifetime fence, then the id of the guest's active park (0: none). */
   readonly state: Int32Array;
 }
 
@@ -12,8 +12,9 @@ export interface NotificationWord {
 
 export type NotificationRelayRequest =
   | { readonly type: "arm"; readonly words: readonly NotificationWord[] }
-  /** The guest is about to block having observed `values`, one per armed word. */
-  | { readonly type: "park"; readonly values: readonly number[] }
+  /** The guest is about to block having observed `values`, one per armed word. It stored `id`
+   * in state[2] first and clears it when the blocking call returns. */
+  | { readonly type: "park"; readonly id: number; readonly values: readonly number[] }
   | { readonly type: "dispose" };
 
 export type NotificationRelayReply =
@@ -46,7 +47,7 @@ class SharedRelay {
   /** Live bridges by connection id: their dispose, for relay-reported failures. */
   private readonly members = new Map<number, () => Promise<void>>();
   /** Removed bridges waiting for the relay to acknowledge their drop. */
-  private readonly drops = new Map<number, () => void>();
+  private readonly drops = new Map<number, ReturnType<typeof Promise.withResolvers<void>>>();
   private nextId = 1;
 
   constructor(
@@ -80,7 +81,7 @@ class SharedRelay {
     if (!this.members.size) return this.stop();
     if (!known) return Promise.resolve();
     const dropped = Promise.withResolvers<void>();
-    this.drops.set(id, dropped.resolve);
+    this.drops.set(id, dropped);
     try {
       this.worker.postMessage({ drop: id } satisfies NotificationRelayControl);
     } catch {
@@ -90,20 +91,25 @@ class SharedRelay {
   }
 
   private acknowledge(id: number): void {
-    const resolve = this.drops.get(id);
+    const dropped = this.drops.get(id);
     this.drops.delete(id);
-    resolve?.();
+    dropped?.resolve();
   }
 
   private stop(): Promise<void> {
     if (this.registry.get(this.url) === this) this.registry.delete(this.url);
-    // Termination ends every connection the relay still had.
-    for (const id of Array.from(this.drops.keys())) this.acknowledge(id);
+    let stopped: Promise<void>;
     try {
-      return Promise.resolve(this.worker.terminate());
+      stopped = Promise.resolve(this.worker.terminate());
     } catch (error) {
-      return Promise.reject(error);
+      stopped = Promise.reject(error);
     }
+    // Termination supersedes outstanding acknowledgments: those drops settle with its result.
+    for (const [id, dropped] of Array.from(this.drops)) {
+      this.drops.delete(id);
+      stopped.then(dropped.resolve, dropped.reject);
+    }
+    return stopped;
   }
 }
 
@@ -121,7 +127,7 @@ export function createNotificationBridge(workerUrl: string): NotificationBridge 
   let state: Int32Array;
   let relay: SharedRelay;
   try {
-    state = new Int32Array(allocateSharedControl(8));
+    state = new Int32Array(allocateSharedControl(12));
     relay = relayFor(workerUrl);
   } catch (error) {
     channel.port1.close();

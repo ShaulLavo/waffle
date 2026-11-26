@@ -1,4 +1,5 @@
 import { FilesystemService } from "../fs/service.js";
+import { NOTIFICATION_STATE_BYTES, notificationParker } from "./fixtures/notification-park.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { createFilesystemConnection } from "../fs/protocol.js";
 import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
@@ -166,7 +167,7 @@ async function relayTraffic(
   const worker = new Worker(urls.probe, { type: "module" });
   const notices = new Notices(worker);
   const channel = new MessageChannel();
-  const state = new Int32Array(new SharedArrayBuffer(8));
+  const state = new Int32Array(new SharedArrayBuffer(NOTIFICATION_STATE_BYTES));
   try {
     channel.port2.onmessage = ({ data }) => notices.accept(data);
     worker.postMessage({ id: 1, port: channel.port1, state }, [channel.port1]);
@@ -182,9 +183,12 @@ async function relayTraffic(
     const sources = [fs.shared.watch.cells, new RingReader(ring).notification, wake];
     const values = () => sources.map((cells, index) => Atomics.load(cells, index === 0 ? 3 : 0));
     // A blocked guest parks on the values it observed and parks again after every wake.
-    const guest = reparkingGuest(state, () =>
-      channel.port2.postMessage({ type: "park", values: values() }),
+    const parker = notificationParker(
+      state,
+      (request) => channel.port2.postMessage(request),
+      values,
     );
+    const guest = reparkingGuest(state, () => void parker.park());
     // The park and the probe travel on different channels: probe until the park has landed.
     let before = await probe(worker, notices, "idle-before");
     for (let attempt = 0; attempt < 100 && before.registrations !== 3; attempt++) {

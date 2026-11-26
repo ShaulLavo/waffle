@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { NOTIFICATION_STATE_BYTES, notificationParker } from "./fixtures/notification-park.js";
 import { controlledNotificationRelay } from "./fixtures/notification-controlled-relay.js";
 
 const collectingRelay = new URL("./fixtures/notification-collecting-worker.ts", import.meta.url)
@@ -9,7 +10,7 @@ const relay = new URL("../browser/notification-worker.ts", import.meta.url).href
 async function armRelay(url: string, words: readonly Int32Array[]) {
   const worker = new Worker(url, { type: "module" });
   const channel = new MessageChannel();
-  const state = new Int32Array(new SharedArrayBuffer(8));
+  const state = new Int32Array(new SharedArrayBuffer(NOTIFICATION_STATE_BYTES));
   worker.postMessage({ id: 1, port: channel.port1, state }, [channel.port1]);
   const armed = new Promise<unknown>((resolve) => {
     channel.port2.onmessage = ({ data }) => resolve(data);
@@ -17,12 +18,12 @@ async function armRelay(url: string, words: readonly Int32Array[]) {
   channel.port2.postMessage({ type: "arm", words: words.map((cells) => ({ cells, index: 0 })) });
   expect(await armed).toEqual({ type: "armed" });
   /** What a guest sends before it blocks: the values it observed. */
-  const park = () =>
-    channel.port2.postMessage({
-      type: "park",
-      values: words.map((cells) => Atomics.load(cells, 0)),
-    });
-  return { worker, channel, state, park };
+  const parker = notificationParker(
+    state,
+    (request) => channel.port2.postMessage(request),
+    () => words.map((cells) => Atomics.load(cells, 0)),
+  );
+  return { worker, channel, state, park: () => void parker.park(), retire: parker.retire };
 }
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -126,7 +127,8 @@ test("a park publishes once, then the relay stops until the next park", async ()
     expect(relay.waits).toHaveLength(3);
     expect(Atomics.load(relay.state, 0)).toBe(1);
     // A park on stale values publishes at once without waiting.
-    relay.inspect("relay.receive({ type: 'park', values: [0, 0, 0] })");
+    Atomics.store(relay.state, 2, 9);
+    relay.inspect("relay.receive({ type: 'park', id: 9, values: [0, 0, 0] })");
     expect(relay.waits).toHaveLength(3);
     expect(Atomics.load(relay.state, 0)).toBe(2);
     // A park on current values waits on every word again.

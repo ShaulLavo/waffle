@@ -916,8 +916,9 @@ page shares among all guests using the same `notificationWorkerUrl`. The helper 
 first connection and is terminated with the last. Pass `notificationWorkerUrl` to
 `BrowserProcessBroker.launchWorker()`. Bundle the
 `waffle/browser/notification-worker` entry separately as a module Worker, just as
-an embedding bundles its guest Worker. Both Workers require shared memory and
-`Atomics.waitAsync`. The guest remains free to block synchronously.
+an embedding bundles its guest Worker. Both Workers require shared memory. The guest
+Worker's lifetime observer also needs `Atomics.waitAsync`; the helper uses only blocking
+waits in its own child Workers. The guest remains free to block synchronously.
 
 `bootstrap()` supplies `context.notifications: NotificationWaitScope | undefined`
 and `context.signal: AbortSignal`. Arm the scope in the awaited `instantiated`
@@ -952,10 +953,18 @@ clear `localNews`; `poll(0)` and normal network drains keep their existing behav
 `NetHost.notification` alone covers GEN0, not local news.
 
 The helper waits on those words only while the guest is parked. Before `wait()` blocks, it
-sends the source values it observed, once per distinct sample. The helper publishes on the
-first difference, or on a wake of a word still at its parked value, and then stops until the
-next park. Source traffic while the guest runs costs the helper nothing, and a guest that
-never blocks in `wait()` starts no blocking wait Workers.
+stores a park id in the connection state and sends the id with the source values it observed,
+once per distinct sample; an unchanged park is reactivated by storing its id again. It
+rechecks the sources after storing the id and clears the id when the blocking call returns.
+The helper publishes on the first difference, or on a wake of a word still at its parked
+value, only by consuming the active id with a compare-exchange, so a retired park never
+publishes. Source traffic while the guest runs costs the helper nothing, and a guest that
+never blocks in `wait()` starts no blocking wait Workers. A malformed request fails that
+guest's connection: the guest receives an error reply and the page fences its state.
+
+Filesystem revocation and reap advance the watch word as well as notifying it, because they
+can make a watch readable. A park taken before a revocation therefore differs by value, even
+when the notify landed before the helper registered its wait.
 
 `covered` is conservative. Process registration with `registerPoll(subscriptions,
 "shared")` owns no guest-local release callbacks and covers only sources already
@@ -1318,7 +1327,8 @@ notification index), `ENOMEM` 48 (native backing allocation failure), `ENOTSUP` 
 descriptor rights are required. The authority is the caller's own open description plus the
 service's capability and inode checks.
 
-Each watch keeps its own `observed` copy of the root's commit counter (`cells[3]`), sampled before
+Each watch keeps its own `observed` copy of the root's commit counter (`cells[3]`, which
+revocation and reap also advance), sampled before
 the open's service call. `watch_read` first copies whole records from the watch's local queue.
 With an empty queue, an unchanged counter returns `EAGAIN` without a service call. A moved counter
 updates `observed` before one synchronous service read, whose batch fills the queue; an overflow
