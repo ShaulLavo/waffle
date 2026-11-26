@@ -71,6 +71,9 @@ export interface FilesystemBackend {
   isPreparedReadValid?(): boolean;
   /** Whether a handle is unlinked (used by service capability trimming when not MemoryBackend). */
   isUnlinked?(handle: FileHandle): boolean;
+  /** Changes whenever `isUnlinked` may have become true for some handle, so capability trimming
+   * can skip rescanning while nothing was unlinked. Without it every trim rescans. */
+  unlinkGeneration?(): number;
   /** Select a bounded cold descriptor range before asynchronous storage work. */
   prepareDescriptorRead?(
     handle: FileHandle,
@@ -162,6 +165,10 @@ export type MemoryBackendSharedRoot = Pick<FilesystemIdentity, "shared" | "maxBy
 
 export class MemoryBackend implements FilesystemBackend {
   private readonly watchOwner: { observer?: WatchMutationObserver };
+  /** The shared slot table's unlink count, so wrappers over the same table share it. */
+  unlinkGeneration(): number {
+    return this.shared.unlinkGeneration();
+  }
   installWatchObserver(observer: WatchMutationObserver): void {
     if (this.watchOwner.observer && this.watchOwner.observer !== observer)
       throw new Error("filesystem root already has a watch owner");
@@ -270,6 +277,7 @@ export class MemoryBackend implements FilesystemBackend {
       publication,
     );
     if (this.sharedPhase !== "imported") this.shared.identities.copyFrom(previous.identities);
+    this.shared.continueUnlinks(previous);
     this.sharedPhase = "attached";
   }
   /** revoked ends a wait for another owner's shared lock when the caller's request is cancelled. */
