@@ -571,3 +571,139 @@ test("a one-byte write fits a 6,000-byte dirty budget", async () => {
     backend.dispose();
   }
 });
+
+test("committed checkpoint retires its dirty debt even when concurrent writes arrive during persist", async () => {
+  const storage = new ControlledStorage();
+  const backend = await PersistentBackend.open(storage, {
+    intervalMs: 0,
+    checkpointLimits: { maxBytes: 128, maxMetadataBytes: 65536 },
+    dirtyLimits: { maxBytes: PAGE * 8 + 256, maxMetadataBytes: 131072 },
+  });
+  const service = new FilesystemService(backend);
+  const pair = createFilesystemConnection();
+  service.connect(pair.server);
+  const client = new FilesystemClient(pair.client);
+  try {
+    await client.asyncCall("writeFile", ["/first"], data(40, 65));
+    const gate = storage.hold();
+    const firstCommit = backend.checkpoint(false);
+    await gate.entered.promise;
+    await client.asyncCall("writeFile", ["/second"], data(12, 66));
+    const during = backend.dirtyPressure();
+    expect(during.dirtyCaptureBytes).toBeGreaterThanOrEqual(104);
+    gate.released.resolve();
+    await firstCommit;
+    const afterFirst = backend.dirtyPressure();
+    expect(afterFirst.dirtyCaptureBytes).toBe(24);
+    expect(afterFirst.immutableCopyBytes).toBe(0);
+    await client.asyncCall("writeFile", ["/third"], data(40, 67));
+    expect(backend.dirtyPressure().dirtyCaptureBytes).toBe(104);
+    await backend.checkpoint(true);
+    expect(backend.dirtyPressure().dirtyCaptureBytes).toBe(0);
+    expect(backend.dirtyPressure().dirtyMetadataUnits).toBe(0);
+  } finally {
+    storage.gate?.released.resolve();
+    client.dispose();
+    service.dispose();
+    await Promise.allSettled([backend.close()]);
+    backend.dispose();
+  }
+});
+
+test("incremental namespaceUnits matches full tree across namespace mutations", async () => {
+  const storage = new ControlledStorage();
+  const backend = await PersistentBackend.open(storage, {
+    intervalMs: 0,
+    checkpointLimits: { maxBytes: 1024 * 1024, maxMetadataBytes: 8 * 1024 * 1024 },
+  });
+  const service = new FilesystemService(backend);
+  const pair = createFilesystemConnection();
+  service.connect(pair.server);
+  const client = new FilesystemClient(pair.client);
+  const expectedUnits = () => {
+    let bytes = 0;
+    const seen = new Set<number>();
+    const visit = (node: ReturnType<typeof backend.fs.lookup>) => {
+      if (!node || seen.has(node.ino)) return;
+      seen.add(node.ino);
+      if (node.kind === "symlink") {
+        bytes += 256 + node.target.length * 2 + new TextEncoder().encode(node.target).length;
+        return;
+      }
+      if (node.kind !== "dir") {
+        bytes += 256;
+        return;
+      }
+      bytes += 256;
+      for (const [name, child] of node.children) {
+        bytes += 64 + name.length * 2;
+        visit(child);
+      }
+    };
+    visit(backend.fs.root);
+    return bytes * 4;
+  };
+  try {
+    await client.asyncCall("mkdirp", ["/pkg/sub/deep"]);
+    await client.asyncCall("writeFile", ["/pkg/a.txt"], data(4));
+    await client.asyncCall("writeFile", ["/pkg/b.txt"], data(4));
+    await client.asyncCall("writeFile", ["/pkg/sub/deep/c.txt"], data(4));
+    const root = await client.asyncCall("preopen", ["/"]);
+    const a = await client.asyncCall("resolve", [root, "pkg/a.txt"]);
+    const hard = await client.asyncCall("resolve", [root, "pkg/hard.txt"]);
+    expect(await client.asyncCall("link", [a, hard])).toBe(0);
+    await client.asyncCall("move", ["/pkg/b.txt", "/pkg/renamed.txt"]);
+    await client.asyncCall("move", ["/pkg/renamed.txt", "/pkg/a.txt"]);
+    await client.asyncCall("remove", ["/pkg/sub"]);
+    await backend.checkpoint(true);
+    expect(backend.dirtyPressure().namespaceUnits).toBe(expectedUnits());
+  } finally {
+    client.dispose();
+    service.dispose();
+    await Promise.allSettled([backend.close()]);
+    backend.dispose();
+  }
+});
+
+test("idle background timer skips checkpoints until a MemFS or direct write arrives", async () => {
+  const storage = new ControlledStorage();
+  const backend = await PersistentBackend.open(storage, {
+    intervalMs: 5,
+    checkpointLimits: { maxBytes: 1024 * 1024, maxMetadataBytes: 8 * 1024 * 1024 },
+  });
+  const service = new FilesystemService(backend);
+  const pair = createFilesystemConnection();
+  service.connect(pair.server);
+  const client = new FilesystemClient(pair.client);
+  let checkpointCalls = 0;
+  const original = backend.checkpoint.bind(backend);
+  backend.checkpoint = (...args) => {
+    checkpointCalls++;
+    return original(...args);
+  };
+  try {
+    await client.asyncCall("writeFile", ["/idle"], data(4, 65));
+    await backend.flush();
+    const afterFlush = checkpointCalls;
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    expect(checkpointCalls).toBe(afterFlush);
+    const root = await client.asyncCall("preopen", ["/"]);
+    const path = await client.asyncCall("resolve", [root, "idle"]);
+    client.retain(path.node);
+    expect(client.tryWrite(path.node, [data(4, 66)], 0)).toBe(4);
+    for (let attempt = 0; attempt < 40 && checkpointCalls === afterFlush; attempt++) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+    expect(checkpointCalls).toBeGreaterThan(afterFlush);
+    await backend.flush();
+    const afterDirect = checkpointCalls;
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    expect(checkpointCalls).toBe(afterDirect);
+    client.release(path.node);
+  } finally {
+    client.dispose();
+    service.dispose();
+    await Promise.allSettled([backend.close()]);
+    backend.dispose();
+  }
+});

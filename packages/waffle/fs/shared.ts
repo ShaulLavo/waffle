@@ -76,6 +76,7 @@ const FREED_REVISION_HIGH = 8;
 // not scan the whole identity table. Other header words: 9 and 10 are DirtyAdmission's
 // signals, 16 to 24 the identity allocator, and 32 onward the dirty-admission ledger.
 const REGISTERED_SLOTS = 11;
+const CHANGE_SEQUENCE = 12;
 // Global-lock accelerators. Nothing below a hint is free; ownership stays authoritative.
 const PHYSICAL_HINT = 27;
 const TABLE_HINT = 28;
@@ -839,11 +840,15 @@ export class SharedFilesystemState {
       (this.slots[base + REVISION]! >>> 0)
     );
   }
+  get changeSequence(): number {
+    return Atomics.load(this.cells, CHANGE_SEQUENCE);
+  }
   private changed(slot: number): void {
     const base = slot * SLOT_WORDS,
       low = this.slots[base + REVISION]!;
     this.slots[base + REVISION] = low + 1;
     if (low === -1) this.slots[base + REVISION_STATE] = this.slots[base + REVISION_STATE]! + 2;
+    Atomics.add(this.cells, CHANGE_SEQUENCE, 1);
   }
   private residentBytes(): number {
     return Atomics.load(this.cells, USED_PAGES) * DATA_PAGE_BYTES;
@@ -896,6 +901,42 @@ export class SharedFilesystemState {
       this.slots[this.at(slot, DIRTY_SIZE)] = 0;
       this.slots[this.at(slot, DIRTY_MARK)] = 0;
     }
+  }
+  reconcileDirty(
+    handles: Iterable<FileHandle>,
+    namespace: number,
+    dirtyNamespace: number,
+    isDirty: (handle: FileHandle, kind: number, revision: number, dirtyMark: number) => boolean,
+  ): void {
+    if (!this.dirtyAdmission.enabled) return;
+    let dirtyBytes = 0;
+    let dirtyMetadata = 0;
+    for (const handle of handles) {
+      const slot = this.findSlot(handle);
+      if (!slot) continue;
+      const base = slot * SLOT_WORDS;
+      const kind = this.slots[base]!;
+      if (!kind || this.slots[base + HANDLE] !== handle + 1) continue;
+      const revision = this.getRevision(slot);
+      const dirtyMark = this.slots[base + DIRTY_MARK]!;
+      if (!isDirty(handle, kind, revision, dirtyMark)) {
+        this.slots[base + DIRTY_SIZE] = 0;
+        this.slots[base + DIRTY_MARK] = 0;
+        continue;
+      }
+      if (kind === 1) {
+        const resident = (this.slots[base + REVISION_STATE]! & RESIDENT) !== 0;
+        const size = resident ? this.slots[base + FILE_SIZE]! : 0;
+        this.slots[base + DIRTY_SIZE] = size;
+        this.slots[base + DIRTY_MARK] = 1;
+        dirtyBytes += size * 2;
+      } else {
+        this.slots[base + DIRTY_SIZE] = 0;
+        this.slots[base + DIRTY_MARK] = 1;
+      }
+      dirtyMetadata += DIRTY_NODE_UNITS;
+    }
+    this.dirtyAdmission.reconcile(namespace, dirtyNamespace, dirtyBytes, dirtyMetadata);
   }
   private checkFile(slot: number, handle: FileHandle): void {
     if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
@@ -2043,6 +2084,7 @@ export class SharedFilesystemState {
       if (slots[base + REVISION_STATE]! & RESIDENT) this.changed(stage.slot);
     }
     slots[base + REVISION_STATE] = slots[base + REVISION_STATE]! | RESIDENT;
+    Atomics.add(this.cells, CHANGE_SEQUENCE, 1);
   }
   /** Caller owns the global mutation lock. Undefined asks for service growth after unlock. */
   tryWrite(
