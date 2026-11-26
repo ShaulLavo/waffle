@@ -127,6 +127,26 @@ function withReusableRegistryCells(expected: string[]) {
     )
     .sort();
 }
+/** The filesystem signal carries a transport word beside its wake word: 8 bytes, not 4. */
+function withTransportSignal(expected: string[]) {
+  const word = '"initial":4,"maximum":4,"growable":false';
+  return expected
+    .flatMap((event, index) => {
+      if (!event.includes(word) || !event.includes('"purpose":"startup"')) return [event];
+      // The signal is the first one-word startup buffer each outcome records.
+      const outcome = event.includes('"outcome":"attempt"') ? "attempt" : "success";
+      const first = expected.findIndex(
+        (other) =>
+          other.includes(word) &&
+          other.includes('"purpose":"startup"') &&
+          other.includes(`"outcome":"${outcome}"`),
+      );
+      return [
+        index === first ? event.replace(word, '"initial":8,"maximum":8,"growable":false') : event,
+      ];
+    })
+    .sort();
+}
 for (const [mode, agent] of [
   ["normal", "desktop"],
   ["fallback", "desktop"],
@@ -174,12 +194,14 @@ for (const [mode, agent] of [
       expect(current.boundary).toBe("PRE-IMPORT PAGE-OWNED JavaScript");
       expect(current.fixtures).toEqual(baseline.fixtures);
       expect(withoutStorageRoot(current, 33_813_544)).toEqual(
-        withReusableRegistryCells(
-          withGroupMemberCells(
-            withExecutionObservation(
-              withPrivateInputArena(
-                withoutIdleWorkers(
-                  withoutEagerSegments(withoutStorageRoot(baseline, 64 * 1024 * 1024)),
+        withTransportSignal(
+          withReusableRegistryCells(
+            withGroupMemberCells(
+              withExecutionObservation(
+                withPrivateInputArena(
+                  withoutIdleWorkers(
+                    withoutEagerSegments(withoutStorageRoot(baseline, 64 * 1024 * 1024)),
+                  ),
                 ),
               ),
             ),

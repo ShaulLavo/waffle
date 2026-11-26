@@ -122,7 +122,7 @@ function abiWrite(start: GuestStart) {
     (1n << 29n) - 1n,
     0n,
   );
-  const wake = new Int32Array(start.connection.signal);
+  const wake = new Int32Array(start.connection.signal, 0, 1);
   let waits = 0;
   const abi = fileOnlyABI({
     memory,

@@ -1842,7 +1842,7 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
         return prevExecute(operation, args, data);
       };
       const { closeRequestMemory } = await import("../fs/request-memory.js");
-      const { wake } = await import("../fs/protocol.js");
+      const { wakeTransport } = await import("../fs/protocol.js");
       const abi2 = new ProcessABI({
         processIdentity: f2.supervisor.get(f2.pid)!.processIdentity,
         memory: f2.memory,
@@ -1862,7 +1862,7 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
       // Concurrent protocol transport failure + service.sweep() + early client2.dispose() while
       // the backend write is still paused must NOT release the offset lease or reap the owner.
       closeRequestMemory(client2.connection.requests, "protocol");
-      wake(client2.connection);
+      wakeTransport(client2.connection);
       service.sweep();
       expect(await client2.settleDeferredWrites(40)).toBe(false);
       client2.dispose();
@@ -1952,7 +1952,7 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
     // then retire transport memory so the undelivered write releases its section without deadlock.
     const { drainAsyncFileDiagnostic } = await import("../browser/diagnostic.js");
     const { closeRequestMemory, requestMemoryRetired } = await import("../fs/request-memory.js");
-    const { wake } = await import("../fs/protocol.js");
+    const { wakeTransport } = await import("../fs/protocol.js");
     const pair4 = createFilesystemConnection(client.connection);
     const reservation4 = client.reserve(handle, pair4.client);
     pair4.client.reservations.push(reservation4);
@@ -2014,7 +2014,7 @@ test("directDisabled file IO yields on pending signals, interrupts reads, and un
       // then inject the protocol error so shutdownFence enters drainFailedSessionRequests(session4).
       const shutdownPromise = service.shutdown();
       closeRequestMemory(pair4.client.requests, "protocol");
-      wake(pair4.client);
+      wakeTransport(pair4.client);
       expect(await syncPending).toBe("rejected");
       expect(await undeliveredWrite).toBe("rejected");
       // While the sync barrier is still paused, drainFailedSessionRequests must NOT retire memory,
