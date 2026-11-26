@@ -5564,6 +5564,56 @@ export class MultiTabBackend implements FilesystemBackend {
     if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
   }
 
+  /**
+   * The lease was not held when a local Host call started: renew it, or forward the call when
+   * this tab has become a Peer. Returns the forwarded result, or undefined to run the call here.
+   */
+  private async renewBeforeLocalHostCall(
+    admittedTerm: bigint,
+    budget: LeaseRenewalBudget,
+    operation: string,
+    args: any[],
+    data: Uint8Array,
+    responseCookieTag?: bigint,
+    cancelled?: () => boolean,
+  ): Promise<{ result: unknown } | undefined> {
+    if (this.disposing) throw new FilesystemError(11, "host lease expired during dispose");
+    if (this.leaseOnlyLapsed(admittedTerm)) {
+      await this.renewLapsedLease(admittedTerm, cancelled, budget);
+    } else {
+      await raceWithAbort(
+        this.renewLeaseNow(this.currentAttemptId),
+        this.disposeAbort.signal,
+        cancelled,
+      );
+    }
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
+    if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
+    // A lease renewed with little time left can lapse again before this check; that lapse is
+    // renewed below like any other, not treated as a lost term.
+    if (!this.isLeaseValid() && !this.leaseOnlyLapsed(admittedTerm)) {
+      await this.awaitPendingFenceLoss(cancelled);
+      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
+      if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
+      if (this.terminalFailure) {
+        throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
+      }
+      if (this.ownershipLost) throw new FilesystemError(11, "filesystem ownership lost");
+      if (this.role === "peer" || this.role === "failover" || this.role === "waiting") {
+        const nextCookieTag = this.revalidateCookieForPeerForward(
+          operation,
+          args,
+          responseCookieTag,
+        );
+        return {
+          result: await this.executeOnPeer(operation, args, data, nextCookieTag, cancelled),
+        };
+      }
+      throw new FilesystemError(11, "host lease expired");
+    }
+    return undefined;
+  }
+
   private async executeLocalOnHost(
     operation: string,
     args: any[],
@@ -5577,38 +5627,16 @@ export class MultiTabBackend implements FilesystemBackend {
 
     // If lease expired before execution: renew first (or fail ECANCELED if disposing!)
     if (!this.isLeaseValid()) {
-      if (this.disposing) throw new FilesystemError(11, "host lease expired during dispose");
-      if (this.leaseOnlyLapsed(admittedTerm)) {
-        await this.renewLapsedLease(admittedTerm, cancelled, budget);
-      } else {
-        await raceWithAbort(
-          this.renewLeaseNow(this.currentAttemptId),
-          this.disposeAbort.signal,
-          cancelled,
-        );
-      }
-      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
-      if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
-      // A lease renewed with little time left can lapse again before this check; that lapse is
-      // renewed below like any other, not treated as a lost term.
-      if (!this.isLeaseValid() && !this.leaseOnlyLapsed(admittedTerm)) {
-        await this.awaitPendingFenceLoss(cancelled);
-        if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
-        if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
-        if (this.terminalFailure) {
-          throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
-        }
-        if (this.ownershipLost) throw new FilesystemError(11, "filesystem ownership lost");
-        if (this.role === "peer" || this.role === "failover" || this.role === "waiting") {
-          const nextCookieTag = this.revalidateCookieForPeerForward(
-            operation,
-            args,
-            responseCookieTag,
-          );
-          return this.executeOnPeer(operation, args, data, nextCookieTag, cancelled);
-        }
-        throw new FilesystemError(11, "host lease expired");
-      }
+      const forwarded = await this.renewBeforeLocalHostCall(
+        admittedTerm,
+        budget,
+        operation,
+        args,
+        data,
+        responseCookieTag,
+        cancelled,
+      );
+      if (forwarded) return forwarded.result;
     }
 
     if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
