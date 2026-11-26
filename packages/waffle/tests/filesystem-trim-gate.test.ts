@@ -98,7 +98,7 @@ test("an unlink through a backend wrapper over the same table is seen by the nex
   // A trim scan with nothing unlinked records the generation.
   await client.asyncCall("stat", [root]);
   const wrapper = new MemoryBackend(undefined, undefined, memory);
-  await wrapper.execute("removePath", [path, false], new Uint8Array(), () => false);
+  await wrapper.execute("removePath", [path, false], new Uint8Array());
   expect(memory.shared.isUnlinked(handle)).toBe(true);
   client.release(handle);
   await client.asyncCall("stat", [root]);
