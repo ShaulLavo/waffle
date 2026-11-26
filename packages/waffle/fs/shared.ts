@@ -2356,7 +2356,18 @@ export class SharedFilesystemState {
       this.section?.exit();
     }
   }
+  /** Moves on every unlink() through this state, the only place a slot becomes unlinked.
+   * Capability trimming compares it to skip rescans while nothing was unlinked. */
+  unlinkGeneration(): number {
+    return this.unlinks;
+  }
+  /** A state that replaces another continues past its count, so the generation never repeats. */
+  continueUnlinks(previous: SharedFilesystemState): void {
+    this.unlinks = previous.unlinks + 1;
+  }
+  private unlinks = 0;
   unlink(handle: FileHandle): void {
+    this.unlinks++;
     this.section?.enter();
     try {
       const slot = this.findSlot(handle);

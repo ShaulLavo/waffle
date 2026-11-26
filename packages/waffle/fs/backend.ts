@@ -165,10 +165,9 @@ export type MemoryBackendSharedRoot = Pick<FilesystemIdentity, "shared" | "maxBy
 
 export class MemoryBackend implements FilesystemBackend {
   private readonly watchOwner: { observer?: WatchMutationObserver };
-  /** Counts this backend's `shared.unlink` calls, the only place a slot becomes unlinked. */
-  private unlinks = 0;
+  /** The shared slot table's unlink count, so wrappers over the same table share it. */
   unlinkGeneration(): number {
-    return this.unlinks;
+    return this.shared.unlinkGeneration();
   }
   installWatchObserver(observer: WatchMutationObserver): void {
     if (this.watchOwner.observer && this.watchOwner.observer !== observer)
@@ -278,6 +277,7 @@ export class MemoryBackend implements FilesystemBackend {
       publication,
     );
     if (this.sharedPhase !== "imported") this.shared.identities.copyFrom(previous.identities);
+    this.shared.continueUnlinks(previous);
     this.sharedPhase = "attached";
   }
   /** revoked ends a wait for another owner's shared lock when the caller's request is cancelled. */
@@ -825,7 +825,6 @@ export class MemoryBackend implements FilesystemBackend {
   /** Nodes a discarded plan created never existed outside it: drop their slots and times. */
   private discardRegistered(registered: readonly FileHandle[]): void {
     for (const handle of registered) {
-      this.unlinks++;
       this.shared.unlink(handle);
       this.directoryTimes.delete(handle);
     }
@@ -924,7 +923,6 @@ export class MemoryBackend implements FilesystemBackend {
     }
     for (const entry of action.removed) {
       if (this.isLinked(entry.node)) continue;
-      this.unlinks++;
       this.shared.unlink(entry.handle);
       this.pruneDirectoryTimes(entry.handle, entry.node);
       if (this.shared.revision(entry.handle) === undefined)

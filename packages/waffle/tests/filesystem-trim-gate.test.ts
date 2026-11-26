@@ -87,3 +87,20 @@ test("a backend that reports unlinks without a generation is rescanned on every 
   for (let index = 0; index < 5; index++) await client.asyncCall("stat", [handle]);
   expect(scans - before).toBeGreaterThanOrEqual(5);
 });
+
+test("an unlink through a backend wrapper over the same table is seen by the next trim", async () => {
+  const { memory, client, transient } = fixture();
+  await client.asyncCall("writeFile", ["/w"], new Uint8Array([4]));
+  const root = await client.asyncCall("preopen", ["/"]);
+  const path = await client.asyncCall("resolve", [root, "w"]);
+  const handle = path.node as number;
+  client.retain(handle);
+  // A trim scan with nothing unlinked records the generation.
+  await client.asyncCall("stat", [root]);
+  const wrapper = new MemoryBackend(undefined, undefined, memory);
+  await wrapper.execute("removePath", [path, false], new Uint8Array(), () => false);
+  expect(memory.shared.isUnlinked(handle)).toBe(true);
+  client.release(handle);
+  await client.asyncCall("stat", [root]);
+  await eventually(() => !transient().has(handle));
+});
