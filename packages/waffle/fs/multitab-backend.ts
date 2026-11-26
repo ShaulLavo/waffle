@@ -3935,6 +3935,11 @@ export class MultiTabBackend implements FilesystemBackend {
         return;
       }
 
+      case "chunk-abort": {
+        this.discardHostStagedUpload(session, msg.uploadId);
+        return;
+      }
+
       case "chunk-get": {
         void this.handleHostChunkGet(session, msg);
         return;
@@ -5698,11 +5703,30 @@ export class MultiTabBackend implements FilesystemBackend {
     for (const wake of waiters) wake();
   }
 
+  private refundPeerCredits(sessionId: string, frames: number, bytes: number): void {
+    if (this.peerSessionId !== sessionId) return;
+    this.peerAvailableFrames += frames;
+    this.peerAvailableBytes += bytes;
+    this.wakePeerCreditWaiters();
+  }
+
+  private abortPeerUpload(sessionId: string, term: bigint, uploadId: string): void {
+    if (this.peerSessionId !== sessionId || !this.peerAttached) return;
+    this.postToPeerChannel({
+      kind: "chunk-abort",
+      hostTerm: formatTerm(term),
+      sessionId,
+      uploadId,
+    });
+  }
+
   private async reservePeerCredits(
     sessionId: string,
     frames: number,
     bytes: number,
+    cancelled?: () => boolean,
   ): Promise<void> {
+    if (cancelled?.()) throw abortError();
     while (
       this.peerSessionId === sessionId &&
       this.peerAttached &&
@@ -5710,12 +5734,22 @@ export class MultiTabBackend implements FilesystemBackend {
       !this.ownershipLost &&
       !this.terminalFailure &&
       !this.peerObservedHostFailed &&
+      !cancelled?.() &&
       (this.peerAvailableFrames < frames || this.peerAvailableBytes < bytes)
     ) {
-      await new Promise<void>((resolve) => {
+      let waiter!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        waiter = resolve;
         this.peerCreditWaiters.push(resolve);
       });
+      try {
+        await awaitUnlessCancelled(ready, cancelled);
+      } finally {
+        const idx = this.peerCreditWaiters.indexOf(waiter);
+        if (idx >= 0) this.peerCreditWaiters.splice(idx, 1);
+      }
     }
+    if (cancelled?.()) throw abortError();
     if (this.disposing || this.ownershipLost) {
       throw new FilesystemError(11, "filesystem is closing");
     }
@@ -5977,20 +6011,26 @@ export class MultiTabBackend implements FilesystemBackend {
     const remoteArgs = this.translateArgsToPeer(operation, args, term, sessionId);
     if (!remoteArgs) throw new FilesystemError(8);
 
+    let uploadId: string | undefined;
     let finalValue: unknown;
     try {
-      const { uploadId, inlineData } = await this.uploadPeerDataIfChunked(sessionId, term, data);
+      const uploaded = await this.uploadPeerDataIfChunked(sessionId, term, data, cancelled);
+      uploadId = uploaded.uploadId;
       const res = await this.sendPeerReq(
         sessionId,
         term,
         operation,
         remoteArgs,
         args,
-        inlineData,
+        uploaded.inlineData,
         uploadId,
         data.byteLength > MAX_FRAME_BYTES ? data.byteLength : undefined,
         responseCookieTag,
+        false,
+        undefined,
+        cancelled,
       );
+      uploadId = undefined;
       finalValue = await this.decodePeerResponseValue(
         sessionId,
         term,
@@ -5998,6 +6038,7 @@ export class MultiTabBackend implements FilesystemBackend {
         isReplayableRead(operation, args),
       );
     } catch (error) {
+      if (uploadId) this.abortPeerUpload(sessionId, term, uploadId);
       if (error instanceof RetryOnHostReadyError || error instanceof FailoverReplayError) {
         const queue =
           error instanceof RetryOnHostReadyError ? this.peerRetryQueue : this.peerFailoverQueue;
@@ -6046,15 +6087,23 @@ export class MultiTabBackend implements FilesystemBackend {
     sessionId: string,
     term: bigint,
     data: Uint8Array,
+    cancelled?: () => boolean,
   ): Promise<{ uploadId?: string; inlineData?: Uint8Array<ArrayBuffer> }> {
-    if (data.byteLength > MAX_FRAME_BYTES) {
-      if (data.byteLength > MAX_STAGED_UPLOAD_BYTES) {
-        throw new FilesystemError(22, "payload exceeds 32 MiB upload cap");
-      }
-      const uploadId = `up-${this.peerNextUploadId++}`;
-      const totalBytes = data.byteLength;
+    if (cancelled?.()) throw abortError();
+    if (data.byteLength <= MAX_FRAME_BYTES) {
+      return data.byteLength > 0 ? { inlineData: unsharedBytes(data) } : {};
+    }
+    if (data.byteLength > MAX_STAGED_UPLOAD_BYTES) {
+      throw new FilesystemError(22, "payload exceeds 32 MiB upload cap");
+    }
+    const uploadId = `up-${this.peerNextUploadId++}`;
+    const totalBytes = data.byteLength;
+    let staged = false;
+    try {
       for (let offset = 0; offset < totalBytes; offset += MAX_FRAME_BYTES) {
+        if (cancelled?.()) throw abortError();
         const end = Math.min(totalBytes, offset + MAX_FRAME_BYTES);
+        staged = true;
         await this.sendPeerChunkPut(
           sessionId,
           term,
@@ -6062,11 +6111,15 @@ export class MultiTabBackend implements FilesystemBackend {
           offset,
           totalBytes,
           unsharedBytes(data.subarray(offset, end)),
+          cancelled,
         );
       }
+      if (cancelled?.()) throw abortError();
       return { uploadId };
+    } catch (error) {
+      if (staged) this.abortPeerUpload(sessionId, term, uploadId);
+      throw error;
     }
-    return data.byteLength > 0 ? { inlineData: unsharedBytes(data) } : {};
   }
 
   private async decodePeerResponseValue(
@@ -6164,8 +6217,13 @@ export class MultiTabBackend implements FilesystemBackend {
     offset: number,
     totalBytes: number,
     chunk: Uint8Array<ArrayBuffer>,
+    cancelled?: () => boolean,
   ): Promise<void> {
-    await this.reservePeerCredits(sessionId, 1, chunk.byteLength);
+    await this.reservePeerCredits(sessionId, 1, chunk.byteLength, cancelled);
+    if (cancelled?.()) {
+      this.refundPeerCredits(sessionId, 1, chunk.byteLength);
+      throw abortError();
+    }
     const reqId = this.peerNextReqId++;
     await new Promise<void>((resolve, reject) => {
       this.peerInFlightRpcs.set(reqId, {
@@ -6244,9 +6302,14 @@ export class MultiTabBackend implements FilesystemBackend {
     responseCookieTag?: bigint,
     isWatchRead = false,
     localWatchId?: number,
+    cancelled?: () => boolean,
   ): Promise<Extract<PeerMessage, { kind: "res" }>> {
     const payloadBytes = data?.byteLength ?? 0;
-    await this.reservePeerCredits(sessionId, 1, payloadBytes);
+    await this.reservePeerCredits(sessionId, 1, payloadBytes, cancelled);
+    if (cancelled?.()) {
+      this.refundPeerCredits(sessionId, 1, payloadBytes);
+      throw abortError();
+    }
     const reqId = this.peerNextReqId++;
     return new Promise<Extract<PeerMessage, { kind: "res" }>>((resolve, reject) => {
       this.peerInFlightRpcs.set(reqId, {

@@ -4094,6 +4094,103 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     }
   });
 
+  test("cancelled Peer chunked append mid-upload never posts mutation req and releases staged upload", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-peer-chunk-cancel-${crypto.randomUUID()}`;
+
+    let tabA: TestTab | undefined;
+    let tabB: TestTab | undefined;
+    try {
+      tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+      tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/chunk-cancel.txt", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await tabA.client.asyncCall("flush", []);
+
+      const payload = new Uint8Array(1_572_864);
+      payload.fill(0x41);
+      const completion = tabB.client.submit(
+        "writeFile",
+        ["/chunk-cancel.txt", true, false],
+        payload,
+      );
+
+      let firstChunkReqId: number | undefined;
+      let cancelledMidUpload = false;
+      let sawWriteFileReq = false;
+      let stagedBytesAtCancel = 0;
+      hub.interceptor = (_ch, sender, data) => {
+        const msg = data as
+          | { kind?: string; op?: string; reqId?: number; offset?: number }
+          | undefined;
+        if (!msg) return;
+        if (sender.ownerTag === "tab-B" && msg.kind === "chunk-put" && msg.offset === 0) {
+          firstChunkReqId = msg.reqId;
+        }
+        if (sender.ownerTag === "tab-B" && msg.kind === "req" && msg.op === "writeFile") {
+          sawWriteFileReq = true;
+        }
+        // Cancel while chunk-put #1 ack is in flight to tab-B (Host has already staged the upload).
+        if (
+          !cancelledMidUpload &&
+          sender.ownerTag === "tab-A" &&
+          msg.kind === "res" &&
+          firstChunkReqId !== undefined &&
+          msg.reqId === firstChunkReqId
+        ) {
+          cancelledMidUpload = true;
+          stagedBytesAtCancel = tabA!.backend.resources().multitabHostUsedUploadBytes ?? 0;
+          completion.cancel();
+        }
+      };
+
+      try {
+        let caught: unknown;
+        try {
+          await completion.value();
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(FilesystemError);
+        expect((caught as FilesystemError).errno).toBe(11);
+      } finally {
+        completion.release();
+      }
+
+      expect(cancelledMidUpload).toBe(true);
+      expect(stagedBytesAtCancel).toBe(payload.byteLength);
+      await waitUntil(
+        () => (tabA!.backend.resources().multitabHostUsedUploadBytes ?? 0) === 0,
+        4000,
+        "Host released staged upload after chunk-abort",
+      );
+      expect(sawWriteFileReq).toBe(false);
+
+      // Subsequent Peer writes and flushes must succeed (credits and barrier intact) and file stays "old".
+      hub.interceptor = undefined;
+      await tabB.client.asyncCall(
+        "writeFile",
+        ["/after-cancel.txt", false, false],
+        new TextEncoder().encode("ok"),
+      );
+      await tabB.client.asyncCall("flush", []);
+      const unchanged: Uint8Array = await tabA.client.asyncCall("readFile", ["/chunk-cancel.txt"]);
+      expect(new TextDecoder().decode(unchanged)).toBe("old");
+      const after: Uint8Array = await tabA.client.asyncCall("readFile", ["/after-cancel.txt"]);
+      expect(new TextDecoder().decode(after)).toBe("ok");
+    } finally {
+      hub.interceptor = undefined;
+      await tabB?.close();
+      await tabA?.close();
+    }
+  });
+
   test("Peer chunked write interrupted by step-down retry orders write reply -> flush reply -> later write", async () => {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();

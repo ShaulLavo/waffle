@@ -341,6 +341,12 @@ export type PeerMessage =
       readonly chunk: Uint8Array;
     }
   | {
+      readonly kind: "chunk-abort";
+      readonly hostTerm: string;
+      readonly sessionId: string;
+      readonly uploadId: string;
+    }
+  | {
       readonly kind: "chunk-get";
       readonly hostTerm: string;
       readonly sessionId: string;
@@ -534,6 +540,8 @@ export function isPeerMessage(value: unknown): value is PeerMessage {
         typeof value.totalBytes === "number" &&
         value.chunk instanceof Uint8Array
       );
+    case "chunk-abort":
+      return typeof value.uploadId === "string";
     case "chunk-get":
       return (
         typeof value.reqId === "number" &&
