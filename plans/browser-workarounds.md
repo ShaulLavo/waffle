@@ -27,7 +27,9 @@ while the underlying behavior persists.
   [Reproduction and engine revision](browser-runtime.md#serial-guest-watch-notification-stall),
   [relay fix](https://github.com/ShaulLavo/waffle/pull/375), and
   [handoff runner](../packages/waffle/tests/notification-race-browser-runner.ts).
-- **Cost.** Up to three reusable blocking wait Workers per guest. The relay remains event-driven.
+- **Cost.** Up to three reusable blocking wait Workers per guest, started only once the guest
+  parks in a notification wait and waiting only while it stays parked. A guest that never
+  blocks there (the Browser engine's event loop) starts none. The relay remains event-driven.
 - **Removal check.** Before switching back to native async waits, repeat the isolated handoffs
   and real quiet and socket-ordered watch writes with the workaround disabled on supported
   affected engines. Require each successful notify to settle without an unrelated message and
