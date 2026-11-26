@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { NetHelper, NetNamespace } from "../browser/net/helper.js";
 import { NetHost } from "../browser/net/host.js";
 import { AGAIN, ERROR, Kind, OK } from "../browser/net/protocol.js";
-import { createRing, RingReader } from "../browser/net/ring.js";
+import { CAPACITY, createRing, RingReader } from "../browser/net/ring.js";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 function text(value: Uint8Array | number): string {
@@ -527,6 +527,42 @@ test("an aborted request sends none of its queued upload to a ring-backed server
     expect(helper.request(32133, upload(), recordingSink([]))).toBe(true);
     await Bun.sleep(5);
     expect(reader.drain().map((record) => record.kind)).toContain(Kind.Data);
+  } finally {
+    helper.dispose();
+    namespace.dispose();
+  }
+});
+
+test("an aborted upload that waits for a full ring publishes no more of it before the end", async () => {
+  const sab = createRing();
+  const reader = new RingReader(sab);
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(
+    sab,
+    async () => {
+      throw Error("External fetch");
+    },
+    {},
+    namespace,
+  );
+  try {
+    helper.handle({ type: "listen", id: 1, port: 32136, host: "localhost" });
+    const controller = new AbortController();
+    // Twice the ring's capacity: the ring fills, and the next chunk waits for space.
+    const body = new Uint8Array(2 * CAPACITY).fill(42);
+    const request = { method: "POST", target: "/upload", headers: [], body };
+    expect(helper.request(32136, request, recordingSink([]), { signal: controller.signal })).toBe(
+      true,
+    );
+    await Bun.sleep(20);
+    // The guest reads what is in the ring, which frees space for the waiting chunk, and the
+    // request is aborted before that chunk is published.
+    const before = reader.drain();
+    expect(before[0]?.kind).toBe(Kind.Conn);
+    expect(before.filter((record) => record.kind === Kind.Data).length).toBeGreaterThan(0);
+    controller.abort();
+    await Bun.sleep(20);
+    expect(reader.drain().map((record) => record.kind)).toEqual([Kind.End]);
   } finally {
     helper.dispose();
     namespace.dispose();

@@ -1150,9 +1150,11 @@ export class NetHelper {
     bytes: Uint8Array,
     live?: () => boolean,
   ): Promise<void> {
+    const dropped = live && (() => !live());
     for (let at = 0; at < bytes.length; at += MAX_RECORD) {
-      if (live && !live()) return;
-      await this.ring.write(handle, Kind.Data, bytes.subarray(at, at + MAX_RECORD));
+      if (dropped?.()) return;
+      // A chunk still waiting for ring space is dropped too when the stream stops.
+      await this.ring.write(handle, Kind.Data, bytes.subarray(at, at + MAX_RECORD), dropped);
     }
   }
 }
