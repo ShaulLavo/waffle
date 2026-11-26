@@ -351,8 +351,20 @@ export function decode(data: Uint8Array): string {
 
 export class MemFS implements FileSystem {
   onChange?: (node: Node) => void;
+  /** Fires when a directory gains or loses a child name (bytes = 64 + name.length * 2). */
+  onDirEntryDelta?: (dir: DirNode, deltaBytes: number) => void;
   /** Namespace edge changes; moving an existing edge leaves its count unchanged. */
   onLinkChange?: (node: Node, delta: 1 | -1) => void;
+  private setChild(parent: DirNode, name: string, child: Node): void {
+    const existed = parent.children.has(name);
+    parent.children.set(name, child);
+    if (!existed) this.onDirEntryDelta?.(parent, 64 + name.length * 2);
+  }
+  private deleteChild(parent: DirNode, name: string): boolean {
+    const deleted = parent.children.delete(name);
+    if (deleted) this.onDirEntryDelta?.(parent, -(64 + name.length * 2));
+    return deleted;
+  }
   private changed(node: Node): void {
     this.onChange?.(node);
   }
@@ -450,13 +462,17 @@ export class MemFS implements FileSystem {
     if (handle !== undefined && !this.references.has(handle)) this.handles.delete(handle);
     if (node.kind === "dir") {
       this.removedDirectories.add(node);
-      for (const child of node.children.values()) {
+      const trackDelta = this.onDirEntryDelta !== undefined;
+      let delta = 0;
+      for (const [name, child] of node.children) {
+        if (trackDelta) delta -= 64 + name.length * 2;
         this.changeLinkCount(child, -1);
         this.forget(child);
       }
       // Recursive removal removes directory entries, not the bytes of separately open files.
       this.directoryPages(node).clear();
       node.children.clear();
+      if (delta) this.onDirEntryDelta?.(node, delta);
     }
   }
   nodeForHandle(handle: FileHandle): Node {
@@ -775,7 +791,7 @@ export class MemFS implements FileSystem {
     const node = kind === "file" ? newFile() : kind === "socket" ? newSocket() : newDir();
     this.directoryPages(parent).reserve(1);
     this.pageEntry(parent, path.name, node);
-    parent.children.set(path.name, node);
+    this.setChild(parent, path.name, node);
     this.changeLinkCount(node, 1);
     this.onLinkChange?.(node, 1);
     modified(parent, node.ctime);
@@ -914,7 +930,7 @@ export class MemFS implements FileSystem {
     if (typeof parent === "number") return parent;
     this.directoryPages(parent).reserve(1);
     this.pageEntry(parent, to.name, node);
-    parent.children.set(to.name, node);
+    this.setChild(parent, to.name, node);
     this.changeLinkCount(node, 1);
     this.onLinkChange?.(node, 1);
     const time = fileTimeNow();
@@ -935,7 +951,7 @@ export class MemFS implements FileSystem {
     const parent = this.directory(path.parent);
     if ((parent.mode & 0o300) !== 0o300) return 2;
     this.pageEntry(parent, path.name, undefined);
-    parent.children.delete(path.name);
+    this.deleteChild(parent, path.name);
     this.changeLinkCount(node, -1);
     this.onLinkChange?.(node, -1);
     const time = fileTimeNow();
@@ -971,11 +987,11 @@ export class MemFS implements FileSystem {
     this.directoryPages(parent).reserve(1);
     this.pageEntry(sourceParent, from.name, undefined);
     this.pageEntry(parent, to.name, node);
-    sourceParent.children.delete(from.name);
+    this.deleteChild(sourceParent, from.name);
     const time = fileTimeNow();
     modified(sourceParent, time);
     node.ctime = time;
-    parent.children.set(to.name, node);
+    this.setChild(parent, to.name, node);
     if (node.kind === "dir") this.directoryParents.set(node, parent);
     if (target) {
       this.forget(target);
@@ -1261,8 +1277,8 @@ export class MemFS implements FileSystem {
       this.pageEntry(edge.parent, edge.name, edge.after);
       if (edge.before) this.changeLinkCount(edge.before, -1);
       if (edge.after) this.changeLinkCount(edge.after, 1);
-      if (edge.after) edge.parent.children.set(edge.name, edge.after);
-      else edge.parent.children.delete(edge.name);
+      if (edge.after) this.setChild(edge.parent, edge.name, edge.after);
+      else this.deleteChild(edge.parent, edge.name);
       if (edge.after?.kind === "dir") this.directoryParents.set(edge.after, edge.parent);
       if (edge.after && created.has(edge.after)) this.onLinkChange?.(edge.after, 1);
     }
@@ -1351,7 +1367,7 @@ export class MemFS implements FileSystem {
     if (!edge) return false;
     const { parent, name, node } = edge;
     this.pageEntry(parent, name, undefined);
-    const removed = parent.children.delete(name);
+    const removed = this.deleteChild(parent, name);
     if (removed) {
       this.changeLinkCount(node, -1);
       this.onLinkChange?.(node, -1);

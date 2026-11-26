@@ -911,11 +911,14 @@ not to ordinary guest I/O or application-selected blocking pipe semantics.
 
 ## Mixed notification waits
 
-The browser broker can own one notification helper Worker per guest. Pass
-`notificationWorkerUrl` to `BrowserProcessBroker.launchWorker()`. Bundle the
+The browser broker gives each guest a notification connection to one helper Worker that the
+page shares among all guests using the same `notificationWorkerUrl`. The helper starts with the
+first connection and is terminated with the last. Pass `notificationWorkerUrl` to
+`BrowserProcessBroker.launchWorker()`. Bundle the
 `waffle/browser/notification-worker` entry separately as a module Worker, just as
-an embedding bundles its guest Worker. Both Workers require shared memory and
-`Atomics.waitAsync`. The guest remains free to block synchronously.
+an embedding bundles its guest Worker. Both Workers require shared memory. The guest
+Worker's lifetime observer also needs `Atomics.waitAsync`; the helper uses only blocking
+waits in its own child Workers. The guest remains free to block synchronously.
 
 `bootstrap()` supplies `context.notifications: NotificationWaitScope | undefined`
 and `context.signal: AbortSignal`. Arm the scope in the awaited `instantiated`
@@ -949,6 +952,20 @@ host-local news synchronously and returns a detach function. Forwarding does not
 clear `localNews`; `poll(0)` and normal network drains keep their existing behavior.
 `NetHost.notification` alone covers GEN0, not local news.
 
+The helper waits on those words only while the guest is parked. Before `wait()` blocks, it
+stores a fresh park id in the connection state and sends it with the source values it
+observed. It rechecks the sources after storing the id and clears the id when the blocking
+call returns. Ids are never reused for a later wait. The helper publishes on the first
+difference, or on a wake of a word still at its parked value, only by consuming the active id
+with a compare-exchange. A retired park never publishes, and a failed claim means the guest
+is running or a newer park is on its way, so the helper drops it. Source traffic while the guest runs costs the helper nothing, and a guest that
+never blocks in `wait()` starts no blocking wait Workers. A malformed request fails that
+guest's connection: the guest receives an error reply and the page fences its state.
+
+Filesystem revocation and reap advance the watch word as well as notifying it, because they
+can make a watch readable. A park taken before a revocation therefore differs by value, even
+when the notify landed before the helper registered its wait.
+
 `covered` is conservative. Process registration with `registerPoll(subscriptions,
 "shared")` owns no guest-local release callbacks and covers only sources already
 publishing to the process common word. Independent streams, terminal/resize
@@ -957,8 +974,10 @@ existing 10 ms fallback. Changing subscriptions recomputes coverage. Existing
 `runtime_proc.poll` and ordinary local `registerPoll()` behavior are unchanged.
 
 The broker installs external ownership before launch and revocation registration.
-It fences the common state and terminates the helper on revoke, startup failure
-and guest completion, and before physical guest termination. Broker disposal joins
+It fences the common state and removes the guest's connection from the helper on revoke,
+startup failure and guest completion, and before physical guest termination. Removal settles
+once the helper has dropped the connection, or once the helper Worker is terminated when that
+was its last connection. One guest's malformed message fails only its own connection. Broker disposal joins
 its physical stop operations before retiring ownership. On browsers,
 `Worker.terminate()` has no exit-event promise; on hosts returning a termination
 promise, disposal awaits it. No cleanup depends on running a guest closure after
@@ -1339,7 +1358,8 @@ notification index), `ENOMEM` 48 (native backing allocation failure), `ENOTSUP` 
 descriptor rights are required. The authority is the caller's own open description plus the
 service's capability and inode checks.
 
-Each watch keeps its own `observed` copy of the root's commit counter (`cells[3]`), sampled before
+Each watch keeps its own `observed` copy of the root's commit counter (`cells[3]`, which
+revocation and reap also advance), sampled before
 the open's service call. `watch_read` first copies whole records from the watch's local queue.
 With an empty queue, an unchanged counter returns `EAGAIN` without a service call. A moved counter
 updates `observed` before one synchronous service read, whose batch fills the queue; an overflow

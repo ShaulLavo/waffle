@@ -13,7 +13,14 @@ import {
 import { FilesystemError, PAGE } from "./protocol.js";
 import type { FileHandle, FileStat } from "../core/index.js";
 import { MemoryBackend, type LocalMutationPlan, type MemoryBackendSharedRoot } from "./backend.js";
-import { MemFS, adoptInodes, type Node, type FileNode, type NamespacePlan } from "./memory.js";
+import {
+  MemFS,
+  adoptInodes,
+  type DirNode,
+  type Node,
+  type FileNode,
+  type NamespacePlan,
+} from "./memory.js";
 import {
   storeTime,
   validatePersistedIndex,
@@ -57,6 +64,9 @@ export class PersistentBackend extends MemoryBackend {
   private readonly pressure: CheckpointPressure;
   private nodes = new Map<number, Node>();
   private byFileId = new Map<bigint, Node>();
+  private dirEntryBytes = new WeakMap<DirNode, number>();
+  private namespaceBytes = 0;
+  private idleChangeSequence: number | undefined;
   private readonly initialWorkspaceId: string;
   private readonly initialEra: bigint;
   private readonly loadedIndex: boolean;
@@ -103,6 +113,7 @@ export class PersistentBackend extends MemoryBackend {
       this.links.set(node.ino, (this.links.get(node.ino) ?? 0) + 1);
       if (this.nodes.has(node.ino)) return;
       this.nodes.set(node.ino, node);
+      this.namespaceBytes += this.nodeMetadataBytes(node);
       if (node.identity) this.byFileId.set(node.identity.id, node);
       if (node.kind === "dir") for (const child of node.children.values()) visit(child);
     };
@@ -116,6 +127,11 @@ export class PersistentBackend extends MemoryBackend {
       }
       this.committedKeys = new Map(this.keys);
     } else this.dirty.add(fs.root);
+    fs.onDirEntryDelta = (dir, delta) => {
+      const existing = this.dirEntryBytes.get(dir);
+      if (existing !== undefined) this.dirEntryBytes.set(dir, existing + delta);
+      if (this.nodes.has(dir.ino)) this.namespaceBytes += delta;
+    };
     fs.onLinkChange = (node, delta) => this.changeLinks(node, delta);
     fs.onChange = (node) => {
       if (!this.detached.has(node)) {
@@ -160,10 +176,18 @@ export class PersistentBackend extends MemoryBackend {
   setTerminalFailureListener(listener: (reason: unknown) => void): void {
     this.storage.setTerminalFailureListener?.(listener);
   }
+  private hasPendingChanges(): boolean {
+    if (this.dirty.size > 0 || this.removed.size > 0 || this.shared.publication) return true;
+    return (
+      this.idleChangeSequence === undefined ||
+      this.shared.changeSequence !== this.idleChangeSequence
+    );
+  }
   private startTimer(intervalMs: number): void {
     if (intervalMs > 0)
       this.timer = setInterval(() => {
-        if (!this.stopped && !this.pendingCheckpoints) void this.checkpoint().catch(() => {});
+        if (!this.stopped && !this.pendingCheckpoints && this.hasPendingChanges())
+          void this.checkpoint().catch(() => {});
       }, intervalMs);
   }
   static async open(
@@ -232,6 +256,7 @@ export class PersistentBackend extends MemoryBackend {
     else this.links.delete(node.ino);
     if (delta === 1 && previous === 0) {
       this.nodes.set(node.ino, node);
+      this.namespaceBytes += this.nodeMetadataBytes(node);
       if (node.identity) this.byFileId.set(node.identity.id, node);
       this.detached.delete(node);
       const key = this.detachedKeys.get(node.ino);
@@ -249,6 +274,7 @@ export class PersistentBackend extends MemoryBackend {
         for (const child of node.children.values()) this.changeLinks(child, 1);
     } else if (delta === -1 && count === 0) {
       this.nodes.delete(node.ino);
+      this.namespaceBytes -= this.nodeMetadataBytes(node);
       this.dirty.delete(node);
       this.detached.add(node);
       this.removed.add(node.ino);
@@ -486,9 +512,7 @@ export class PersistentBackend extends MemoryBackend {
     return this.ownWork(load);
   }
   private namespaceUnits(): number {
-    let units = 0;
-    for (const node of this.nodes.values()) units += this.nodeMetadataBytes(node) * 4;
-    return units;
+    return this.namespaceBytes * 4;
   }
   private configureDirty(): void {
     if (this.dirtyLimits === false) return;
@@ -501,7 +525,10 @@ export class PersistentBackend extends MemoryBackend {
   override attachShared(...args: Parameters<MemoryBackend["attachShared"]>): void {
     const previous = this.shared;
     super.attachShared(...args);
-    if (previous !== this.shared) this.configureDirty();
+    if (previous !== this.shared) {
+      this.idleChangeSequence = undefined;
+      this.configureDirty();
+    }
   }
   private namespaceGrowth(plan: NamespacePlan): number {
     let units = plan.created.reduce((sum, node) => sum + this.nodeMetadataBytes(node), 0);
@@ -689,13 +716,18 @@ export class PersistentBackend extends MemoryBackend {
       void work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
     });
   }
+  private cachedDirEntryBytes(node: DirNode): number {
+    let entryBytes = this.dirEntryBytes.get(node);
+    if (entryBytes !== undefined) return entryBytes;
+    entryBytes = 0;
+    for (const name of node.children.keys()) entryBytes += 64 + name.length * 2;
+    this.dirEntryBytes.set(node, entryBytes);
+    return entryBytes;
+  }
   private nodeMetadataBytes(node: Node): number {
-    let bytes = 256;
-    if (node.kind === "symlink")
-      return bytes + node.target.length * 2 + utf8ByteLength(node.target);
-    if (node.kind !== "dir") return bytes;
-    for (const name of node.children.keys()) bytes += 64 + name.length * 2;
-    return bytes;
+    if (node.kind === "symlink") return 256 + node.target.length * 2 + utf8ByteLength(node.target);
+    if (node.kind === "dir") return 256 + this.cachedDirEntryBytes(node);
+    return 256;
   }
   private pinMetadataBytes(): number {
     let bytes = 0;
@@ -754,10 +786,36 @@ export class PersistentBackend extends MemoryBackend {
     return true;
   }
   private invalidateCapturedState(): void {
+    this.idleChangeSequence = undefined;
     this.keys = new Map(this.committedKeys);
     // Cold baselines still identify retained durable bytes. Only resident captures need retry.
     for (const handle of this.revisions.keys())
       if (this.shared.isResident(handle)) this.revisions.delete(handle);
+  }
+  private reconcileDirtyAfterCommit(revision: number): void {
+    if (!this.shared.dirtyAdmission.enabled || this.pendingCheckpoints > 0) return;
+    const namespace = this.namespaceUnits();
+    if (
+      this.shared.dirtyAdmission.revision === revision &&
+      !this.dirty.size &&
+      !this.removed.size
+    ) {
+      this.shared.reconcileDirty(this.registeredNodes.keys(), namespace, 0, () => false);
+      return;
+    }
+    let dirtyNamespace = this.removed.size * 256;
+    for (const node of this.dirty) dirtyNamespace += this.nodeMetadataBytes(node);
+    this.shared.reconcileDirty(
+      this.registeredNodes.keys(),
+      namespace,
+      dirtyNamespace * 4,
+      (handle, kind, currentRevision, dirtyMark) => {
+        if (kind === 1) return currentRevision !== this.revisions.get(handle);
+        if (dirtyMark !== 1) return false;
+        const node = this.registeredNodes.get(handle);
+        return node !== undefined && this.dirty.has(node);
+      },
+    );
   }
   private reserveCheckpoint(request: CheckpointRequest): Promise<void> {
     const cost = { ...this.captureCost(request) };
@@ -772,13 +830,21 @@ export class PersistentBackend extends MemoryBackend {
     const revision = this.includesDetachedWriters(request)
       ? this.shared.dirtyAdmission.revision
       : undefined;
+    const capturedChangeSeq = this.shared.changeSequence;
     try {
       return this.captureReserved(request, reservation, cost)
         .then(() => {
-          if (revision === undefined) return;
-          this.shared.mutate(undefined, undefined, () =>
-            this.shared.cleanDirty(revision, this.namespaceUnits()),
-          );
+          if (this.stopped) return;
+          this.shared.mutate(undefined, undefined, () => {
+            if (
+              !this.pendingCheckpoints &&
+              !this.dirty.size &&
+              !this.removed.size &&
+              this.shared.changeSequence === capturedChangeSeq
+            )
+              this.idleChangeSequence = capturedChangeSeq;
+            if (revision !== undefined) this.reconcileDirtyAfterCommit(revision);
+          });
         })
         .finally(() => {
           this.pressure.release(reservation);

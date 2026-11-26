@@ -160,6 +160,20 @@ export class NotificationWaitScope {
     initialCoverage: boolean,
   ): NotificationWaitSet {
     let covered = initialCoverage;
+    // The relay waits on the source words only while this guest is parked. Every wait attempt
+    // posts a fresh park id, stored in state[2] while the guest is blocked; the relay publishes
+    // only by consuming it. Ids are never reactivated, so a relay that fails to claim one can
+    // drop it without stranding a sleeping guest.
+    const active = this.connection.state;
+    let nextPark = 1;
+    const park = (observed: NotificationSample): void => {
+      const values = parkValues(observed, network !== undefined, process !== undefined);
+      const id = nextPark;
+      nextPark = nextPark === 0x7fffffff ? 1 : nextPark + 1;
+      atomicsStore(active, 2, id);
+      this.send({ type: "park", id, values });
+    };
+    const retire = () => atomicsStore(active, 2, 0);
     const disposed = () => this.status === "closed" || atomicsLoad(this.connection.state, 1) !== 0;
     const sample = (): NotificationSample => ({
       sequence: atomicsLoad(this.wake, 0),
@@ -176,18 +190,36 @@ export class NotificationWaitScope {
       },
       sample,
       wait: (observed, deadline) => {
+        // Disposal stores the fence before it moves the sequence, so any sequence change it
+        // caused is seen together with the fence: every return reports "closed" first.
+        const settled = (result: NotificationWaitResult): NotificationWaitResult =>
+          disposed() ? "closed" : result;
         if (disposed()) return "closed";
-        const current = sample();
-        if (changed(observed, current)) return "not-equal";
+        if (changed(observed, sample())) return settled("not-equal");
         const remaining = deadline === Infinity ? Infinity : maximum(0, deadline - now());
-        if (remaining === 0) return "timed-out";
+        if (remaining === 0) return settled("timed-out");
+        try {
+          park(observed);
+        } catch {
+          // An unreachable relay cannot wake this guest: close the set instead of sleeping.
+          retire();
+          this.cleanupStep(() => this.dispose());
+          return "closed";
+        }
+        // Recheck after activating the park: a change the relay saw while it was inactive is
+        // visible here, so the relay dropping that park loses nothing.
+        if (changed(observed, sample())) {
+          retire();
+          return settled("not-equal");
+        }
         const result = atomicsWait(
           this.wake,
           0,
           observed.sequence,
           covered ? remaining : minimum(remaining, 10),
         );
-        return disposed() ? "closed" : result;
+        retire();
+        return settled(result);
       },
       setProcessSubscriptions(subscriptions) {
         covered =
@@ -229,6 +261,15 @@ export class NotificationWaitScope {
       this.cleanupError ??= { error };
     }
   }
+}
+
+/** Values in armed word order: filesystem, then network and process when armed. */
+function parkValues(sample: NotificationSample, network: boolean, process: boolean): number[] {
+  const filesystem = sample.filesystem;
+  if (network && process) return [filesystem, sample.network!, sample.process!];
+  if (network) return [filesystem, sample.network!];
+  if (process) return [filesystem, sample.process!];
+  return [filesystem];
 }
 
 function changed(before: NotificationSample, after: NotificationSample): boolean {

@@ -76,6 +76,7 @@ const FREED_REVISION_HIGH = 8;
 // not scan the whole identity table. Other header words: 9 and 10 are DirtyAdmission's
 // signals, 16 to 24 the identity allocator, and 32 onward the dirty-admission ledger.
 const REGISTERED_SLOTS = 11;
+const CHANGE_SEQUENCE = 12;
 // Unlinks of this table, for capability trimming. Kept across remount, so it never repeats.
 const UNLINK_GENERATION = 31;
 // Global-lock accelerators. Nothing below a hint is free; ownership stays authoritative.
@@ -841,11 +842,15 @@ export class SharedFilesystemState {
       (this.slots[base + REVISION]! >>> 0)
     );
   }
+  get changeSequence(): number {
+    return Atomics.load(this.cells, CHANGE_SEQUENCE);
+  }
   private changed(slot: number): void {
     const base = slot * SLOT_WORDS,
       low = this.slots[base + REVISION]!;
     this.slots[base + REVISION] = low + 1;
     if (low === -1) this.slots[base + REVISION_STATE] = this.slots[base + REVISION_STATE]! + 2;
+    Atomics.add(this.cells, CHANGE_SEQUENCE, 1);
   }
   private residentBytes(): number {
     return Atomics.load(this.cells, USED_PAGES) * DATA_PAGE_BYTES;
@@ -892,12 +897,42 @@ export class SharedFilesystemState {
       this.slots[this.at(slot, DIRTY_MARK)] = 1;
     }
   }
-  cleanDirty(revision: number, namespace: number): void {
-    if (!this.dirtyAdmission.clean(revision, namespace)) return;
-    for (let slot = 1; slot < MAX_FILES; slot++) {
-      this.slots[this.at(slot, DIRTY_SIZE)] = 0;
-      this.slots[this.at(slot, DIRTY_MARK)] = 0;
+  reconcileDirty(
+    handles: Iterable<FileHandle>,
+    namespace: number,
+    dirtyNamespace: number,
+    isDirty: (handle: FileHandle, kind: number, revision: number, dirtyMark: number) => boolean,
+  ): void {
+    if (!this.dirtyAdmission.enabled) return;
+    let dirtyBytes = 0;
+    let dirtyMetadata = 0;
+    for (const handle of handles) {
+      const slot = this.findSlot(handle);
+      if (!slot) continue;
+      if (this.staged.size && this.staged.has(slot)) this.settleUnderLock(slot);
+      const base = slot * SLOT_WORDS;
+      const kind = this.slots[base]!;
+      if (!kind || this.slots[base + HANDLE] !== handle + 1) continue;
+      const revision = this.getRevision(slot);
+      const dirtyMark = this.slots[base + DIRTY_MARK]!;
+      if (!isDirty(handle, kind, revision, dirtyMark)) {
+        this.slots[base + DIRTY_SIZE] = 0;
+        this.slots[base + DIRTY_MARK] = 0;
+        continue;
+      }
+      if (kind === 1) {
+        const resident = (this.slots[base + REVISION_STATE]! & RESIDENT) !== 0;
+        const size = resident ? this.slots[base + FILE_SIZE]! : 0;
+        this.slots[base + DIRTY_SIZE] = size;
+        this.slots[base + DIRTY_MARK] = 1;
+        dirtyBytes += size * 2;
+      } else {
+        this.slots[base + DIRTY_SIZE] = 0;
+        this.slots[base + DIRTY_MARK] = 1;
+      }
+      dirtyMetadata += DIRTY_NODE_UNITS;
     }
+    this.dirtyAdmission.reconcile(namespace, dirtyNamespace, dirtyBytes, dirtyMetadata);
   }
   private checkFile(slot: number, handle: FileHandle): void {
     if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
@@ -2045,6 +2080,7 @@ export class SharedFilesystemState {
       if (slots[base + REVISION_STATE]! & RESIDENT) this.changed(stage.slot);
     }
     slots[base + REVISION_STATE] = slots[base + REVISION_STATE]! | RESIDENT;
+    Atomics.add(this.cells, CHANGE_SEQUENCE, 1);
   }
   /** Caller owns the global mutation lock. Undefined asks for service growth after unlock. */
   tryWrite(
@@ -2453,9 +2489,15 @@ export class SharedFilesystemState {
     if (this.slots[this.at(slot, UNLINKED)])
       this.publication?.forgetContent(this.slots[this.at(slot, INO)]!);
     this.freePagesLocked(slot);
+    const dirtySize = this.slots[this.at(slot, DIRTY_SIZE)]!;
+    const dirtyMark = this.slots[this.at(slot, DIRTY_MARK)]!;
     this.dirtyAdmission.pin(-1, this.residentBytes());
     this.slots[this.at(slot, DIRTY_SIZE)] = 0;
     this.slots[this.at(slot, DIRTY_MARK)] = 0;
+    if (dirtySize || dirtyMark) {
+      this.dirtyAdmission.releaseSlot(dirtySize * 2, dirtyMark ? DIRTY_NODE_UNITS : 0);
+      Atomics.add(this.cells, CHANGE_SEQUENCE, 1);
+    }
     const revision = this.getRevision(slot);
     const floor =
       (this.cells[FREED_REVISION_HIGH]! >>> 0) * 0x100000000 +

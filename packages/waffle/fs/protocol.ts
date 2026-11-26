@@ -424,7 +424,9 @@ export function revokeFilesystemService(connection: FilesystemIdentity): void {
 export function revokeFilesystem(connection: FilesystemIdentity): void {
   Atomics.compareExchange(new Int32Array(connection.revocations[0]!), 0, 0, 1);
   Atomics.compareExchange(new Int32Array(connection.ownerStates), connection.owner, 0, 1);
-  wakeFilesystemWatch(connection.shared);
+  // Revocation can make a watch readable, so it moves the observed watch generation: a waiter
+  // that registers after this notify still sees the change by value.
+  wakeFilesystemWatch(connection.shared, true);
   wakeTransport(connection);
 }
 /** Revokes synchronously, then waits without blocking the supervisor's event loop. Resolving
@@ -459,7 +461,7 @@ export async function waitForFilesystemQuiescence(connection: FilesystemIdentity
 export function reapFilesystem(connection: FilesystemIdentity): void {
   Atomics.store(new Int32Array(connection.revocations[0]!), 0, 2);
   Atomics.store(new Int32Array(connection.ownerStates), connection.owner, 2);
-  wakeFilesystemWatch(connection.shared);
+  wakeFilesystemWatch(connection.shared, true);
   if (connection.publication)
     new PublicationDomain(connection.publication.buffers).retireSession(
       connection.publication.session,
