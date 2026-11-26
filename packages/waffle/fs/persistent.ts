@@ -47,6 +47,11 @@ interface CheckpointCapture {
   readonly detachedSnapshots: Map<FileNode, { handle: FileHandle; key: string; revision: number }>;
 }
 
+const BURST_MAX_MULTIPLIER = 10;
+const BURST_MAX_INTERVAL_MS = 500;
+const BURST_DIRTY_NODE_WATERMARK = 512;
+const BURST_RESIDENT_BYTES_WATERMARK = 8 * 1024 * 1024;
+
 interface CheckpointEpoch {
   failure?: { cause: unknown };
 }
@@ -67,6 +72,10 @@ export class PersistentBackend extends MemoryBackend {
   private dirEntryBytes = new WeakMap<DirNode, number>();
   private namespaceBytes = 0;
   private idleChangeSequence: number | undefined;
+  private mutationSerial = 0;
+  private burstLevel = 0;
+  private burstFirstDirtyAt: number | undefined;
+  private burstLastActivity: { mem: number; shared: number } | undefined;
   private readonly initialWorkspaceId: string;
   private readonly initialEra: bigint;
   private readonly loadedIndex: boolean;
@@ -128,6 +137,7 @@ export class PersistentBackend extends MemoryBackend {
       this.committedKeys = new Map(this.keys);
     } else this.dirty.add(fs.root);
     fs.onDirEntryDelta = (dir, delta) => {
+      this.mutationSerial++;
       const existing = this.dirEntryBytes.get(dir);
       if (existing !== undefined) this.dirEntryBytes.set(dir, existing + delta);
       if (this.nodes.has(dir.ino)) this.namespaceBytes += delta;
@@ -135,6 +145,7 @@ export class PersistentBackend extends MemoryBackend {
     fs.onLinkChange = (node, delta) => this.changeLinks(node, delta);
     fs.onChange = (node) => {
       if (!this.detached.has(node)) {
+        this.mutationSerial++;
         this.nodes.set(node.ino, node);
         if (node.identity) this.byFileId.set(node.identity.id, node);
         this.dirty.add(node);
@@ -183,12 +194,44 @@ export class PersistentBackend extends MemoryBackend {
       this.shared.changeSequence !== this.idleChangeSequence
     );
   }
+  private timerTick(intervalMs: number): void {
+    if (this.stopped || this.pendingCheckpoints) return;
+    if (!this.hasPendingChanges()) {
+      this.burstLevel = 0;
+      this.burstFirstDirtyAt = undefined;
+      this.burstLastActivity = undefined;
+      return;
+    }
+    const now = performance.now();
+    const activity = { mem: this.mutationSerial, shared: this.shared.changeSequence };
+    const maxIntervalMs = Math.max(
+      intervalMs,
+      Math.min(intervalMs * BURST_MAX_MULTIPLIER, BURST_MAX_INTERVAL_MS),
+    );
+    if (this.burstLevel > 0) {
+      const stillWriting =
+        this.burstLastActivity !== undefined &&
+        (this.burstLastActivity.mem !== activity.mem ||
+          this.burstLastActivity.shared !== activity.shared);
+      const firstDirtyAt = (this.burstFirstDirtyAt ??= now);
+      this.burstLastActivity = activity;
+      const targetDelay = Math.min(maxIntervalMs, intervalMs * (1 << Math.min(this.burstLevel, 4)));
+      const resources = this.shared.resources();
+      const overWatermark =
+        this.dirty.size >= BURST_DIRTY_NODE_WATERMARK ||
+        this.removed.size >= BURST_DIRTY_NODE_WATERMARK ||
+        resources.files >= BURST_DIRTY_NODE_WATERMARK ||
+        resources.usedBytes >= BURST_RESIDENT_BYTES_WATERMARK;
+      if (stillWriting && !overWatermark && now - firstDirtyAt < targetDelay) return;
+      if (firstDirtyAt === now && !overWatermark && targetDelay > intervalMs) return;
+    }
+    this.burstFirstDirtyAt = undefined;
+    this.burstLastActivity = undefined;
+    this.burstLevel = Math.min(this.burstLevel + 1, 4);
+    void this.checkpoint().catch(() => {});
+  }
   private startTimer(intervalMs: number): void {
-    if (intervalMs > 0)
-      this.timer = setInterval(() => {
-        if (!this.stopped && !this.pendingCheckpoints && this.hasPendingChanges())
-          void this.checkpoint().catch(() => {});
-      }, intervalMs);
+    if (intervalMs > 0) this.timer = setInterval(() => this.timerTick(intervalMs), intervalMs);
   }
   static async open(
     storage: StorageBackend,
@@ -255,6 +298,7 @@ export class PersistentBackend extends MemoryBackend {
     if (count > 0) this.links.set(node.ino, count);
     else this.links.delete(node.ino);
     if (delta === 1 && previous === 0) {
+      this.mutationSerial++;
       this.nodes.set(node.ino, node);
       this.namespaceBytes += this.nodeMetadataBytes(node);
       if (node.identity) this.byFileId.set(node.identity.id, node);
@@ -273,6 +317,7 @@ export class PersistentBackend extends MemoryBackend {
       if (node.kind === "dir")
         for (const child of node.children.values()) this.changeLinks(child, 1);
     } else if (delta === -1 && count === 0) {
+      this.mutationSerial++;
       this.nodes.delete(node.ino);
       this.namespaceBytes -= this.nodeMetadataBytes(node);
       this.dirty.delete(node);

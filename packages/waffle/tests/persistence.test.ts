@@ -287,6 +287,27 @@ test("background persistence coalesces writes while an earlier checkpoint is blo
   await client.asyncCall("flush");
 });
 
+test("background checkpoint cadence backs off during sustained write bursts and flushes promptly when quiet", async () => {
+  const store = new Store();
+  const { client } = await fixture(store, undefined, 5);
+  await client.asyncCall("writeFile", ["/quiet"], encode("a"));
+  for (let i = 0; i < 40 && store.batches.length < 1; i++)
+    await new Promise((done) => setTimeout(done, 5));
+  expect(store.batches.length).toBeGreaterThanOrEqual(1);
+  const beforeBurst = store.batches.length;
+  for (let i = 0; i < 30; i++) {
+    await client.asyncCall("writeFile", [`/burst-${i}`], encode(`data-${i}`));
+    await new Promise((done) => setTimeout(done, 4));
+  }
+  const duringBurst = store.batches.length - beforeBurst;
+  expect(duringBurst).toBeLessThan(15);
+  for (let i = 0; i < 60 && store.index?.nodes.length !== 32; i++)
+    await new Promise((done) => setTimeout(done, 10));
+  expect(store.index?.nodes.some((node: any) => node.kind === "file")).toBe(true);
+  await client.asyncCall("flush");
+  expect(store.index?.nodes.filter((node: any) => node.kind === "file")).toHaveLength(31);
+});
+
 test("a direct write immediately after hydration is not mistaken for clean data", async () => {
   const store = new Store();
   const first = await fixture(store);
