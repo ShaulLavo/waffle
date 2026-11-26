@@ -1,11 +1,24 @@
-import type { ConnectionSink, PreviewConnection, PreviewSink } from "./net/helper.js";
+import type {
+  ConnectionSink,
+  PreviewConnection,
+  PreviewRequestOptions,
+  PreviewSink,
+} from "./net/helper.js";
 import type { PreviewRequest } from "./net/http1.js";
 import type { PreviewMessage, PreviewReply } from "./preview-protocol.js";
 import type { PreviewHostOptions, PreviewHostRelay } from "./preview-host.js";
 
+export type { PreviewRequestOptions };
+
 /** A server transport, independent of the guest engine or worker owning it. */
 export interface PreviewServer {
-  request(port: number, request: PreviewRequest, sink: PreviewSink): boolean;
+  /** Aborting `options.signal` ends this request on the server's side as well as the sink's. */
+  request(
+    port: number,
+    request: PreviewRequest,
+    sink: PreviewSink,
+    options?: PreviewRequestOptions,
+  ): boolean;
   connect(port: number, sink: ConnectionSink): PreviewConnection | null;
 }
 

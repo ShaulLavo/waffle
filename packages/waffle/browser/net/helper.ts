@@ -127,6 +127,12 @@ export interface NetHelperHooks {
 /** Streams a preview response back to whoever asked (the service worker, a test). */
 export type PreviewSink = ResponseSink;
 
+/** What the caller of a preview request may add to it. */
+export interface PreviewRequestOptions {
+  /** Ends this one request: aborting it closes the guest's connection and silences the sink. */
+  readonly signal?: AbortSignal;
+}
+
 export class NetHelper {
   private ring: RingWriter;
   private fetches = new Map<number, FetchJob>();
@@ -254,9 +260,44 @@ export class NetHelper {
   /**
    * Delivers `req` to the guest server on `port` as a new connection and streams the parsed response
    * into `sink`. Returns false when nothing listens there.
+   *
+   * Aborting `options.signal` closes that connection, so the guest server sees its client go away,
+   * and `sink` hears nothing more. A signal that is already aborted sends nothing; the result then
+   * says only whether a server listens on `port`.
    */
-  request(port: number, req: PreviewRequest, sink: PreviewSink): boolean {
-    return this.requestConnection(port, req, sink) !== null;
+  request(
+    port: number,
+    req: PreviewRequest,
+    sink: PreviewSink,
+    options: PreviewRequestOptions = {},
+  ): boolean {
+    const signal = options.signal;
+    if (!signal) return this.requestConnection(port, req, sink) !== null;
+    if (signal.aborted) return this.listenerFor(port) !== undefined;
+    let connection: PreviewConnection | null = null;
+    let abandoned = false;
+    const abort = () => {
+      abandoned = true;
+      connection?.close();
+    };
+    const settled = () => signal.removeEventListener("abort", abort);
+    connection = this.requestConnection(port, req, {
+      head: (head) => {
+        if (!abandoned) sink.head(head);
+      },
+      data: (chunk) => (abandoned ? undefined : sink.data(chunk)),
+      end: () => {
+        settled();
+        if (!abandoned) sink.end();
+      },
+      error: (message) => {
+        settled();
+        if (!abandoned) sink.error(message);
+      },
+    });
+    if (!connection) return false;
+    signal.addEventListener("abort", abort, { once: true });
+    return true;
   }
 
   private requestConnection(

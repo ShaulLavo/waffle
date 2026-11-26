@@ -328,6 +328,76 @@ test.each([
   }
 });
 
+test("aborting a streaming preview request closes the guest's connection and silences the sink", async () => {
+  const f = await fixture();
+  try {
+    const server = f.add();
+    const listener = server.host.listen("localhost", 32129);
+    const events: string[] = [];
+    const controller = new AbortController();
+    expect(
+      server.helper.request(
+        32129,
+        { method: "GET", target: "/events", headers: [], body: null },
+        {
+          head: (head) => events.push(`head:${head.status}`),
+          data: (chunk) => {
+            events.push(`data:${text(chunk)}`);
+          },
+          end: () => events.push("end"),
+          error: (message) => events.push(`error:${message}`),
+        },
+        { signal: controller.signal },
+      ),
+    ).toBe(true);
+    const conn = await until(
+      () => server.host.accept(listener),
+      (id) => id > 0,
+    );
+    const head =
+      "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+    const first = "6\r\nfirst\n\r\n";
+    expect(server.host.write(conn, bytes(head + first))).toBe(head.length + first.length);
+    await until(
+      () => events.length,
+      (n) => n === 2,
+    );
+    expect(events).toEqual(["head:200", "data:first\n"]);
+
+    controller.abort();
+    // The guest server sees its client go away: its next read is the end of the stream.
+    await until(
+      () => server.host.read(conn, 1024),
+      (value) => value === 0,
+    );
+    // Whatever it still sends reaches no one, and no terminal callback follows the abort.
+    server.host.write(conn, bytes("7\r\nsecond\n\r\n"));
+    server.host.close(conn);
+    await Bun.sleep(5);
+    expect(events).toEqual(["head:200", "data:first\n"]);
+  } finally {
+    f.close();
+  }
+});
+
+test("a preview request whose signal is already aborted sends nothing", async () => {
+  const f = await fixture();
+  try {
+    const server = f.add();
+    const listener = server.host.listen("localhost", 32129);
+    const controller = new AbortController();
+    controller.abort();
+    const sink = { head() {}, data() {}, end() {}, error() {} };
+    const request = { method: "GET", target: "/", headers: [], body: null };
+    expect(server.helper.request(32129, request, sink, { signal: controller.signal })).toBe(true);
+    expect(server.helper.request(32130, request, sink, { signal: controller.signal })).toBe(false);
+    await Bun.sleep(5);
+    expect(server.host.accept(listener)).toBeLessThanOrEqual(0);
+  } finally {
+    f.close();
+  }
+});
+
 test("preview terminal callback exceptions remain visible during disposal", async () => {
   const f = await fixture();
   try {
