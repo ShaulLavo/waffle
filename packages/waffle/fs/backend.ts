@@ -23,7 +23,12 @@ import { SharedFilesystemState, type SharedSegment } from "./shared.js";
 
 /** Storage boundary. 3b can add asynchronous loading/commit without changing guest transport. */
 export interface FilesystemBackend {
-  execute(operation: string, args: any[], data: Uint8Array): unknown | Promise<unknown>;
+  execute(
+    operation: string,
+    args: any[],
+    data: Uint8Array,
+    cancelled?: () => boolean,
+  ): unknown | Promise<unknown>;
   retain(handle: FileHandle): void;
   release(handle: FileHandle): void;
   resources?(): Record<string, number>;

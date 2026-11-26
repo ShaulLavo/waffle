@@ -341,6 +341,12 @@ export type PeerMessage =
       readonly chunk: Uint8Array;
     }
   | {
+      readonly kind: "chunk-abort";
+      readonly hostTerm: string;
+      readonly sessionId: string;
+      readonly uploadId: string;
+    }
+  | {
       readonly kind: "chunk-get";
       readonly hostTerm: string;
       readonly sessionId: string;
@@ -378,6 +384,7 @@ export type PeerMessage =
       readonly pendingWatchAcks?: readonly (readonly [number, boolean])[];
       readonly pendingUnpins?: readonly number[];
       readonly pendingWatchCloses?: readonly number[];
+      readonly pendingUploadAborts?: readonly string[];
     }
   | {
       readonly kind: "pong";
@@ -389,6 +396,7 @@ export type PeerMessage =
       readonly settledWatchAcks?: readonly number[];
       readonly settledUnpins?: readonly number[];
       readonly settledWatchCloses?: readonly number[];
+      readonly settledUploadAborts?: readonly string[];
       readonly creditLimit: PeerCreditLimit;
       readonly hostState: HostHealthState;
     }
@@ -430,6 +438,7 @@ export type PeerMessage =
       readonly watchAcks?: readonly number[];
       readonly unpins?: readonly number[];
       readonly watchCloses?: readonly number[];
+      readonly uploadAborts?: readonly string[];
     }
   | {
       readonly kind: "detach";
@@ -534,6 +543,8 @@ export function isPeerMessage(value: unknown): value is PeerMessage {
         typeof value.totalBytes === "number" &&
         value.chunk instanceof Uint8Array
       );
+    case "chunk-abort":
+      return typeof value.uploadId === "string";
     case "chunk-get":
       return (
         typeof value.reqId === "number" &&

@@ -233,6 +233,7 @@ interface HostPeerSession {
   readonly pendingSettledUnpins: number[];
   readonly pendingSettledWatchAcks: number[];
   readonly pendingSettledWatchCloses: number[];
+  readonly pendingSettledUploadAborts: string[];
   settledFlushTimer?: ReturnType<typeof setTimeout>;
   latestWakeSeq: number;
   wakeInFlightSeq?: number;
@@ -278,6 +279,7 @@ interface QueuedPeerOp {
   readonly isWatchRead?: boolean;
   readonly localWatchId?: number;
   readonly replayOnSessionBreak?: boolean;
+  readonly cancelled?: () => boolean;
   readonly resolve: (value: any) => void;
   readonly reject: (error: unknown) => void;
 }
@@ -285,7 +287,8 @@ interface QueuedPeerOp {
 type SettlementItem =
   | { readonly kind: "unpin"; readonly pinToken: number }
   | { readonly kind: "watch-ack"; readonly ackId: number; readonly accepted: boolean }
-  | { readonly kind: "watch-close"; readonly hostWatchId: number };
+  | { readonly kind: "watch-close"; readonly hostWatchId: number }
+  | { readonly kind: "chunk-abort"; readonly uploadId: string };
 
 function abortError(): FilesystemError {
   return new FilesystemError(11, "operation cancelled");
@@ -345,6 +348,25 @@ async function raceWithAbort(
     await Promise.race([promise.catch(() => {}), waiter.promise]);
   } finally {
     waiter.cleanup();
+  }
+}
+
+async function awaitUnlessCancelled<T>(promise: Promise<T>, cancelled?: () => boolean): Promise<T> {
+  if (!cancelled) return promise;
+  if (cancelled()) {
+    void promise.catch(() => {});
+    throw abortError();
+  }
+  let poll: ReturnType<typeof setInterval> | undefined;
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      promise.then(resolve, reject);
+      poll = setInterval(() => {
+        if (cancelled()) reject(abortError());
+      }, 20);
+    });
+  } finally {
+    if (poll) clearInterval(poll);
   }
 }
 
@@ -476,6 +498,42 @@ function defaultOpenStorage(
   });
 }
 
+/** Orders flush/sync barriers behind prior in-flight mutations and holds later mutations until
+ * an active barrier settles, while allowing concurrent non-barrier mutations between barriers. */
+class BarrierGate {
+  private readonly mutations = new Set<Promise<void>>();
+  private activeBarrier: Promise<void> | undefined;
+
+  runMutation<T>(fn: () => Promise<T>): Promise<T> {
+    const barrier = this.activeBarrier;
+    const result = barrier ? barrier.then(fn) : fn();
+    const settled = result.then(
+      () => {},
+      () => {},
+    );
+    this.mutations.add(settled);
+    void settled.finally(() => {
+      this.mutations.delete(settled);
+    });
+    return result;
+  }
+
+  runBarrier<T>(fn: () => Promise<T>): Promise<T> {
+    const prior = Array.from(this.mutations);
+    if (this.activeBarrier) prior.push(this.activeBarrier);
+    const result = prior.length ? Promise.allSettled(prior).then(fn) : fn();
+    const settled = result.then(
+      () => {},
+      () => {},
+    );
+    this.activeBarrier = settled;
+    void settled.finally(() => {
+      if (this.activeBarrier === settled) this.activeBarrier = undefined;
+    });
+    return result;
+  }
+}
+
 /**
  * Multi-tab shared persistent filesystem backend (`whenBusy: "attach"`).
  * Implements Rev 24 of the Waffle multi-tab persistent FS design:
@@ -545,6 +603,7 @@ export class MultiTabBackend implements FilesystemBackend {
   private persistent?: PersistentBackend;
   private watchService?: WatchService;
   private hostQueue: Promise<void> = Promise.resolve();
+  private readonly barrier = new BarrierGate();
   private hostAdmittedCount = 0;
   private hostAdmittedZeroWaiters: (() => void)[] = [];
   private hostPeers = new Map<string, HostPeerSession>();
@@ -585,6 +644,7 @@ export class MultiTabBackend implements FilesystemBackend {
   private peerPendingUnpins = new Set<number>();
   private peerPendingWatchAcks = new Map<number, boolean>();
   private peerPendingWatchCloses = new Set<number>();
+  private peerPendingUploadAborts = new Set<string>();
   readonly supportsSockets = false;
   readonly asyncErrorsAreClientResults = true;
   private peerFailoverInFlight?: Promise<void>;
@@ -818,21 +878,42 @@ export class MultiTabBackend implements FilesystemBackend {
   prepare(operation: string, args: any[], _data: Uint8Array): void | Promise<void> {
     if (this.role !== "host" || !this.persistent || !this.isLeaseValid()) return;
     if (UNSUPPORTED_ATTACH_OPS.has(operation)) return;
-    if (operation === "flush" || operation === "sync") return;
+    // Mutations hydrate inside execute() under the barrier gate so flush/sync cannot bypass them.
+    if (operation === "flush" || operation === "sync" || MUTATION_OPS.has(operation)) return;
     const translated = this.translateArgsToHost(operation, args);
     if (!translated) return;
     return this.persistent.prepare(operation, translated);
   }
 
-  execute(operation: string, args: any[], data: Uint8Array): unknown | Promise<unknown> {
+  execute(
+    operation: string,
+    args: any[],
+    data: Uint8Array,
+    cancelled?: () => boolean,
+  ): unknown | Promise<unknown> {
     if (UNSUPPORTED_ATTACH_OPS.has(operation)) {
       throw new FilesystemError(58, `${operation} is not supported in whenBusy: "attach"`);
     }
     if (this.terminalFailure)
       throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
-    if (this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified) {
-      return this.executeAfterFenceLoss(operation, args, data);
+    const awaitingFenceLoss =
+      !!this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified;
+    if (!awaitingFenceLoss) {
+      this.assertLocalExecuteAdmissible();
     }
+    if (operation === "flush" || operation === "sync") {
+      return this.barrier.runBarrier(() => this.runLocalExecute(operation, args, data, cancelled));
+    }
+    if (MUTATION_OPS.has(operation)) {
+      return this.barrier.runMutation(() => this.runLocalExecute(operation, args, data, cancelled));
+    }
+    if (awaitingFenceLoss) {
+      return this.runLocalExecute(operation, args, data, cancelled);
+    }
+    return this.dispatchLocalRead(operation, args, data, cancelled);
+  }
+
+  private assertLocalExecuteAdmissible(): void {
     if (this.ownershipLost) throw new FilesystemError(11, "filesystem ownership lost");
     if (this.disposing) {
       // Allow queued local Host work on disposeHostTerm ONLY while lease is valid.
@@ -846,7 +927,22 @@ export class MultiTabBackend implements FilesystemBackend {
         throw new FilesystemError(11, "filesystem is disposing");
       }
     }
+    if (
+      this.role !== "host" &&
+      this.role !== "peer" &&
+      this.role !== "failover" &&
+      this.role !== "waiting"
+    ) {
+      throw new FilesystemError(11, "filesystem backend is closed");
+    }
+  }
 
+  private dispatchLocalRead(
+    operation: string,
+    args: any[],
+    data: Uint8Array,
+    cancelled?: () => boolean,
+  ): unknown | Promise<unknown> {
     // Validate & strip directory cookies at the receiving boundary BEFORE dispatch!
     let effectiveArgs = args;
     let responseCookieTag: bigint | undefined;
@@ -860,12 +956,26 @@ export class MultiTabBackend implements FilesystemBackend {
     }
 
     if (this.role === "host") {
-      return this.executeLocalOnHost(operation, effectiveArgs, data, responseCookieTag);
+      return this.executeLocalOnHost(operation, effectiveArgs, data, responseCookieTag, cancelled);
     }
-    if (this.role === "peer" || this.role === "failover" || this.role === "waiting") {
-      return this.executeOnPeer(operation, effectiveArgs, data, responseCookieTag);
+    return this.executeOnPeer(operation, effectiveArgs, data, responseCookieTag, cancelled);
+  }
+
+  private async runLocalExecute(
+    operation: string,
+    args: any[],
+    data: Uint8Array,
+    cancelled?: () => boolean,
+  ): Promise<unknown> {
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
+    if (this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified) {
+      await this.awaitPendingFenceLoss(cancelled);
     }
-    throw new FilesystemError(11, "filesystem backend is closed");
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
+    if (this.terminalFailure)
+      throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
+    this.assertLocalExecuteAdmissible();
+    return this.dispatchLocalRead(operation, args, data, cancelled);
   }
 
   private async awaitPendingFenceLoss(cancelled?: () => boolean): Promise<void> {
@@ -928,16 +1038,11 @@ export class MultiTabBackend implements FilesystemBackend {
     }
   }
 
-  private async executeAfterFenceLoss(
-    operation: string,
-    args: any[],
-    data: Uint8Array,
-  ): Promise<unknown> {
-    await this.awaitPendingFenceLoss();
-    return this.execute(operation, args, data);
+  flush(target?: FileHandle | string): Promise<void> {
+    return this.barrier.runBarrier(() => this.runLocalFlush(target));
   }
 
-  async flush(target?: FileHandle | string): Promise<void> {
+  private async runLocalFlush(target?: FileHandle | string): Promise<void> {
     if (this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified) {
       await this.awaitPendingFenceLoss();
     }
@@ -964,6 +1069,8 @@ export class MultiTabBackend implements FilesystemBackend {
       }
       this.enterHostAdmitted();
       try {
+        await this.hostQueue;
+        this.assertHostReadyForLocal(admittedTerm);
         await this.persistent!.flush(resolvedTarget);
       } finally {
         this.leaveHostAdmitted();
@@ -2541,6 +2648,7 @@ export class MultiTabBackend implements FilesystemBackend {
     this.peerPendingUnpins.clear();
     this.peerPendingWatchAcks.clear();
     this.peerPendingWatchCloses.clear();
+    this.peerPendingUploadAborts.clear();
 
     const attachedGate = Promise.withResolvers<PeerCreditLimit | "failed" | "rejected">();
     let newerHostReady = false;
@@ -2646,8 +2754,7 @@ export class MultiTabBackend implements FilesystemBackend {
         return false;
       }
       if (this.peerSessionId !== sessionId || !this.peerAttached) return false;
-      this.drainPeerRetryQueue();
-      this.drainPeerFailoverQueue();
+      this.drainPeerRetryAndFailoverQueues();
       return true;
     } finally {
       if (retryTimer) clearInterval(retryTimer);
@@ -3568,6 +3675,7 @@ export class MultiTabBackend implements FilesystemBackend {
       pendingSettledUnpins: [],
       pendingSettledWatchAcks: [],
       pendingSettledWatchCloses: [],
+      pendingSettledUploadAborts: [],
       latestWakeSeq: 0,
       wakeDirty: false,
       lastActivityAt: Date.now(),
@@ -3795,6 +3903,7 @@ export class MultiTabBackend implements FilesystemBackend {
         const settledUnpins: number[] = [];
         const settledWatchAcks: number[] = [];
         const settledWatchCloses: number[] = [];
+        const settledUploadAborts: string[] = [];
         for (const token of msg.pendingUnpins ?? []) {
           this.hostProcessUnpin(session, token, false);
           settledUnpins.push(token);
@@ -3806,6 +3915,10 @@ export class MultiTabBackend implements FilesystemBackend {
         for (const watchId of msg.pendingWatchCloses ?? []) {
           this.hostProcessWatchClose(session, watchId, false);
           settledWatchCloses.push(watchId);
+        }
+        for (const uploadId of msg.pendingUploadAborts ?? []) {
+          this.hostProcessUploadAbort(session, uploadId, false);
+          settledUploadAborts.push(uploadId);
         }
         const slot = this.hostCreditSlots.get(session.peerId);
         const creditLimit = slot
@@ -3821,6 +3934,7 @@ export class MultiTabBackend implements FilesystemBackend {
           ...(settledUnpins.length ? { settledUnpins } : {}),
           ...(settledWatchAcks.length ? { settledWatchAcks } : {}),
           ...(settledWatchCloses.length ? { settledWatchCloses } : {}),
+          ...(settledUploadAborts.length ? { settledUploadAborts } : {}),
           creditLimit,
           hostState: this.hostHealthState(),
         });
@@ -3829,6 +3943,11 @@ export class MultiTabBackend implements FilesystemBackend {
 
       case "chunk-put": {
         this.handleHostChunkPut(session, msg);
+        return;
+      }
+
+      case "chunk-abort": {
+        this.hostProcessUploadAbort(session, msg.uploadId, true);
         return;
       }
 
@@ -3889,11 +4008,20 @@ export class MultiTabBackend implements FilesystemBackend {
     }
   }
 
+  private hostProcessUploadAbort(session: HostPeerSession, uploadId: string, batch = true): void {
+    this.discardHostStagedUpload(session, uploadId);
+    if (batch) {
+      session.pendingSettledUploadAborts.push(uploadId);
+      this.maybeScheduleHostSettledFlush(session);
+    }
+  }
+
   private maybeScheduleHostSettledFlush(session: HostPeerSession): void {
     const total =
       session.pendingSettledUnpins.length +
       session.pendingSettledWatchAcks.length +
-      session.pendingSettledWatchCloses.length;
+      session.pendingSettledWatchCloses.length +
+      session.pendingSettledUploadAborts.length;
     if (total >= SETTLEMENT_BATCH_SIZE) {
       this.flushHostSettled(session);
       return;
@@ -3915,12 +4043,14 @@ export class MultiTabBackend implements FilesystemBackend {
     if (
       !session.pendingSettledUnpins.length &&
       !session.pendingSettledWatchAcks.length &&
-      !session.pendingSettledWatchCloses.length
+      !session.pendingSettledWatchCloses.length &&
+      !session.pendingSettledUploadAborts.length
     )
       return;
     const unpins = session.pendingSettledUnpins.splice(0);
     const watchAcks = session.pendingSettledWatchAcks.splice(0);
     const watchCloses = session.pendingSettledWatchCloses.splice(0);
+    const uploadAborts = session.pendingSettledUploadAborts.splice(0);
     this.sendPeerFrame(session.peerId, session.channel, {
       kind: "settled",
       hostTerm: formatTerm(session.hostTerm),
@@ -3928,6 +4058,7 @@ export class MultiTabBackend implements FilesystemBackend {
       ...(unpins.length ? { unpins } : {}),
       ...(watchAcks.length ? { watchAcks } : {}),
       ...(watchCloses.length ? { watchCloses } : {}),
+      ...(uploadAborts.length ? { uploadAborts } : {}),
     });
   }
 
@@ -4310,7 +4441,11 @@ export class MultiTabBackend implements FilesystemBackend {
       if (msg.op === "flush" || msg.op === "sync") {
         const target =
           msg.op === "sync" ? (msg.args[0] as number) : (msg.args[0] as string | undefined);
-        await this.persistent!.flush(target);
+        await this.barrier.runBarrier(async () => {
+          await this.hostQueue;
+          this.assertHostOpStillValid(session, admittedTerm);
+          await this.persistent!.flush(target);
+        });
         await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
         this.assertHostOpStillValid(session, admittedTerm);
         reply({ ok: true, value: msg.op === "sync" ? 0 : undefined });
@@ -4655,19 +4790,13 @@ export class MultiTabBackend implements FilesystemBackend {
     }
   }
 
-  private async handleHostPeerGeneral(
+  private async executeHostPeerGeneralLoop(
     session: HostPeerSession,
     admittedTerm: bigint,
+    persistent: PersistentBackend,
     msg: Extract<PeerMessage, { kind: "req" }>,
     data: Uint8Array,
-    reply: (
-      partial: Omit<
-        Extract<PeerMessage, { kind: "res" }>,
-        "kind" | "hostTerm" | "sessionId" | "reqId" | "creditFrames" | "creditBytes"
-      >,
-    ) => void,
-  ): Promise<void> {
-    const persistent = this.persistent!;
+  ): Promise<unknown> {
     for (;;) {
       this.assertHostOpStillValid(session, admittedTerm);
       const preparing = persistent.prepare(msg.op, msg.args);
@@ -4693,32 +4822,52 @@ export class MultiTabBackend implements FilesystemBackend {
         );
         continue;
       }
+      return result;
+    }
+  }
 
-      const { wireValue, mintedTokens } = this.wrapHostPeerResult(
-        session,
-        persistent,
-        msg.op,
-        result,
-      );
+  private async handleHostPeerGeneral(
+    session: HostPeerSession,
+    admittedTerm: bigint,
+    msg: Extract<PeerMessage, { kind: "req" }>,
+    data: Uint8Array,
+    reply: (
+      partial: Omit<
+        Extract<PeerMessage, { kind: "res" }>,
+        "kind" | "hostTerm" | "sessionId" | "reqId" | "creditFrames" | "creditBytes"
+      >,
+    ) => void,
+  ): Promise<void> {
+    const persistent = this.persistent!;
+    const result = MUTATION_OPS.has(msg.op)
+      ? await this.barrier.runMutation(() =>
+          this.executeHostPeerGeneralLoop(session, admittedTerm, persistent, msg, data),
+        )
+      : await this.executeHostPeerGeneralLoop(session, admittedTerm, persistent, msg, data);
 
-      await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
-      if (
-        session.revoked ||
-        this.terminalFailure ||
-        !this.isLeaseValid() ||
-        this.hostTerm !== admittedTerm ||
-        persistent.isTerminallyFailed()
-      ) {
-        this.rollbackMintedPeerTokens(session, persistent, mintedTokens);
-        this.assertHostOpStillValid(session, admittedTerm);
-      }
+    const { wireValue, mintedTokens } = this.wrapHostPeerResult(
+      session,
+      persistent,
+      msg.op,
+      result,
+    );
 
-      if (wireValue instanceof Uint8Array) {
-        reply({ ok: true, data: unsharedBytes(wireValue), binary: true });
-      } else {
-        reply({ ok: true, value: wireValue });
-      }
-      return;
+    await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
+    if (
+      session.revoked ||
+      this.terminalFailure ||
+      !this.isLeaseValid() ||
+      this.hostTerm !== admittedTerm ||
+      persistent.isTerminallyFailed()
+    ) {
+      this.rollbackMintedPeerTokens(session, persistent, mintedTokens);
+      this.assertHostOpStillValid(session, admittedTerm);
+    }
+
+    if (wireValue instanceof Uint8Array) {
+      reply({ ok: true, data: unsharedBytes(wireValue), binary: true });
+    } else {
+      reply({ ok: true, value: wireValue });
     }
   }
 
@@ -5265,7 +5414,9 @@ export class MultiTabBackend implements FilesystemBackend {
     args: any[],
     data: Uint8Array,
     responseCookieTag?: bigint,
+    cancelled?: () => boolean,
   ): Promise<unknown> {
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
     const admittedTerm = this.hostTerm;
 
     // If lease expired before execution: renew first (or fail ECANCELED if disposing!)
@@ -5277,10 +5428,13 @@ export class MultiTabBackend implements FilesystemBackend {
           ok = renewed;
         }),
         this.disposeAbort.signal,
+        cancelled,
       );
+      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
       if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
       if (!ok || !this.isLeaseValid()) {
-        await this.awaitPendingFenceLoss();
+        await this.awaitPendingFenceLoss(cancelled);
+        if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
         if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
         if (this.terminalFailure) {
           throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
@@ -5292,12 +5446,13 @@ export class MultiTabBackend implements FilesystemBackend {
             args,
             responseCookieTag,
           );
-          return this.executeOnPeer(operation, args, data, nextCookieTag);
+          return this.executeOnPeer(operation, args, data, nextCookieTag, cancelled);
         }
         throw new FilesystemError(11, "host lease expired");
       }
     }
 
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
     this.assertHostReadyForLocal(admittedTerm);
     const persistent = this.persistent!;
     const translated = this.translateArgsToHost(operation, args);
@@ -5308,11 +5463,14 @@ export class MultiTabBackend implements FilesystemBackend {
       if (operation === "flush" || operation === "sync") {
         const target =
           operation === "sync" ? (translated[0] as number) : (translated[0] as string | undefined);
+        await this.hostQueue;
+        if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
+        this.assertHostReadyForLocal(admittedTerm);
         await persistent.flush(target);
         return operation === "sync" ? 0 : undefined;
       }
       if (operation === "read") {
-        return await this.executeLocalHostRead(persistent, admittedTerm, translated);
+        return await this.executeLocalHostRead(persistent, admittedTerm, translated, cancelled);
       }
       const result = await this.executeLocalHostGeneral(
         persistent,
@@ -5321,6 +5479,7 @@ export class MultiTabBackend implements FilesystemBackend {
         translated,
         data,
         responseCookieTag,
+        cancelled,
       );
       return this.mapLocalHostHandles(persistent, admittedTerm, operation, result);
     } finally {
@@ -5332,27 +5491,30 @@ export class MultiTabBackend implements FilesystemBackend {
     persistent: PersistentBackend,
     admittedTerm: bigint,
     translated: any[],
+    cancelled?: () => boolean,
   ): Promise<Uint8Array> {
     const [remoteHandle, length, offset] = translated as [number, number, number];
-    for (;;) {
+    const assertValid = () => {
+      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
       this.assertHostReadyForLocal(admittedTerm);
+    };
+    for (;;) {
+      assertValid();
       const startVer = this.readVersion();
       const prep = persistent.prepareDescriptorRead(
         remoteHandle,
         offset,
         length,
-        () => this.hostTerm !== admittedTerm || !this.isLeaseValid(),
+        () => !!cancelled?.() || this.hostTerm !== admittedTerm || !this.isLeaseValid(),
       );
       if (prep) {
-        const accepted = await this.revalidateColdReadBytes(prep, startVer, () =>
-          this.assertHostReadyForLocal(admittedTerm),
-        );
+        const accepted = await this.revalidateColdReadBytes(prep, startVer, assertValid);
         if (accepted !== undefined) return accepted;
         continue;
       }
       let readBytes!: Uint8Array;
       await this.enqueueHostSerial(() => {
-        this.assertHostReadyForLocal(admittedTerm);
+        assertValid();
         readBytes = persistent.execute(
           "read",
           [remoteHandle, length, offset],
@@ -5370,17 +5532,22 @@ export class MultiTabBackend implements FilesystemBackend {
     translated: any[],
     data: Uint8Array,
     responseCookieTag?: bigint,
+    cancelled?: () => boolean,
   ): Promise<unknown> {
+    const assertValid = () => {
+      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
+      this.assertHostReadyForLocal(admittedTerm);
+    };
     for (;;) {
-      this.assertHostReadyForLocal(admittedTerm);
+      assertValid();
       const preparing = persistent.prepare(operation, translated);
-      if (preparing) await preparing;
-      this.assertHostReadyForLocal(admittedTerm);
+      if (preparing) await awaitUnlessCancelled(preparing, cancelled);
+      assertValid();
 
       let result: unknown;
       let dirtyRetryChange: number | undefined;
       await this.enqueueHostSerial(() => {
-        this.assertHostReadyForLocal(admittedTerm);
+        assertValid();
         const step = this.executePersistentOrDirtyRetry(
           persistent,
           operation,
@@ -5397,7 +5564,7 @@ export class MultiTabBackend implements FilesystemBackend {
       if (dirtyRetryChange !== undefined) {
         await persistent.waitForDirtyCapacity(
           dirtyRetryChange,
-          () => this.hostTerm !== admittedTerm || !this.isLeaseValid(),
+          () => !!cancelled?.() || this.hostTerm !== admittedTerm || !this.isLeaseValid(),
         );
         continue;
       }
@@ -5471,7 +5638,8 @@ export class MultiTabBackend implements FilesystemBackend {
     return (
       this.peerPendingUnpins.size +
       this.peerPendingWatchAcks.size +
-      this.peerPendingWatchCloses.size
+      this.peerPendingWatchCloses.size +
+      this.peerPendingUploadAborts.size
     );
   }
 
@@ -5484,7 +5652,8 @@ export class MultiTabBackend implements FilesystemBackend {
     const alreadyPresent =
       (item.kind === "unpin" && this.peerPendingUnpins.has(item.pinToken)) ||
       (item.kind === "watch-ack" && this.peerPendingWatchAcks.has(item.ackId)) ||
-      (item.kind === "watch-close" && this.peerPendingWatchCloses.has(item.hostWatchId));
+      (item.kind === "watch-close" && this.peerPendingWatchCloses.has(item.hostWatchId)) ||
+      (item.kind === "chunk-abort" && this.peerPendingUploadAborts.has(item.uploadId));
 
     if (!alreadyPresent && this.totalPendingSettlements() >= MAX_PENDING_SETTLEMENTS) {
       // Pre-insertion cap: trigger session reset instead of exceeding 1024!
@@ -5510,13 +5679,21 @@ export class MultiTabBackend implements FilesystemBackend {
         ackId: item.ackId,
         accepted: item.accepted,
       });
-    } else {
+    } else if (item.kind === "watch-close") {
       this.peerPendingWatchCloses.add(item.hostWatchId);
       this.postToPeerChannel({
         kind: "watch-close",
         hostTerm: termStr,
         sessionId,
         hostWatchId: item.hostWatchId,
+      });
+    } else {
+      this.peerPendingUploadAborts.add(item.uploadId);
+      this.postToPeerChannel({
+        kind: "chunk-abort",
+        hostTerm: termStr,
+        sessionId,
+        uploadId: item.uploadId,
       });
     }
   }
@@ -5559,11 +5736,24 @@ export class MultiTabBackend implements FilesystemBackend {
     for (const wake of waiters) wake();
   }
 
+  private refundPeerCredits(sessionId: string, frames: number, bytes: number): void {
+    if (this.peerSessionId !== sessionId) return;
+    this.peerAvailableFrames += frames;
+    this.peerAvailableBytes += bytes;
+    this.wakePeerCreditWaiters();
+  }
+
+  private abortPeerUpload(sessionId: string, _term: bigint, uploadId: string): void {
+    this.enqueueSettlement(sessionId, { kind: "chunk-abort", uploadId });
+  }
+
   private async reservePeerCredits(
     sessionId: string,
     frames: number,
     bytes: number,
+    cancelled?: () => boolean,
   ): Promise<void> {
+    if (cancelled?.()) throw abortError();
     while (
       this.peerSessionId === sessionId &&
       this.peerAttached &&
@@ -5571,12 +5761,22 @@ export class MultiTabBackend implements FilesystemBackend {
       !this.ownershipLost &&
       !this.terminalFailure &&
       !this.peerObservedHostFailed &&
+      !cancelled?.() &&
       (this.peerAvailableFrames < frames || this.peerAvailableBytes < bytes)
     ) {
-      await new Promise<void>((resolve) => {
+      let waiter!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        waiter = resolve;
         this.peerCreditWaiters.push(resolve);
       });
+      try {
+        await awaitUnlessCancelled(ready, cancelled);
+      } finally {
+        const idx = this.peerCreditWaiters.indexOf(waiter);
+        if (idx >= 0) this.peerCreditWaiters.splice(idx, 1);
+      }
     }
+    if (cancelled?.()) throw abortError();
     if (this.disposing || this.ownershipLost) {
       throw new FilesystemError(11, "filesystem is closing");
     }
@@ -5613,6 +5813,10 @@ export class MultiTabBackend implements FilesystemBackend {
       0,
       PONG_SETTLEMENT_LIMIT,
     );
+    const pendingUploadAborts = Array.from(this.peerPendingUploadAborts).slice(
+      0,
+      PONG_SETTLEMENT_LIMIT,
+    );
     this.postToPeerChannel({
       kind: "ping",
       hostTerm: formatTerm(this.peerHostTerm),
@@ -5622,6 +5826,7 @@ export class MultiTabBackend implements FilesystemBackend {
       ...(pendingUnpins.length ? { pendingUnpins } : {}),
       ...(pendingWatchAcks.length ? { pendingWatchAcks } : {}),
       ...(pendingWatchCloses.length ? { pendingWatchCloses } : {}),
+      ...(pendingUploadAborts.length ? { pendingUploadAborts } : {}),
     });
   }
 
@@ -5654,7 +5859,7 @@ export class MultiTabBackend implements FilesystemBackend {
         });
         return;
       case "settled":
-        this.applyPeerSettledLists(msg.unpins, msg.watchAcks, msg.watchCloses);
+        this.applyPeerSettledLists(msg.unpins, msg.watchAcks, msg.watchCloses, msg.uploadAborts);
         return;
       case "pong":
         this.onPeerPong(msg);
@@ -5669,15 +5874,22 @@ export class MultiTabBackend implements FilesystemBackend {
     unpins?: readonly number[],
     watchAcks?: readonly number[],
     watchCloses?: readonly number[],
+    uploadAborts?: readonly string[],
   ): void {
     for (const token of unpins ?? []) this.peerPendingUnpins.delete(token);
     for (const ackId of watchAcks ?? []) this.peerPendingWatchAcks.delete(ackId);
     for (const watchId of watchCloses ?? []) this.peerPendingWatchCloses.delete(watchId);
+    for (const uploadId of uploadAborts ?? []) this.peerPendingUploadAborts.delete(uploadId);
   }
 
   private onPeerPong(msg: Extract<PeerMessage, { kind: "pong" }>): void {
     this.applyPeerCreditLimit(msg.creditLimit);
-    this.applyPeerSettledLists(msg.settledUnpins, msg.settledWatchAcks, msg.settledWatchCloses);
+    this.applyPeerSettledLists(
+      msg.settledUnpins,
+      msg.settledWatchAcks,
+      msg.settledWatchCloses,
+      msg.settledUploadAborts,
+    );
 
     if (msg.latestWakeSeq > this.peerLatestSeenWakeSeq) {
       this.peerLatestSeenWakeSeq = msg.latestWakeSeq;
@@ -5766,7 +5978,9 @@ export class MultiTabBackend implements FilesystemBackend {
     args: any[],
     data: Uint8Array,
     responseCookieTag?: bigint,
+    cancelled?: () => boolean,
   ): Promise<unknown> {
+    if (cancelled?.()) return Promise.reject(new FilesystemError(11, "operation cancelled"));
     if (this.disposing || this.ownershipLost) return Promise.reject(new FilesystemError(11));
     if (this.terminalFailure || this.peerObservedHostFailed) {
       return Promise.reject(
@@ -5783,7 +5997,14 @@ export class MultiTabBackend implements FilesystemBackend {
       !this.peerAttached ||
       this.peerRebinding
     ) {
-      return this.enqueuePeerOp(this.peerFailoverQueue, operation, args, data, responseCookieTag);
+      return this.enqueuePeerOp(
+        this.peerFailoverQueue,
+        operation,
+        args,
+        data,
+        responseCookieTag,
+        cancelled,
+      );
     }
 
     let effectiveCookieTag = responseCookieTag;
@@ -5792,7 +6013,7 @@ export class MultiTabBackend implements FilesystemBackend {
     } catch (error) {
       return Promise.reject(error);
     }
-    return this.dispatchPeerOperation(operation, args, data, effectiveCookieTag);
+    return this.dispatchPeerOperation(operation, args, data, effectiveCookieTag, cancelled);
   }
 
   private revalidateCookieForPeerForward(
@@ -5817,30 +6038,38 @@ export class MultiTabBackend implements FilesystemBackend {
     args: any[],
     data: Uint8Array,
     responseCookieTag?: bigint,
+    cancelled?: () => boolean,
   ): Promise<unknown> {
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
     const sessionId = this.peerSessionId;
     const term = this.peerHostTerm;
     if (!sessionId || term === undefined || !this.peerAttached) {
-      return this.executeOnPeer(operation, args, data, responseCookieTag);
+      return this.executeOnPeer(operation, args, data, responseCookieTag, cancelled);
     }
 
     const remoteArgs = this.translateArgsToPeer(operation, args, term, sessionId);
     if (!remoteArgs) throw new FilesystemError(8);
 
+    let uploadId: string | undefined;
     let finalValue: unknown;
     try {
-      const { uploadId, inlineData } = await this.uploadPeerDataIfChunked(sessionId, term, data);
+      const uploaded = await this.uploadPeerDataIfChunked(sessionId, term, data, cancelled);
+      uploadId = uploaded.uploadId;
       const res = await this.sendPeerReq(
         sessionId,
         term,
         operation,
         remoteArgs,
         args,
-        inlineData,
+        uploaded.inlineData,
         uploadId,
         data.byteLength > MAX_FRAME_BYTES ? data.byteLength : undefined,
         responseCookieTag,
+        false,
+        undefined,
+        cancelled,
       );
+      uploadId = undefined;
       finalValue = await this.decodePeerResponseValue(
         sessionId,
         term,
@@ -5848,10 +6077,11 @@ export class MultiTabBackend implements FilesystemBackend {
         isReplayableRead(operation, args),
       );
     } catch (error) {
+      if (uploadId) this.abortPeerUpload(sessionId, term, uploadId);
       if (error instanceof RetryOnHostReadyError || error instanceof FailoverReplayError) {
         const queue =
           error instanceof RetryOnHostReadyError ? this.peerRetryQueue : this.peerFailoverQueue;
-        return this.enqueuePeerOp(queue, operation, args, data, responseCookieTag);
+        return this.enqueuePeerOp(queue, operation, args, data, responseCookieTag, cancelled);
       }
       throw error;
     }
@@ -5865,7 +6095,9 @@ export class MultiTabBackend implements FilesystemBackend {
     args: any[],
     data: Uint8Array,
     responseCookieTag?: bigint,
+    cancelled?: () => boolean,
   ): Promise<unknown> {
+    if (cancelled?.()) return Promise.reject(new FilesystemError(11, "operation cancelled"));
     if (this.disposing || this.ownershipLost) {
       return Promise.reject(new FilesystemError(11, "filesystem is closing"));
     }
@@ -5883,6 +6115,7 @@ export class MultiTabBackend implements FilesystemBackend {
         args,
         data: data.byteLength ? unsharedBytes(data) : undefined,
         responseCookieTag,
+        cancelled,
         resolve,
         reject,
       });
@@ -5893,15 +6126,23 @@ export class MultiTabBackend implements FilesystemBackend {
     sessionId: string,
     term: bigint,
     data: Uint8Array,
+    cancelled?: () => boolean,
   ): Promise<{ uploadId?: string; inlineData?: Uint8Array<ArrayBuffer> }> {
-    if (data.byteLength > MAX_FRAME_BYTES) {
-      if (data.byteLength > MAX_STAGED_UPLOAD_BYTES) {
-        throw new FilesystemError(22, "payload exceeds 32 MiB upload cap");
-      }
-      const uploadId = `up-${this.peerNextUploadId++}`;
-      const totalBytes = data.byteLength;
+    if (cancelled?.()) throw abortError();
+    if (data.byteLength <= MAX_FRAME_BYTES) {
+      return data.byteLength > 0 ? { inlineData: unsharedBytes(data) } : {};
+    }
+    if (data.byteLength > MAX_STAGED_UPLOAD_BYTES) {
+      throw new FilesystemError(22, "payload exceeds 32 MiB upload cap");
+    }
+    const uploadId = `up-${this.peerNextUploadId++}`;
+    const totalBytes = data.byteLength;
+    let staged = false;
+    try {
       for (let offset = 0; offset < totalBytes; offset += MAX_FRAME_BYTES) {
+        if (cancelled?.()) throw abortError();
         const end = Math.min(totalBytes, offset + MAX_FRAME_BYTES);
+        staged = true;
         await this.sendPeerChunkPut(
           sessionId,
           term,
@@ -5909,11 +6150,15 @@ export class MultiTabBackend implements FilesystemBackend {
           offset,
           totalBytes,
           unsharedBytes(data.subarray(offset, end)),
+          cancelled,
         );
       }
+      if (cancelled?.()) throw abortError();
       return { uploadId };
+    } catch (error) {
+      if (staged) this.abortPeerUpload(sessionId, term, uploadId);
+      throw error;
     }
-    return data.byteLength > 0 ? { inlineData: unsharedBytes(data) } : {};
   }
 
   private async decodePeerResponseValue(
@@ -6011,10 +6256,15 @@ export class MultiTabBackend implements FilesystemBackend {
     offset: number,
     totalBytes: number,
     chunk: Uint8Array<ArrayBuffer>,
+    cancelled?: () => boolean,
   ): Promise<void> {
-    await this.reservePeerCredits(sessionId, 1, chunk.byteLength);
+    await this.reservePeerCredits(sessionId, 1, chunk.byteLength, cancelled);
+    if (cancelled?.()) {
+      this.refundPeerCredits(sessionId, 1, chunk.byteLength);
+      throw abortError();
+    }
     const reqId = this.peerNextReqId++;
-    await new Promise<void>((resolve, reject) => {
+    const ack = new Promise<void>((resolve, reject) => {
       this.peerInFlightRpcs.set(reqId, {
         reqId,
         op: "chunk-put",
@@ -6035,6 +6285,8 @@ export class MultiTabBackend implements FilesystemBackend {
         chunk,
       });
     });
+    void ack.catch(() => {});
+    await awaitUnlessCancelled(ack, cancelled);
   }
 
   private async fetchPeerChunkedDownload(
@@ -6091,9 +6343,14 @@ export class MultiTabBackend implements FilesystemBackend {
     responseCookieTag?: bigint,
     isWatchRead = false,
     localWatchId?: number,
+    cancelled?: () => boolean,
   ): Promise<Extract<PeerMessage, { kind: "res" }>> {
     const payloadBytes = data?.byteLength ?? 0;
-    await this.reservePeerCredits(sessionId, 1, payloadBytes);
+    await this.reservePeerCredits(sessionId, 1, payloadBytes, cancelled);
+    if (cancelled?.()) {
+      this.refundPeerCredits(sessionId, 1, payloadBytes);
+      throw abortError();
+    }
     const reqId = this.peerNextReqId++;
     return new Promise<Extract<PeerMessage, { kind: "res" }>>((resolve, reject) => {
       this.peerInFlightRpcs.set(reqId, {
@@ -6290,6 +6547,7 @@ export class MultiTabBackend implements FilesystemBackend {
     this.peerPendingUnpins.clear();
     this.peerPendingWatchAcks.clear();
     this.peerPendingWatchCloses.clear();
+    this.peerPendingUploadAborts.clear();
     this.settleInFlightOnSessionBreak();
     this.markLocalWatchesOverflow();
     this.detachHandlesForRemount();
@@ -6479,46 +6737,68 @@ export class MultiTabBackend implements FilesystemBackend {
     return typeof cookie === "bigint" && cookie >= 3n && op.responseCookieTag !== this.dirEpoch;
   }
 
-  private drainPeerQueue(queue: QueuedPeerOp[]): void {
-    if (!queue.length || !this.peerAttached || this.peerRebinding) return;
-    const queued = queue.splice(0);
-    for (const op of queued) {
+  private dispatchQueuedOps(
+    ops: readonly QueuedPeerOp[],
+    dispatchImmediate: (op: QueuedPeerOp) => Promise<unknown>,
+  ): void {
+    for (const op of ops) {
+      if (op.cancelled?.()) {
+        op.reject(new FilesystemError(11, "operation cancelled"));
+        continue;
+      }
       if (this.isStaleQueuedCookie(op)) {
         op.reject(new FilesystemError(8, "stale directory cookie"));
         continue;
       }
+      dispatchImmediate(op).then(op.resolve, op.reject);
+    }
+  }
+
+  private drainPeerQueue(queue: QueuedPeerOp[]): void {
+    if (!queue.length || !this.peerAttached || this.peerRebinding) return;
+    this.dispatchQueuedOps(queue.splice(0), (op) =>
       this.dispatchPeerOperation(
         op.op,
         op.args,
         op.data ?? new Uint8Array(),
         op.op === "readdirPage" ? this.dirEpoch : op.responseCookieTag,
-      ).then(op.resolve, op.reject);
-    }
+        op.cancelled,
+      ),
+    );
   }
 
   private drainPeerRetryQueue(): void {
     this.drainPeerQueue(this.peerRetryQueue);
   }
 
-  private drainPeerFailoverQueue(): void {
-    this.drainPeerQueue(this.peerFailoverQueue);
+  private drainPeerRetryAndFailoverQueues(): void {
+    if (!this.peerAttached || this.peerRebinding) return;
+    const all = this.peerRetryQueue.splice(0).concat(this.peerFailoverQueue.splice(0));
+    if (all.length) {
+      this.dispatchQueuedOps(all, (op) =>
+        this.dispatchPeerOperation(
+          op.op,
+          op.args,
+          op.data ?? new Uint8Array(),
+          op.op === "readdirPage" ? this.dirEpoch : op.responseCookieTag,
+          op.cancelled,
+        ),
+      );
+    }
     this.notifyFailoverReadyWaiters();
   }
 
   private drainQueuedPeerOpsOnNewHost(): void {
     const all = this.peerRetryQueue.splice(0).concat(this.peerFailoverQueue.splice(0));
-    for (const op of all) {
-      if (this.isStaleQueuedCookie(op)) {
-        op.reject(new FilesystemError(8, "stale directory cookie"));
-        continue;
-      }
+    this.dispatchQueuedOps(all, (op) =>
       this.executeLocalOnHost(
         op.op,
         op.args,
         op.data ?? new Uint8Array(),
         op.op === "readdirPage" ? this.dirEpoch : undefined,
-      ).then(op.resolve, op.reject);
-    }
+        op.cancelled,
+      ),
+    );
     this.notifyFailoverReadyWaiters();
   }
 

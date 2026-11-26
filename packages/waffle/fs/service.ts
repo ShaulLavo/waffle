@@ -1169,18 +1169,40 @@ export class FilesystemService {
       return;
     }
     if (operation === "flush" || operation === "sync") {
-      const flushing = this.backend.flush?.(
-        operation === "sync" ? a : typeof a === "string" ? a : undefined,
-      );
-      return this.trackRequestWork(session, Promise.resolve(flushing)).then(() =>
-        this.finishResult(session, id, operation, operation === "sync" ? 0 : undefined),
+      const target = operation === "sync" ? a : typeof a === "string" ? a : undefined;
+      if (operation === "sync") this.backend.retain(a);
+      let flushing: Promise<void> | undefined;
+      try {
+        flushing = this.backend.flush?.(target);
+      } catch (error) {
+        if (operation === "sync") this.backend.release(a);
+        throw error;
+      }
+      return this.trackRequestWork(session, Promise.resolve(flushing)).then(
+        () => {
+          if (operation === "sync") this.backend.release(a);
+          return this.finishResult(session, id, operation, operation === "sync" ? 0 : undefined);
+        },
+        (error) => {
+          if (operation === "sync") this.backend.release(a);
+          throw error;
+        },
       );
     }
     if (operation === "resolve" && session.socketScope && this.backend instanceof MemoryBackend) {
       const result = this.backend.fs.resolveSocket(a, b, c === true);
       return this.finishResult(session, id, operation, result, args);
     }
-    const result = this.backend.execute(operation, args, data);
+    const isCancelled = () => {
+      const pending = session.pending.get(id);
+      return (
+        !pending ||
+        sessionRevoked(session) ||
+        !this.sessions.has(session) ||
+        requestCancelled(pending)
+      );
+    };
+    const result = this.backend.execute(operation, args, data, isCancelled);
     if (result instanceof Promise)
       return this.trackRequestWork(session, result).then((value) =>
         this.finishResult(session, id, operation, value, args),

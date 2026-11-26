@@ -3406,9 +3406,14 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     const waitForBackendExecute = (targetOp: string) => {
       const entered = Promise.withResolvers<void>();
       const origExecute = backendA.execute.bind(backendA);
-      backendA.execute = ((op: string, args: any[], data: Uint8Array) => {
+      backendA.execute = ((
+        op: string,
+        args: any[],
+        data: Uint8Array,
+        cancelled?: () => boolean,
+      ) => {
         if (op === targetOp) entered.resolve();
-        return origExecute(op, args, data);
+        return origExecute(op, args, data, cancelled);
       }) as typeof backendA.execute;
       return entered.promise;
     };
@@ -3424,6 +3429,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     };
 
     return {
+      hub,
       backendA,
       serviceA,
       clientA,
@@ -3707,6 +3713,901 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       leasePause.resolve();
       await tabB.close();
       await tabA.close();
+    }
+  });
+
+  test("promotion drains cold append -> flush -> overwrite in strict barrier order", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-failover-flush-order-${crypto.randomUUID()}`;
+
+    const promoteRelease = Promise.withResolvers<void>();
+    const readRelease = Promise.withResolvers<void>();
+    let pauseNextCutover = false;
+    let cutoverPaused = false;
+    let pauseNextRead = false;
+    let readPaused = false;
+
+    let tabA: TestTab | undefined;
+    let tabB: TestTab | undefined;
+    let tabC: TestTab | undefined;
+    try {
+      tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+      tabB = await openTab(broker, hub, store, {
+        clientId: "tab-B",
+        name,
+        hooks: {
+          async beforeCutoverBarrier() {
+            if (pauseNextCutover) {
+              pauseNextCutover = false;
+              cutoverPaused = true;
+              await promoteRelease.promise;
+            }
+          },
+        },
+      });
+      store.beforeRead = async () => {
+        if (pauseNextRead) {
+          pauseNextRead = false;
+          readPaused = true;
+          await readRelease.promise;
+        }
+      };
+
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/doc.txt", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await tabA.client.asyncCall("flush", []);
+
+      pauseNextCutover = true;
+      pauseNextRead = true;
+      hub.killOwner("tab-A");
+      broker.crashClient("tab-A");
+      await waitUntil(() => cutoverPaused, 4000, "cutover barrier paused");
+
+      // Queue cold append -> flush -> overwrite while Peer B is paused mid-promotion.
+      let flushSettled = false;
+      let overwriteSettled = false;
+      const appendP = tabB.backend.execute(
+        "writeFile",
+        ["/doc.txt", true, false],
+        new TextEncoder().encode("-A"),
+      );
+      const flushP = tabB.backend.flush().finally(() => {
+        flushSettled = true;
+      });
+      void Promise.resolve(
+        tabB.backend.execute(
+          "writeFile",
+          ["/doc.txt", false, false],
+          new TextEncoder().encode("B"),
+        ),
+      ).then(
+        () => {
+          overwriteSettled = true;
+        },
+        () => {
+          overwriteSettled = true;
+        },
+      );
+
+      promoteRelease.resolve();
+      await waitUntil(() => readPaused, 4000, "cold append hydration paused");
+      await new Promise((r) => setTimeout(r, 20));
+      expect(flushSettled).toBe(false);
+      expect(overwriteSettled).toBe(false);
+
+      readRelease.resolve();
+      await flushP;
+      await appendP;
+
+      // Crash promoted Host B immediately after flush() resolved: storage MUST have "old-A"
+      // (neither stale "old" nor later "B" that came after the flush barrier)!
+      hub.killOwner("tab-B");
+      broker.crashClient("tab-B");
+      tabC = await openTab(broker, hub, store, { clientId: "tab-C", name });
+      const bytes: Uint8Array = await tabC.client.asyncCall("readFile", ["/doc.txt"]);
+      expect(new TextDecoder().decode(bytes)).toBe("old-A");
+    } finally {
+      store.beforeRead = undefined;
+      promoteRelease.resolve();
+      readRelease.resolve();
+      await tabC?.close();
+      await tabB?.close();
+      await tabA?.close();
+    }
+  });
+
+  function readCommittedFile(store: MockSharedStore, fileName: string): Uint8Array | undefined {
+    const index = store.index;
+    if (!index) return undefined;
+    const byIno = new Map(index.nodes.map((n) => [n.ino, n]));
+    const root = byIno.get(index.root);
+    const entry = root?.children?.find(([n]) => n === fileName);
+    if (!entry) return undefined;
+    const node = byIno.get(entry[1]);
+    if (!node || node.kind !== "file") return undefined;
+    if (node.size === 0) return new Uint8Array();
+    return node.data ? store.payloads.get(node.data)?.slice() : undefined;
+  }
+
+  test("Host client cold append holds local and Peer flush() and blocks another Peer write across barrier", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-host-flush-order-${crypto.randomUUID()}`;
+
+    const readRelease = Promise.withResolvers<void>();
+    let pauseNextRead = false;
+    let readPaused = false;
+    let writerReqArrivedAtHost = false;
+
+    let tabSeed: TestTab | undefined;
+    let tabHost: TestTab | undefined;
+    let tabPeerFlush: TestTab | undefined;
+    let tabPeerWriter: TestTab | undefined;
+    try {
+      tabSeed = await openTab(broker, hub, store, { clientId: "tab-seed", name });
+      await tabSeed.client.asyncCall(
+        "writeFile",
+        ["/doc.txt", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await tabSeed.client.asyncCall("flush", []);
+      await tabSeed.close();
+      tabSeed = undefined;
+
+      // Fresh Host opens with /doc.txt cold on disk; two separate Peers attach.
+      tabHost = await openTab(broker, hub, store, { clientId: "tab-host", name });
+      tabPeerFlush = await openTab(broker, hub, store, { clientId: "tab-peer-flush", name });
+      tabPeerWriter = await openTab(broker, hub, store, { clientId: "tab-peer-writer", name });
+
+      hub.interceptor = (_ch, sender, data) => {
+        const msg = data as { kind?: string; op?: string } | undefined;
+        if (
+          sender.ownerTag === "tab-peer-writer" &&
+          msg?.kind === "req" &&
+          msg.op === "writeFile"
+        ) {
+          writerReqArrivedAtHost = true;
+        }
+      };
+      store.beforeRead = async () => {
+        if (pauseNextRead) {
+          pauseNextRead = false;
+          readPaused = true;
+          await readRelease.promise;
+        }
+      };
+      pauseNextRead = true;
+
+      // Submit cold append through FilesystemService (prepare -> execute), not direct backend.execute().
+      const appendP = tabHost.client.asyncCall(
+        "writeFile",
+        ["/doc.txt", true, false],
+        new TextEncoder().encode("-A"),
+      );
+      await waitUntil(() => readPaused, 4000, "Host client cold append paused in hydration");
+
+      let hostFlushDone = false;
+      let clientFlushDone = false;
+      let peerFlushDone = false;
+      let peerLaterWriteDone = false;
+      let committedAtHostFlush: Uint8Array | undefined;
+      const hostFlushP = tabHost.backend.flush().finally(() => {
+        hostFlushDone = true;
+        committedAtHostFlush = readCommittedFile(store, "doc.txt");
+      });
+      const clientFlushP = tabHost.client.asyncCall("flush", []).finally(() => {
+        clientFlushDone = true;
+      });
+      const peerFlushP = tabPeerFlush.client.asyncCall("flush", []).finally(() => {
+        peerFlushDone = true;
+      });
+      // Separate Peer with no pending flush of its own sends a write directly to Host.
+      const peerLaterWriteP = tabPeerWriter.client
+        .asyncCall("writeFile", ["/doc.txt", false, false], new TextEncoder().encode("B"))
+        .finally(() => {
+          peerLaterWriteDone = true;
+        });
+
+      await waitUntil(
+        () => writerReqArrivedAtHost,
+        4000,
+        "second Peer write reached Host while Host flush was pending",
+      );
+      await new Promise((r) => setTimeout(r, 20));
+      expect(hostFlushDone).toBe(false);
+      expect(clientFlushDone).toBe(false);
+      expect(peerFlushDone).toBe(false);
+      expect(peerLaterWriteDone).toBe(false);
+
+      readRelease.resolve();
+      await Promise.all([appendP, hostFlushP, clientFlushP, peerFlushP, peerLaterWriteP]);
+
+      // The committed snapshot at Host flush must be "old-A" (neither stale "old" nor second Peer's "B").
+      expect(committedAtHostFlush).toBeDefined();
+      expect(new TextDecoder().decode(committedAtHostFlush!)).toBe("old-A");
+      // Second Peer's later write must have executed and succeeded after the barrier.
+      const liveBytes: Uint8Array = await tabHost.client.asyncCall("readFile", ["/doc.txt"]);
+      expect(new TextDecoder().decode(liveBytes)).toBe("B");
+    } finally {
+      hub.interceptor = undefined;
+      store.beforeRead = undefined;
+      readRelease.resolve();
+      await tabPeerWriter?.close();
+      await tabPeerFlush?.close();
+      await tabHost?.close();
+      await tabSeed?.close();
+    }
+  });
+
+  test("cancelled Host client cold append returns ECANCELED, unblocks service queue while read stays paused, and leaves file unmodified", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-host-cancel-cold-append-${crypto.randomUUID()}`;
+
+    const readRelease = Promise.withResolvers<void>();
+    let pauseNextRead = false;
+    let readPaused = false;
+
+    let tabSeed: TestTab | undefined;
+    let tabHost: TestTab | undefined;
+    try {
+      tabSeed = await openTab(broker, hub, store, { clientId: "tab-seed", name });
+      await tabSeed.client.asyncCall(
+        "writeFile",
+        ["/cancel.txt", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await tabSeed.client.asyncCall("flush", []);
+      await tabSeed.close();
+      tabSeed = undefined;
+
+      tabHost = await openTab(broker, hub, store, { clientId: "tab-host", name });
+      store.beforeRead = async () => {
+        if (pauseNextRead) {
+          pauseNextRead = false;
+          readPaused = true;
+          await readRelease.promise;
+        }
+      };
+      pauseNextRead = true;
+
+      const completion = tabHost.client.submit(
+        "writeFile",
+        ["/cancel.txt", true, false],
+        new TextEncoder().encode("-cancelled"),
+      );
+      try {
+        await waitUntil(() => readPaused, 4000, "cold append paused in hydration before cancel");
+        completion.cancel();
+        let caught: unknown;
+        try {
+          await completion.value();
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(FilesystemError);
+        expect((caught as FilesystemError).errno).toBe(11);
+      } finally {
+        completion.release();
+      }
+
+      // With the cancelled append's storage read STILL paused, unrelated requests on the same
+      // Host FilesystemService queue must progress immediately without stalling.
+      await tabHost.client.asyncCall(
+        "writeFile",
+        ["/unrelated.txt", false, false],
+        new TextEncoder().encode("ok"),
+      );
+      const unrelatedBytes: Uint8Array = await tabHost.client.asyncCall("readFile", [
+        "/unrelated.txt",
+      ]);
+      expect(new TextDecoder().decode(unrelatedBytes)).toBe("ok");
+
+      readRelease.resolve();
+      await tabHost.client.asyncCall("flush", []);
+      const liveBytes: Uint8Array = await tabHost.client.asyncCall("readFile", ["/cancel.txt"]);
+      expect(new TextDecoder().decode(liveBytes)).toBe("old");
+    } finally {
+      store.beforeRead = undefined;
+      readRelease.resolve();
+      await tabHost?.close();
+      await tabSeed?.close();
+    }
+  });
+
+  test("cancelled Host-originated append queued across fence-loss failover does not commit on replacement Host", async () => {
+    const f = await setupPausedFenceLossFixture("ws-fence-cancel-append");
+    try {
+      await f.clientA.asyncCall(
+        "writeFile",
+        ["/failover-cancel.txt", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await f.clientA.asyncCall("flush", []);
+
+      await f.promoteBAndPauseFenceLoss();
+
+      // Block tab-A from attaching to replacement Host B until we cancel the queued failover append.
+      let blockAttach = true;
+      f.hub.interceptor = (_ch, sender, msg) => {
+        if (!blockAttach) return;
+        const kind = msg && typeof msg === "object" ? Reflect.get(msg, "kind") : undefined;
+        if (sender.ownerTag === "tab-A" && kind === "attach") return false;
+        if (sender.ownerTag === "tab-B" && kind === "attached") return false;
+      };
+
+      const appendEntered = f.waitForBackendExecute("writeFile");
+      const completion = f.clientA.submit(
+        "writeFile",
+        ["/failover-cancel.txt", true, false],
+        new TextEncoder().encode("-cancelled"),
+      );
+      try {
+        await appendEntered;
+        // Release fence-loss so tab-A demotes into failover and enqueues the append on peerFailoverQueue.
+        f.epochGate.resolve();
+        await waitUntil(
+          () => f.backendA.currentRole === "failover",
+          4000,
+          "tab-A demoted into failover while append is queued",
+        );
+        await new Promise((r) => setTimeout(r, 20));
+
+        completion.cancel();
+        let caught: unknown;
+        try {
+          await completion.value();
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(FilesystemError);
+        expect((caught as FilesystemError).errno).toBe(11);
+      } finally {
+        completion.release();
+      }
+
+      // Allow tab-A to reattach to replacement Host B and drain its failover queue.
+      blockAttach = false;
+      f.hub.interceptor = undefined;
+      await waitUntil(
+        () => f.backendA.currentRole === "peer",
+        4000,
+        "tab-A attached as Peer to replacement Host B",
+      );
+      await f.clientA.asyncCall(
+        "writeFile",
+        ["/probe.txt", false, false],
+        new TextEncoder().encode("ok"),
+      );
+      const bytes: Uint8Array = await f.tabB.client.asyncCall("readFile", ["/failover-cancel.txt"]);
+      expect(new TextDecoder().decode(bytes)).toBe("old");
+    } finally {
+      f.hub.interceptor = undefined;
+      await f.cleanup();
+    }
+  });
+
+  test("cancelled Peer chunked append mid-upload frees staged bytes and unblocks flush while chunk ack is withheld", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-peer-chunk-cancel-${crypto.randomUUID()}`;
+
+    let tabA: TestTab | undefined;
+    let tabB: TestTab | undefined;
+    try {
+      tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+      tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/chunk-cancel.txt", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await tabA.client.asyncCall("flush", []);
+
+      const payload = new Uint8Array(1_572_864);
+      payload.fill(0x41);
+      const completion = tabB.client.submit(
+        "writeFile",
+        ["/chunk-cancel.txt", true, false],
+        payload,
+      );
+
+      let firstChunkReqId: number | undefined;
+      let initialSessionId: string | undefined;
+      let flushSessionId: string | undefined;
+      let cancelledMidUpload = false;
+      let sawWriteFileReq = false;
+      let stagedBytesAtCancel = 0;
+      let holdAck = true;
+      let withheldAck: { sender: MockChannel; data: unknown } | undefined;
+      hub.interceptor = (_ch, sender, data) => {
+        const msg = data as
+          | { kind?: string; op?: string; reqId?: number; offset?: number; sessionId?: string }
+          | undefined;
+        if (!msg) return;
+        // Gate heartbeat delivery while the chunk ack is held so lost-frame reset cannot race the test.
+        if (holdAck && (msg.kind === "ping" || msg.kind === "pong")) return false;
+        if (sender.ownerTag === "tab-B" && msg.kind === "chunk-put" && msg.offset === 0) {
+          firstChunkReqId = msg.reqId;
+          initialSessionId = msg.sessionId;
+        }
+        if (sender.ownerTag === "tab-B" && msg.kind === "req" && msg.op === "writeFile") {
+          sawWriteFileReq = true;
+        }
+        if (sender.ownerTag === "tab-B" && msg.kind === "req" && msg.op === "flush") {
+          flushSessionId = msg.sessionId;
+        }
+        // Withhold chunk-put #1 ack after Host stages the upload, and cancel while ack is still pending.
+        if (
+          !cancelledMidUpload &&
+          sender.ownerTag === "tab-A" &&
+          msg.kind === "res" &&
+          firstChunkReqId !== undefined &&
+          msg.reqId === firstChunkReqId
+        ) {
+          cancelledMidUpload = true;
+          stagedBytesAtCancel = tabA!.backend.resources().multitabHostUsedUploadBytes ?? 0;
+          withheldAck = { sender, data };
+          completion.cancel();
+          return false;
+        }
+      };
+
+      try {
+        let caught: unknown;
+        try {
+          await completion.value();
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(FilesystemError);
+        expect((caught as FilesystemError).errno).toBe(11);
+      } finally {
+        completion.release();
+      }
+
+      // While chunk-put #1 ack is STILL withheld, Host must already free staged bytes and a
+      // following Peer flush must progress immediately on the original session.
+      const peerCredits = tabB.backend as unknown as {
+        peerAvailableFrames: number;
+        peerAvailableBytes: number;
+        peerGrantedFrames: number;
+        peerGrantedBytes: number;
+        peerSessionId?: string;
+      };
+      expect(cancelledMidUpload).toBe(true);
+      expect(initialSessionId).toBeDefined();
+      expect(stagedBytesAtCancel).toBe(payload.byteLength);
+      await waitUntil(
+        () => (tabA!.backend.resources().multitabHostUsedUploadBytes ?? 0) === 0,
+        4000,
+        "Host released staged upload while chunk ack was still withheld",
+      );
+      await tabB.client.asyncCall("flush", []);
+      expect(flushSessionId).toBe(initialSessionId);
+      expect(peerCredits.peerSessionId).toBe(initialSessionId);
+      expect(sawWriteFileReq).toBe(false);
+      // The withheld 1 MiB chunk-put's credits must still be charged until the late ack arrives.
+      expect(peerCredits.peerAvailableFrames).toBe(peerCredits.peerGrantedFrames - 1);
+      expect(peerCredits.peerAvailableBytes).toBe(peerCredits.peerGrantedBytes - 1024 * 1024);
+
+      // Deliver the late chunk-put #1 ack on the same session and verify full credit return directly.
+      holdAck = false;
+      hub.interceptor = undefined;
+      withheldAck?.sender.postMessage(withheldAck.data);
+      await waitUntil(
+        () =>
+          peerCredits.peerAvailableFrames === peerCredits.peerGrantedFrames &&
+          peerCredits.peerAvailableBytes === peerCredits.peerGrantedBytes,
+        4000,
+        "late chunk-put ack returned full Peer credits",
+      );
+      expect(peerCredits.peerSessionId).toBe(initialSessionId);
+
+      const afterPayload = new Uint8Array(1_572_864);
+      afterPayload.fill(0x52);
+      await tabB.client.asyncCall("writeFile", ["/after-cancel.bin", false, false], afterPayload);
+      await tabB.client.asyncCall("flush", []);
+      const unchanged: Uint8Array = await tabA.client.asyncCall("readFile", ["/chunk-cancel.txt"]);
+      expect(new TextDecoder().decode(unchanged)).toBe("old");
+      const after: Uint8Array = await tabA.client.asyncCall("readFile", ["/after-cancel.bin"]);
+      expect(after.byteLength).toBe(afterPayload.byteLength);
+      expect(after[0]).toBe(0x52);
+      expect(tabA.backend.resources().multitabHostUsedUploadBytes).toBe(0);
+    } finally {
+      hub.interceptor = undefined;
+      await tabB?.close();
+      await tabA?.close();
+    }
+  });
+
+  test("dropped chunk-abort frame is recovered by heartbeat settlement without disconnecting Peer", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-peer-chunk-abort-drop-${crypto.randomUUID()}`;
+
+    let tabA: TestTab | undefined;
+    let tabB: TestTab | undefined;
+    try {
+      tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+      tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/abort-drop.txt", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await tabA.client.asyncCall("flush", []);
+
+      const payload = new Uint8Array(1_572_864);
+      payload.fill(0x42);
+      const completion = tabB.client.submit("writeFile", ["/abort-drop.txt", true, false], payload);
+
+      let firstChunkReqId: number | undefined;
+      let initialSessionId: string | undefined;
+      let settledAbortInPong = false;
+      let cancelledMidUpload = false;
+      let droppedAborts = 0;
+      let stagedBytesAtCancel = 0;
+      hub.interceptor = (_ch, sender, data) => {
+        const msg = data as
+          | {
+              kind?: string;
+              reqId?: number;
+              offset?: number;
+              sessionId?: string;
+              settledUploadAborts?: readonly string[];
+            }
+          | undefined;
+        if (!msg) return;
+        if (sender.ownerTag === "tab-B" && msg.kind === "chunk-abort") {
+          droppedAborts++;
+          return false;
+        }
+        if (sender.ownerTag === "tab-B" && msg.kind === "chunk-put" && msg.offset === 0) {
+          firstChunkReqId = msg.reqId;
+          initialSessionId = msg.sessionId;
+        }
+        if (
+          sender.ownerTag === "tab-A" &&
+          msg.kind === "pong" &&
+          msg.sessionId === initialSessionId &&
+          (msg.settledUploadAborts?.length ?? 0) > 0
+        ) {
+          settledAbortInPong = true;
+        }
+        if (
+          !cancelledMidUpload &&
+          sender.ownerTag === "tab-A" &&
+          msg.kind === "res" &&
+          firstChunkReqId !== undefined &&
+          msg.reqId === firstChunkReqId
+        ) {
+          cancelledMidUpload = true;
+          stagedBytesAtCancel = tabA!.backend.resources().multitabHostUsedUploadBytes ?? 0;
+          completion.cancel();
+        }
+      };
+
+      try {
+        let caught: unknown;
+        try {
+          await completion.value();
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(FilesystemError);
+        expect((caught as FilesystemError).errno).toBe(11);
+      } finally {
+        completion.release();
+      }
+
+      expect(cancelledMidUpload).toBe(true);
+      expect(initialSessionId).toBeDefined();
+      expect(stagedBytesAtCancel).toBe(payload.byteLength);
+      await waitUntil(
+        () => droppedAborts >= 1,
+        4000,
+        "direct chunk-abort frame emitted and dropped",
+      );
+      // Even with direct chunk-abort frames dropped, heartbeat ping/pong settlement frees the staged
+      // upload and clears the Peer's pending settlement without resetting or disconnecting the session.
+      await waitUntil(
+        () =>
+          (tabA!.backend.resources().multitabHostUsedUploadBytes ?? 0) === 0 &&
+          (tabB!.backend.resources().multitabPeerPendingSettlements ?? -1) === 0,
+        4000,
+        "heartbeat settlement freed staged upload and cleared Peer pending settlements",
+      );
+      expect(settledAbortInPong).toBe(true);
+      expect(tabB.backend.currentRole).toBe("peer");
+      expect((tabB.backend as unknown as { peerSessionId?: string }).peerSessionId).toBe(
+        initialSessionId,
+      );
+      const unchanged: Uint8Array = await tabA.client.asyncCall("readFile", ["/abort-drop.txt"]);
+      expect(new TextDecoder().decode(unchanged)).toBe("old");
+    } finally {
+      hub.interceptor = undefined;
+      await tabB?.close();
+      await tabA?.close();
+    }
+  });
+
+  test("Peer chunked write interrupted by step-down retry orders write reply -> flush reply -> later write", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-peer-flush-retry-order-${crypto.randomUUID()}`;
+    const flushGate = Promise.withResolvers<void>();
+    let stepDownTriggered = false;
+    let sawRetry = false;
+    let committedAtFlushReply: Uint8Array | undefined;
+
+    let tabA: TestTab | undefined;
+    let tabB: TestTab | undefined;
+    try {
+      tabA = await openTab(broker, hub, store, {
+        clientId: "tab-A",
+        name,
+        implementation: "opfs-memory",
+        hooks: {
+          async beforeCooperativeFlush() {
+            await flushGate.promise;
+          },
+        },
+      });
+      tabB = await openTab(broker, hub, store, {
+        clientId: "tab-B",
+        name,
+        implementation: "opfs-memory",
+      });
+
+      await tabA.client.asyncCall(
+        "writeFile",
+        ["/big.bin", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await tabA.client.asyncCall("flush", []);
+
+      // Transient cooperative flush failure forces Host A to restore ready so Peer B retries upload.
+      store.flushFault = { failOnce: new Error("transient cooperative flush failure") };
+
+      const wireEvents: string[] = [];
+      const write1ReqIds = new Set<number>();
+      const flushReqIds = new Set<number>();
+      const write2ReqIds = new Set<number>();
+      hub.interceptor = (_ch, sender, data) => {
+        const msg = data as
+          | {
+              kind?: string;
+              op?: string;
+              reqId?: number;
+              offset?: number;
+              uploadId?: string;
+              ok?: boolean;
+              retry?: boolean;
+            }
+          | undefined;
+        if (!msg) return;
+        if (
+          !stepDownTriggered &&
+          sender.ownerTag === "tab-B" &&
+          msg.kind === "chunk-put" &&
+          msg.offset === 1024 * 1024
+        ) {
+          stepDownTriggered = true;
+          const ctrl = hub.create(
+            `waffle:multitab:v1:ctrl:${multitabScope("opfs-memory", name)}`,
+            "trigger",
+          );
+          ctrl.postMessage({
+            kind: "cooperative-step-down",
+            targetAttemptId: tabA!.backend.attemptId!,
+            targetTerm: tabA!.backend.currentHostTerm.toString(16),
+          } satisfies ControlMessage);
+          ctrl.close();
+          setTimeout(() => flushGate.resolve(), 25);
+        }
+        if (sender.ownerTag === "tab-A" && msg.retry === true) {
+          sawRetry = true;
+        }
+        if (typeof msg.reqId !== "number") return;
+        if (sender.ownerTag === "tab-B" && msg.kind === "req" && msg.op) {
+          if (msg.op === "writeFile" && msg.uploadId !== undefined) {
+            write1ReqIds.add(msg.reqId);
+            wireEvents.push("req:writeFile#1");
+          } else if (msg.op === "flush") {
+            flushReqIds.add(msg.reqId);
+            wireEvents.push("req:flush");
+          } else if (msg.op === "writeFile") {
+            write2ReqIds.add(msg.reqId);
+            wireEvents.push("req:writeFile#2");
+          }
+        }
+        if (sender.ownerTag === "tab-A" && msg.kind === "res" && msg.ok === true) {
+          if (write1ReqIds.has(msg.reqId)) wireEvents.push("res:writeFile#1");
+          if (flushReqIds.has(msg.reqId)) {
+            wireEvents.push("res:flush");
+            committedAtFlushReply = readCommittedFile(store, "big.bin");
+          }
+          if (write2ReqIds.has(msg.reqId)) wireEvents.push("res:writeFile#2");
+        }
+      };
+
+      const bigBytes = new Uint8Array(1_572_864);
+      bigBytes.fill(0x5a);
+      bigBytes[0] = 0x11;
+      bigBytes[bigBytes.length - 1] = 0x99;
+
+      const bigWriteP = tabB.backend.execute("writeFile", ["/big.bin", false, false], bigBytes);
+      const flushP = tabB.backend.flush();
+      const afterWriteP = tabB.backend.execute(
+        "writeFile",
+        ["/big.bin", false, false],
+        new TextEncoder().encode("after-flush"),
+      );
+
+      await Promise.all([bigWriteP, flushP, afterWriteP]);
+
+      expect(stepDownTriggered).toBe(true);
+      expect(sawRetry).toBe(true);
+      const idxWrite1Res = wireEvents.indexOf("res:writeFile#1");
+      const idxFlushReq = wireEvents.indexOf("req:flush");
+      const idxFlushRes = wireEvents.indexOf("res:flush");
+      const idxWrite2Req = wireEvents.indexOf("req:writeFile#2");
+      const idxWrite2Res = wireEvents.indexOf("res:writeFile#2");
+      expect(idxWrite1Res).toBeGreaterThanOrEqual(0);
+      expect(idxFlushReq).toBeGreaterThan(idxWrite1Res);
+      expect(idxFlushRes).toBeGreaterThan(idxFlushReq);
+      expect(idxWrite2Req).toBeGreaterThan(idxFlushRes);
+      expect(idxWrite2Res).toBeGreaterThan(idxWrite2Req);
+
+      // The committed store snapshot at flush reply must hold the 1.5 MiB upload (not "old" or "after-flush").
+      expect(committedAtFlushReply).toBeDefined();
+      expect(committedAtFlushReply!.byteLength).toBe(bigBytes.byteLength);
+      expect(committedAtFlushReply![0]).toBe(0x11);
+      expect(committedAtFlushReply![committedAtFlushReply!.byteLength - 1]).toBe(0x99);
+
+      const liveBytes: Uint8Array = await tabA.client.asyncCall("readFile", ["/big.bin"]);
+      expect(new TextDecoder().decode(liveBytes)).toBe("after-flush");
+      expect(tabA.backend.resources().multitabHostUsedUploadBytes).toBe(0);
+    } finally {
+      hub.interceptor = undefined;
+      flushGate.resolve();
+      await tabB?.close();
+      await tabA?.close();
+    }
+  });
+
+  test("queued descriptor sync retains target handle across immediate last release on Host and Peer", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-sync-retain-release-${crypto.randomUUID()}`;
+
+    let readRelease = Promise.withResolvers<void>();
+    let pauseNextRead = false;
+    let readPaused = false;
+
+    let tabSeed: TestTab | undefined;
+    let tabHost: TestTab | undefined;
+    let tabPeer: TestTab | undefined;
+    let tabCheck: TestTab | undefined;
+    try {
+      tabSeed = await openTab(broker, hub, store, { clientId: "tab-seed", name });
+      await tabSeed.client.asyncCall(
+        "writeFile",
+        ["/cold-host.txt", false, false],
+        new TextEncoder().encode("h0"),
+      );
+      await tabSeed.client.asyncCall(
+        "writeFile",
+        ["/cold-peer.txt", false, false],
+        new TextEncoder().encode("p0"),
+      );
+      await tabSeed.client.asyncCall(
+        "writeFile",
+        ["/sync.txt", false, false],
+        new TextEncoder().encode("v1"),
+      );
+      await tabSeed.client.asyncCall("flush", []);
+      await tabSeed.close();
+      tabSeed = undefined;
+
+      tabHost = await openTab(broker, hub, store, { clientId: "tab-host", name });
+      tabPeer = await openTab(broker, hub, store, { clientId: "tab-peer", name });
+
+      store.beforeRead = async (key) => {
+        if (pauseNextRead && key !== "") {
+          pauseNextRead = false;
+          readPaused = true;
+          await readRelease.promise;
+        }
+      };
+
+      // Host case: pause a Peer cold append on Host, then queue Host sync(h) followed immediately by last release(h).
+      const rootHost: number = await tabHost.client.asyncCall("preopen", ["/"]);
+      const hostRes = (await tabHost.client.asyncCall("resolve", [rootHost, "sync.txt", true])) as {
+        node?: number;
+      };
+      const hostHandle = hostRes.node!;
+      await tabHost.client.asyncCall("retain", [hostHandle]);
+      await tabHost.client.asyncCall("write", [hostHandle, 0], new TextEncoder().encode("v2"));
+
+      pauseNextRead = true;
+      const hostPauseAppend = tabPeer.client.asyncCall(
+        "writeFile",
+        ["/cold-host.txt", true, false],
+        new TextEncoder().encode("-1"),
+      );
+      await waitUntil(() => readPaused, 4000, "Host cold append paused before sync+release");
+
+      let hostSyncDone = false;
+      const hostSyncP = tabHost.client.asyncCall("sync", [hostHandle]).finally(() => {
+        hostSyncDone = true;
+      });
+      await tabHost.client.asyncCall("release", [hostHandle]);
+      expect(hostSyncDone).toBe(false);
+
+      readRelease.resolve();
+      expect(await hostSyncP).toBe(0);
+      await hostPauseAppend;
+
+      // Peer case: pause a Host cold append, then queue Peer sync(ph) followed immediately by last release(ph).
+      const rootPeer: number = await tabPeer.client.asyncCall("preopen", ["/"]);
+      const peerRes = (await tabPeer.client.asyncCall("resolve", [rootPeer, "sync.txt", true])) as {
+        node?: number;
+      };
+      const peerHandle = peerRes.node!;
+      await tabPeer.client.asyncCall("retain", [peerHandle]);
+      await tabPeer.client.asyncCall("write", [peerHandle, 0], new TextEncoder().encode("v3"));
+
+      readRelease = Promise.withResolvers<void>();
+      readPaused = false;
+      pauseNextRead = true;
+      const peerPauseAppend = tabHost.client.asyncCall(
+        "writeFile",
+        ["/cold-peer.txt", true, false],
+        new TextEncoder().encode("-2"),
+      );
+      await waitUntil(() => readPaused, 4000, "Host cold append paused before Peer sync+release");
+
+      let peerSyncDone = false;
+      const peerSyncP = tabPeer.client.asyncCall("sync", [peerHandle]).finally(() => {
+        peerSyncDone = true;
+      });
+      await tabPeer.client.asyncCall("release", [peerHandle]);
+      expect(peerSyncDone).toBe(false);
+
+      readRelease.resolve();
+      expect(await peerSyncP).toBe(0);
+      await peerPauseAppend;
+
+      // Crash both tabs immediately after Peer sync resolved: /sync.txt MUST be "v3" on disk.
+      hub.killOwner("tab-host");
+      broker.crashClient("tab-host");
+      hub.killOwner("tab-peer");
+      broker.crashClient("tab-peer");
+      tabCheck = await openTab(broker, hub, store, { clientId: "tab-check", name });
+      const synced: Uint8Array = await tabCheck.client.asyncCall("readFile", ["/sync.txt"]);
+      expect(new TextDecoder().decode(synced)).toBe("v3");
+    } finally {
+      store.beforeRead = undefined;
+      readRelease.resolve();
+      await tabCheck?.close();
+      await tabPeer?.close();
+      await tabHost?.close();
+      await tabSeed?.close();
     }
   });
 });
