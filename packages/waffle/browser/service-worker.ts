@@ -219,10 +219,25 @@ export function createPreviewServiceWorker(options: PreviewServiceWorkerOptions)
   };
 }
 
-/** Await activation even when the registering page is outside the worker's scope. */
+/**
+ * Await activation even when the registering page is outside the worker's scope.
+ *
+ * A worker in the registration's active slot is already activating or activated, and fetches it
+ * handles wait for its activation, so it needs no wait. Only an installing or waiting worker is
+ * watched. WebKit can resolve `register()` in a second page that registered at the same moment with
+ * the active worker's state still reading "installing", and never sends that object another
+ * `statechange`; waiting on it would hang forever. A "redundant" state is still a failure: the spec
+ * queues that state update before it clears the active slot, so the two can briefly disagree.
+ */
 export function activated(registration: ServiceWorkerRegistration): Promise<void> {
-  const worker = registration.installing ?? registration.waiting ?? registration.active;
-  if (!worker) return Promise.reject(new Error("service worker registration has no worker"));
+  const worker = registration.installing ?? registration.waiting;
+  if (!worker) {
+    const active = registration.active;
+    if (!active) return Promise.reject(new Error("service worker registration has no worker"));
+    if (active.state === "redundant")
+      return Promise.reject(new Error("service worker became redundant before activation"));
+    return Promise.resolve();
+  }
   return new Promise((resolve, reject) => {
     const check = () => {
       if (worker.state !== "activated" && worker.state !== "redundant") return;

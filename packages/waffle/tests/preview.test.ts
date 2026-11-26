@@ -404,3 +404,57 @@ test("activation helper observes activation and redundant failures outside worke
   await expect(activated(registration)).rejects.toThrow("redundant");
   await expect(activated({} as ServiceWorkerRegistration)).rejects.toThrow("no worker");
 });
+
+test("activation helper accepts an active worker whose state object never updates", async () => {
+  // WebKit: a second page registering at the same moment gets the active worker with its state
+  // still "installing" and no later statechange. The active slot alone means it is activating or
+  // activated, so the helper must not wait on that object.
+  class Worker extends EventTarget {
+    state: ServiceWorkerState = "installing";
+  }
+  const stale = {
+    installing: null,
+    waiting: null,
+    active: new Worker(),
+  } as unknown as ServiceWorkerRegistration;
+  await activated(stale);
+  for (const state of ["installed", "activating", "activated"] as const) {
+    const active = new Worker();
+    active.state = state;
+    await activated({
+      installing: null,
+      waiting: null,
+      active,
+    } as unknown as ServiceWorkerRegistration);
+  }
+
+  // An active worker already marked redundant is a failure, not a ready worker: the spec updates
+  // its state before it clears the active slot.
+  const gone = new Worker();
+  gone.state = "redundant";
+  await expect(
+    activated({
+      installing: null,
+      waiting: null,
+      active: gone,
+    } as unknown as ServiceWorkerRegistration),
+  ).rejects.toThrow("redundant");
+
+  // A newer installing worker is still awaited, even while an older one is active.
+  const next = new Worker();
+  const updating = {
+    installing: next,
+    waiting: null,
+    active: new Worker(),
+  } as unknown as ServiceWorkerRegistration;
+  let settled = false;
+  const ready = activated(updating).then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  next.state = "activated";
+  next.dispatchEvent(new Event("statechange"));
+  await ready;
+  expect(settled).toBe(true);
+});
