@@ -9,7 +9,7 @@ import {
 } from "../core/descriptors";
 import { ProcessError } from "../proc/types";
 import type { WorkerDescriptorCodec } from "../proc/worker-client";
-import { createRuntimeTerminalCodec } from "../browser/runtime-terminals";
+import { createRuntimeTerminalCodec, hostPipeDestination } from "../browser/runtime-terminals";
 import { deliveredTerminalOutput } from "../browser/terminal-output";
 import { createNullDevice } from "../core/devices";
 
@@ -166,6 +166,81 @@ test("default runtime stdio transfers without Bun slots and routes stdout/stderr
       [1, "fd1"],
       [2, "fd2"],
     ]);
+  } finally {
+    state.table.dispose();
+  }
+});
+
+function pipeFixture() {
+  const table = new DescriptorTable();
+  for (const fd of [0, 1, 2] as const)
+    table.openAt(
+      fd,
+      hostPipeDestination(fd, {
+        kind: "pipe",
+        read: () => 0,
+        write: () => 0,
+        readiness: () => ({ readable: fd === 0, writable: fd !== 0, hangup: fd === 0 }),
+      }),
+      (1n << 29n) - 1n,
+      0n,
+    );
+  const output: [number, string][] = [];
+  const codec = createRuntimeTerminalCodec({
+    descriptors: table,
+    fallback: fixture().fallback,
+    output: deliveredTerminalOutput((fd, bytes) => {
+      output.push([fd, new TextDecoder().decode(bytes)]);
+      return bytes.length;
+    }),
+    resolveTerminal: () => {
+      throw new Error("a pipe destination never resolves to an interactive terminal");
+    },
+  });
+  return { table, codec, output };
+}
+
+test("host pipe destinations reach the host output but are pipes to every generation", () => {
+  const state = pipeFixture();
+  const child = new DescriptorTable();
+  try {
+    for (const fd of [0, 1, 2]) {
+      const token = state.codec.export(state.table.get(fd)!, 2);
+      expect(token).toEqual({ kind: "web-terminal", target: fd, pipe: true });
+      const imported = state.codec.import(token, 2);
+      expect(imported.resource.kind).toBe("pipe");
+      child.inherit(fd, borrowed(imported));
+      // runtime_proc fd_kind: 1 is a pipe, 2 a terminal.
+      expect(child.kind(fd)).toBe(1);
+      const resource = imported.resource as Stream;
+      if (fd === 0) expect(resource.read([new Uint8Array(8)])).toBe(0);
+      else expect(resource.write([text(`fd${fd}`)])).toBe(3);
+      // Re-exported by the child (for a grandchild or after 2>&1), it stays a pipe.
+      expect(state.codec.export(child.get(fd)!, 3)).toEqual(token);
+    }
+    child.inherit(2, child.get(1)!);
+    expect(state.codec.export(child.get(2)!, 3)).toEqual({
+      kind: "web-terminal",
+      target: 1,
+      pipe: true,
+    });
+    expect(state.output).toEqual([
+      [1, "fd1"],
+      [2, "fd2"],
+    ]);
+  } finally {
+    child.dispose();
+    state.table.dispose();
+  }
+});
+
+test("host pipe destinations require a pipe stream and a well-formed token", () => {
+  const state = pipeFixture();
+  try {
+    expect(() => hostPipeDestination(1, terminal())).toThrow(TypeError);
+    expect(() => state.codec.import({ kind: "web-terminal", target: 1, pipe: false }, 2)).toThrow(
+      TypeError,
+    );
   } finally {
     state.table.dispose();
   }

@@ -95,6 +95,9 @@ no `stopRequested`. Use it for a supervisor whose children are useless without i
 
 ## Output and completion
 
+Captured stdout and stderr, and stdin when it reads end of file, are pipes, so `isatty` is false
+in the command, as on Unix. Pass `terminal: true` to present them as a terminal instead.
+
 Waffle captures the first 64 KiB of stdout and stderr by default. Set `limitBytes` on either
 output to change its cap. A zero cap discards capture. Each output reports `truncated` separately
 from the exit result. An optional synchronous `onChunk` callback receives owned chunks as they

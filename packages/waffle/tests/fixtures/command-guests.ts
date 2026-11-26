@@ -63,6 +63,18 @@ const files = {
     ${open}
     (call $emit (i32.const 1) (i32.const 32) (i32.const 4))
     (loop $live (drop (call $signal (i32.const 0) (i32.const 4))) (br $live)) ${close}`,
+  // Exits with fd 0, 1 and 2's WASI file types as decimal digits: 0 for a pipe, 2 for a terminal.
+  "stdio-kind": `(module
+    (import "wasi_snapshot_preview1" "fd_fdstat_get" (func $stat (param i32 i32) (result i32)))
+    ${exit} (memory (export "memory") 1 1)
+    (func $type (param $fd i32) (result i32)
+      (if (call $stat (local.get $fd) (i32.const 0)) (then unreachable))
+      (i32.load8_u (i32.const 0)))
+    ${open}
+    (call $exit (i32.add (i32.add
+      (i32.mul (call $type (i32.const 0)) (i32.const 100))
+      (i32.mul (call $type (i32.const 1)) (i32.const 10)))
+      (call $type (i32.const 2)))) ${close}`,
   "sigint-twice": `(module ${imports} ${io} ${emit}
     (data (i32.const 32) "readyhandled")
     ${open}

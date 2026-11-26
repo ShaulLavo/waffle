@@ -93,6 +93,21 @@ try {
   await install("/test/host", { command: { load: async () => async () => 0 } });
   await install("/test/live", { adapter: "generic", source: source("live") });
   await install("/test/leader", { adapter: "generic", source: source("leader-exit7") });
+  await install("/test/stdio-kind", { adapter: "generic", source: source("stdio-kind") });
+
+  // Captured stdio is a pipe by default and a terminal only on request.
+  assert.deepEqual(await exitOf("/test/stdio-kind"), { kind: "exited", code: 0, status: 0 });
+  assert.deepEqual(await exitOf("/test/stdio-kind", { terminal: true }), {
+    kind: "exited",
+    code: 222,
+    status: 222,
+  });
+  // Stdin from bytes is a real pipe even when stdout and stderr are terminals.
+  assert.deepEqual(await exitOf("/test/stdio-kind", { terminal: true, stdin: new Uint8Array() }), {
+    kind: "exited",
+    code: 22,
+    status: 22,
+  });
 
   assert.equal((await exitOf("/test/tee"))?.kind, "start-failed");
   await echoesThroughCooperativeModule();
