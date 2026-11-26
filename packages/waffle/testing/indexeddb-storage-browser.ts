@@ -36,7 +36,12 @@ import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { FilesystemError, PAGE } from "../fs/protocol.js";
 import { gatedIndexedDB } from "./gated-indexeddb.js";
 import { assertRuntimeStartupTrace } from "./runtime-startup-proof.js";
-import type { ChecksummedRecord, PersistedNode, StorageBackend } from "../fs/storage.js";
+import type {
+  ChecksummedRecord,
+  PersistenceBatch,
+  PersistedNode,
+  StorageBackend,
+} from "../fs/storage.js";
 import { storedTimes } from "./fixtures/file-times.js";
 import {
   busyDeletesNothingCase,
@@ -50,6 +55,67 @@ function request<T>(value: IDBRequest<T>): Promise<T> {
     value.onsuccess = () => resolve(value.result);
     value.onerror = () => reject(value.error);
   });
+}
+/** One directory of `files` small files, each with its own payload. */
+function wideBatch(generation: number, files: number): PersistenceBatch {
+  const saved = batch(generation);
+  const file = saved.upserts[1]!;
+  const root = { ...saved.upserts[0]!, children: [] as [string, number][] };
+  const upserts: PersistedNode[] = [root];
+  const data = new Map<string, Uint8Array>();
+  for (let index = 0; index < files; index++) {
+    const content = bytes(`file ${index}`);
+    const key = `wide:${generation}:${index}`;
+    root.children.push([`f${index}`, index + 2]);
+    upserts.push({ ...file, ino: index + 2, size: content.length, data: key });
+    data.set(key, content);
+  }
+  return { ...saved, upserts, data };
+}
+async function countTransactions<T>(
+  action: () => Promise<T>,
+): Promise<{ result: T; count: number }> {
+  const transaction = IDBDatabase.prototype.transaction;
+  let count = 0;
+  IDBDatabase.prototype.transaction = function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    count++;
+    return transaction.apply(this, args);
+  } as IDBDatabase["transaction"];
+  try {
+    return { result: await action(), count };
+  } finally {
+    IDBDatabase.prototype.transaction = transaction;
+  }
+}
+function binaryBytes(values: readonly unknown[]): number {
+  let total = 0;
+  for (const value of values) if (value instanceof Uint8Array) total += value.byteLength;
+  return total;
+}
+/** Bytes of Uint8Array values that bulk data-store reads returned while `action` ran. */
+async function bulkBytesDuring(
+  action: () => Promise<unknown>,
+): Promise<{ bytes: number; failure: unknown }> {
+  const getAll = IDBObjectStore.prototype.getAll;
+  let bytes = 0;
+  IDBObjectStore.prototype.getAll = function (...args: Parameters<IDBObjectStore["getAll"]>) {
+    const request = getAll.apply(this, args);
+    if (this.name !== "data") return request;
+    request.addEventListener("success", () => (bytes += binaryBytes(request.result)));
+    return request;
+  };
+  try {
+    const failure = await action().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    return { bytes, failure };
+  } finally {
+    IDBObjectStore.prototype.getAll = getAll;
+  }
 }
 async function raw(name: string, work: (db: IDBDatabase) => Promise<void>): Promise<void> {
   const db = await request(indexedDB.open(name));
@@ -1251,6 +1317,56 @@ function indexedDBCases(
     },
     128,
   );
+
+  test("IndexedDB reopen reads every payload manifest in one transaction", async (_name, open) => {
+    const files = 300;
+    const storage = await open();
+    await storage.persist(wideBatch(1, files));
+    await storage.close();
+    const cold = await open();
+    const result = Object.getOwnPropertyDescriptor(IDBRequest.prototype, "result")!;
+    let resultReads = 0;
+    Object.defineProperty(IDBRequest.prototype, "result", {
+      ...result,
+      get(this: IDBRequest) {
+        resultReads++;
+        return result.get!.call(this);
+      },
+    });
+    const reopen = await countTransactions(() => cold.load()).finally(() =>
+      Object.defineProperty(IDBRequest.prototype, "result", result),
+    );
+    assert(reopen.result?.nodes.length === files + 1, "every file survives reopen");
+    assert(reopen.count === 1, `reopen used ${reopen.count} transactions for ${files} payloads`);
+    // WebKit rebuilds a request's whole result array on every read of `result`.
+    assert(resultReads < files, `reopen read IDBRequest.result ${resultReads} times`);
+    for (const index of [0, 150, files - 1])
+      assert(
+        new TextDecoder().decode(await cold.read(`wide:1:${index}`)) === `file ${index}`,
+        "payload bytes survive reopen",
+      );
+    await cold.close();
+  });
+
+  test("IndexedDB reopen rejects binary data keys without loading their values", async (name, open) => {
+    const storage = await open();
+    await storage.persist(batch(1));
+    await storage.close();
+    const binary = new Uint8Array([1, 2, 3]).buffer;
+    await change(name, "data", binary, new Uint8Array(8 * 1024 * 1024));
+    const reopened = await open();
+    const loaded = await bulkBytesDuring(() => reopened.load());
+    await reopened.close();
+    assert(
+      String(loaded.failure).includes("Invalid"),
+      `binary key must stay fatal, got ${String(loaded.failure)}`,
+    );
+    assert(loaded.bytes === 0, `reopen loaded ${loaded.bytes} bytes under invalid keys`);
+    await raw(name, async (db) => {
+      const kept = await request(db.transaction("data").objectStore("data").getKey(binary));
+      assert(kept !== undefined, "fatal reopen keeps the invalid record");
+    });
+  });
 
   test("IndexedDB pin validation does not hydrate cold payloads", async (_name, open) => {
     const storage = await open();

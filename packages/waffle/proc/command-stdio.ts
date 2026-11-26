@@ -250,7 +250,7 @@ export class CommandStdio {
     if (!filesystem)
       throw new CommandStdioError("EBADF", "File descriptor has no filesystem connection");
     const offset = shareFileResource(resource, filesystem.connection);
-    return [new Int32Array(filesystem.connection.signal), new Int32Array(offset, 0, 1)];
+    return [new Int32Array(filesystem.connection.signal, 0, 1), new Int32Array(offset, 0, 1)];
   }
 
   private file(

@@ -46,7 +46,7 @@ function fixture(overrides: Partial<typeof native> = {}) {
         },
       } as unknown as MessagePort,
       epoch: new native.SharedArrayBufferConstructor(4),
-      signal: new native.SharedArrayBufferConstructor(4),
+      signal: new native.SharedArrayBufferConstructor(8),
       revocations: [revocation],
       shared: new native.SharedArrayBufferConstructor(4),
       segments: [],
@@ -73,6 +73,12 @@ function fixture(overrides: Partial<typeof native> = {}) {
   const wake = () => {
     native.atomicsAdd(signal, 0, 1);
     native.atomicsNotify(signal, 0);
+  };
+  // Revocation and transport failure wake the transport word, then everything on word 0.
+  const wakeTransport = () => {
+    native.atomicsAdd(signal, protocol.SIGNAL_TRANSPORT, 1);
+    native.atomicsNotify(signal, protocol.SIGNAL_TRANSPORT);
+    wake();
   };
   // Predeclare every allocation so the observer recognizes buffers created after poisoning.
   const allocations = [new native.SharedArrayBufferConstructor(8)];
@@ -103,6 +109,7 @@ function fixture(overrides: Partial<typeof native> = {}) {
     isRevoked: revoked,
     sharedRevoked: () => revoked,
     wake,
+    wakeTransport,
     reapFilesystem() {},
     releaseFilesystemReservation(reservation: protocol.FilesystemReservation) {
       native.atomicsStore(new native.Int32ArrayConstructor(reservation.state), 0, 2);
@@ -143,7 +150,7 @@ function fixture(overrides: Partial<typeof native> = {}) {
     target.revocations[0]!,
     target.sections,
   ]);
-  return { client, source, target, buffers, capabilities, revocation, wake, posted };
+  return { client, source, target, buffers, capabilities, revocation, wakeTransport, posted };
 }
 
 const LARGE = 70_000;
@@ -233,7 +240,7 @@ test("a failed private copy rolls back without posting", () => {
 });
 
 test("filesystem client keeps completion, capability, and revocation views out of guest intrinsics", async () => {
-  const { client, source, target, buffers, capabilities, revocation, wake } = fixture();
+  const { client, source, target, buffers, capabilities, revocation, wakeTransport } = fixture();
   const payload = new native.Uint8ArrayConstructor([65, 66]);
   let report: IntrinsicsReport | undefined;
   let copied: Uint8Array | undefined, copiedAsync: Uint8Array | undefined;
@@ -272,7 +279,7 @@ test("filesystem client keeps completion, capability, and revocation views out o
 
     // The live revocation watcher cancels pending completions and wakes their value waiters.
     native.atomicsStore(revocation, 0, 1);
-    wake();
+    wakeTransport();
     await waiting;
     complete.release();
     pending.release();
@@ -337,9 +344,9 @@ test("the client's epoch caches keep capability-bearing answers out of guest int
   expect(report.leaks).toContain("Map.set");
 });
 
-test("real SharedFilesystemState.isDirectDisabled and protocol.wake stay out of guest intrinsics", () => {
+test("real SharedFilesystemState.isDirectDisabled and protocol wakes stay out of guest intrinsics", () => {
   const sharedBuffer = new native.SharedArrayBufferConstructor(SHARED_ROOT_BYTES);
-  const signalBuffer = new native.SharedArrayBufferConstructor(4);
+  const signalBuffer = new native.SharedArrayBufferConstructor(8);
   const state = new SharedFilesystemState(sharedBuffer, protocol.PAGE, 1);
   state.setClientMode(CLIENT_MODE_NO_DIRECT_IO | CLIENT_MODE_NO_CLIENT_CACHE);
   const connection = { signal: signalBuffer } as protocol.FilesystemIdentity;
@@ -351,6 +358,7 @@ test("real SharedFilesystemState.isDirectDisabled and protocol.wake stay out of 
     directDisabled = state.isDirectDisabled();
     cacheDisabled = state.isClientCacheDisabled();
     protocol.wake(connection);
+    protocol.wakeTransport(connection);
   } finally {
     report = observer.restore();
   }
@@ -361,5 +369,8 @@ test("real SharedFilesystemState.isDirectDisabled and protocol.wake stay out of 
     native.atomicsLoad(new native.Int32ArrayConstructor(sharedBuffer), CLIENT_MODE) &
       CLIENT_MODE_NO_DIRECT_IO,
   ).toBe(CLIENT_MODE_NO_DIRECT_IO);
-  expect(native.atomicsLoad(new native.Int32ArrayConstructor(signalBuffer), 0)).toBe(1);
+  expect(native.atomicsLoad(new native.Int32ArrayConstructor(signalBuffer), 0)).toBe(2);
+  expect(
+    native.atomicsLoad(new native.Int32ArrayConstructor(signalBuffer), protocol.SIGNAL_TRANSPORT),
+  ).toBe(1);
 });

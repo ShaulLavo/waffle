@@ -448,6 +448,9 @@ export class MemoryBackend implements FilesystemBackend {
       case "resolve":
         this.check(a, "directory");
         return this.fs.resolve(a, b, c === true, args[3] === true);
+      case "realpath":
+        this.check(a, "directory");
+        return this.fs.realpath(a, b, c === true);
       case "readlink":
         this.check(a);
         return this.fs.readlink(a);
