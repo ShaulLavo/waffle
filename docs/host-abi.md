@@ -1306,12 +1306,13 @@ errno 63. A bad descriptor returns `EBADF`, errno 8, a descriptor that is not a 
 
 ## Guest filesystem watches
 
-A synchronous guest reads committed watch events through four `runtime_fs` imports. The WASI
+A synchronous guest reads committed watch events through five `runtime_fs` imports. The WASI
 adapter supplies them without activating process services. Opening a watch needs a filesystem that
 offers watches (`FileSystem.watches`, which `FilesystemClient` provides), or returns `ENOTSUP`,
 errno 58. Open, read and close return a **positive WASI errno, 0 on success**; readiness returns
 an i32 boolean. Arguments are unsigned i32.
-Calls with output spans validate every span before any state changes (`EFAULT` 21). Output is
+Calls with output spans validate every span before any state changes (`EFAULT` 21), and reject
+overlapping output spans (`EINVAL` 28) before draining or writing. Output is
 little-endian. Ids are process-local positive u32 values, never reused within the process. They
 are not descriptors: `fd_kind`, `dup`, `fd_close`, spawn bindings, `/dev/fd` and `poll` don't see
 them.
@@ -1339,8 +1340,9 @@ runtime_fs.watch_next(out_id_ptr: u32, buf_ptr: u32, buf_len: u32, out_len_ptr: 
   0        out_id = ready watch id; out_len > 0: whole records written; out_len = 0: end of stream
   6        EAGAIN: no registered watch has pending records, end or an error. out_id = 0
   42       ENOBUFS: out_id = ready watch id; out_len = first record size; nothing consumed
+  28       EINVAL: output spans overlap (out_id, out_len, and buf when buf_len > 0); nothing drained
   other    watch-scoped service error (e.g. EACCES 2, ECANCELED 11): out_id = affected watch id,
-           out_len = 0; or EFAULT 21 when a pointer range is out of guest memory
+           out_len = 0; unscoped service error: out_id = 0; or EFAULT 21 when out of guest memory
 
 runtime_fs.watch_close(id: u32) -> errno       0, or 8 for an unknown or already closed id
 ```
@@ -1367,11 +1369,14 @@ service's capability and inode checks.
 
 Each watch keeps its own `observed` copy of the root's commit counter (`cells[3]`, which
 revocation and reap also advance), sampled before
-the open's service call. `watch_read` first copies whole records from the watch's local queue.
-With an empty queue, an unchanged counter returns `EAGAIN` without a service call. A moved counter
-updates `observed` before one synchronous service read, whose batch fills the queue; an overflow
-batch becomes the single type-3 record. A false `EAGAIN` would need exactly 2^32 commits between
-two reads of one watch.
+the open's service call. `watch_read` is scoped to that watch: it copies whole records from the
+watch's local queue, returns `EAGAIN` without a service call when the counter hasn't moved, and
+otherwise updates `observed` and performs one per-watch service read (never draining other
+watches). `watch_next` drains ready watches in bounded batched service replies (`watchDrain`)
+when supported by the active backend role, delivers all buffered batches before starting another
+drain so per-watch guest queues stay bounded, and falls back to per-watch reads when batched
+draining is unavailable. An overflow batch becomes the single type-3 record. A false `EAGAIN`
+would need exactly 2^32 commits between two reads of one watch.
 
 ### Delivery guarantee
 

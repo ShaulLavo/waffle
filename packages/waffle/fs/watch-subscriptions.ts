@@ -173,14 +173,21 @@ export class WatchSubscriptions {
     view.setUint32(at + 16, flags & ~INACCESSIBLE, true);
     if (!(flags & OVERFLOW) && !view.getUint32(at + COUNT, true)) this.unmarkReady(slot, owner);
   }
-  forReady(owner: number, visit: (id: number) => void): void {
+  forReady(owner: number, visit: (id: number) => boolean | void): void {
     let slot = this.readyOwners.get(BigInt(owner));
     while (slot) {
       const at = (slot - 1) * WIDTH;
       const next = this.records.view.getUint32(at + READY_NEXT, true);
-      visit(this.records.view.getFloat64(at, true));
+      if (visit(this.records.view.getFloat64(at, true)) === false) return;
       slot = next;
     }
+  }
+  hasQueued(owner: number, id: number): boolean {
+    const at = this.at(owner, id);
+    return (
+      !(this.records.view.getUint32(at + 16, true) & OVERFLOW) &&
+      this.records.view.getUint32(at + HEAD, true) !== 0
+    );
   }
   root(owner: number, id: number): bigint {
     const at = this.at(owner, id);
@@ -306,7 +313,9 @@ export class WatchSubscriptions {
       name: length === NULL_NAME ? null : this.names.read(view.getUint32(at + 28, true), length),
     };
   }
-  batch(owner: number, id: number): HeldWatchBatch {
+  batch(owner: number, id: number): HeldWatchBatch;
+  batch(owner: number, id: number, deferOnBudget: boolean): HeldWatchBatch | undefined;
+  batch(owner: number, id: number, deferOnBudget = false): HeldWatchBatch | undefined {
     const at = this.at(owner, id);
     if (this.records.view.getUint32(at + 16, true) & OVERFLOW)
       return { batch: { kind: "overflow", events: [] }, release() {}, rollback() {} };
@@ -322,6 +331,7 @@ export class WatchSubscriptions {
       control = this.account.reserveControl(units);
     } catch (error) {
       if (!(error instanceof FilesystemError) || error.errno !== 6) throw error;
+      if (deferOnBudget) return undefined;
       this.overflow(owner, id);
       return { batch: { kind: "overflow", events: [] }, release() {}, rollback() {} };
     }

@@ -1078,19 +1078,19 @@ export class FilesystemService {
               release: held.release,
             });
           else held.release();
-          return held.entries;
+          return { entries: held.entries, more: held.more };
         };
         const draining = this.backend.watchDrain(session.connection.owner, cancelled);
         return draining instanceof Promise
           ? this.trackRequestWork(session, draining).then(register)
           : register(draining);
       }
-      if (!this.watchService) return [];
+      if (!this.watchService) return { entries: [], more: false };
       const held = this.watchService.drainHeld(session.connection.owner);
       if (held.hasEvents)
         session.watchTransactions.set(requestId, { cancel: held.rollback, release: held.release });
       else held.release();
-      return held.entries;
+      return { entries: held.entries, more: held.more };
     }
     if (operation === "watchClose") {
       if (this.backend.watchClose) {

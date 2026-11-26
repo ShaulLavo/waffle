@@ -704,12 +704,16 @@ export class Wasi {
     out >>>= 0;
     const size = this.bytes().length;
     if ((outId >= 0 && outId + 4 > size) || buf + len > size || out + 4 > size) return EFAULT;
+    if (
+      (len > 0 && buf < out + 4 && out < buf + len) ||
+      (outId >= 0 &&
+        ((outId < out + 4 && out < outId + 4) || (len > 0 && buf < outId + 4 && outId < buf + len)))
+    )
+      return EINVAL;
+    if (outId >= 0) this.view().setUint32(outId, 0, true);
     const result = id >= 0 ? this.watches?.read(id, len) : this.watches?.readNext(len);
     if (!result) return id >= 0 ? EBADF : 6;
-    if (result.kind === "error") {
-      if (outId >= 0) this.view().setUint32(outId, 0, true);
-      return result.errno;
-    }
+    if (result.kind === "error") return result.errno;
     const view = this.view();
     if (outId >= 0) view.setUint32(outId, "id" in result ? result.id : 0, true);
     if (result.kind === "watch_error") {

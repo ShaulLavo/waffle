@@ -13,7 +13,12 @@ import {
   pack,
   unpack,
 } from "./protocol.js";
-import { CLIENT_MODE, CLIENT_MODE_NO_CLIENT_CACHE, CLIENT_MODE_NO_DIRECT_IO } from "./shared.js";
+import {
+  CLIENT_MODE,
+  CLIENT_MODE_NO_CLIENT_CACHE,
+  CLIENT_MODE_NO_DIRECT_IO,
+  CLIENT_MODE_NO_WATCH_DRAIN,
+} from "./shared.js";
 import type { RuntimeStartupObserver } from "./startup.js";
 import type { StorageBackend } from "./storage.js";
 import { HEADER_WORDS, WATCH_OFFSET } from "./storage-geometry.js";
@@ -577,7 +582,15 @@ export class MultiTabBackend implements FilesystemBackend {
   private watchCells?: Int32Array;
 
   // Lifecycle & role state
-  private role: "init" | "host" | "peer" | "failover" | "waiting" | "failed" | "closed" = "init";
+  private roleState: "init" | "host" | "peer" | "failover" | "waiting" | "failed" | "closed" =
+    "init";
+  private get role() {
+    return this.roleState;
+  }
+  private set role(next: "init" | "host" | "peer" | "failover" | "waiting" | "failed" | "closed") {
+    this.roleState = next;
+    this.syncClientMode();
+  }
   private phase: "opening" | "waiting-storage" | "ready" | "retiring" | "failed" | "closed" =
     "opening";
   private steppingDown = false;
@@ -793,15 +806,27 @@ export class MultiTabBackend implements FilesystemBackend {
     this.configureSharedBuffer(buffer);
     if (this.persistent) {
       this.persistent.attachShared(buffer, this.sharedMaxBytes, this.retainedSegments);
-      this.persistent.shared.setClientMode(CLIENT_MODE_NO_DIRECT_IO | CLIENT_MODE_NO_CLIENT_CACHE);
     }
+    this.syncClientMode();
   }
 
   private configureSharedBuffer(buffer: SharedArrayBuffer): void {
-    const header = new Int32Array(buffer, 0, HEADER_WORDS);
-    Atomics.store(header, CLIENT_MODE, CLIENT_MODE_NO_DIRECT_IO | CLIENT_MODE_NO_CLIENT_CACHE);
     const ring = new WatchRing(buffer, WATCH_OFFSET);
     this.watchCells = ring.cells;
+    this.syncClientMode();
+  }
+
+  private syncClientMode(): void {
+    const mode =
+      CLIENT_MODE_NO_DIRECT_IO |
+      CLIENT_MODE_NO_CLIENT_CACHE |
+      (this.roleState === "host" ? 0 : CLIENT_MODE_NO_WATCH_DRAIN);
+    if (this.persistent) {
+      this.persistent.shared.setClientMode(mode);
+    } else if (this.sharedBuffer) {
+      const header = new Int32Array(this.sharedBuffer, 0, HEADER_WORDS);
+      Atomics.store(header, CLIENT_MODE, mode);
+    }
   }
 
   private wakeWatchWord(): void {
@@ -1286,49 +1311,56 @@ export class MultiTabBackend implements FilesystemBackend {
     | import("./watch-service.js").HeldWatchDrain
     | Promise<import("./watch-service.js").HeldWatchDrain> {
     if (this.role === "host") {
+      const admittedTerm = this.hostTerm;
       if (!this.isLeaseValid()) {
-        return this.watchDrainHostAfterRenew(owner, cancelled);
+        return this.watchDrainHostAfterRenew(owner, admittedTerm, cancelled);
       }
       return this.drainHostWatches(owner);
     }
     throw new FilesystemError(58);
   }
 
+  private overflowOwnerWatches(
+    owner: number,
+    permanent: boolean,
+  ): import("./watch-service.js").HeldWatchDrain {
+    const entries: import("../core/filesystem.js").WatchDrainEntry[] = [];
+    for (const watch of this.localWatches.values()) {
+      if (watch.closed || watch.localOwner !== owner) continue;
+      if (permanent || watch.hostTerm !== this.hostTerm) watch.overflowed = true;
+      entries.push({ id: watch.localWatchId, batch: { kind: "overflow", events: [] } });
+    }
+    return { entries, more: false, hasEvents: false, release() {}, rollback() {} };
+  }
+
   private async watchDrainHostAfterRenew(
     owner: number,
+    admittedTerm: bigint,
     cancelled: () => boolean,
   ): Promise<import("./watch-service.js").HeldWatchDrain> {
     if (this.disposing || cancelled()) throw new FilesystemError(11);
-    let ok = false;
-    await raceWithAbort(
-      this.renewLeaseNow().then((renewed) => {
-        ok = renewed;
-      }),
-      this.disposeAbort.signal,
-      cancelled,
-    );
-    if (this.disposing || cancelled()) throw new FilesystemError(11);
-    if (!ok || !this.isLeaseValid() || this.role !== "host") {
-      const entries: import("../core/filesystem.js").WatchDrainEntry[] = [];
-      for (const watch of this.localWatches.values()) {
-        if (watch.closed || watch.localOwner !== owner) continue;
-        watch.overflowed = true;
-        entries.push({ id: watch.localWatchId, batch: { kind: "overflow", events: [] } });
-      }
-      return { entries, hasEvents: false, release() {}, rollback() {} };
+    if (this.leaseOnlyLapsed(admittedTerm)) {
+      // A renewal that cannot finish in time reports one overflow below, not a failure.
+      await this.renewLapsedLease(admittedTerm, cancelled).catch(() => {});
+    } else {
+      await raceWithAbort(this.renewLeaseNow(), this.disposeAbort.signal, cancelled);
     }
+    if (this.disposing || cancelled()) throw new FilesystemError(11);
+    const termEnded =
+      admittedTerm !== this.hostTerm ||
+      this.role !== "host" ||
+      this.ownershipLost ||
+      this.leaseClosed ||
+      !!this.terminalFailure ||
+      !this.watchService;
+    if (termEnded) return this.overflowOwnerWatches(owner, true);
+    if (!this.isLeaseValid()) return this.overflowOwnerWatches(owner, false);
     return this.drainHostWatches(owner);
   }
 
   private drainHostWatches(owner: number): import("./watch-service.js").HeldWatchDrain {
     if (this.terminalFailure || !this.watchService) {
-      const entries: import("../core/filesystem.js").WatchDrainEntry[] = [];
-      for (const watch of this.localWatches.values()) {
-        if (watch.closed || watch.localOwner !== owner) continue;
-        watch.overflowed = true;
-        entries.push({ id: watch.localWatchId, batch: { kind: "overflow", events: [] } });
-      }
-      return { entries, hasEvents: false, release() {}, rollback() {} };
+      return this.overflowOwnerWatches(owner, true);
     }
     const entries: import("../core/filesystem.js").WatchDrainEntry[] = [];
     const seen = new Set<number>();
@@ -1365,6 +1397,7 @@ export class MultiTabBackend implements FilesystemBackend {
     }
     return {
       entries,
+      more: held.more,
       hasEvents: held.hasEvents,
       release: held.release,
       rollback: held.rollback,
@@ -1783,7 +1816,9 @@ export class MultiTabBackend implements FilesystemBackend {
       });
 
       if (this.sharedBuffer) {
-        backend.shared.setClientMode(CLIENT_MODE_NO_DIRECT_IO | CLIENT_MODE_NO_CLIENT_CACHE);
+        backend.shared.setClientMode(
+          CLIENT_MODE_NO_DIRECT_IO | CLIENT_MODE_NO_CLIENT_CACHE | CLIENT_MODE_NO_WATCH_DRAIN,
+        );
       }
 
       // Brand-new workspace: flush initial root BEFORE first host-ready so workspaceId + root FileIdentity are durable.
@@ -7253,6 +7288,7 @@ export class MultiTabBackend implements FilesystemBackend {
   }
 
   private markLocalWatchesOverflow(): void {
+    this.hostWatchToLocal.clear();
     for (const watch of this.localWatches.values()) {
       watch.overflowed = true;
     }

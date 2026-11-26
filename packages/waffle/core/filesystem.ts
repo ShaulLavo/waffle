@@ -159,6 +159,11 @@ export type WatchDrainEntry =
   | { readonly id: number; readonly batch: WatchBatch }
   | { readonly id: number; readonly errno: number };
 
+export interface WatchDrainResult {
+  readonly entries: readonly WatchDrainEntry[];
+  readonly more: boolean;
+}
+
 /** The opener's filesystem session owns each subscription; session close releases them all. */
 export interface WatchFileSystem {
   /** The root's watch cells. Index 3 counts committed watch records. */
@@ -166,10 +171,12 @@ export interface WatchFileSystem {
   readonly revoked: boolean;
   /** True when watches are served remotely (attach mode); disables local-generation short-circuit. */
   readonly remote?: boolean;
+  /** True when `drain()` is currently supported by the active backend role. Defaults to `typeof drain === "function"`. */
+  readonly canDrain?: boolean;
   /** Throws FilesystemError. */
   open(handle: FileHandle, recursive: boolean): number;
   read(id: number): WatchBatch;
-  /** Optional batched drain of every ready watch for this session in one round trip. */
-  drain?(): readonly WatchDrainEntry[];
+  /** Optional batched drain of ready watches for this session in one round trip. */
+  drain?(): WatchDrainResult;
   close(id: number): void;
 }

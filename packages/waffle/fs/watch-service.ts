@@ -7,11 +7,21 @@ import { WatchSubscriptions, type HeldWatchBatch } from "./watch-subscriptions.j
 import { WATCH_CAPACITY, type WatchRecord } from "./watch-ring.js";
 import type { WatchBatch, WatchEvent } from "./watch.js";
 
+const MAX_DRAIN_EVENTS = 128;
+
 export interface HeldWatchDrain {
   readonly entries: readonly WatchDrainEntry[];
+  readonly more: boolean;
   readonly hasEvents: boolean;
   release(): void;
   rollback(): void;
+}
+
+interface DrainState {
+  readonly entries: WatchDrainEntry[];
+  readonly held: HeldWatchBatch[];
+  events: number;
+  more: boolean;
 }
 
 /** One live metadata index and pooled event allocator per backend root. */
@@ -95,54 +105,79 @@ export class WatchService {
     }
   }
   drainHeld(owner: number): HeldWatchDrain {
-    return this.backend.shared.mutate(undefined, undefined, () => {
-      this.drain();
-      const entries: WatchDrainEntry[] = [];
-      const held: HeldWatchBatch[] = [];
-      let hasEvents = false;
-      try {
-        this.subscriptions.forReady(owner, (id) => {
-          const root = this.subscriptions.root(owner, id);
-          if (!this.incomplete && !this.subscriptions.overflowed(owner, id)) {
-            try {
-              this.access(root);
-            } catch (error) {
-              if (error instanceof FilesystemError) {
-                entries.push({ id, errno: error.errno });
-                return;
-              }
-              throw error;
-            }
-          }
-          const item = this.subscriptions.batch(owner, id);
-          if (item.batch.kind === "events" && !item.batch.events.length) {
-            item.release();
-            return;
-          }
-          if (item.batch.events.length) hasEvents = true;
-          held.push(item);
-          entries.push({ id, batch: item.batch });
-        });
-      } catch (error) {
-        for (const item of held) item.rollback();
-        throw error;
+    return this.backend.shared.mutate(undefined, undefined, () => this.collectDrain(owner));
+  }
+  private collectDrain(owner: number): HeldWatchDrain {
+    this.drain();
+    const state: DrainState = { entries: [], held: [], events: 0, more: false };
+    try {
+      this.subscriptions.forReady(owner, (id) => this.collectDrainWatch(owner, id, state));
+    } catch (error) {
+      for (let i = state.held.length - 1; i >= 0; i--) state.held[i]!.rollback();
+      throw error;
+    }
+    return this.finishDrain(state);
+  }
+  private collectDrainWatch(owner: number, id: number, state: DrainState): boolean {
+    const denied = this.drainAccess(owner, id);
+    if (denied !== undefined) {
+      state.entries.push({ id, errno: denied });
+      return true;
+    }
+    if (
+      state.events >= MAX_DRAIN_EVENTS &&
+      state.held.length > 0 &&
+      this.subscriptions.hasQueued(owner, id)
+    ) {
+      state.more = true;
+      return false;
+    }
+    const item = this.subscriptions.batch(owner, id, state.held.length > 0);
+    if (!item) {
+      state.more = true;
+      return false;
+    }
+    if (item.batch.kind === "events" && !item.batch.events.length) {
+      item.release();
+      return true;
+    }
+    if (item.batch.events.length) {
+      state.events += item.batch.events.length;
+      state.held.push(item);
+    } else {
+      item.release();
+    }
+    state.entries.push({ id, batch: item.batch });
+    return true;
+  }
+  private drainAccess(owner: number, id: number): number | undefined {
+    if (this.incomplete || this.subscriptions.overflowed(owner, id)) return undefined;
+    try {
+      this.access(this.subscriptions.root(owner, id));
+      return undefined;
+    } catch (error) {
+      if (error instanceof FilesystemError) return error.errno;
+      throw error;
+    }
+  }
+  private finishDrain(state: DrainState): HeldWatchDrain {
+    let settled = false;
+    const settle = (rollback: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (rollback) {
+        for (let i = state.held.length - 1; i >= 0; i--) state.held[i]!.rollback();
+      } else {
+        for (const item of state.held) item.release();
       }
-      let settled = false;
-      const finish = (rollback: boolean) => {
-        if (settled) return;
-        settled = true;
-        for (const item of held) {
-          if (rollback) item.rollback();
-          else item.release();
-        }
-      };
-      return {
-        entries,
-        hasEvents,
-        release: () => finish(false),
-        rollback: () => finish(true),
-      };
-    });
+    };
+    return {
+      entries: state.entries,
+      more: state.more,
+      hasEvents: state.events > 0,
+      release: () => settle(false),
+      rollback: () => settle(true),
+    };
   }
   close(owner: number, id: number): void {
     let directory = false;

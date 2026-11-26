@@ -38,7 +38,14 @@ const mapGetMethod = Map.prototype.get,
 const mapHasMethod = Map.prototype.has,
   mapDeleteMethod = Map.prototype.delete;
 const mapForEachMethod = Map.prototype.forEach;
+const mapValuesMethod = Map.prototype.values;
+const mapIteratorNext = objectGetPrototypeOf(new MapConstructor().values()).next as (
+  this: MapIterator<unknown>,
+) => IteratorResult<unknown>;
 const mapSizeGetter = descriptor(Map.prototype, "size")!.get!;
+export function mapFirst<V>(map: ReadonlyMap<unknown, V>): V | undefined {
+  return apply(mapIteratorNext, apply(mapValuesMethod, map, []), []).value as V | undefined;
+}
 export function mapGet<K, V>(map: ReadonlyMap<K, V>, key: K): V | undefined {
   return apply(mapGetMethod, map, [key]);
 }
