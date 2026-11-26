@@ -1,6 +1,6 @@
 {
   "name": "@waffle-os/relay",
-  "version": "0.0.152",
+  "version": "0.0.153",
   "description": "Optional authenticated HTTP and TCP relay for Waffle runtimes.",
   "license": "MIT",
   "repository": {
