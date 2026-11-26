@@ -581,8 +581,7 @@ export class MultiTabBackend implements FilesystemBackend {
   private persistent?: PersistentBackend;
   private watchService?: WatchService;
   private hostQueue: Promise<void> = Promise.resolve();
-  private readonly localBarrier = new BarrierGate();
-  private readonly hostBarrier = new BarrierGate();
+  private readonly barrier = new BarrierGate();
   private hostAdmittedCount = 0;
   private hostAdmittedZeroWaiters: (() => void)[] = [];
   private hostPeers = new Map<string, HostPeerSession>();
@@ -856,7 +855,8 @@ export class MultiTabBackend implements FilesystemBackend {
   prepare(operation: string, args: any[], _data: Uint8Array): void | Promise<void> {
     if (this.role !== "host" || !this.persistent || !this.isLeaseValid()) return;
     if (UNSUPPORTED_ATTACH_OPS.has(operation)) return;
-    if (operation === "flush" || operation === "sync") return;
+    // Mutations hydrate inside execute() under the barrier gate so flush/sync cannot bypass them.
+    if (operation === "flush" || operation === "sync" || MUTATION_OPS.has(operation)) return;
     const translated = this.translateArgsToHost(operation, args);
     if (!translated) return;
     return this.persistent.prepare(operation, translated);
@@ -874,10 +874,10 @@ export class MultiTabBackend implements FilesystemBackend {
       this.assertLocalExecuteAdmissible();
     }
     if (operation === "flush" || operation === "sync") {
-      return this.localBarrier.runBarrier(() => this.runLocalExecute(operation, args, data));
+      return this.barrier.runBarrier(() => this.runLocalExecute(operation, args, data));
     }
     if (MUTATION_OPS.has(operation)) {
-      return this.localBarrier.runMutation(() => this.runLocalExecute(operation, args, data));
+      return this.barrier.runMutation(() => this.runLocalExecute(operation, args, data));
     }
     if (awaitingFenceLoss) {
       return this.runLocalExecute(operation, args, data);
@@ -1007,7 +1007,7 @@ export class MultiTabBackend implements FilesystemBackend {
   }
 
   flush(target?: FileHandle | string): Promise<void> {
-    return this.localBarrier.runBarrier(() => this.runLocalFlush(target));
+    return this.barrier.runBarrier(() => this.runLocalFlush(target));
   }
 
   private async runLocalFlush(target?: FileHandle | string): Promise<void> {
@@ -1037,11 +1037,9 @@ export class MultiTabBackend implements FilesystemBackend {
       }
       this.enterHostAdmitted();
       try {
-        await this.hostBarrier.runBarrier(async () => {
-          await this.hostQueue;
-          this.assertHostReadyForLocal(admittedTerm);
-          await this.persistent!.flush(resolvedTarget);
-        });
+        await this.hostQueue;
+        this.assertHostReadyForLocal(admittedTerm);
+        await this.persistent!.flush(resolvedTarget);
       } finally {
         this.leaveHostAdmitted();
       }
@@ -4386,7 +4384,7 @@ export class MultiTabBackend implements FilesystemBackend {
       if (msg.op === "flush" || msg.op === "sync") {
         const target =
           msg.op === "sync" ? (msg.args[0] as number) : (msg.args[0] as string | undefined);
-        await this.hostBarrier.runBarrier(async () => {
+        await this.barrier.runBarrier(async () => {
           await this.hostQueue;
           this.assertHostOpStillValid(session, admittedTerm);
           await this.persistent!.flush(target);
@@ -4785,7 +4783,7 @@ export class MultiTabBackend implements FilesystemBackend {
   ): Promise<void> {
     const persistent = this.persistent!;
     const result = MUTATION_OPS.has(msg.op)
-      ? await this.hostBarrier.runMutation(() =>
+      ? await this.barrier.runMutation(() =>
           this.executeHostPeerGeneralLoop(session, admittedTerm, persistent, msg, data),
         )
       : await this.executeHostPeerGeneralLoop(session, admittedTerm, persistent, msg, data);
@@ -5402,28 +5400,22 @@ export class MultiTabBackend implements FilesystemBackend {
       if (operation === "flush" || operation === "sync") {
         const target =
           operation === "sync" ? (translated[0] as number) : (translated[0] as string | undefined);
-        return await this.hostBarrier.runBarrier(async () => {
-          await this.hostQueue;
-          this.assertHostReadyForLocal(admittedTerm);
-          await persistent.flush(target);
-          return operation === "sync" ? 0 : undefined;
-        });
+        await this.hostQueue;
+        this.assertHostReadyForLocal(admittedTerm);
+        await persistent.flush(target);
+        return operation === "sync" ? 0 : undefined;
       }
       if (operation === "read") {
         return await this.executeLocalHostRead(persistent, admittedTerm, translated);
       }
-      const runGeneral = () =>
-        this.executeLocalHostGeneral(
-          persistent,
-          admittedTerm,
-          operation,
-          translated,
-          data,
-          responseCookieTag,
-        );
-      const result = MUTATION_OPS.has(operation)
-        ? await this.hostBarrier.runMutation(runGeneral)
-        : await runGeneral();
+      const result = await this.executeLocalHostGeneral(
+        persistent,
+        admittedTerm,
+        operation,
+        translated,
+        data,
+        responseCookieTag,
+      );
       return this.mapLocalHostHandles(persistent, admittedTerm, operation, result);
     } finally {
       this.leaveHostAdmitted();

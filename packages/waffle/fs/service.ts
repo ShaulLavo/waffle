@@ -1169,11 +1169,24 @@ export class FilesystemService {
       return;
     }
     if (operation === "flush" || operation === "sync") {
-      const flushing = this.backend.flush?.(
-        operation === "sync" ? a : typeof a === "string" ? a : undefined,
-      );
-      return this.trackRequestWork(session, Promise.resolve(flushing)).then(() =>
-        this.finishResult(session, id, operation, operation === "sync" ? 0 : undefined),
+      const target = operation === "sync" ? a : typeof a === "string" ? a : undefined;
+      if (operation === "sync") this.backend.retain(a);
+      let flushing: Promise<void> | undefined;
+      try {
+        flushing = this.backend.flush?.(target);
+      } catch (error) {
+        if (operation === "sync") this.backend.release(a);
+        throw error;
+      }
+      return this.trackRequestWork(session, Promise.resolve(flushing)).then(
+        () => {
+          if (operation === "sync") this.backend.release(a);
+          return this.finishResult(session, id, operation, operation === "sync" ? 0 : undefined);
+        },
+        (error) => {
+          if (operation === "sync") this.backend.release(a);
+          throw error;
+        },
       );
     }
     if (operation === "resolve" && session.socketScope && this.backend instanceof MemoryBackend) {
