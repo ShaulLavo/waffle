@@ -117,6 +117,9 @@ test("command policies reject unknown values before any process is reserved", as
     expect(() =>
       startCommand(runtime, "/fixture", { ...options, onLeaderExit: "kill" as "stop" }),
     ).toThrow('Command onLeaderExit must be "join" or "stop"');
+    expect(() =>
+      startCommand(runtime, "/fixture", { ...options, terminal: "yes" as unknown as boolean }),
+    ).toThrow("Command terminal must be a boolean");
   } finally {
     await runtime.dispose();
   }
