@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { FilesystemError, PROBE_PATH_LIMIT } from "../core/filesystem.js";
 import { RIGHT_PATH_FILESTAT_GET } from "../core/rights.js";
+import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
+import { guestFunction, guestModule } from "./fixtures/publication-wasm.js";
 import { link, runtimeFsGuest } from "./fixtures/runtime-fs-guest.js";
 import { openVfsBackend, VFS_BACKEND_KINDS } from "./fixtures/vfs-backends.js";
 
@@ -242,9 +244,42 @@ describe("runtime_fs.path_probe", () => {
     expect(g.fs.probes).toBe(0);
   });
 
-  test("pathnames are their exact bytes: a leading U+FEFF is kept", () => {
-    const g = guest();
-    g.fs.writeFile("/﻿plain", "");
-    expect(g.probe(["plain", "﻿plain"], 1)).toEqual({ errno: 0, found: 1 });
+  test("pathnames are their exact bytes: a leading U+FEFF matches path_filestat_get", () => {
+    const fs = new CountingFS();
+    fs.writeFile("/\uFEFFplain", "hello");
+    const memory = new WebAssembly.Memory({ initial: 4 });
+    const wasi = new Wasi({
+      args: [],
+      env: {},
+      fs,
+      preopens: { "/": "/" },
+      namespaces: { env: { memory } },
+      stdout() {},
+      stderr() {},
+      sleep() {},
+    });
+    try {
+      const probeMod = guestModule("runtime_fs", [
+        { name: "path_probe", parameters: ["i32", "i32", "i32", "i32", "i32"] },
+      ]);
+      const probeInst = new WebAssembly.Instance(probeMod, wasi.imports(probeMod));
+      wasi.start(probeInst);
+      const statMod = guestModule("wasi_snapshot_preview1", [
+        { name: "path_filestat_get", parameters: ["i32", "i32", "i32", "i32", "i32"] },
+      ]);
+      const statInst = new WebAssembly.Instance(statMod, wasi.imports(statMod));
+      const pathProbe = guestFunction(probeInst, "path_probe");
+      const pathFilestatGet = guestFunction(statInst, "path_filestat_get");
+      const bomName = encoder.encode("\uFEFFplain");
+      const list = encoder.encode("plain\0\uFEFFplain\0");
+      new Uint8Array(memory.buffer).set(list, 64);
+      expect(pathProbe(3, 64, list.length, 1, 32)).toBe(0);
+      expect(new DataView(memory.buffer).getUint32(32, true)).toBe(1);
+      new Uint8Array(memory.buffer).set(bomName, 128);
+      expect(pathFilestatGet(3, 1, 128, bomName.length, 256)).toBe(0);
+      expect(new DataView(memory.buffer).getBigUint64(256 + 32, true)).toBe(5n);
+    } finally {
+      wasi.descriptors.dispose();
+    }
   });
 });

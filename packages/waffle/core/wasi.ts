@@ -163,7 +163,7 @@ export interface WasiOptions {
 // replaces globalThis.performance and crypto with the runtime's polyfills, which call back into
 // bun.wasm, which calls clock_time_get / random_get here.
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 const fatalDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const perfNow = performance.now.bind(performance);
 const timeOrigin = performance.timeOrigin;
@@ -208,14 +208,20 @@ const PROBE_KINDS: readonly (ProbeKind | undefined)[] = [undefined, "file", "dir
  * too many pathnames. */
 function probePathnames(bytes: Uint8Array, ptr: number, len: number): string[] | undefined {
   if (len === 0 || bytes[ptr + len - 1] !== 0) return undefined;
-  let text: string;
-  try {
-    text = decodeBytes(bytes, ptr, len - 1, fatalDecoder);
-  } catch {
-    return undefined;
+  const end = ptr + len;
+  const paths: string[] = [];
+  let start = ptr;
+  for (let at = ptr; at < end; at++) {
+    if (bytes[at] !== 0) continue;
+    if (paths.length === PROBE_PATH_LIMIT) return undefined;
+    try {
+      paths.push(decodeBytes(bytes, start, at - start, fatalDecoder));
+    } catch {
+      return undefined;
+    }
+    start = at + 1;
   }
-  const paths = text.split("\0");
-  return paths.length > PROBE_PATH_LIMIT ? undefined : paths;
+  return paths;
 }
 
 function writeUtf8Prefix(target: string, output: Uint8Array): number {
