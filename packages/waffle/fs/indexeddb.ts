@@ -625,24 +625,11 @@ function placeManifestReads(
   };
 }
 /**
- * The epoch read of an open readwrite transaction whose scope holds "metadata". No connection can
- * change the epoch until that transaction finishes, so its result stays current while it is open.
+ * The epoch read of a readwrite transaction whose scope holds "metadata": whether the epoch
+ * matched, or `undefined` when the transaction ended before reading it. No connection can change
+ * the epoch while that transaction holds "metadata", so a match stays current until it ends.
  */
-interface EpochWitness {
-  readonly tx: IDBTransaction;
-  /** The epoch matched, did not match, or `undefined` when the transaction ended before reading. */
-  readonly result: Promise<boolean | undefined>;
-}
-
-/** Whether `tx` can still issue requests later; a committing or finished transaction cannot. */
-function transactionOpen(tx: IDBTransaction): boolean {
-  try {
-    tx.objectStore("metadata");
-    return true;
-  } catch {
-    return false;
-  }
-}
+type EpochWitness = Promise<boolean | undefined>;
 
 /** Settles with `promise`, or rejects with the signal's reason once it aborts. */
 function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -1127,6 +1114,11 @@ export class IndexedDBStorage implements StorageBackend {
    * Verifies this connection still owns the latest epoch. While one of its own readwrite
    * transactions holds "metadata", that transaction's epoch read answers: a readonly transaction
    * would only queue behind it, and a large checkpoint commit can hold it for seconds.
+   *
+   * A witness leaves the set in its transaction's complete or abort event, a task after the
+   * transaction released "metadata". That gap does not weaken the answer for the multitab lease:
+   * only a connection that took the storage Web Lock writes a new epoch, and the lease renewal
+   * confirms this connection still holds that lock before it asks here.
    */
   async verifyEpoch(signal?: AbortSignal): Promise<boolean> {
     if (this.closed || this.ownershipError) return false;
@@ -1138,17 +1130,15 @@ export class IndexedDBStorage implements StorageBackend {
 
   private async witnessedEpoch(signal?: AbortSignal): Promise<boolean | undefined> {
     for (const witness of Array.from(this.epochWitnesses)) {
-      if (!transactionOpen(witness.tx)) continue;
-      const result = await raceAbort(witness.result, signal);
+      const result = await raceAbort(witness, signal);
       if (result !== undefined) return result;
     }
     return undefined;
   }
 
-  /** Records the epoch read of a readwrite transaction holding "metadata" until it finishes. */
+  /** Records the epoch read of a readwrite transaction holding "metadata" until it ends. */
   private witnessEpoch(tx: IDBTransaction, read: IDBRequest): void {
-    const { promise, resolve } = Promise.withResolvers<boolean | undefined>();
-    const witness: EpochWitness = { tx, result: promise };
+    const { promise: witness, resolve } = Promise.withResolvers<boolean | undefined>();
     const end = () => {
       this.epochWitnesses.delete(witness);
       resolve(undefined);
