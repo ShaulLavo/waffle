@@ -110,8 +110,10 @@ export interface FileSystem {
   symlink(path: ResolvedPath, target: string): number;
   readlink(handle: FileHandle): string;
   stat(handle: FileHandle): FileStat;
-  /** Supported clear bits deny access; unsupported bits carry no answer. */
-  permissions?(handle: FileHandle): FilePermissions | undefined;
+  /** Supported clear bits deny access; unsupported bits carry no answer. A caller that has just
+   * read `stat(handle)` passes it, so an implementation that derives permissions from it need
+   * not read it again. */
+  permissions?(handle: FileHandle, stat?: FileStat): FilePermissions | undefined;
   /** Bytes transferred, or negative WASI errno; errors must not advance the open offset. */
   read(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number;
   /** Bytes transferred, or negative WASI errno; partial success returns its byte count. */

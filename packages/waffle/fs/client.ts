@@ -1999,8 +1999,7 @@ export class FilesystemClient implements FileSystem {
       this.release(handle);
     }
   }
-  permissions(handle: FileHandle) {
-    const stat = this.stat(handle);
+  permissions(handle: FileHandle, stat = this.stat(handle)) {
     return stat.mode === undefined ? undefined : permissionsFor(stat.kind, stat.mode);
   }
   setMode(handle: FileHandle, mode: number): number {

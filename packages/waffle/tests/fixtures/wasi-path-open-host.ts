@@ -1,4 +1,4 @@
-import type { FileHandle, FileSystem } from "../../core/filesystem.js";
+import type { FileHandle, FileStat, FileSystem } from "../../core/filesystem.js";
 import { RIGHTS_ALL } from "../../core/rights.js";
 import { Wasi } from "../../core/wasi.js";
 import { guestFunction, guestModule } from "./publication-wasm.js";
@@ -18,9 +18,12 @@ export interface FsCounts {
 export function countingFs(inner: FileSystem): {
   fs: FileSystem;
   counts: FsCounts;
+  /** Permissions calls that were handed the stat the caller had already read. */
+  readonly permissionsWithStat: number;
   reset(): void;
 } {
   const counts: FsCounts = { stat: 0, preopen: 0, permissions: 0, resolve: 0, create: 0 };
+  let permissionsWithStat = 0;
   const fs = Object.create(inner) as FileSystem;
   fs.stat = (handle: FileHandle) => {
     counts.stat++;
@@ -32,9 +35,10 @@ export function countingFs(inner: FileSystem): {
   };
   if (inner.permissions) {
     const innerPermissions = inner.permissions.bind(inner);
-    fs.permissions = (handle: FileHandle) => {
+    fs.permissions = (handle: FileHandle, stat?: FileStat) => {
       counts.permissions++;
-      return innerPermissions(handle);
+      if (stat) permissionsWithStat++;
+      return innerPermissions(handle, stat);
     };
   }
   fs.resolve = (directory: FileHandle, path: string, followFinal?: boolean, rooted?: boolean) => {
@@ -48,7 +52,11 @@ export function countingFs(inner: FileSystem): {
   return {
     fs,
     counts,
+    get permissionsWithStat() {
+      return permissionsWithStat;
+    },
     reset() {
+      permissionsWithStat = 0;
       counts.stat = 0;
       counts.preopen = 0;
       counts.permissions = 0;

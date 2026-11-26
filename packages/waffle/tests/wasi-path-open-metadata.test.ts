@@ -63,6 +63,8 @@ test("root path_open uses one stat and one permissions call; non-root drops dupl
   const created = host.openRaw(3, "work/sub/created.txt", { oflags: O_CREAT | O_EXCL });
   expect(created.errno).toBe(0);
   expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 1, create: 1 });
+  // The open hands its stat to permissions, so a remote filesystem need not read it again.
+  expect(wrapped.permissionsWithStat).toBe(1);
   expect(host.close(created.fd)).toBe(0);
 
   const fileForReopen = host.openRaw(3, "work/sub/hello.txt");
@@ -70,6 +72,7 @@ test("root path_open uses one stat and one permissions call; non-root drops dupl
   wrapped.reset();
   expect(host.wasi.fdReopen(fileForReopen.fd, 0, 0, RIGHT_FD_READ, 128)).toBe(0);
   expect(wrapped.counts).toEqual({ stat: 1, preopen: 0, permissions: 1, resolve: 0, create: 0 });
+  expect(wrapped.permissionsWithStat).toBe(1);
 });
 
 test("path_open preserves WASI error codes, permission denials, and high-bit fdOut bounds checks", () => {
