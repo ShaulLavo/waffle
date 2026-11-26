@@ -278,6 +278,7 @@ interface QueuedPeerOp {
   readonly isWatchRead?: boolean;
   readonly localWatchId?: number;
   readonly replayOnSessionBreak?: boolean;
+  readonly cancelled?: () => boolean;
   readonly resolve: (value: any) => void;
   readonly reject: (error: unknown) => void;
 }
@@ -345,6 +346,25 @@ async function raceWithAbort(
     await Promise.race([promise.catch(() => {}), waiter.promise]);
   } finally {
     waiter.cleanup();
+  }
+}
+
+async function awaitUnlessCancelled<T>(promise: Promise<T>, cancelled?: () => boolean): Promise<T> {
+  if (!cancelled) return promise;
+  if (cancelled()) {
+    void promise.catch(() => {});
+    throw abortError();
+  }
+  let poll: ReturnType<typeof setInterval> | undefined;
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      promise.then(resolve, reject);
+      poll = setInterval(() => {
+        if (cancelled()) reject(abortError());
+      }, 20);
+    });
+  } finally {
+    if (poll) clearInterval(poll);
   }
 }
 
@@ -935,7 +955,7 @@ export class MultiTabBackend implements FilesystemBackend {
     if (this.role === "host") {
       return this.executeLocalOnHost(operation, effectiveArgs, data, responseCookieTag, cancelled);
     }
-    return this.executeOnPeer(operation, effectiveArgs, data, responseCookieTag);
+    return this.executeOnPeer(operation, effectiveArgs, data, responseCookieTag, cancelled);
   }
 
   private async runLocalExecute(
@@ -5398,7 +5418,7 @@ export class MultiTabBackend implements FilesystemBackend {
             args,
             responseCookieTag,
           );
-          return this.executeOnPeer(operation, args, data, nextCookieTag);
+          return this.executeOnPeer(operation, args, data, nextCookieTag, cancelled);
         }
         throw new FilesystemError(11, "host lease expired");
       }
@@ -5493,7 +5513,7 @@ export class MultiTabBackend implements FilesystemBackend {
     for (;;) {
       assertValid();
       const preparing = persistent.prepare(operation, translated);
-      if (preparing) await preparing;
+      if (preparing) await awaitUnlessCancelled(preparing, cancelled);
       assertValid();
 
       let result: unknown;
@@ -5885,7 +5905,9 @@ export class MultiTabBackend implements FilesystemBackend {
     args: any[],
     data: Uint8Array,
     responseCookieTag?: bigint,
+    cancelled?: () => boolean,
   ): Promise<unknown> {
+    if (cancelled?.()) return Promise.reject(new FilesystemError(11, "operation cancelled"));
     if (this.disposing || this.ownershipLost) return Promise.reject(new FilesystemError(11));
     if (this.terminalFailure || this.peerObservedHostFailed) {
       return Promise.reject(
@@ -5902,7 +5924,14 @@ export class MultiTabBackend implements FilesystemBackend {
       !this.peerAttached ||
       this.peerRebinding
     ) {
-      return this.enqueuePeerOp(this.peerFailoverQueue, operation, args, data, responseCookieTag);
+      return this.enqueuePeerOp(
+        this.peerFailoverQueue,
+        operation,
+        args,
+        data,
+        responseCookieTag,
+        cancelled,
+      );
     }
 
     let effectiveCookieTag = responseCookieTag;
@@ -5911,7 +5940,7 @@ export class MultiTabBackend implements FilesystemBackend {
     } catch (error) {
       return Promise.reject(error);
     }
-    return this.dispatchPeerOperation(operation, args, data, effectiveCookieTag);
+    return this.dispatchPeerOperation(operation, args, data, effectiveCookieTag, cancelled);
   }
 
   private revalidateCookieForPeerForward(
@@ -5936,11 +5965,13 @@ export class MultiTabBackend implements FilesystemBackend {
     args: any[],
     data: Uint8Array,
     responseCookieTag?: bigint,
+    cancelled?: () => boolean,
   ): Promise<unknown> {
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
     const sessionId = this.peerSessionId;
     const term = this.peerHostTerm;
     if (!sessionId || term === undefined || !this.peerAttached) {
-      return this.executeOnPeer(operation, args, data, responseCookieTag);
+      return this.executeOnPeer(operation, args, data, responseCookieTag, cancelled);
     }
 
     const remoteArgs = this.translateArgsToPeer(operation, args, term, sessionId);
@@ -5970,7 +6001,7 @@ export class MultiTabBackend implements FilesystemBackend {
       if (error instanceof RetryOnHostReadyError || error instanceof FailoverReplayError) {
         const queue =
           error instanceof RetryOnHostReadyError ? this.peerRetryQueue : this.peerFailoverQueue;
-        return this.enqueuePeerOp(queue, operation, args, data, responseCookieTag);
+        return this.enqueuePeerOp(queue, operation, args, data, responseCookieTag, cancelled);
       }
       throw error;
     }
@@ -5984,7 +6015,9 @@ export class MultiTabBackend implements FilesystemBackend {
     args: any[],
     data: Uint8Array,
     responseCookieTag?: bigint,
+    cancelled?: () => boolean,
   ): Promise<unknown> {
+    if (cancelled?.()) return Promise.reject(new FilesystemError(11, "operation cancelled"));
     if (this.disposing || this.ownershipLost) {
       return Promise.reject(new FilesystemError(11, "filesystem is closing"));
     }
@@ -6002,6 +6035,7 @@ export class MultiTabBackend implements FilesystemBackend {
         args,
         data: data.byteLength ? unsharedBytes(data) : undefined,
         responseCookieTag,
+        cancelled,
         resolve,
         reject,
       });
@@ -6603,6 +6637,10 @@ export class MultiTabBackend implements FilesystemBackend {
     dispatchImmediate: (op: QueuedPeerOp) => Promise<unknown>,
   ): void {
     for (const op of ops) {
+      if (op.cancelled?.()) {
+        op.reject(new FilesystemError(11, "operation cancelled"));
+        continue;
+      }
       if (this.isStaleQueuedCookie(op)) {
         op.reject(new FilesystemError(8, "stale directory cookie"));
         continue;
@@ -6619,6 +6657,7 @@ export class MultiTabBackend implements FilesystemBackend {
         op.args,
         op.data ?? new Uint8Array(),
         op.op === "readdirPage" ? this.dirEpoch : op.responseCookieTag,
+        op.cancelled,
       ),
     );
   }
@@ -6637,6 +6676,7 @@ export class MultiTabBackend implements FilesystemBackend {
           op.args,
           op.data ?? new Uint8Array(),
           op.op === "readdirPage" ? this.dirEpoch : op.responseCookieTag,
+          op.cancelled,
         ),
       );
     }
@@ -6651,6 +6691,7 @@ export class MultiTabBackend implements FilesystemBackend {
         op.args,
         op.data ?? new Uint8Array(),
         op.op === "readdirPage" ? this.dirEpoch : undefined,
+        op.cancelled,
       ),
     );
     this.notifyFailoverReadyWaiters();

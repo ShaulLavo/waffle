@@ -3406,9 +3406,14 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     const waitForBackendExecute = (targetOp: string) => {
       const entered = Promise.withResolvers<void>();
       const origExecute = backendA.execute.bind(backendA);
-      backendA.execute = ((op: string, args: any[], data: Uint8Array) => {
+      backendA.execute = ((
+        op: string,
+        args: any[],
+        data: Uint8Array,
+        cancelled?: () => boolean,
+      ) => {
         if (op === targetOp) entered.resolve();
-        return origExecute(op, args, data);
+        return origExecute(op, args, data, cancelled);
       }) as typeof backendA.execute;
       return entered.promise;
     };
@@ -3424,6 +3429,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     };
 
     return {
+      hub,
       backendA,
       serviceA,
       clientA,
@@ -3939,7 +3945,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     }
   });
 
-  test("cancelled Host client cold append returns ECANCELED and leaves file unmodified", async () => {
+  test("cancelled Host client cold append returns ECANCELED, unblocks service queue while read stays paused, and leaves file unmodified", async () => {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();
     const store = new MockSharedStore();
@@ -3992,6 +3998,18 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
         completion.release();
       }
 
+      // With the cancelled append's storage read STILL paused, unrelated requests on the same
+      // Host FilesystemService queue must progress immediately without stalling.
+      await tabHost.client.asyncCall(
+        "writeFile",
+        ["/unrelated.txt", false, false],
+        new TextEncoder().encode("ok"),
+      );
+      const unrelatedBytes: Uint8Array = await tabHost.client.asyncCall("readFile", [
+        "/unrelated.txt",
+      ]);
+      expect(new TextDecoder().decode(unrelatedBytes)).toBe("ok");
+
       readRelease.resolve();
       await tabHost.client.asyncCall("flush", []);
       const liveBytes: Uint8Array = await tabHost.client.asyncCall("readFile", ["/cancel.txt"]);
@@ -4001,6 +4019,78 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       readRelease.resolve();
       await tabHost?.close();
       await tabSeed?.close();
+    }
+  });
+
+  test("cancelled Host-originated append queued across fence-loss failover does not commit on replacement Host", async () => {
+    const f = await setupPausedFenceLossFixture("ws-fence-cancel-append");
+    try {
+      await f.clientA.asyncCall(
+        "writeFile",
+        ["/failover-cancel.txt", false, false],
+        new TextEncoder().encode("old"),
+      );
+      await f.clientA.asyncCall("flush", []);
+
+      await f.promoteBAndPauseFenceLoss();
+
+      // Block tab-A from attaching to replacement Host B until we cancel the queued failover append.
+      let blockAttach = true;
+      f.hub.interceptor = (_ch, sender, msg) => {
+        if (!blockAttach) return;
+        const kind = msg && typeof msg === "object" ? Reflect.get(msg, "kind") : undefined;
+        if (sender.ownerTag === "tab-A" && kind === "attach") return false;
+        if (sender.ownerTag === "tab-B" && kind === "attached") return false;
+      };
+
+      const appendEntered = f.waitForBackendExecute("writeFile");
+      const completion = f.clientA.submit(
+        "writeFile",
+        ["/failover-cancel.txt", true, false],
+        new TextEncoder().encode("-cancelled"),
+      );
+      try {
+        await appendEntered;
+        // Release fence-loss so tab-A demotes into failover and enqueues the append on peerFailoverQueue.
+        f.epochGate.resolve();
+        await waitUntil(
+          () => f.backendA.currentRole === "failover",
+          4000,
+          "tab-A demoted into failover while append is queued",
+        );
+        await new Promise((r) => setTimeout(r, 20));
+
+        completion.cancel();
+        let caught: unknown;
+        try {
+          await completion.value();
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(FilesystemError);
+        expect((caught as FilesystemError).errno).toBe(11);
+      } finally {
+        completion.release();
+      }
+
+      // Allow tab-A to reattach to replacement Host B and drain its failover queue.
+      blockAttach = false;
+      f.hub.interceptor = undefined;
+      await waitUntil(
+        () => f.backendA.currentRole === "peer",
+        4000,
+        "tab-A attached as Peer to replacement Host B",
+      );
+      await f.clientA.asyncCall(
+        "writeFile",
+        ["/probe.txt", false, false],
+        new TextEncoder().encode("ok"),
+      );
+      const bytes: Uint8Array = await f.tabB.client.asyncCall("readFile", ["/failover-cancel.txt"]);
+      expect(new TextDecoder().decode(bytes)).toBe("old");
+    } finally {
+      f.hub.interceptor = undefined;
+      await f.cleanup();
     }
   });
 
