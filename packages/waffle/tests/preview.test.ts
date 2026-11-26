@@ -418,6 +418,27 @@ test("activation helper accepts an active worker whose state object never update
     active: new Worker(),
   } as unknown as ServiceWorkerRegistration;
   await activated(stale);
+  for (const state of ["installed", "activating", "activated"] as const) {
+    const active = new Worker();
+    active.state = state;
+    await activated({
+      installing: null,
+      waiting: null,
+      active,
+    } as unknown as ServiceWorkerRegistration);
+  }
+
+  // An active worker already marked redundant is a failure, not a ready worker: the spec updates
+  // its state before it clears the active slot.
+  const gone = new Worker();
+  gone.state = "redundant";
+  await expect(
+    activated({
+      installing: null,
+      waiting: null,
+      active: gone,
+    } as unknown as ServiceWorkerRegistration),
+  ).rejects.toThrow("redundant");
 
   // A newer installing worker is still awaited, even while an older one is active.
   const next = new Worker();
