@@ -11,17 +11,22 @@ function nextTask(): Promise<void> {
   });
 }
 
+/** A real timer turn: long enough on any runner for the park to reach the relay's waiter. */
+const timerTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 1));
+
 async function forward(
   state: Int32Array,
   word: Int32Array,
   iteration: number,
   park: () => void,
+  settle: boolean,
 ): Promise<number> {
   const before = Atomics.load(state, 0);
   park();
   // Odd handoffs give the relay time to block in its waiter first, so the notify below lands
   // on an idle relay; even ones race the park message.
   if (iteration % 2) for (let turn = 0; turn < 3; turn++) await nextTask();
+  if (iteration % 2 && settle) await timerTurn();
   Atomics.add(word, 0, 1);
   const notified = Atomics.notify(word, 0);
   // A finite native wait changes timer scheduling and can mask the lost dispatch
@@ -55,7 +60,10 @@ function armed(port: MessagePort): Promise<void> {
  * Exercise idle-to-notified dispatch without another source waking the relay.
  * @browserEntry Loaded dynamically by the browser runner's served bundle.
  */
-export async function notificationRelayRaceCase(helperUrl: string) {
+export async function notificationRelayRaceCase(
+  helperUrl: string,
+  { iterations = 200_000, floor = 4000 } = {},
+) {
   const worker = new Worker(helperUrl, { type: "module" });
   const channel = new MessageChannel();
   const state = new Int32Array(new SharedArrayBuffer(NOTIFICATION_STATE_BYTES));
@@ -72,13 +80,25 @@ export async function notificationRelayRaceCase(helperUrl: string) {
       () => words.map((cells) => Atomics.load(cells, 0)),
     );
     const park = () => void parker.park();
-    const iterations = 200_000;
+    // Both orderings must each be seen at least `floor` times: a notify that found the relay
+    // blocked in its waiter (the idle path) and one that ran ahead of the park (the race).
+    // How the raced handoffs split depends on scheduling, so a short side is topped up with
+    // more handoffs. While blocked ones are short, odd top-ups pause on a timer first.
+    const cap = iterations + 8 * floor;
     let blocked = 0;
-    for (let iteration = 0; iteration < iterations; iteration++)
-      if (await forward(state, words[iteration % words.length]!, iteration, park)) blocked++;
-    // The notify must have found a blocked waiter often, or the idle path went untested.
-    if (blocked < iterations / 50) throw Error(`only ${blocked} handoffs reached a blocked waiter`);
-    return { iterations, blocked };
+    let unblocked = 0;
+    let iteration = 0;
+    for (; iteration < iterations || blocked < floor || unblocked < floor; iteration++) {
+      if (iteration === cap)
+        throw Error(
+          `of ${iteration} handoffs, ${blocked} found the relay blocked and ${unblocked} did not`,
+        );
+      const word = words[iteration % words.length]!;
+      const settle = iteration >= iterations && blocked < floor;
+      if (await forward(state, word, iteration, park, settle)) blocked++;
+      else unblocked++;
+    }
+    return { iterations, topUp: iteration - iterations, blocked, unblocked };
   } finally {
     Atomics.store(state, 1, 1);
     channel.port2.close();
