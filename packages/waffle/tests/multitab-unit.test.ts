@@ -3710,33 +3710,45 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     }
   });
 
-  test("flush queued behind writeFile during Peer promotion drains writeFile before persisting", async () => {
+  test("promotion drains cold append -> flush -> overwrite in strict barrier order", async () => {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();
     const store = new MockSharedStore();
     const name = `ws-failover-flush-order-${crypto.randomUUID()}`;
 
-    const promotePaused = Promise.withResolvers<void>();
     const promoteRelease = Promise.withResolvers<void>();
+    const readRelease = Promise.withResolvers<void>();
     let pauseNextCutover = false;
+    let cutoverPaused = false;
+    let pauseNextRead = false;
+    let readPaused = false;
 
-    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
-    const tabB = await openTab(broker, hub, store, {
-      clientId: "tab-B",
-      name,
-      hooks: {
-        async beforeCutoverBarrier() {
-          if (pauseNextCutover) {
-            pauseNextCutover = false;
-            promotePaused.resolve();
-            await promoteRelease.promise;
-          }
-        },
-      },
-    });
+    let tabA: TestTab | undefined;
+    let tabB: TestTab | undefined;
     let tabC: TestTab | undefined;
-
     try {
+      tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+      tabB = await openTab(broker, hub, store, {
+        clientId: "tab-B",
+        name,
+        hooks: {
+          async beforeCutoverBarrier() {
+            if (pauseNextCutover) {
+              pauseNextCutover = false;
+              cutoverPaused = true;
+              await promoteRelease.promise;
+            }
+          },
+        },
+      });
+      store.beforeRead = async () => {
+        if (pauseNextRead) {
+          pauseNextRead = false;
+          readPaused = true;
+          await readRelease.promise;
+        }
+      };
+
       await tabA.client.asyncCall(
         "writeFile",
         ["/doc.txt", false, false],
@@ -3745,113 +3757,238 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       await tabA.client.asyncCall("flush", []);
 
       pauseNextCutover = true;
+      pauseNextRead = true;
       hub.killOwner("tab-A");
       broker.crashClient("tab-A");
-      await promotePaused.promise;
+      await waitUntil(() => cutoverPaused, 4000, "cutover barrier paused");
 
-      // Queue writeFile followed by flush while Peer B is in failover promotion.
-      const writeP = tabB.backend.execute(
+      // Queue cold append -> flush -> overwrite while Peer B is paused mid-promotion.
+      let flushSettled = false;
+      let overwriteSettled = false;
+      const appendP = tabB.backend.execute(
         "writeFile",
-        ["/doc.txt", false, false],
-        new TextEncoder().encode("new"),
+        ["/doc.txt", true, false],
+        new TextEncoder().encode("-A"),
       );
-      const flushP = tabB.backend.flush();
+      const flushP = tabB.backend.flush().finally(() => {
+        flushSettled = true;
+      });
+      void Promise.resolve(
+        tabB.backend.execute(
+          "writeFile",
+          ["/doc.txt", false, false],
+          new TextEncoder().encode("B"),
+        ),
+      ).then(
+        () => {
+          overwriteSettled = true;
+        },
+        () => {
+          overwriteSettled = true;
+        },
+      );
 
       promoteRelease.resolve();
-      await flushP;
-      await writeP;
+      await waitUntil(() => readPaused, 4000, "cold append hydration paused");
+      await new Promise((r) => setTimeout(r, 20));
+      expect(flushSettled).toBe(false);
+      expect(overwriteSettled).toBe(false);
 
-      // Crash promoted Host B immediately after flush() resolved: storage MUST already have "new"!
+      readRelease.resolve();
+      await flushP;
+      await appendP;
+
+      // Crash promoted Host B immediately after flush() resolved: storage MUST have "old-A"
+      // (neither stale "old" nor later "B" that came after the flush barrier)!
       hub.killOwner("tab-B");
       broker.crashClient("tab-B");
       tabC = await openTab(broker, hub, store, { clientId: "tab-C", name });
       const bytes: Uint8Array = await tabC.client.asyncCall("readFile", ["/doc.txt"]);
-      expect(new TextDecoder().decode(bytes)).toBe("new");
+      expect(new TextDecoder().decode(bytes)).toBe("old-A");
     } finally {
+      store.beforeRead = undefined;
       promoteRelease.resolve();
+      readRelease.resolve();
       await tabC?.close();
-      await tabB.close();
-      await tabA.close();
+      await tabB?.close();
+      await tabA?.close();
     }
   });
 
-  test("Host flush() waits for mutations already queued on hostQueue before checkpointing", async () => {
+  test("Host and Peer flush() wait for paused cold append and hold later writes behind barrier", async () => {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();
     const store = new MockSharedStore();
     const name = `ws-host-flush-order-${crypto.randomUUID()}`;
 
-    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
-    let tabB: TestTab | undefined;
+    const readRelease = Promise.withResolvers<void>();
+    let pauseNextRead = false;
+    let readPaused = false;
+
+    let tabSeed: TestTab | undefined;
+    let tabHost: TestTab | undefined;
+    let tabPeer: TestTab | undefined;
+    let tabCheck: TestTab | undefined;
     try {
-      await tabA.client.asyncCall(
+      tabSeed = await openTab(broker, hub, store, { clientId: "tab-seed", name });
+      await tabSeed.client.asyncCall(
         "writeFile",
         ["/doc.txt", false, false],
         new TextEncoder().encode("old"),
       );
-      await tabA.client.asyncCall("flush", []);
+      await tabSeed.client.asyncCall("flush", []);
+      await tabSeed.close();
+      tabSeed = undefined;
 
-      // Submit writeFile (enters hostQueue) and immediately call flush() on the same Host backend.
-      const writeP = tabA.backend.execute(
+      // Fresh Host opens with /doc.txt cold on disk.
+      tabHost = await openTab(broker, hub, store, { clientId: "tab-host", name });
+      tabPeer = await openTab(broker, hub, store, { clientId: "tab-peer", name });
+
+      store.beforeRead = async () => {
+        if (pauseNextRead) {
+          pauseNextRead = false;
+          readPaused = true;
+          await readRelease.promise;
+        }
+      };
+      pauseNextRead = true;
+
+      const appendP = tabHost.backend.execute(
         "writeFile",
-        ["/doc.txt", false, false],
-        new TextEncoder().encode("new"),
+        ["/doc.txt", true, false],
+        new TextEncoder().encode("-A"),
       );
-      const flushP = tabA.backend.flush();
-      await flushP;
-      await writeP;
+      await waitUntil(() => readPaused, 4000, "Host cold append paused in prepare()");
 
-      // Crash Host A immediately after flush() resolved: storage MUST already have "new"!
-      hub.killOwner("tab-A");
-      broker.crashClient("tab-A");
-      tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
-      const bytes: Uint8Array = await tabB.client.asyncCall("readFile", ["/doc.txt"]);
-      expect(new TextDecoder().decode(bytes)).toBe("new");
+      let hostFlushDone = false;
+      let peerFlushDone = false;
+      let laterWriteDone = false;
+      const hostFlushP = tabHost.backend.flush().finally(() => {
+        hostFlushDone = true;
+      });
+      const peerFlushP = tabPeer.backend.flush().finally(() => {
+        peerFlushDone = true;
+      });
+      void Promise.resolve(
+        tabHost.backend.execute(
+          "writeFile",
+          ["/doc.txt", false, false],
+          new TextEncoder().encode("B"),
+        ),
+      ).then(
+        () => {
+          laterWriteDone = true;
+        },
+        () => {
+          laterWriteDone = true;
+        },
+      );
+
+      await new Promise((r) => setTimeout(r, 20));
+      expect(hostFlushDone).toBe(false);
+      expect(peerFlushDone).toBe(false);
+      expect(laterWriteDone).toBe(false);
+
+      readRelease.resolve();
+      await Promise.all([appendP, hostFlushP, peerFlushP]);
+
+      // Crash Host immediately after both flushes resolved: storage MUST have "old-A", not "old" or "B".
+      hub.killOwner("tab-host");
+      broker.crashClient("tab-host");
+      hub.killOwner("tab-peer");
+      broker.crashClient("tab-peer");
+      tabCheck = await openTab(broker, hub, store, { clientId: "tab-check", name });
+      const bytes: Uint8Array = await tabCheck.client.asyncCall("readFile", ["/doc.txt"]);
+      expect(new TextDecoder().decode(bytes)).toBe("old-A");
     } finally {
-      await tabB?.close();
-      await tabA.close();
+      store.beforeRead = undefined;
+      readRelease.resolve();
+      await tabCheck?.close();
+      await tabPeer?.close();
+      await tabHost?.close();
+      await tabSeed?.close();
     }
   });
 
-  test("Peer pipelined writeFile followed by flush waits for writeFile on Host before persisting", async () => {
+  test("Peer chunked write -> flush -> overwrite never sends flush before upload completes or crosses barrier", async () => {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();
     const store = new MockSharedStore();
     const name = `ws-peer-flush-order-${crypto.randomUUID()}`;
 
-    const tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
-    const tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+    let tabA: TestTab | undefined;
+    let tabB: TestTab | undefined;
     let tabC: TestTab | undefined;
     try {
+      tabA = await openTab(broker, hub, store, { clientId: "tab-A", name });
+      tabB = await openTab(broker, hub, store, { clientId: "tab-B", name });
+
       await tabA.client.asyncCall(
         "writeFile",
-        ["/doc.txt", false, false],
+        ["/big.bin", false, false],
         new TextEncoder().encode("old"),
       );
       await tabA.client.asyncCall("flush", []);
 
-      // Pipeline writeFile and flush from Peer B to Host A concurrently.
-      const writeP = tabB.backend.execute(
-        "writeFile",
-        ["/doc.txt", false, false],
-        new TextEncoder().encode("new"),
-      );
-      const flushP = tabB.backend.flush();
-      await flushP;
-      await writeP;
+      // Record Peer -> Host wire ordering to prove flush waits for chunked upload + reply,
+      // and later writeFile does not cross the active flush barrier.
+      const wireEvents: string[] = [];
+      let bigWriteReqId: number | undefined;
+      let flushReqId: number | undefined;
+      hub.interceptor = (_ch, sender, data) => {
+        const msg = data as { kind?: string; op?: string; reqId?: number } | undefined;
+        if (!msg || typeof msg.reqId !== "number") return;
+        if (sender.ownerTag === "tab-B" && msg.kind === "req" && msg.op) {
+          wireEvents.push(`req:${msg.op}`);
+          if (msg.op === "writeFile" && bigWriteReqId === undefined) bigWriteReqId = msg.reqId;
+          if (msg.op === "flush" && flushReqId === undefined) flushReqId = msg.reqId;
+        }
+        if (sender.ownerTag === "tab-A" && msg.kind === "res") {
+          if (msg.reqId === bigWriteReqId) wireEvents.push("res:writeFile#1");
+          if (msg.reqId === flushReqId) wireEvents.push("res:flush");
+        }
+      };
 
-      // Crash Host A and Peer B immediately after flush() resolved: storage MUST have "new"!
+      const bigBytes = new Uint8Array(1_572_864);
+      bigBytes.fill(0x5a);
+      bigBytes[0] = 0x11;
+      bigBytes[bigBytes.length - 1] = 0x99;
+
+      const bigWriteP = tabB.backend.execute("writeFile", ["/big.bin", false, false], bigBytes);
+      const flushP = tabB.backend.flush();
+      void Promise.resolve(
+        tabB.backend.execute(
+          "writeFile",
+          ["/big.bin", false, false],
+          new TextEncoder().encode("after-flush"),
+        ),
+      ).catch(() => {});
+
+      await flushP;
+      await bigWriteP;
+      expect(wireEvents.slice(0, 4)).toEqual([
+        "req:writeFile",
+        "res:writeFile#1",
+        "req:flush",
+        "res:flush",
+      ]);
+
+      // Crash Host A and Peer B immediately after flush() resolved: storage MUST hold the 1.5 MiB write!
+      hub.interceptor = undefined;
       hub.killOwner("tab-A");
       broker.crashClient("tab-A");
       hub.killOwner("tab-B");
       broker.crashClient("tab-B");
       tabC = await openTab(broker, hub, store, { clientId: "tab-C", name });
-      const bytes: Uint8Array = await tabC.client.asyncCall("readFile", ["/doc.txt"]);
-      expect(new TextDecoder().decode(bytes)).toBe("new");
+      const bytes: Uint8Array = await tabC.client.asyncCall("readFile", ["/big.bin"]);
+      expect(bytes.byteLength).toBe(bigBytes.byteLength);
+      expect(bytes[0]).toBe(0x11);
+      expect(bytes[bytes.length - 1]).toBe(0x99);
     } finally {
+      hub.interceptor = undefined;
       await tabC?.close();
-      await tabB.close();
-      await tabA.close();
+      await tabB?.close();
+      await tabA?.close();
     }
   });
 });

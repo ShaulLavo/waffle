@@ -476,6 +476,42 @@ function defaultOpenStorage(
   });
 }
 
+/** Orders flush/sync barriers behind prior in-flight mutations and holds later mutations until
+ * an active barrier settles, while allowing concurrent non-barrier mutations between barriers. */
+class BarrierGate {
+  private readonly mutations = new Set<Promise<void>>();
+  private activeBarrier: Promise<void> | undefined;
+
+  runMutation<T>(fn: () => Promise<T>): Promise<T> {
+    const barrier = this.activeBarrier;
+    const result = barrier ? barrier.then(fn) : fn();
+    const settled = result.then(
+      () => {},
+      () => {},
+    );
+    this.mutations.add(settled);
+    void settled.finally(() => {
+      this.mutations.delete(settled);
+    });
+    return result;
+  }
+
+  runBarrier<T>(fn: () => Promise<T>): Promise<T> {
+    const prior = Array.from(this.mutations);
+    if (this.activeBarrier) prior.push(this.activeBarrier);
+    const result = prior.length ? Promise.allSettled(prior).then(fn) : fn();
+    const settled = result.then(
+      () => {},
+      () => {},
+    );
+    this.activeBarrier = settled;
+    void settled.finally(() => {
+      if (this.activeBarrier === settled) this.activeBarrier = undefined;
+    });
+    return result;
+  }
+}
+
 /**
  * Multi-tab shared persistent filesystem backend (`whenBusy: "attach"`).
  * Implements Rev 24 of the Waffle multi-tab persistent FS design:
@@ -545,6 +581,8 @@ export class MultiTabBackend implements FilesystemBackend {
   private persistent?: PersistentBackend;
   private watchService?: WatchService;
   private hostQueue: Promise<void> = Promise.resolve();
+  private readonly localBarrier = new BarrierGate();
+  private readonly hostBarrier = new BarrierGate();
   private hostAdmittedCount = 0;
   private hostAdmittedZeroWaiters: (() => void)[] = [];
   private hostPeers = new Map<string, HostPeerSession>();
@@ -830,9 +868,24 @@ export class MultiTabBackend implements FilesystemBackend {
     }
     if (this.terminalFailure)
       throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
-    if (this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified) {
-      return this.executeAfterFenceLoss(operation, args, data);
+    const awaitingFenceLoss =
+      !!this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified;
+    if (!awaitingFenceLoss) {
+      this.assertLocalExecuteAdmissible();
     }
+    if (operation === "flush" || operation === "sync") {
+      return this.localBarrier.runBarrier(() => this.runLocalExecute(operation, args, data));
+    }
+    if (MUTATION_OPS.has(operation)) {
+      return this.localBarrier.runMutation(() => this.runLocalExecute(operation, args, data));
+    }
+    if (awaitingFenceLoss) {
+      return this.runLocalExecute(operation, args, data);
+    }
+    return this.dispatchLocalRead(operation, args, data);
+  }
+
+  private assertLocalExecuteAdmissible(): void {
     if (this.ownershipLost) throw new FilesystemError(11, "filesystem ownership lost");
     if (this.disposing) {
       // Allow queued local Host work on disposeHostTerm ONLY while lease is valid.
@@ -846,7 +899,21 @@ export class MultiTabBackend implements FilesystemBackend {
         throw new FilesystemError(11, "filesystem is disposing");
       }
     }
+    if (
+      this.role !== "host" &&
+      this.role !== "peer" &&
+      this.role !== "failover" &&
+      this.role !== "waiting"
+    ) {
+      throw new FilesystemError(11, "filesystem backend is closed");
+    }
+  }
 
+  private dispatchLocalRead(
+    operation: string,
+    args: any[],
+    data: Uint8Array,
+  ): unknown | Promise<unknown> {
     // Validate & strip directory cookies at the receiving boundary BEFORE dispatch!
     let effectiveArgs = args;
     let responseCookieTag: bigint | undefined;
@@ -862,10 +929,21 @@ export class MultiTabBackend implements FilesystemBackend {
     if (this.role === "host") {
       return this.executeLocalOnHost(operation, effectiveArgs, data, responseCookieTag);
     }
-    if (this.role === "peer" || this.role === "failover" || this.role === "waiting") {
-      return this.executeOnPeer(operation, effectiveArgs, data, responseCookieTag);
+    return this.executeOnPeer(operation, effectiveArgs, data, responseCookieTag);
+  }
+
+  private async runLocalExecute(
+    operation: string,
+    args: any[],
+    data: Uint8Array,
+  ): Promise<unknown> {
+    if (this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified) {
+      await this.awaitPendingFenceLoss();
     }
-    throw new FilesystemError(11, "filesystem backend is closed");
+    if (this.terminalFailure)
+      throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
+    this.assertLocalExecuteAdmissible();
+    return this.dispatchLocalRead(operation, args, data);
   }
 
   private async awaitPendingFenceLoss(cancelled?: () => boolean): Promise<void> {
@@ -928,16 +1006,11 @@ export class MultiTabBackend implements FilesystemBackend {
     }
   }
 
-  private async executeAfterFenceLoss(
-    operation: string,
-    args: any[],
-    data: Uint8Array,
-  ): Promise<unknown> {
-    await this.awaitPendingFenceLoss();
-    return this.execute(operation, args, data);
+  flush(target?: FileHandle | string): Promise<void> {
+    return this.localBarrier.runBarrier(() => this.runLocalFlush(target));
   }
 
-  async flush(target?: FileHandle | string): Promise<void> {
+  private async runLocalFlush(target?: FileHandle | string): Promise<void> {
     if (this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified) {
       await this.awaitPendingFenceLoss();
     }
@@ -964,9 +1037,11 @@ export class MultiTabBackend implements FilesystemBackend {
       }
       this.enterHostAdmitted();
       try {
-        await this.hostQueue;
-        this.assertHostReadyForLocal(admittedTerm);
-        await this.persistent!.flush(resolvedTarget);
+        await this.hostBarrier.runBarrier(async () => {
+          await this.hostQueue;
+          this.assertHostReadyForLocal(admittedTerm);
+          await this.persistent!.flush(resolvedTarget);
+        });
       } finally {
         this.leaveHostAdmitted();
       }
@@ -4311,9 +4386,11 @@ export class MultiTabBackend implements FilesystemBackend {
       if (msg.op === "flush" || msg.op === "sync") {
         const target =
           msg.op === "sync" ? (msg.args[0] as number) : (msg.args[0] as string | undefined);
-        await this.hostQueue;
-        this.assertHostOpStillValid(session, admittedTerm);
-        await this.persistent!.flush(target);
+        await this.hostBarrier.runBarrier(async () => {
+          await this.hostQueue;
+          this.assertHostOpStillValid(session, admittedTerm);
+          await this.persistent!.flush(target);
+        });
         await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
         this.assertHostOpStillValid(session, admittedTerm);
         reply({ ok: true, value: msg.op === "sync" ? 0 : undefined });
@@ -4658,19 +4735,13 @@ export class MultiTabBackend implements FilesystemBackend {
     }
   }
 
-  private async handleHostPeerGeneral(
+  private async executeHostPeerGeneralLoop(
     session: HostPeerSession,
     admittedTerm: bigint,
+    persistent: PersistentBackend,
     msg: Extract<PeerMessage, { kind: "req" }>,
     data: Uint8Array,
-    reply: (
-      partial: Omit<
-        Extract<PeerMessage, { kind: "res" }>,
-        "kind" | "hostTerm" | "sessionId" | "reqId" | "creditFrames" | "creditBytes"
-      >,
-    ) => void,
-  ): Promise<void> {
-    const persistent = this.persistent!;
+  ): Promise<unknown> {
     for (;;) {
       this.assertHostOpStillValid(session, admittedTerm);
       const preparing = persistent.prepare(msg.op, msg.args);
@@ -4696,32 +4767,52 @@ export class MultiTabBackend implements FilesystemBackend {
         );
         continue;
       }
+      return result;
+    }
+  }
 
-      const { wireValue, mintedTokens } = this.wrapHostPeerResult(
-        session,
-        persistent,
-        msg.op,
-        result,
-      );
+  private async handleHostPeerGeneral(
+    session: HostPeerSession,
+    admittedTerm: bigint,
+    msg: Extract<PeerMessage, { kind: "req" }>,
+    data: Uint8Array,
+    reply: (
+      partial: Omit<
+        Extract<PeerMessage, { kind: "res" }>,
+        "kind" | "hostTerm" | "sessionId" | "reqId" | "creditFrames" | "creditBytes"
+      >,
+    ) => void,
+  ): Promise<void> {
+    const persistent = this.persistent!;
+    const result = MUTATION_OPS.has(msg.op)
+      ? await this.hostBarrier.runMutation(() =>
+          this.executeHostPeerGeneralLoop(session, admittedTerm, persistent, msg, data),
+        )
+      : await this.executeHostPeerGeneralLoop(session, admittedTerm, persistent, msg, data);
 
-      await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
-      if (
-        session.revoked ||
-        this.terminalFailure ||
-        !this.isLeaseValid() ||
-        this.hostTerm !== admittedTerm ||
-        persistent.isTerminallyFailed()
-      ) {
-        this.rollbackMintedPeerTokens(session, persistent, mintedTokens);
-        this.assertHostOpStillValid(session, admittedTerm);
-      }
+    const { wireValue, mintedTokens } = this.wrapHostPeerResult(
+      session,
+      persistent,
+      msg.op,
+      result,
+    );
 
-      if (wireValue instanceof Uint8Array) {
-        reply({ ok: true, data: unsharedBytes(wireValue), binary: true });
-      } else {
-        reply({ ok: true, value: wireValue });
-      }
-      return;
+    await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
+    if (
+      session.revoked ||
+      this.terminalFailure ||
+      !this.isLeaseValid() ||
+      this.hostTerm !== admittedTerm ||
+      persistent.isTerminallyFailed()
+    ) {
+      this.rollbackMintedPeerTokens(session, persistent, mintedTokens);
+      this.assertHostOpStillValid(session, admittedTerm);
+    }
+
+    if (wireValue instanceof Uint8Array) {
+      reply({ ok: true, data: unsharedBytes(wireValue), binary: true });
+    } else {
+      reply({ ok: true, value: wireValue });
     }
   }
 
@@ -5311,22 +5402,28 @@ export class MultiTabBackend implements FilesystemBackend {
       if (operation === "flush" || operation === "sync") {
         const target =
           operation === "sync" ? (translated[0] as number) : (translated[0] as string | undefined);
-        await this.hostQueue;
-        this.assertHostReadyForLocal(admittedTerm);
-        await persistent.flush(target);
-        return operation === "sync" ? 0 : undefined;
+        return await this.hostBarrier.runBarrier(async () => {
+          await this.hostQueue;
+          this.assertHostReadyForLocal(admittedTerm);
+          await persistent.flush(target);
+          return operation === "sync" ? 0 : undefined;
+        });
       }
       if (operation === "read") {
         return await this.executeLocalHostRead(persistent, admittedTerm, translated);
       }
-      const result = await this.executeLocalHostGeneral(
-        persistent,
-        admittedTerm,
-        operation,
-        translated,
-        data,
-        responseCookieTag,
-      );
+      const runGeneral = () =>
+        this.executeLocalHostGeneral(
+          persistent,
+          admittedTerm,
+          operation,
+          translated,
+          data,
+          responseCookieTag,
+        );
+      const result = MUTATION_OPS.has(operation)
+        ? await this.hostBarrier.runMutation(runGeneral)
+        : await runGeneral();
       return this.mapLocalHostHandles(persistent, admittedTerm, operation, result);
     } finally {
       this.leaveHostAdmitted();
@@ -6488,21 +6585,12 @@ export class MultiTabBackend implements FilesystemBackend {
     ops: readonly QueuedPeerOp[],
     dispatchImmediate: (op: QueuedPeerOp) => Promise<unknown>,
   ): void {
-    const prior: Promise<unknown>[] = [];
     for (const op of ops) {
       if (this.isStaleQueuedCookie(op)) {
         op.reject(new FilesystemError(8, "stale directory cookie"));
         continue;
       }
-      const isBarrier = op.op === "flush" || op.op === "sync";
-      const run =
-        isBarrier && prior.length
-          ? Promise.allSettled(prior.splice(0)).then(() =>
-              this.execute(op.op, op.args, op.data ?? new Uint8Array()),
-            )
-          : dispatchImmediate(op);
-      prior.push(run);
-      run.then(op.resolve, op.reject);
+      dispatchImmediate(op).then(op.resolve, op.reject);
     }
   }
 
