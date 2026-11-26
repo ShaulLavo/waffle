@@ -1,5 +1,12 @@
 # @waffle-os/runtime
 
+## 0.0.152
+
+### Patch Changes
+
+- 7f79856: Multi-tab `flush()` and descriptor `sync()` now enforce strict barrier ordering on both Host and Peer tabs: barriers wait for earlier in-flight writes (including cold file hydration, dirty-capacity retries, chunked uploads, and failover queues) and hold later Host or Peer writes behind active barriers. Cancelled cold writes and chunked uploads abort before committing and release staged Host upload buffers via settlement-tracked aborts, and `FilesystemService` retains descriptor `sync()` targets until the barrier settles so an immediate `release()` cannot invalidate a queued sync.
+- 665ec3f: `activated()` no longer hangs in WebKit when two pages register the same service worker at once. A worker already in the registration's active slot now counts as activated; only an installing or waiting worker is awaited.
+
 ## 0.0.151
 
 ### Patch Changes
