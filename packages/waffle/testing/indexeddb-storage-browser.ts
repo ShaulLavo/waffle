@@ -864,35 +864,49 @@ async function pendingRuntimeOpenCase(
 /**
  * A multitab Host renews its lease with verifyEpoch. A readonly epoch read queues behind the
  * connection's own checkpoint commit, which on a loaded device can hold "metadata" for seconds,
- * so the lease lapsed and running calls were cancelled. The commit's own epoch read answers.
+ * so the lease lapsed and running calls were cancelled. The commit's own epoch read answers, both
+ * right after that read and once every write is issued (WebKit then reports it as committing).
  */
 async function epochCheckDuringCommitCase(open: () => Promise<StorageBackend>): Promise<void> {
   const storage = (await open()) as IndexedDBStorage;
   await storage.persist(batch(1));
+  await epochCheckDuring(storage, "get", "epoch", 2);
+  await epochCheckDuring(storage, "put", "active", 3);
+  await storage.close();
+}
+
+/** Runs one commit and checks the epoch when it issues `method` on metadata `key`. */
+async function epochCheckDuring(
+  storage: IndexedDBStorage,
+  method: "get" | "put",
+  key: string,
+  generation: number,
+): Promise<void> {
   const order: string[] = [];
   let checked: Promise<boolean> | undefined;
-  const get = IDBObjectStore.prototype.get;
-  IDBObjectStore.prototype.get = function (this: IDBObjectStore, key: IDBValidKey | IDBKeyRange) {
-    const read = get.call(this, key);
-    if (key === "epoch" && this.transaction.mode === "readwrite" && !checked)
-      read.addEventListener("success", () => {
+  const original = IDBObjectStore.prototype[method] as (...args: unknown[]) => IDBRequest;
+  const watched = function (this: IDBObjectStore, ...args: unknown[]): IDBRequest {
+    const request = original.apply(this, args);
+    const requestKey = method === "get" ? args[0] : args[1];
+    if (requestKey === key && this.transaction.mode === "readwrite" && !checked)
+      request.addEventListener("success", () => {
         checked = storage.verifyEpoch().then((owned) => {
           order.push("verified");
           return owned;
         });
       });
-    return read;
+    return request;
   };
+  Object.assign(IDBObjectStore.prototype, { [method]: watched });
   try {
-    await storage.persist(batch(2));
+    await storage.persist(batch(generation));
     order.push("committed");
   } finally {
-    IDBObjectStore.prototype.get = get;
+    Object.assign(IDBObjectStore.prototype, { [method]: original });
   }
-  assert(checked !== undefined, "the commit read the epoch");
-  assert((await checked) === true, "the owner's epoch is confirmed during its commit");
-  assert(order.join() === "verified,committed", `epoch check waited for the commit: ${order}`);
-  await storage.close();
+  assert(checked !== undefined, `the commit issued ${method} ${key}`);
+  assert((await checked) === true, `the owner's epoch is confirmed at ${method} ${key}`);
+  assert(order.join() === "verified,committed", `epoch check at ${method} ${key}: ${order}`);
 }
 
 function indexedDBCases(
