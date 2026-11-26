@@ -103,6 +103,8 @@ import {
   reapFilesystem,
   unpack,
   wake,
+  wakeTransport,
+  SIGNAL_TRANSPORT,
   releaseFilesystemReservation,
   type FilesystemIdentity,
   type FilesystemReservation,
@@ -587,7 +589,9 @@ export class FilesystemClient implements FileSystem {
   private capabilities: Int32Array;
   private epoch: Int32Array;
   /** Shared wake counter, viewed once: a blocking wait reads it on every loop. */
+  /** Word 0 of the shared signal, one word long, as poll's wake-word checks require. */
   readonly signal: Int32Array;
+  private readonly transportSignal: Int32Array;
   private revoked: () => boolean;
   private readonly section: FilesystemSection;
   readonly shared: SharedFilesystemState;
@@ -607,7 +611,8 @@ export class FilesystemClient implements FileSystem {
     this.requests = new FilesystemRequestAllocator(connection.requests);
     this.capabilities = new Int32ArrayConstructor(connection.capabilities, 0, CAPABILITY_LENGTH);
     this.epoch = new Int32ArrayConstructor(connection.epoch);
-    this.signal = new Int32ArrayConstructor(connection.signal);
+    this.signal = new Int32ArrayConstructor(connection.signal, 0, 1);
+    this.transportSignal = new Int32ArrayConstructor(connection.signal, SIGNAL_TRANSPORT * 4, 1);
     const revoked = sharedRevoked(connection);
     this.revoked = () => this.disposed || revoked() || !!this.transportError();
     if (connection.residentPublication)
@@ -633,7 +638,7 @@ export class FilesystemClient implements FileSystem {
     };
     connection.port.onmessageerror = () => {
       closeRequestMemory(this.requests.memory);
-      wake(connection);
+      wakeTransport(connection);
       mapForEach(this.completions, (completion) => completion.notify());
       connection.port.postMessage({ transportClosed: true });
       connection.port.close();
@@ -770,7 +775,10 @@ export class FilesystemClient implements FileSystem {
     this.monitorRevocation();
   }
   private monitorRevocation(): void {
-    const signal = this.signal;
+    // Completions arrive as port messages; this loop needs only revocation, reap, retirement and
+    // transport failure, which all wake SIGNAL_TRANSPORT. A publication domain's stop wakes
+    // nothing itself, so a publishing connection keeps watching every change.
+    const signal = this.connection.publication ? this.signal : this.transportSignal;
     const stop = () => {
       this.watchingRevocation = false;
     };
