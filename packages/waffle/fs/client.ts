@@ -2568,6 +2568,13 @@ export class FilesystemClient implements FileSystem {
       return errno(error);
     }
   }
+  realpath(directory: FileHandle, path: string, rooted = false): string | number {
+    try {
+      return this.call("realpath", [directory, path, rooted]);
+    } catch (error) {
+      return errno(error);
+    }
+  }
   readlink(handle: FileHandle): string {
     this.retain(handle);
     try {
