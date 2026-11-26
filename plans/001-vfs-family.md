@@ -372,3 +372,17 @@ and Next.js builds (cold rereads, the client path cache, transport admission).
   entries and one atomic load each). That cost blocks raising `TRANSIENT_HANDLES`, which bounds
   how many distinct resolved paths a client can keep cached. A fast path needs a proof that no
   idle handle can have become unlinked since the last full scan.
+
+### Follow-up: a lapsed Host lease still fails Peer requests, 2026-11-26
+
+Status: Approved follow-up, found in the review of PR 655. That PR makes the Host's own calls
+renew a lease that lapsed only because renewal ran late (a long serial-queue task or a loaded
+device), with one renewal budget per call. Requests a Host serves for Peer tabs still check
+`isLeaseValid()` or `assertHostOpStillValid` and fail with errno 11 ("host lease expired") on the
+same lapse: `handleHostPeerReq` (including its stepping-down gate), `handleHostPeerRead`,
+`handleHostPeerGeneral`, `handleHostPeerReadFile`, `handleHostPeerReaddirPage`, the watch open
+and read handlers, and the chunk-get and chunked-upload replies in
+`packages/waffle/fs/multitab-backend.ts`. Use the same
+`leaseOnlyLapsed` / `renewLapsedLease` path, with the per-call budget, before the Host replies or
+publishes, so the Peer's guest is not cancelled while the Host still holds its locks. Test it with
+two tabs: the Host's lease lapses behind a long `listFiles` while the Peer reads and writes.
