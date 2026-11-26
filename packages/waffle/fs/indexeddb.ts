@@ -28,6 +28,7 @@ import {
   parseManifest,
   preparePayload,
   preparePayloads,
+  putPayload,
   copyLegacyChunks,
   validateRange,
   type ChunkManifest,
@@ -448,6 +449,9 @@ class PayloadSizes {
   }
   size(key: string): number | undefined {
     return this.entries.get(key)?.size;
+  }
+  has(key: string): boolean {
+    return this.entries.has(key);
   }
 }
 interface CommittedTransaction {
@@ -1997,11 +2001,14 @@ export class IndexedDBStorage implements StorageBackend {
   }
 
   private recordRecovery(state: State, extra?: readonly string[]): void {
-    const retained = new Set<string>(extra);
-    payloads(state.nodes.values(), retained);
-    for (const base of state.bases) if (base) payloads(base.nodes, retained);
-    for (const journal of state.journals.values()) payloads(journal.upserts, retained);
-    this.readers.recovery(retained);
+    if (!extra?.length) {
+      this.readers.recovery(state.payloadSizes);
+      return;
+    }
+    const extraRoots = new Set(extra);
+    this.readers.recovery({
+      has: (key) => extraRoots.has(key) || state.payloadSizes.has(key),
+    });
   }
 
   private matchSizes(
@@ -2093,7 +2100,7 @@ export class IndexedDBStorage implements StorageBackend {
   private async commit(batch: PersistenceBatch, committed?: CommittedTransaction): Promise<void> {
     if (this.committedMode !== !!committed)
       throw new Error("Committed storage requires a complete durable group");
-    const prepared = await preparePayloads(batch.data);
+    const prepared = await preparePayloads(batch.data, true);
     const staged = stageChanges(this.state, batch),
       old = this.state;
     // A recovered generation may be reused. Its abandoned successors must not reconnect
@@ -2203,7 +2210,13 @@ export class IndexedDBStorage implements StorageBackend {
           abort(error);
         }
       };
-      let remaining = checking.size + pinChecks.size + (committed ? 2 : 0);
+      const newKeys: string[] = [];
+      const verifyKeys: string[] = [];
+      for (const key of checking) {
+        if (prepared.has(key) && !old?.payloadKeys.has(key)) newKeys.push(key);
+        else verifyKeys.push(key);
+      }
+      let remaining = 1 + verifyKeys.length + pinChecks.size + (committed ? 1 : 0);
       const checked = () => {
         if (--remaining === 0) finish();
       };
@@ -2213,12 +2226,22 @@ export class IndexedDBStorage implements StorageBackend {
           abort(this.loseOwnership());
           return;
         }
-        if (committed) checked();
+        try {
+          for (const key of newKeys) {
+            const supplied = prepared.get(key)!;
+            const size = expected.get(key);
+            if (size !== undefined && supplied.manifest.size !== size)
+              throw new Error(`Invalid filesystem payload size: ${key}`);
+            putPayload(data, key, supplied);
+          }
+          checked();
+        } catch (error) {
+          abort(error);
+        }
       };
       if (committed) checkCommitHead(tx, committed, checked, abort);
       try {
-        if (!remaining) finish();
-        for (const key of checking) {
+        for (const key of verifyKeys) {
           const get = data.get(key);
           get.onsuccess = () => {
             try {

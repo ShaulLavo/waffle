@@ -6,8 +6,11 @@ import { describe, expect, test } from "bun:test";
 import {
   decodeSnapshot,
   encodeSnapshot,
+  PayloadRetentions,
+  snapshotBatch,
   validatePersistedIndex,
   type PersistedIndex,
+  type PersistenceBatch,
 } from "../fs/storage";
 import { IndexedDBStorage, recoverIndex, type StorageLockManager } from "../fs/indexeddb";
 import { storedTimes } from "../testing/fixtures/file-times";
@@ -75,6 +78,54 @@ describe("durable metadata", () => {
     value.nodes[0]!.children!.push(["hardlink", 2], ["empty", 3]);
     value.nodes.push({ ino: 3, kind: "file", ...storedTimes(0), size: 0 });
     expect(await decodeSnapshot(await encodeSnapshot(value))).toEqual(value);
+  });
+
+  test("snapshotBatch isolates caller mutations across upserts, children, identity, removes and bytes", () => {
+    const payload = new Uint8Array([1, 2, 3]);
+    const batch: PersistenceBatch = {
+      generation: 2,
+      root: 1,
+      upserts: [
+        {
+          ino: 1,
+          kind: "dir",
+          identity: {
+            format: "waffle-file-identity-v1",
+            workspace: "ws",
+            id: "1",
+            version: "1",
+          },
+          ...storedTimes(1),
+          size: 0,
+          children: [["a", 2]],
+        },
+        { ino: 2, kind: "file", ...storedTimes(1), size: 3, data: "k1" },
+      ],
+      removes: [9],
+      retainedData: ["pin"],
+      data: new Map([["k1", payload]]),
+    };
+    const copy = snapshotBatch(batch);
+    batch.upserts[0]!.children![0]![0] = "mutated";
+    (batch.upserts[0]!.identity as { id: string }).id = "999";
+    batch.removes.push(10);
+    batch.retainedData!.push("extra");
+    payload[0] = 99;
+    expect(copy.upserts[0]!.children).toEqual([["a", 2]]);
+    expect(copy.upserts[0]!.identity!.id).toBe("1");
+    expect(copy.removes).toEqual([9]);
+    expect(copy.retainedData).toEqual(["pin"]);
+    expect(Array.from(copy.data.get("k1")!)).toEqual([1, 2, 3]);
+  });
+
+  test("PayloadRetentions.recovery accepts any lookup object without copying root sets", () => {
+    const retentions = new PayloadRetentions();
+    const handle = retentions.retain("k1", 10);
+    handle.release();
+    expect(retentions.resources().readerStorageDebt).toBe(10);
+    retentions.recovery({ has: (key) => key === "k1" });
+    expect(retentions.resources().readerStorageDebt).toBe(0);
+    expect(retentions.resources().readerStorageBytes).toBe(0);
   });
 });
 

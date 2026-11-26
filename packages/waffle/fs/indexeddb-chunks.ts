@@ -67,24 +67,64 @@ export function parseChunk(value: unknown, size: number, key: string): ChunkReco
 export function chunkLength(manifest: ChunkManifest, index: number): number {
   return Math.min(CHUNK_SIZE, manifest.size - index * CHUNK_SIZE);
 }
+const HEX = Array.from({ length: 256 }, (_, byte) => byte.toString(16).padStart(2, "0"));
+const PREPARE_CONCURRENCY = 32;
+
 export async function chunkChecksum(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  let hex = "";
+  for (let i = 0; i < digest.length; i++) hex += HEX[digest[i]!]!;
+  return hex;
 }
-export async function preparePayload(
+async function prepareOwnedPayload(
   bytes: Uint8Array,
   signal?: AbortSignal,
+  owned = false,
 ): Promise<PreparedPayload> {
-  const chunks: ChunkRecord[] = [];
-  for (let offset = 0; offset < bytes.length; offset += CHUNK_SIZE) {
+  if (!bytes.length) {
     signal?.throwIfAborted();
-    const part = bytes.slice(offset, offset + CHUNK_SIZE);
-    chunks.push({ bytes: part, checksum: await chunkChecksum(part) });
+    return {
+      manifest: { version: 2, size: 0, chunkSize: CHUNK_SIZE, count: 0 },
+      chunks: [],
+    };
   }
+  if (
+    owned &&
+    bytes.length <= CHUNK_SIZE &&
+    bytes.byteOffset === 0 &&
+    bytes.byteLength === bytes.buffer.byteLength &&
+    bytes.buffer instanceof ArrayBuffer
+  ) {
+    signal?.throwIfAborted();
+    const part = bytes as Uint8Array<ArrayBuffer>;
+    return {
+      manifest: { version: 2, size: bytes.length, chunkSize: CHUNK_SIZE, count: 1 },
+      chunks: [{ bytes: part, checksum: await chunkChecksum(part) }],
+    };
+  }
+  const count = Math.ceil(bytes.length / CHUNK_SIZE);
+  const chunks = Array.from<ChunkRecord>({ length: count });
+  let next = 0;
+  const workers = Math.min(PREPARE_CONCURRENCY, count);
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (next < count) {
+        signal?.throwIfAborted();
+        const index = next++;
+        const offset = index * CHUNK_SIZE;
+        const part = bytes.slice(offset, offset + CHUNK_SIZE);
+        chunks[index] = { bytes: part, checksum: await chunkChecksum(part) };
+      }
+    }),
+  );
+  signal?.throwIfAborted();
   return {
-    manifest: { version: 2, size: bytes.length, chunkSize: CHUNK_SIZE, count: chunks.length },
+    manifest: { version: 2, size: bytes.length, chunkSize: CHUNK_SIZE, count },
     chunks,
   };
+}
+export function preparePayload(bytes: Uint8Array, signal?: AbortSignal): Promise<PreparedPayload> {
+  return prepareOwnedPayload(bytes, signal, false);
 }
 export function validateRange(range: IndexedDBRange): void {
   if (
@@ -99,7 +139,7 @@ export function deletePayload(store: IDBObjectStore, key: string): void {
   store.delete(key);
   store.delete(IDBKeyRange.bound([key, 0], [key, Number.MAX_SAFE_INTEGER]));
 }
-function putPayload(store: IDBObjectStore, key: string, payload: PreparedPayload): void {
+export function putPayload(store: IDBObjectStore, key: string, payload: PreparedPayload): void {
   for (const [index, chunk] of payload.chunks.entries()) store.put(chunk, [key, index]);
   store.put(payload.manifest, key);
 }
@@ -165,9 +205,54 @@ function compareChunk(
 
 export async function preparePayloads(
   data: ReadonlyMap<string, Uint8Array>,
+  owned = false,
 ): Promise<Map<string, PreparedPayload>> {
   const prepared = new Map<string, PreparedPayload>();
-  for (const [key, bytes] of data) prepared.set(key, await preparePayload(bytes));
+  if (!data.size) return prepared;
+  const tasks: {
+    chunks: ChunkRecord[];
+    index: number;
+    bytes: Uint8Array;
+    offset: number;
+    direct: boolean;
+  }[] = [];
+  for (const [key, bytes] of data) {
+    if (!bytes.length) {
+      prepared.set(key, {
+        manifest: { version: 2, size: 0, chunkSize: CHUNK_SIZE, count: 0 },
+        chunks: [],
+      });
+      continue;
+    }
+    const count = Math.ceil(bytes.length / CHUNK_SIZE);
+    const chunks = Array.from<ChunkRecord>({ length: count });
+    prepared.set(key, {
+      manifest: { version: 2, size: bytes.length, chunkSize: CHUNK_SIZE, count },
+      chunks,
+    });
+    const direct =
+      owned &&
+      count === 1 &&
+      bytes.byteOffset === 0 &&
+      bytes.byteLength === bytes.buffer.byteLength &&
+      bytes.buffer instanceof ArrayBuffer;
+    for (let index = 0; index < count; index++)
+      tasks.push({ chunks, index, bytes, offset: index * CHUNK_SIZE, direct });
+  }
+  if (!tasks.length) return prepared;
+  let next = 0;
+  const workers = Math.min(PREPARE_CONCURRENCY, tasks.length);
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (next < tasks.length) {
+        const task = tasks[next++]!;
+        const part = task.direct
+          ? (task.bytes as Uint8Array<ArrayBuffer>)
+          : task.bytes.slice(task.offset, task.offset + CHUNK_SIZE);
+        task.chunks[task.index] = { bytes: part, checksum: await chunkChecksum(part) };
+      }
+    }),
+  );
   return prepared;
 }
 export function copyLegacyChunks(

@@ -72,18 +72,52 @@ export interface PersistenceBatch {
   retainedData?: string[];
 }
 
+function clonePersistedNode(node: PersistedNode): PersistedNode {
+  if (!node || typeof node !== "object") return structuredClone(node);
+  const identity =
+    node.identity && typeof node.identity === "object" ? { ...node.identity } : node.identity;
+  if (node.kind === "dir") {
+    if (node.children !== undefined && !Array.isArray(node.children)) return structuredClone(node);
+    return {
+      ...node,
+      ...(node.identity !== undefined ? { identity } : {}),
+      ...(node.children
+        ? {
+            children: node.children.map((entry): [string, number] =>
+              Array.isArray(entry) && entry.length === 2
+                ? [entry[0], entry[1]]
+                : structuredClone(entry),
+            ),
+          }
+        : {}),
+    };
+  }
+  return {
+    ...node,
+    ...(node.identity !== undefined ? { identity } : {}),
+  };
+}
+
 /** Snapshot before enqueueing so caller mutation cannot change pending persistence. */
 export function snapshotBatch(batch: PersistenceBatch): PersistenceBatch {
+  const data = new Map<string, Uint8Array>();
+  for (const [key, bytes] of batch.data) data.set(key, new Uint8Array(bytes));
   return {
-    ...structuredClone({
-      generation: batch.generation,
-      root: batch.root,
-      upserts: batch.upserts,
-      removes: batch.removes,
-      retainedData: batch.retainedData,
-    }),
+    generation: batch.generation,
+    root: batch.root,
+    upserts: Array.isArray(batch.upserts)
+      ? batch.upserts.map(clonePersistedNode)
+      : structuredClone(batch.upserts),
+    removes: Array.isArray(batch.removes) ? batch.removes.slice() : structuredClone(batch.removes),
+    ...(batch.retainedData !== undefined
+      ? {
+          retainedData: Array.isArray(batch.retainedData)
+            ? batch.retainedData.slice()
+            : structuredClone(batch.retainedData),
+        }
+      : {}),
     ...(batch.publication ? { publication: snapshotPublicationCheckpoint(batch.publication) } : {}),
-    data: new Map(Array.from(batch.data, ([key, bytes]) => [key, new Uint8Array(bytes)])),
+    data,
   };
 }
 
@@ -349,6 +383,10 @@ export class PayloadRetentionPressure extends Error {}
 export class PayloadMetadataPressure extends Error {}
 export class PayloadCorruption extends Error {}
 
+export interface RecoveryRootLookup {
+  has(key: string): boolean;
+}
+
 /** Runtime references, never recovery metadata. Released reader-only keys stay charged until deletion. */
 export class PayloadRetentions {
   private readonly entries = new Map<
@@ -362,7 +400,7 @@ export class PayloadRetentions {
   >();
   private metadata = 0;
   private metadataPeak = 0;
-  private roots: ReadonlySet<string> = new Set();
+  private roots: RecoveryRootLookup = new Set();
   private bytes = 0;
   private peak = 0;
   size(key: string): number | undefined {
@@ -412,7 +450,7 @@ export class PayloadRetentions {
     this.metadataPeak = Math.max(this.metadataPeak, this.metadata);
     return entry;
   }
-  recovery(roots: ReadonlySet<string>): void {
+  recovery(roots: RecoveryRootLookup): void {
     this.roots = roots;
     for (const [key, entry] of this.entries) {
       if (!entry.refs && roots.has(key)) this.deleted(key);
