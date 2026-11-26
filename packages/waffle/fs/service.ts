@@ -1193,7 +1193,16 @@ export class FilesystemService {
       const result = this.backend.fs.resolveSocket(a, b, c === true);
       return this.finishResult(session, id, operation, result, args);
     }
-    const result = this.backend.execute(operation, args, data);
+    const isCancelled = () => {
+      const pending = session.pending.get(id);
+      return (
+        !pending ||
+        sessionRevoked(session) ||
+        !this.sessions.has(session) ||
+        requestCancelled(pending)
+      );
+    };
+    const result = this.backend.execute(operation, args, data, isCancelled);
     if (result instanceof Promise)
       return this.trackRequestWork(session, result).then((value) =>
         this.finishResult(session, id, operation, value, args),

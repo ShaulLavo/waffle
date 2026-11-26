@@ -862,7 +862,12 @@ export class MultiTabBackend implements FilesystemBackend {
     return this.persistent.prepare(operation, translated);
   }
 
-  execute(operation: string, args: any[], data: Uint8Array): unknown | Promise<unknown> {
+  execute(
+    operation: string,
+    args: any[],
+    data: Uint8Array,
+    cancelled?: () => boolean,
+  ): unknown | Promise<unknown> {
     if (UNSUPPORTED_ATTACH_OPS.has(operation)) {
       throw new FilesystemError(58, `${operation} is not supported in whenBusy: "attach"`);
     }
@@ -874,15 +879,15 @@ export class MultiTabBackend implements FilesystemBackend {
       this.assertLocalExecuteAdmissible();
     }
     if (operation === "flush" || operation === "sync") {
-      return this.barrier.runBarrier(() => this.runLocalExecute(operation, args, data));
+      return this.barrier.runBarrier(() => this.runLocalExecute(operation, args, data, cancelled));
     }
     if (MUTATION_OPS.has(operation)) {
-      return this.barrier.runMutation(() => this.runLocalExecute(operation, args, data));
+      return this.barrier.runMutation(() => this.runLocalExecute(operation, args, data, cancelled));
     }
     if (awaitingFenceLoss) {
-      return this.runLocalExecute(operation, args, data);
+      return this.runLocalExecute(operation, args, data, cancelled);
     }
-    return this.dispatchLocalRead(operation, args, data);
+    return this.dispatchLocalRead(operation, args, data, cancelled);
   }
 
   private assertLocalExecuteAdmissible(): void {
@@ -913,6 +918,7 @@ export class MultiTabBackend implements FilesystemBackend {
     operation: string,
     args: any[],
     data: Uint8Array,
+    cancelled?: () => boolean,
   ): unknown | Promise<unknown> {
     // Validate & strip directory cookies at the receiving boundary BEFORE dispatch!
     let effectiveArgs = args;
@@ -927,7 +933,7 @@ export class MultiTabBackend implements FilesystemBackend {
     }
 
     if (this.role === "host") {
-      return this.executeLocalOnHost(operation, effectiveArgs, data, responseCookieTag);
+      return this.executeLocalOnHost(operation, effectiveArgs, data, responseCookieTag, cancelled);
     }
     return this.executeOnPeer(operation, effectiveArgs, data, responseCookieTag);
   }
@@ -936,14 +942,17 @@ export class MultiTabBackend implements FilesystemBackend {
     operation: string,
     args: any[],
     data: Uint8Array,
+    cancelled?: () => boolean,
   ): Promise<unknown> {
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
     if (this.fenceLossInFlight && !this.disposing && !this.externalOwnershipLostNotified) {
-      await this.awaitPendingFenceLoss();
+      await this.awaitPendingFenceLoss(cancelled);
     }
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
     if (this.terminalFailure)
       throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
     this.assertLocalExecuteAdmissible();
-    return this.dispatchLocalRead(operation, args, data);
+    return this.dispatchLocalRead(operation, args, data, cancelled);
   }
 
   private async awaitPendingFenceLoss(cancelled?: () => boolean): Promise<void> {
@@ -5357,7 +5366,9 @@ export class MultiTabBackend implements FilesystemBackend {
     args: any[],
     data: Uint8Array,
     responseCookieTag?: bigint,
+    cancelled?: () => boolean,
   ): Promise<unknown> {
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
     const admittedTerm = this.hostTerm;
 
     // If lease expired before execution: renew first (or fail ECANCELED if disposing!)
@@ -5369,10 +5380,13 @@ export class MultiTabBackend implements FilesystemBackend {
           ok = renewed;
         }),
         this.disposeAbort.signal,
+        cancelled,
       );
+      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
       if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
       if (!ok || !this.isLeaseValid()) {
-        await this.awaitPendingFenceLoss();
+        await this.awaitPendingFenceLoss(cancelled);
+        if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
         if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
         if (this.terminalFailure) {
           throw new FilesystemError(29, describeReason(this.terminalFailure.reason));
@@ -5390,6 +5404,7 @@ export class MultiTabBackend implements FilesystemBackend {
       }
     }
 
+    if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
     this.assertHostReadyForLocal(admittedTerm);
     const persistent = this.persistent!;
     const translated = this.translateArgsToHost(operation, args);
@@ -5401,12 +5416,13 @@ export class MultiTabBackend implements FilesystemBackend {
         const target =
           operation === "sync" ? (translated[0] as number) : (translated[0] as string | undefined);
         await this.hostQueue;
+        if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
         this.assertHostReadyForLocal(admittedTerm);
         await persistent.flush(target);
         return operation === "sync" ? 0 : undefined;
       }
       if (operation === "read") {
-        return await this.executeLocalHostRead(persistent, admittedTerm, translated);
+        return await this.executeLocalHostRead(persistent, admittedTerm, translated, cancelled);
       }
       const result = await this.executeLocalHostGeneral(
         persistent,
@@ -5415,6 +5431,7 @@ export class MultiTabBackend implements FilesystemBackend {
         translated,
         data,
         responseCookieTag,
+        cancelled,
       );
       return this.mapLocalHostHandles(persistent, admittedTerm, operation, result);
     } finally {
@@ -5426,27 +5443,30 @@ export class MultiTabBackend implements FilesystemBackend {
     persistent: PersistentBackend,
     admittedTerm: bigint,
     translated: any[],
+    cancelled?: () => boolean,
   ): Promise<Uint8Array> {
     const [remoteHandle, length, offset] = translated as [number, number, number];
-    for (;;) {
+    const assertValid = () => {
+      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
       this.assertHostReadyForLocal(admittedTerm);
+    };
+    for (;;) {
+      assertValid();
       const startVer = this.readVersion();
       const prep = persistent.prepareDescriptorRead(
         remoteHandle,
         offset,
         length,
-        () => this.hostTerm !== admittedTerm || !this.isLeaseValid(),
+        () => !!cancelled?.() || this.hostTerm !== admittedTerm || !this.isLeaseValid(),
       );
       if (prep) {
-        const accepted = await this.revalidateColdReadBytes(prep, startVer, () =>
-          this.assertHostReadyForLocal(admittedTerm),
-        );
+        const accepted = await this.revalidateColdReadBytes(prep, startVer, assertValid);
         if (accepted !== undefined) return accepted;
         continue;
       }
       let readBytes!: Uint8Array;
       await this.enqueueHostSerial(() => {
-        this.assertHostReadyForLocal(admittedTerm);
+        assertValid();
         readBytes = persistent.execute(
           "read",
           [remoteHandle, length, offset],
@@ -5464,17 +5484,22 @@ export class MultiTabBackend implements FilesystemBackend {
     translated: any[],
     data: Uint8Array,
     responseCookieTag?: bigint,
+    cancelled?: () => boolean,
   ): Promise<unknown> {
-    for (;;) {
+    const assertValid = () => {
+      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
       this.assertHostReadyForLocal(admittedTerm);
+    };
+    for (;;) {
+      assertValid();
       const preparing = persistent.prepare(operation, translated);
       if (preparing) await preparing;
-      this.assertHostReadyForLocal(admittedTerm);
+      assertValid();
 
       let result: unknown;
       let dirtyRetryChange: number | undefined;
       await this.enqueueHostSerial(() => {
-        this.assertHostReadyForLocal(admittedTerm);
+        assertValid();
         const step = this.executePersistentOrDirtyRetry(
           persistent,
           operation,
@@ -5491,7 +5516,7 @@ export class MultiTabBackend implements FilesystemBackend {
       if (dirtyRetryChange !== undefined) {
         await persistent.waitForDirtyCapacity(
           dirtyRetryChange,
-          () => this.hostTerm !== admittedTerm || !this.isLeaseValid(),
+          () => !!cancelled?.() || this.hostTerm !== admittedTerm || !this.isLeaseValid(),
         );
         continue;
       }
