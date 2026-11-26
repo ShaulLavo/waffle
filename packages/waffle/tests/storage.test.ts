@@ -118,6 +118,45 @@ describe("durable metadata", () => {
     expect(Array.from(copy.data.get("k1")!)).toEqual([1, 2, 3]);
   });
 
+  test("snapshotBatch rejects non-cloneable own serializers and isolates nested extra properties", () => {
+    const serializerNode = {
+      ino: 1,
+      kind: "dir" as const,
+      ...storedTimes(1),
+      size: 0,
+      children: [] as [string, number][],
+      toJSON: () => ({ ino: 1, kind: "dir", ...storedTimes(1), size: 0 }),
+    };
+    expect(() =>
+      snapshotBatch({
+        generation: 1,
+        root: 1,
+        upserts: [serializerNode],
+        removes: [],
+        data: new Map(),
+      }),
+    ).toThrow(/DataCloneError|could not be cloned|clone/i);
+
+    const nested = { tag: "before" };
+    const extraNode = {
+      ino: 1,
+      kind: "dir" as const,
+      ...storedTimes(1),
+      size: 0,
+      children: [] as [string, number][],
+      extra: nested,
+    };
+    const copy = snapshotBatch({
+      generation: 1,
+      root: 1,
+      upserts: [extraNode as PersistenceBatch["upserts"][number]],
+      removes: [],
+      data: new Map(),
+    });
+    nested.tag = "after";
+    expect((copy.upserts[0] as unknown as { extra: { tag: string } }).extra.tag).toBe("before");
+  });
+
   test("PayloadRetentions.recovery accepts any lookup object without copying root sets", () => {
     const retentions = new PayloadRetentions();
     const handle = retentions.retain("k1", 10);

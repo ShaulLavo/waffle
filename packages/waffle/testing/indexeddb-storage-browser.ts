@@ -1789,6 +1789,72 @@ function indexedDBCases(
     });
   });
 
+  test("persist rejects own serializer nodes without corrupting reopen and isolates nested extra fields", async (name, open) => {
+    const storage = await open();
+    const bad = batch(1);
+    Object.assign(bad.upserts[0]!, {
+      toJSON() {
+        return { ino: 1, kind: "dir", atime: "0", mtime: "0", ctime: "0", size: 0 };
+      },
+    });
+    let rejected = false;
+    try {
+      await storage.persist(bad);
+    } catch (error) {
+      rejected = /DataCloneError|clone/i.test(String(error));
+    }
+    assert(rejected, "own serializer node must reject with clone error");
+    await storage.close();
+    const clean = await open();
+    assert((await clean.load()) === undefined, "reopen after rejected serializer stays empty");
+
+    const nested = { tag: "before" };
+    const extraBatch = batch(1);
+    Object.assign(extraBatch.upserts[0]!, { extra: nested });
+    const saving = clean.persist(extraBatch);
+    nested.tag = "after";
+    await saving;
+    await raw(name, async (db) => {
+      const snap = (await request(db.transaction("metadata").objectStore("metadata").get(0))) as {
+        json: string;
+      };
+      assert(snap.json.includes('"before"'), "persisted snapshot kept pre-mutation nested field");
+      assert(!snap.json.includes('"after"'), "post-submission nested mutation must not leak");
+    });
+    await clean.close();
+    const reloaded = await open();
+    assert((await reloaded.load())?.generation === 1, "reopen succeeds cleanly");
+  });
+
+  test("recovery root lookup matches full retention across commit, abort, retry, compaction and journal reopen", async (_name, open) => {
+    const storage = await open();
+    await storage.persist(batch(1));
+    const pin1 = storage.retainPayload("file:1", 2);
+    const originalPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
+      if (this.name === "journal") throw new DOMException("injected abort", "AbortError");
+      return originalPut.call(this, value, key);
+    };
+    try {
+      await rejects(storage.persist(batch(2)), "abort");
+    } finally {
+      IDBObjectStore.prototype.put = originalPut;
+    }
+    storage.checkPayload("file:1", 2);
+    await storage.persist(batch(2));
+    await storage.persist({ ...batch(3), retainedData: ["file:1"] });
+    pin1.release();
+    storage.checkPayload("file:1", 2);
+    await storage.persist(batch(4));
+    await storage.close();
+    const reopened = await open();
+    assert((await reopened.load())?.generation === 4, "reopen recovers generation 4");
+    assert(
+      new TextDecoder().decode(await reopened.read("file:4")) === "v4",
+      "latest payload readable",
+    );
+  });
+
   return cases;
 }
 

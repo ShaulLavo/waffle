@@ -2100,7 +2100,12 @@ export class IndexedDBStorage implements StorageBackend {
   private async commit(batch: PersistenceBatch, committed?: CommittedTransaction): Promise<void> {
     if (this.committedMode !== !!committed)
       throw new Error("Committed storage requires a complete durable group");
-    const prepared = await preparePayloads(batch.data, true);
+    const checkActive = () => {
+      committed?.control.checkAbort();
+      this.assertOwner();
+    };
+    const prepared = await preparePayloads(batch.data, true, checkActive);
+    checkActive();
     const staged = stageChanges(this.state, batch),
       old = this.state;
     // A recovered generation may be reused. Its abandoned successors must not reconnect

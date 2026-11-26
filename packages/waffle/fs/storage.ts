@@ -72,30 +72,114 @@ export interface PersistenceBatch {
   retainedData?: string[];
 }
 
-function clonePersistedNode(node: PersistedNode): PersistedNode {
-  if (!node || typeof node !== "object") return structuredClone(node);
-  const identity =
-    node.identity && typeof node.identity === "object" ? { ...node.identity } : node.identity;
-  if (node.kind === "dir") {
-    if (node.children !== undefined && !Array.isArray(node.children)) return structuredClone(node);
-    return {
-      ...node,
-      ...(node.identity !== undefined ? { identity } : {}),
-      ...(node.children
-        ? {
-            children: node.children.map((entry): [string, number] =>
-              Array.isArray(entry) && entry.length === 2
-                ? [entry[0], entry[1]]
-                : structuredClone(entry),
-            ),
-          }
-        : {}),
-    };
-  }
+const NODE_KEYS = new Set([
+  "ino",
+  "kind",
+  "atime",
+  "mtime",
+  "ctime",
+  "mode",
+  "size",
+  "children",
+  "data",
+  "target",
+  "identity",
+]);
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object") return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function cloneStoredIdentity(value: unknown): StoredIdentity | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 4 ||
+    typeof value.format !== "string" ||
+    typeof value.workspace !== "string" ||
+    typeof value.id !== "string" ||
+    typeof value.version !== "string"
+  )
+    return undefined;
   return {
-    ...node,
-    ...(node.identity !== undefined ? { identity } : {}),
+    format: value.format as StoredIdentity["format"],
+    workspace: value.workspace,
+    id: value.id,
+    version: value.version,
   };
+}
+
+function clonePersistedNode(node: PersistedNode): PersistedNode {
+  if (!isPlainObject(node)) return structuredClone(node);
+  const keys = Object.keys(node);
+  for (let i = 0; i < keys.length; i++) {
+    if (!NODE_KEYS.has(keys[i]!)) return structuredClone(node);
+  }
+  if (
+    typeof node.ino !== "number" ||
+    typeof node.kind !== "string" ||
+    typeof node.atime !== "string" ||
+    typeof node.mtime !== "string" ||
+    typeof node.ctime !== "string" ||
+    typeof node.size !== "number" ||
+    (node.mode !== undefined && typeof node.mode !== "number") ||
+    (node.data !== undefined && typeof node.data !== "string") ||
+    (node.target !== undefined && typeof node.target !== "string")
+  )
+    return structuredClone(node);
+  let identity: StoredIdentity | undefined;
+  if (node.identity !== undefined) {
+    identity = cloneStoredIdentity(node.identity);
+    if (!identity) return structuredClone(node);
+  }
+  let children: [string, number][] | undefined;
+  if (node.children !== undefined) {
+    if (!Array.isArray(node.children)) return structuredClone(node);
+    children = Array.from<[string, number]>({ length: node.children.length });
+    for (let i = 0; i < node.children.length; i++) {
+      const entry = node.children[i];
+      if (
+        !Array.isArray(entry) ||
+        entry.length !== 2 ||
+        typeof entry[0] !== "string" ||
+        typeof entry[1] !== "number"
+      )
+        return structuredClone(node);
+      children[i] = [entry[0], entry[1]];
+    }
+  }
+  const copy: Record<string, unknown> = {
+    ino: node.ino,
+    kind: node.kind,
+    atime: node.atime,
+    mtime: node.mtime,
+    ctime: node.ctime,
+    size: node.size,
+  };
+  if ("mode" in node) copy.mode = node.mode;
+  if ("data" in node) copy.data = node.data;
+  if ("target" in node) copy.target = node.target;
+  if ("children" in node) copy.children = children;
+  if ("identity" in node) copy.identity = identity;
+  return copy as unknown as PersistedNode;
+}
+
+function cloneNumberArray(values: number[]): number[] {
+  if (!Array.isArray(values)) return structuredClone(values);
+  for (let i = 0; i < values.length; i++) {
+    if (typeof values[i] !== "number") return structuredClone(values);
+  }
+  return values.slice();
+}
+
+function cloneStringArray(values: string[]): string[] {
+  if (!Array.isArray(values)) return structuredClone(values);
+  for (let i = 0; i < values.length; i++) {
+    if (typeof values[i] !== "string") return structuredClone(values);
+  }
+  return values.slice();
 }
 
 /** Snapshot before enqueueing so caller mutation cannot change pending persistence. */
@@ -108,13 +192,9 @@ export function snapshotBatch(batch: PersistenceBatch): PersistenceBatch {
     upserts: Array.isArray(batch.upserts)
       ? batch.upserts.map(clonePersistedNode)
       : structuredClone(batch.upserts),
-    removes: Array.isArray(batch.removes) ? batch.removes.slice() : structuredClone(batch.removes),
+    removes: cloneNumberArray(batch.removes),
     ...(batch.retainedData !== undefined
-      ? {
-          retainedData: Array.isArray(batch.retainedData)
-            ? batch.retainedData.slice()
-            : structuredClone(batch.retainedData),
-        }
+      ? { retainedData: cloneStringArray(batch.retainedData) }
       : {}),
     ...(batch.publication ? { publication: snapshotPublicationCheckpoint(batch.publication) } : {}),
     data,

@@ -79,27 +79,12 @@ export async function chunkChecksum(bytes: Uint8Array<ArrayBuffer>): Promise<str
 async function prepareOwnedPayload(
   bytes: Uint8Array,
   signal?: AbortSignal,
-  owned = false,
 ): Promise<PreparedPayload> {
   if (!bytes.length) {
     signal?.throwIfAborted();
     return {
       manifest: { version: 2, size: 0, chunkSize: CHUNK_SIZE, count: 0 },
       chunks: [],
-    };
-  }
-  if (
-    owned &&
-    bytes.length <= CHUNK_SIZE &&
-    bytes.byteOffset === 0 &&
-    bytes.byteLength === bytes.buffer.byteLength &&
-    bytes.buffer instanceof ArrayBuffer
-  ) {
-    signal?.throwIfAborted();
-    const part = bytes as Uint8Array<ArrayBuffer>;
-    return {
-      manifest: { version: 2, size: bytes.length, chunkSize: CHUNK_SIZE, count: 1 },
-      chunks: [{ bytes: part, checksum: await chunkChecksum(part) }],
     };
   }
   const count = Math.ceil(bytes.length / CHUNK_SIZE);
@@ -124,7 +109,7 @@ async function prepareOwnedPayload(
   };
 }
 export function preparePayload(bytes: Uint8Array, signal?: AbortSignal): Promise<PreparedPayload> {
-  return prepareOwnedPayload(bytes, signal, false);
+  return prepareOwnedPayload(bytes, signal);
 }
 export function validateRange(range: IndexedDBRange): void {
   if (
@@ -206,8 +191,10 @@ function compareChunk(
 export async function preparePayloads(
   data: ReadonlyMap<string, Uint8Array>,
   owned = false,
+  checkAbort?: () => void,
 ): Promise<Map<string, PreparedPayload>> {
   const prepared = new Map<string, PreparedPayload>();
+  checkAbort?.();
   if (!data.size) return prepared;
   const tasks: {
     chunks: ChunkRecord[];
@@ -241,18 +228,40 @@ export async function preparePayloads(
   }
   if (!tasks.length) return prepared;
   let next = 0;
+  let failed = false;
+  let failure: unknown;
+  const fail = (error: unknown) => {
+    if (!failed) {
+      failed = true;
+      failure = error;
+    }
+  };
   const workers = Math.min(PREPARE_CONCURRENCY, tasks.length);
-  await Promise.all(
+  await Promise.allSettled(
     Array.from({ length: workers }, async () => {
-      while (next < tasks.length) {
+      while (!failed && next < tasks.length) {
+        try {
+          checkAbort?.();
+        } catch (error) {
+          fail(error);
+          return;
+        }
         const task = tasks[next++]!;
         const part = task.direct
           ? (task.bytes as Uint8Array<ArrayBuffer>)
           : task.bytes.slice(task.offset, task.offset + CHUNK_SIZE);
-        task.chunks[task.index] = { bytes: part, checksum: await chunkChecksum(part) };
+        try {
+          const checksum = await chunkChecksum(part);
+          task.chunks[task.index] = { bytes: part, checksum };
+        } catch (error) {
+          fail(error);
+          return;
+        }
       }
     }),
   );
+  if (failed) throw failure;
+  checkAbort?.();
   return prepared;
 }
 export function copyLegacyChunks(

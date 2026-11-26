@@ -61,9 +61,13 @@ test("preparePayloads runs digests concurrently within a bounded worker pool", a
   const data = new Map<string, Uint8Array>();
   for (let i = 0; i < 64; i++) {
     const size = i === 0 ? CHUNK_SIZE * 2 + 13 : i === 1 ? 0 : 128 + i;
-    data.set(`k:${i}`, new Uint8Array(size).fill(i & 0xff));
+    const bytes = new Uint8Array(size);
+    for (let j = 0; j < size; j++) bytes[j] = (i * 31 + j) & 0xff;
+    data.set(`k:${i}`, bytes);
   }
   const original = crypto.subtle.digest.bind(crypto.subtle);
+  const toHex = (buf: ArrayBuffer) =>
+    Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
   let active = 0;
   let peak = 0;
   crypto.subtle.digest = async (...args) => {
@@ -84,13 +88,113 @@ test("preparePayloads runs digests concurrently within a bounded worker pool", a
     expect(prepared.get("k:0")!.chunks).toHaveLength(3);
     expect(prepared.get("k:1")!.chunks).toHaveLength(0);
     for (const [key, entry] of prepared) {
-      for (const chunk of entry.chunks) {
-        expect(await original("SHA-256", chunk.bytes)).toBeDefined();
-        expect(chunk.checksum).toMatch(/^[a-f0-9]{64}$/);
+      const source = data.get(key)!;
+      expect(entry.manifest.size).toBe(source.length);
+      for (const [index, chunk] of entry.chunks.entries()) {
+        const expected = toHex(
+          await original("SHA-256", source.slice(index * CHUNK_SIZE, (index + 1) * CHUNK_SIZE)),
+        );
+        expect(chunk.checksum).toBe(expected);
       }
-      expect(entry.manifest.size).toBe(data.get(key)!.length);
     }
   } finally {
+    crypto.subtle.digest = original;
+  }
+});
+
+test("preparePayloads stops admitting on failure and drains in-flight digests before rejecting", async () => {
+  const batch1 = new Map<string, Uint8Array>();
+  for (let i = 0; i < 70; i++) batch1.set(`b1:${i}`, new Uint8Array(64).fill(i & 0xff));
+  const batch2 = new Map<string, Uint8Array>();
+  for (let i = 0; i < 40; i++) batch2.set(`b2:${i}`, new Uint8Array(64).fill((i + 100) & 0xff));
+
+  const original = crypto.subtle.digest.bind(crypto.subtle);
+  let active = 0;
+  let peak = 0;
+  let calls = 0;
+  let releaseHeld: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => {
+    releaseHeld = resolve;
+  });
+  let inFlightSettled = 0;
+  crypto.subtle.digest = async (...args) => {
+    const call = ++calls;
+    active++;
+    peak = Math.max(peak, active);
+    try {
+      if (call === 1) {
+        await Promise.resolve();
+        throw new Error("injected digest failure");
+      }
+      if (call <= 32) {
+        await held;
+        inFlightSettled++;
+      }
+      return await original(...args);
+    } finally {
+      active--;
+    }
+  };
+  try {
+    let settled = false;
+    const first = preparePayloads(batch1, true).finally(() => {
+      settled = true;
+    });
+    for (let i = 0; i < 20 && calls < 32; i++) await Promise.resolve();
+    expect(calls).toBe(32);
+    expect(settled).toBe(false);
+    releaseHeld!();
+    await expect(first).rejects.toThrow("injected digest failure");
+    expect(active).toBe(0);
+    expect(inFlightSettled).toBe(31);
+    expect(calls).toBe(32);
+
+    const second = await preparePayloads(batch2, true);
+    expect(second.size).toBe(40);
+    expect(peak).toBeLessThanOrEqual(32);
+    expect(calls).toBe(72);
+  } finally {
+    releaseHeld?.();
+    crypto.subtle.digest = original;
+  }
+});
+
+test("preparePayloads stops admitting on abort check and drains in-flight digests", async () => {
+  const batch = new Map<string, Uint8Array>();
+  for (let i = 0; i < 70; i++) batch.set(`a:${i}`, new Uint8Array(64).fill(i & 0xff));
+  const original = crypto.subtle.digest.bind(crypto.subtle);
+  let calls = 0;
+  let active = 0;
+  let aborted = false;
+  let releaseHeld: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => {
+    releaseHeld = resolve;
+  });
+  crypto.subtle.digest = async (...args) => {
+    const call = ++calls;
+    active++;
+    try {
+      if (call === 32) {
+        aborted = true;
+      }
+      if (call <= 32) await held;
+      return await original(...args);
+    } finally {
+      active--;
+    }
+  };
+  try {
+    const run = preparePayloads(batch, true, () => {
+      if (aborted) throw new Error("aborted before next chunk");
+    });
+    for (let i = 0; i < 20 && calls < 32; i++) await Promise.resolve();
+    expect(calls).toBe(32);
+    releaseHeld!();
+    await expect(run).rejects.toThrow("aborted before next chunk");
+    expect(active).toBe(0);
+    expect(calls).toBe(32);
+  } finally {
+    releaseHeld?.();
     crypto.subtle.digest = original;
   }
 });
