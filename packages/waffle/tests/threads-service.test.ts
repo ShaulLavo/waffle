@@ -306,7 +306,7 @@ test("a completed file read cannot publish after actual filesystem revocation", 
 
 for (const failureMode of ["revoke", "transport"] as const) {
   test(`a threaded write that committed before ${failureMode} advances and unlocks the shared offset`, async () => {
-    const { revokeFilesystem, wake } = await import("../fs/protocol.ts");
+    const { revokeFilesystem, wakeTransport } = await import("../fs/protocol.ts");
     const { closeRequestMemory } = await import("../fs/request-memory.ts");
     const value = await serviceFixture("growth");
     const published = Promise.withResolvers<void>();
@@ -339,7 +339,7 @@ for (const failureMode of ["revoke", "transport"] as const) {
       if (failureMode === "revoke") revokeFilesystem(value.client.connection);
       else {
         closeRequestMemory(value.client.connection.requests, "protocol");
-        wake(value.client.connection);
+        wakeTransport(value.client.connection);
       }
       release.resolve();
       if (failureMode === "revoke") expect(await pending).toEqual({ kind: "error", errno: 11 });
@@ -358,7 +358,7 @@ for (const failureMode of ["revoke", "transport"] as const) {
 test("a threaded write still pending when a transport error and failed retirement hit defers settlement until backend commits", async () => {
   const { MemoryBackend, FilesystemService, FilesystemClient, createFilesystemConnection } =
     await import("../fs/index.ts");
-  const { wake } = await import("../fs/protocol.ts");
+  const { wakeTransport } = await import("../fs/protocol.ts");
   const { closeRequestMemory, retireRequestMemory } = await import("../fs/request-memory.ts");
   const { DescriptorTable } = await import("../core/descriptors.ts");
   const { RIGHTS_ALL } = await import("../core/rights.ts");
@@ -410,7 +410,7 @@ test("a threaded write still pending when a transport error and failed retiremen
     // neither proves the in-flight write aborted, so the offset lease must stay held.
     closeRequestMemory(pair.client.requests, "protocol");
     retireRequestMemory(pair.client.requests, 29);
-    wake(pair.client);
+    wakeTransport(pair.client);
     await expect(pending).rejects.toThrow("invalid control message");
     expect(client.hasDeferredWrites()).toBe(true);
     expect(Atomics.load(new Int32Array(shared), 0)).toBe(pair.client.owner);

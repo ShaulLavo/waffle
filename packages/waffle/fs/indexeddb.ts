@@ -527,6 +527,73 @@ function request<T>(value: IDBRequest<T>): Promise<T> {
   void result.catch(() => {});
   return result;
 }
+/** Every string key in the data store, which in chunked formats names a payload manifest. Keys
+ * order numbers, dates, strings, binary, arrays: the empty binary key is the least binary key, so
+ * values under invalid number, date or binary keys are never loaded. Layout validation still
+ * rejects those keys from the key listing. */
+function manifestKeyRange(): IDBKeyRange {
+  return IDBKeyRange.bound("", new ArrayBuffer(0), false, true);
+}
+/** Pairs a bulk manifest read; each result is read once (see formatAndManifests). */
+function pairManifests(
+  names: readonly IDBValidKey[],
+  records: readonly unknown[],
+): Map<IDBValidKey, unknown> {
+  if (names.length !== records.length)
+    throw new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Invalid payload manifests");
+  const manifests = new Map<IDBValidKey, unknown>();
+  for (const [index, key] of names.entries()) manifests.set(key, records[index]);
+  return manifests;
+}
+interface FormatRecords {
+  readonly format: unknown;
+  /** Manifest records by payload key, read only for chunked formats. */
+  readonly manifests?: ReadonlyMap<IDBValidKey, unknown>;
+}
+/** Reads the format and, for chunked formats, every manifest in the same snapshot. Legacy
+ * formats keep whole payloads at string keys, so those are never read here. */
+function formatAndManifests(
+  metadata: IDBObjectStore,
+  data: IDBObjectStore,
+): Promise<FormatRecords> {
+  return new Promise<FormatRecords>((resolve, reject) => {
+    const format = metadata.get("format");
+    format.onerror = requestFailed(format, reject);
+    format.onsuccess = () => {
+      if (format.result !== INDEXEDDB_FORMAT && format.result !== STAGED_FORMAT) {
+        resolve({ format: format.result });
+        return;
+      }
+      // Placed from the format's success callback, so they read the same snapshot.
+      placeManifestReads(data, format.result, resolve, reject);
+    };
+  });
+}
+function requestFailed(failure: IDBRequest, reject: (error: unknown) => void): () => void {
+  return () => reject(failure.error ?? new Error("IndexedDB request failed"));
+}
+/** Requests complete in order, so the keys are ready when the values arrive. */
+function placeManifestReads(
+  data: IDBObjectStore,
+  format: unknown,
+  resolve: (records: FormatRecords) => void,
+  reject: (error: unknown) => void,
+): void {
+  const range = manifestKeyRange();
+  const keys = data.getAllKeys(range);
+  const values = data.getAll(range);
+  keys.onerror = requestFailed(keys, reject);
+  values.onerror = requestFailed(values, reject);
+  values.onsuccess = () => {
+    // Read each result once: WebKit builds a new array on every `result` access, which made an
+    // indexed loop over 17,000 manifests take 6.5 s.
+    try {
+      resolve({ format, manifests: pairManifests(keys.result, values.result) });
+    } catch (error) {
+      reject(error);
+    }
+  };
+}
 function completed(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
@@ -545,6 +612,42 @@ function recoveryManifest(value: unknown, key: string): ChunkManifest | undefine
   } catch {
     return undefined;
   }
+}
+/** Manifests whose chunk keys are exactly 0 to count - 1. `records` holds every manifest record
+ * read in the same snapshot as `keys`. */
+function validateChunks(
+  keys: readonly IDBValidKey[],
+  records: ReadonlyMap<IDBValidKey, unknown>,
+): Map<string, ChunkManifest> {
+  const manifests = new Map<string, ChunkManifest>();
+  const chunks = new Map<string, Set<number>>();
+  for (const key of keys) {
+    if (typeof key === "string") {
+      const manifest = recoveryManifest(records.get(key), key);
+      if (manifest) manifests.set(key, manifest);
+      continue;
+    }
+    if (
+      !Array.isArray(key) ||
+      key.length !== 2 ||
+      typeof key[0] !== "string" ||
+      !validInteger(key[1])
+    )
+      chunkError(String(key));
+    const indices = chunks.get(key[0]) ?? new Set<number>();
+    indices.add(key[1]);
+    chunks.set(key[0], indices);
+  }
+  for (const [key, manifest] of manifests) {
+    const indices = chunks.get(key);
+    if ((indices?.size ?? 0) !== manifest.count) {
+      manifests.delete(key);
+      continue;
+    }
+    if (indices && Array.from(indices).some((index) => index >= manifest.count))
+      manifests.delete(key);
+  }
+  return manifests;
 }
 function referenceIndex(nodes: Iterable<PersistedNode>): Pick<State, "references" | "parents"> {
   const references = new Map<number, number>(),
@@ -1522,7 +1625,8 @@ export class IndexedDBStorage implements StorageBackend {
     void settled.catch(() => {});
     signal?.addEventListener("abort", abort, { once: true });
     const metadata = tx.objectStore("metadata"),
-      journal = tx.objectStore("journal");
+      journal = tx.objectStore("journal"),
+      data = tx.objectStore("data");
     try {
       const records = await Promise.all([
         request(metadata.get(0)),
@@ -1530,8 +1634,8 @@ export class IndexedDBStorage implements StorageBackend {
         request(metadata.getAllKeys()),
         request(journal.getAll()),
         request(journal.getAllKeys()),
-        request(tx.objectStore("data").getAllKeys()),
-        request(metadata.get("format")),
+        request(data.getAllKeys()),
+        formatAndManifests(metadata, data),
         request(metadata.get("commit")),
         request(metadata.get("active")),
         settled,
@@ -1558,7 +1662,7 @@ export class IndexedDBStorage implements StorageBackend {
       journalValues,
       journalKeys,
       dataKeys,
-      format,
+      { format, manifests },
       storedCommit,
       active,
     ] = await this.indexRecords(signal);
@@ -1574,10 +1678,7 @@ export class IndexedDBStorage implements StorageBackend {
       if (typeof key === "string") payloadKeys.add(key);
       else if (Array.isArray(key) && typeof key[0] === "string") payloadKeys.add(key[0]);
     }
-    const physical =
-      format === INDEXEDDB_FORMAT || format === STAGED_FORMAT
-        ? await this.validateChunks(dataKeys, signal)
-        : undefined;
+    const physical = manifests && validateChunks(dataKeys, manifests);
     const available = physical ? new Set(physical.keys()) : payloadKeys;
     const decoded = await Promise.all([decodeIndex(first), decodeIndex(second)]);
     signal?.throwIfAborted();
@@ -1710,42 +1811,6 @@ export class IndexedDBStorage implements StorageBackend {
       !manifests ||
       nodes.every((node) => node.data === undefined || manifests.get(node.data)?.size === node.size)
     );
-  }
-
-  private async validateChunks(
-    keys: IDBValidKey[],
-    signal?: AbortSignal,
-  ): Promise<Map<string, ChunkManifest>> {
-    const manifests = new Map<string, ChunkManifest>();
-    const chunks = new Map<string, Set<number>>();
-    for (const key of keys) {
-      signal?.throwIfAborted();
-      if (typeof key === "string") {
-        const manifest = recoveryManifest(await this.readRecord(key, signal), key);
-        if (manifest) manifests.set(key, manifest);
-        continue;
-      }
-      if (
-        !Array.isArray(key) ||
-        key.length !== 2 ||
-        typeof key[0] !== "string" ||
-        !validInteger(key[1])
-      )
-        chunkError(String(key));
-      const indices = chunks.get(key[0]) ?? new Set<number>();
-      indices.add(key[1]);
-      chunks.set(key[0], indices);
-    }
-    for (const [key, manifest] of manifests) {
-      const indices = chunks.get(key);
-      if ((indices?.size ?? 0) !== manifest.count) {
-        manifests.delete(key);
-        continue;
-      }
-      if (indices && Array.from(indices).some((index) => index >= manifest.count))
-        manifests.delete(key);
-    }
-    return manifests;
   }
 
   private async fencedWrite(

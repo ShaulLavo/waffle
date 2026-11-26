@@ -49,6 +49,7 @@ import {
   CAPABILITY_WORDS,
   PAGE,
   TRANSIENT_HANDLES,
+  SIGNAL_TRANSPORT,
   State,
   FilesystemError,
   errno,
@@ -59,6 +60,7 @@ import {
   waitForFilesystemQuiescence,
   unpack,
   wake,
+  wakeTransport,
   sameFilesystemIdentity,
   reserveIdentityCapability,
   releaseFilesystemReservation,
@@ -400,18 +402,21 @@ export class FilesystemService {
     reason: "messageerror" | "protocol" = "messageerror",
   ): void {
     closeRequestMemory(session.requests, reason);
-    wake(session.connection);
+    wakeTransport(session.connection);
   }
   private async watchTransport(session: Session): Promise<void> {
     const signal = new Int32Array(session.connection.signal);
+    // Revocation, reap and transport failure all wake SIGNAL_TRANSPORT. A publication domain's
+    // stop wakes nothing itself, so a publishing session keeps watching every change.
+    const word = session.connection.publication ? 0 : SIGNAL_TRANSPORT;
     while (!session.closed) {
-      const observed = Atomics.load(signal, 0);
+      const observed = Atomics.load(signal, word);
       if (sessionRevoked(session)) {
         if (requestTransportError(session.requests)) session.transportFailed = true;
         this.close(session);
         return;
       }
-      const waiting = atomicsWaitAsync(signal, 0, observed);
+      const waiting = atomicsWaitAsync(signal, word, observed);
       if (waiting.async) await waiting.value;
     }
   }
@@ -465,7 +470,7 @@ export class FilesystemService {
       .map((entry) => entry[0]);
     if (!pending.length) {
       retireRequestMemory(session.requests);
-      wake(session.connection);
+      wakeTransport(session.connection);
       return;
     }
     session.transportRetirement = Promise.allSettled(pending).then(() => {
@@ -961,6 +966,7 @@ export class FilesystemService {
         "readdir",
         "readdirPage",
         "resolve",
+        "realpath",
       ].includes(operation)
     )
       this.check(session, a, held);
@@ -2242,7 +2248,7 @@ export class FilesystemService {
     const failure = requestTransportError(session.requests);
     if (failure?.reason !== "stale" && !requestMemoryRetired(session.requests))
       retireRequestMemory(session.requests);
-    wake(session.connection);
+    wakeTransport(session.connection);
   }
   private async drainShutdown(owner: ShutdownOwner, fences: Promise<void>[]): Promise<void> {
     const failures: unknown[] = [];

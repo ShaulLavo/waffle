@@ -92,9 +92,14 @@ export function nodeSize(node: Node): number {
 }
 interface MemoryPath extends ResolvedPath {
   readonly canonicalPath: string;
+  readonly base: PathBase;
 }
+/** What a walk's `canonicalPath` is relative to: the start directory, the rooted walk's root
+ * (after an absolute link target), or neither (a rooted `..` climbed above the start). */
+type PathBase = "start" | "root" | "lost";
 interface TreePath {
   canonicalPath: string;
+  base: PathBase;
   parent: DirNode | undefined;
   node: Node | undefined;
   name: string;
@@ -160,6 +165,14 @@ function expandTreeLink(
     }
   );
 }
+/** A rooted `..` above the start leaves names that no longer start anywhere known. */
+function climbedBase(base: PathBase, aboveStart: boolean): PathBase {
+  return aboveStart && base === "start" ? "lost" : base;
+}
+/** An absolute link target restarts the names at the rooted walk's root. */
+function restartedBase(base: PathBase, options: TreeWalk): PathBase {
+  return options.rooted ? "root" : base;
+}
 /** Expand links against actual parent edges, never a lexically normalized pathname. */
 export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePath | number {
   const error = treePathError(path, options.pathUnits, options.pathBytes);
@@ -168,6 +181,7 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
   const names: string[] = [];
   let node: Node = root;
   let parent: DirNode | undefined;
+  let base: PathBase = "start";
   let name = "",
     terminalDot = false,
     expansions = 0,
@@ -186,8 +200,10 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
     terminalDot = part === "." || part === "..";
     if (part === ".") continue;
     if (part === "..") {
-      const up: DirNode | number = dirs.pop() ?? climbAbove(node, root, options);
+      const popped = dirs.pop();
+      const up: DirNode | number = popped ?? climbAbove(node, root, options);
       if (typeof up === "number") return up;
+      base = climbedBase(base, popped === undefined && up !== node);
       node = up;
       names.pop();
       parent = undefined;
@@ -203,6 +219,7 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
     if (!child)
       return {
         canonicalPath: "/" + names.concat(part).join("/"),
+        base,
         parent,
         name,
         node: undefined,
@@ -214,6 +231,7 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
     if (link?.absolute) {
       dirs.length = 0;
       names.length = 0;
+      base = restartedBase(base, options);
     }
     if (link) {
       expansions++;
@@ -230,7 +248,25 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
   }
   const trailingSlash = path.endsWith("/");
   if (trailingSlash && node.kind !== "dir") return 54;
-  return { parent, name, node, trailingSlash, terminalDot, canonicalPath: "/" + names.join("/") };
+  return {
+    parent,
+    name,
+    node,
+    trailingSlash,
+    terminalDot,
+    canonicalPath: "/" + names.join("/"),
+    base,
+  };
+}
+
+/** `below` ("/" or "/a/b") appended to the absolute directory path `prefix`, or its errno. */
+function joinBelow(prefix: string | number, below: string): string | number {
+  if (typeof prefix === "number" || below === "/") return prefix;
+  return (prefix === "/" ? "" : prefix) + below;
+}
+function childName(parent: DirNode, child: Node): string | undefined {
+  for (const [name, entry] of parent.children) if (entry === child) return name;
+  return undefined;
 }
 
 export interface NamespaceEdge {
@@ -509,7 +545,34 @@ export class MemFS implements FileSystem {
     pathBytes?: number,
     rooted = false,
   ): MemoryPath | number {
-    const resolved = walkTree(this.directory(directory), path, {
+    const resolved = this.walkNodes(
+      this.directory(directory),
+      path,
+      clampRoot,
+      followFinal,
+      pathBytes,
+      rooted,
+    );
+    if (typeof resolved === "number") return resolved;
+    return {
+      canonicalPath: resolved.canonicalPath,
+      base: resolved.base,
+      name: resolved.name,
+      trailingSlash: resolved.trailingSlash,
+      terminalDot: resolved.terminalDot,
+      parent: resolved.parent ? this.handle(resolved.parent) : undefined,
+      node: resolved.node ? this.handle(resolved.node) : undefined,
+    };
+  }
+  private walkNodes(
+    start: DirNode,
+    path: string,
+    clampRoot: boolean,
+    followFinal: boolean,
+    pathBytes?: number,
+    rooted = false,
+  ): TreePath | number {
+    return walkTree(start, path, {
       clampRoot,
       followFinal,
       pathBytes,
@@ -520,15 +583,37 @@ export class MemFS implements FileSystem {
         return child;
       },
     });
+  }
+  /** realpath(3) from `directory`: what `path` names with every link followed, in one lookup.
+   * A rooted lookup answers with an absolute path from the root. Any other lookup cannot leave
+   * `directory`, and answers relative to it ("." for the directory itself). Errors are the
+   * lookup's positive WASI errno: ENOENT for a missing component, ENOTDIR, ELOOP, EACCES. */
+  realpath(directory: FileHandle, path: string, rooted = false): string | number {
+    if (path.startsWith("/")) return 63;
+    const start = this.directory(directory);
+    const resolved = this.walkNodes(start, path, false, true, undefined, rooted);
     if (typeof resolved === "number") return resolved;
-    return {
-      canonicalPath: resolved.canonicalPath,
-      name: resolved.name,
-      trailingSlash: resolved.trailingSlash,
-      terminalDot: resolved.terminalDot,
-      parent: resolved.parent ? this.handle(resolved.parent) : undefined,
-      node: resolved.node ? this.handle(resolved.node) : undefined,
-    };
+    if (resolved.node === undefined) return 44;
+    if (!rooted) return resolved.canonicalPath.slice(1) || ".";
+    if (resolved.base === "root" || (resolved.base === "start" && start === this.root))
+      return resolved.canonicalPath;
+    if (resolved.base === "start") return joinBelow(this.pathOf(start), resolved.canonicalPath);
+    // A `..` above the start left the walk's names behind: name the result by its ancestry.
+    if (resolved.node.kind === "dir") return this.pathOf(resolved.node);
+    return joinBelow(this.pathOf(resolved.parent!), "/" + resolved.name);
+  }
+  /** The absolute path of a live directory, by its parent edges up to the root. */
+  private pathOf(dir: DirNode): string | number {
+    const names: string[] = [];
+    for (let at = dir; at !== this.root;) {
+      const parent = this.liveParent(at);
+      if (typeof parent === "number") return parent === 63 ? 44 : parent;
+      const name = childName(parent, at);
+      if (name === undefined) return 44;
+      names.push(name);
+      at = parent;
+    }
+    return "/" + names.reverse().join("/");
   }
   symlink(path: ResolvedPath, target: string): number {
     const prepared = this.planSymlink(path, target, 4);

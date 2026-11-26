@@ -20,7 +20,7 @@ self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection }>) 
       (1n << 29n) - 1n,
       0n,
     );
-    const wake = new Int32Array(data.connection.signal);
+    const wake = new Int32Array(data.connection.signal, 0, 1);
     let blocked = false;
     const abi = fileOnlyABI({
       memory,
