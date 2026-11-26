@@ -125,3 +125,33 @@ test("a retired park whose word moved stops waiting until the guest parks again"
     await relay.close();
   }
 });
+
+test("disposal between a guest's first checks and its post-park recheck reports closed", async () => {
+  const service = new FilesystemService(new MemoryBackend());
+  const pair = createFilesystemConnection();
+  service.connect(pair.server);
+  const bridge = createNotificationBridge(relayUrl);
+  const worker = new Worker(
+    new URL("./fixtures/notification-revoke-window-worker.ts", import.meta.url).href,
+    { type: "module" },
+  );
+  try {
+    const state = bridge.connection.state;
+    const reported = new Promise<unknown>((resolve) => {
+      worker.onmessage = ({ data }) => resolve(data);
+    });
+    worker.postMessage({ filesystem: pair.client, notifications: bridge.connection }, [
+      pair.client.port,
+      bridge.connection.port,
+    ]);
+    // The guest notifies index 2 once its park is active; dispose while its send is held.
+    for (let attempt = 0; attempt < 500 && !Atomics.load(state, 2); attempt++) await pause(2);
+    expect(Atomics.load(state, 2)).not.toBe(0);
+    await bridge.dispose();
+    expect(await reported).toEqual({ result: "closed" });
+  } finally {
+    worker.terminate();
+    await bridge.dispose();
+    await service.shutdown();
+  }
+});

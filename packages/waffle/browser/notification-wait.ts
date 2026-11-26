@@ -190,11 +190,14 @@ export class NotificationWaitScope {
       },
       sample,
       wait: (observed, deadline) => {
+        // Disposal stores the fence before it moves the sequence, so any sequence change it
+        // caused is seen together with the fence: every return reports "closed" first.
+        const settled = (result: NotificationWaitResult): NotificationWaitResult =>
+          disposed() ? "closed" : result;
         if (disposed()) return "closed";
-        const current = sample();
-        if (changed(observed, current)) return "not-equal";
+        if (changed(observed, sample())) return settled("not-equal");
         const remaining = deadline === Infinity ? Infinity : maximum(0, deadline - now());
-        if (remaining === 0) return "timed-out";
+        if (remaining === 0) return settled("timed-out");
         try {
           park(observed);
         } catch {
@@ -207,7 +210,7 @@ export class NotificationWaitScope {
         // visible here, so the relay dropping that park loses nothing.
         if (changed(observed, sample())) {
           retire();
-          return "not-equal";
+          return settled("not-equal");
         }
         const result = atomicsWait(
           this.wake,
@@ -216,7 +219,7 @@ export class NotificationWaitScope {
           covered ? remaining : minimum(remaining, 10),
         );
         retire();
-        return disposed() ? "closed" : result;
+        return settled(result);
       },
       setProcessSubscriptions(subscriptions) {
         covered =
