@@ -1,5 +1,12 @@
 # @waffle-os/runtime
 
+## 0.0.156
+
+### Patch Changes
+
+- 5b04bb4: `PersistentBackend` now detects sequential cold descriptor scans and fetches a page-aligned 1 MiB readahead window (bounded to half the cold-read cache budget and clamped to EOF) into `ColdReadCache` in one storage read, reducing storage round trips when sequentially reading large cold files while keeping the 64 KiB transport page size unchanged.
+- b329a95: Guests can check a list of candidate paths in one filesystem request with the new `runtime_fs.path_probe` import, which returns the first one that names a regular file or a directory. Module resolvers use it instead of one stat round trip per candidate.
+
 ## 0.0.155
 
 ### Patch Changes
