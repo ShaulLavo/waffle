@@ -102,6 +102,16 @@ function countRecord(value: unknown, counters: PhysicalCounters): void {
   counters.resultByteSizes.push(0);
   counters.recordBytes += new TextEncoder().encode(JSON.stringify(value) ?? "").length;
 }
+/** The string-key range that holds manifests and never chunk records. */
+function manifestQuery(query: unknown): boolean {
+  return (
+    query instanceof IDBKeyRange &&
+    query.lower === "" &&
+    Array.isArray(query.upper) &&
+    query.upper.length === 0 &&
+    query.upperOpen
+  );
+}
 async function observePhysical<T>(action: () => Promise<T>) {
   const counters: PhysicalCounters = {
     records: 0,
@@ -121,8 +131,13 @@ async function observePhysical<T>(action: () => Promise<T>) {
     return request;
   };
   IDBObjectStore.prototype.getAll = function (...args: Parameters<IDBObjectStore["getAll"]>) {
-    assert(this.name !== "data", "cold range must not retrieve all physical payload values");
-    return getAll.apply(this, args);
+    if (this.name !== "data") return getAll.apply(this, args);
+    assert(manifestQuery(args[0]), "only manifest records may be read in bulk");
+    const request = getAll.apply(this, args);
+    request.addEventListener("success", () => {
+      for (const record of request.result) countRecord(record, counters);
+    });
+    return request;
   };
   IDBObjectStore.prototype.openCursor = function (
     ...args: Parameters<IDBObjectStore["openCursor"]>
@@ -739,11 +754,19 @@ async function coldRecoveryCancellation() {
     await storage.close();
     const cold = await open();
     const controller = new AbortController();
-    const get = IDBObjectStore.prototype.get;
-    IDBObjectStore.prototype.get = function (key: IDBValidKey | IDBKeyRange) {
-      const request = get.call(this, key);
-      if (this.name === "data" && key === "file:1")
-        request.addEventListener("success", () => controller.abort(false), { once: true });
+    const getAll = IDBObjectStore.prototype.getAll;
+    let validated = 0;
+    IDBObjectStore.prototype.getAll = function (...args: Parameters<IDBObjectStore["getAll"]>) {
+      const request = getAll.apply(this, args);
+      if (this.name === "data" && manifestQuery(args[0]))
+        request.addEventListener(
+          "success",
+          () => {
+            validated++;
+            controller.abort(false);
+          },
+          { once: true },
+        );
       return request;
     };
     try {
@@ -752,9 +775,10 @@ async function coldRecoveryCancellation() {
         false,
       );
     } finally {
-      IDBObjectStore.prototype.get = get;
+      IDBObjectStore.prototype.getAll = getAll;
       await cold.close();
     }
+    assert(validated === 1, "cancellation arrives while cold manifests are validated");
     const reopened = await open();
     assert((await reopened.load())?.generation === 1, "cancelled validation preserves the root");
     return "false abort reason escapes cold manifest validation unchanged";

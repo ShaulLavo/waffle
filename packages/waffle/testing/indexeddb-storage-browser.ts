@@ -36,7 +36,12 @@ import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { FilesystemError, PAGE } from "../fs/protocol.js";
 import { gatedIndexedDB } from "./gated-indexeddb.js";
 import { assertRuntimeStartupTrace } from "./runtime-startup-proof.js";
-import type { ChecksummedRecord, PersistedNode, StorageBackend } from "../fs/storage.js";
+import type {
+  ChecksummedRecord,
+  PersistenceBatch,
+  PersistedNode,
+  StorageBackend,
+} from "../fs/storage.js";
 import { storedTimes } from "./fixtures/file-times.js";
 import {
   busyDeletesNothingCase,
@@ -50,6 +55,40 @@ function request<T>(value: IDBRequest<T>): Promise<T> {
     value.onsuccess = () => resolve(value.result);
     value.onerror = () => reject(value.error);
   });
+}
+/** One directory of `files` small files, each with its own payload. */
+function wideBatch(generation: number, files: number): PersistenceBatch {
+  const saved = batch(generation);
+  const file = saved.upserts[1]!;
+  const root = { ...saved.upserts[0]!, children: [] as [string, number][] };
+  const upserts: PersistedNode[] = [root];
+  const data = new Map<string, Uint8Array>();
+  for (let index = 0; index < files; index++) {
+    const content = bytes(`file ${index}`);
+    const key = `wide:${generation}:${index}`;
+    root.children.push([`f${index}`, index + 2]);
+    upserts.push({ ...file, ino: index + 2, size: content.length, data: key });
+    data.set(key, content);
+  }
+  return { ...saved, upserts, data };
+}
+async function countTransactions<T>(
+  action: () => Promise<T>,
+): Promise<{ result: T; count: number }> {
+  const transaction = IDBDatabase.prototype.transaction;
+  let count = 0;
+  IDBDatabase.prototype.transaction = function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    count++;
+    return transaction.apply(this, args);
+  } as IDBDatabase["transaction"];
+  try {
+    return { result: await action(), count };
+  } finally {
+    IDBDatabase.prototype.transaction = transaction;
+  }
 }
 async function raw(name: string, work: (db: IDBDatabase) => Promise<void>): Promise<void> {
   const db = await request(indexedDB.open(name));
@@ -1251,6 +1290,23 @@ function indexedDBCases(
     },
     128,
   );
+
+  test("IndexedDB reopen reads every payload manifest in one transaction", async (_name, open) => {
+    const files = 300;
+    const storage = await open();
+    await storage.persist(wideBatch(1, files));
+    await storage.close();
+    const cold = await open();
+    const reopen = await countTransactions(() => cold.load());
+    assert(reopen.result?.nodes.length === files + 1, "every file survives reopen");
+    assert(reopen.count === 1, `reopen used ${reopen.count} transactions for ${files} payloads`);
+    for (const index of [0, 150, files - 1])
+      assert(
+        new TextDecoder().decode(await cold.read(`wide:1:${index}`)) === `file ${index}`,
+        "payload bytes survive reopen",
+      );
+    await cold.close();
+  });
 
   test("IndexedDB pin validation does not hydrate cold payloads", async (_name, open) => {
     const storage = await open();
