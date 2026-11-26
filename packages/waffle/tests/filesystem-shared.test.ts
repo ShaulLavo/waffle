@@ -450,3 +450,22 @@ test("a borrowing backend keeps registered parent identities and timestamps curr
     clock.mockRestore();
   }
 });
+
+test("a warm registered-handle listing reads only indexed slots, not the whole table", () => {
+  const state = new SharedFilesystemState();
+  state.register(9, { kind: "file", ino: 10, nlink: 1, size: 0, ...statTimes(1) });
+  expect(state.registeredHandles()).toEqual([9]);
+  const load = Atomics.load;
+  let slotReads = 0;
+  Atomics.load = ((array: Int32Array, index: number) => {
+    if (array === state.slots) slotReads++;
+    return load(array, index);
+  }) as typeof Atomics.load;
+  try {
+    expect(state.registeredHandles()).toEqual([9]);
+  } finally {
+    Atomics.load = load;
+  }
+  // One slot read for the one indexed slot; a table walk reads all 32,767.
+  expect(slotReads).toBe(1);
+});

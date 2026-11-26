@@ -1018,11 +1018,7 @@ export class SharedFilesystemState {
         this.slots[this.at(slot, REVISION_STATE)] =
           Math.floor(revision / 0x100000000) * 2 + (loaded ? RESIDENT : 0);
         if (identity) this.installIdentity(slot, identity);
-        Atomics.store(this.slots, this.at(slot, HANDLE), handle + 1);
-        if (this.registeredIndex && !this.registeredIndex.has(slot)) {
-          this.registeredIndex.add(slot);
-          this.registeredOrder = undefined;
-        }
+        this.publishHandle(slot, handle);
       } catch (error) {
         if (pinned) this.dirtyAdmission.pin(-1, this.residentBytes());
         throw error;
@@ -1121,6 +1117,13 @@ export class SharedFilesystemState {
     } finally {
       this.unlock(this.at(slot, FILE_LOCK));
     }
+  }
+  /** Publishes a registered slot's handle, then adds the slot to this state's index. */
+  private publishHandle(slot: number, handle: FileHandle): void {
+    Atomics.store(this.slots, this.at(slot, HANDLE), handle + 1);
+    if (!this.registeredIndex || this.registeredIndex.has(slot)) return;
+    this.registeredIndex.add(slot);
+    this.registeredOrder = undefined;
   }
   /** Bounded by the resident identity table, not the size of the persisted namespace. In slot
    * order. Another agent's registration, or one racing this read, makes the indexed count differ
