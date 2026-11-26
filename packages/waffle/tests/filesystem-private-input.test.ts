@@ -475,7 +475,7 @@ test("private transfers carry a detached transferable, not a view", () => {
   const payload = message.payload as ArrayBuffer;
   expect(payload).toBeInstanceOf(ArrayBuffer);
   expect(transfer).toEqual([payload]);
-  const packed = pack({ operation: "writeFile", args: ["/a"], publication: undefined });
+  const packed = pack({ operation: "writeFile", args: ["/a"] });
   expect(completion.cells[1]).toBe(packed.length);
   expect(completion.cells[2]).toBe(70_000);
   expect(completion.cells[7]).toBe(packed.length + 70_000);
@@ -492,7 +492,7 @@ test("inputs at the inline threshold stay inline and one byte more becomes priva
   const budget = createRequestBudget(undefined, 8 * MiB);
   const pool = new FilesystemRequestPool(budget, REQUEST_ARENA_BYTES);
   const f = stoppedClient(budget, pool);
-  const packed = pack({ operation: "writeFile", args: ["/a"], publication: undefined }).length;
+  const packed = pack({ operation: "writeFile", args: ["/a"] }).length;
   const inline = f.client.submit("writeFile", ["/a"], new Uint8Array(PAGE - packed));
   expect(f.posted[0]!.message.payload).toBeUndefined();
   expect(f.posted[0]!.transfer).toBeUndefined();
