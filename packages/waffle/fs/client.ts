@@ -964,7 +964,9 @@ export class FilesystemClient implements FileSystem {
     capacity: number,
     publication?: PublicationAdmission,
   ): FilesystemCompletion {
-    const input = pack({ operation, args, publication });
+    // An absent admission stays absent: encoding undefined would tag the envelope and send every
+    // request down the service's tagged-value decode.
+    const input = pack(publication ? { operation, args, publication } : { operation, args });
     this.section.enter();
     try {
       return this.postRequest(input, data, capacity, publication);

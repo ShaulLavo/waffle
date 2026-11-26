@@ -1,6 +1,7 @@
 import { hostFilesystemClient } from "../testing/fixtures/filesystem-host.js";
 import { afterEach, expect, test } from "bun:test";
 import { FilesystemService, MemoryBackend, createFilesystemConnection } from "../fs";
+import { requestBytes } from "../fs/request-memory";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -65,4 +66,15 @@ test("malformed control fails the transport instead of being ignored", async () 
   const connection = client.connection;
   connection.port.postMessage({ control: true, discards: ["x"] });
   await eventually(() => client.transportError()?.reason === "protocol");
+});
+
+test("a request without a publication admission encodes no tagged values", async () => {
+  const { client, root } = await fixture();
+  const completion = client.submit("resolve", [root, "file"]);
+  const input = new TextDecoder().decode(
+    requestBytes(completion.buffer).slice(0, completion.cells[1]),
+  );
+  expect(JSON.parse(input)).toEqual({ operation: "resolve", args: [root, "file"] });
+  expect((await completion.value()).node).toBeGreaterThanOrEqual(0);
+  completion.release();
 });
