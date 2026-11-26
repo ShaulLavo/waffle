@@ -198,6 +198,19 @@ export interface DirectDisabledIOControl {
   deferWrite?(completion: FilesystemCompletion): void;
 }
 
+/** Operations whose inline replies the service keeps nothing for. */
+const PLAIN_REPLIES = new SetConstructor([
+  "stat",
+  "create",
+  "write",
+  "append",
+  "grow",
+  "resize",
+  "setTimes",
+  "setMode",
+  "read",
+  "readlink",
+]);
 export class FilesystemCompletion {
   static {
     waitForObservedResolve = (completion, cancellation) => completion.#wait(cancellation);
@@ -211,6 +224,8 @@ export class FilesystemCompletion {
   private loading?: Promise<unknown>;
   private consumed = false;
   private released = false;
+  /** Whether the service may keep state for this reply until its discard. */
+  retained = true;
   constructor(
     readonly id: number,
     readonly buffer: FilesystemRequestBuffer,
@@ -277,7 +292,9 @@ export class FilesystemCompletion {
     // release cancels that value and notifies its waiters before removing the completion.
     if (!this.consumed) this.cancel();
     else {
-      this.client.connection.port.postMessage({ discard: this.id });
+      // The service keeps nothing for a plain inline reply, so its discard would do nothing.
+      if (this.retained || atomicsLoad(this.cells, 0) !== State.Complete)
+        this.client.connection.port.postMessage({ discard: this.id });
       this.notify();
     }
     mapDelete(this.client.completions, this.id);
@@ -996,13 +1013,27 @@ export class FilesystemClient implements FileSystem {
     capacity: number,
     publication?: PublicationAdmission,
   ): FilesystemCompletion {
-    const input = pack({ operation, args, publication });
+    // An absent admission stays absent: encoding undefined would tag the envelope and send every
+    // request down the service's tagged-value decode.
+    const input = pack(publication ? { operation, args, publication } : { operation, args });
     this.section.enter();
     try {
-      return this.postRequest(input, data, capacity, publication);
+      const completion = this.postRequest(input, data, capacity, publication);
+      completion.retained = this.retainsReply(operation);
+      return completion;
     } finally {
       this.section.exit();
     }
+  }
+  /** The service keeps a reply until its discard for a resolve (its held references), a stage,
+   * a walk, a watch, a workspace read and any overflowing reply. Only these operations are known
+   * to keep nothing for an inline reply; the caller still checks overflow from the reply state. */
+  private retainsReply(operation: string): boolean {
+    return (
+      !setHas(PLAIN_REPLIES, operation) ||
+      this.connection.residentPublication !== undefined ||
+      this.shared.publication !== undefined
+    );
   }
   private postRequest(
     input: Uint8Array,

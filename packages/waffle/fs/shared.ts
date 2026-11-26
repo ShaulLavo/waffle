@@ -186,6 +186,11 @@ export class SharedFilesystemState {
   readonly publication?: PublicationDomain;
   readonly watch: WatchRing;
   private readonly pageReaders?: Int32Array;
+  /** Slots this state has registered or seen registered, so listing them need not walk the
+   * whole identity table. Entries whose slot was freed since are dropped as they are found. */
+  private registeredIndex?: Set<number>;
+  /** The index in ascending slot order, rebuilt only after the index changes. */
+  private registeredOrder?: number[];
   onContention?: () => void;
   constructor(
     buffer?: SharedArrayBuffer,
@@ -1015,7 +1020,7 @@ export class SharedFilesystemState {
         this.slots[this.at(slot, REVISION_STATE)] =
           Math.floor(revision / 0x100000000) * 2 + (loaded ? RESIDENT : 0);
         if (identity) this.installIdentity(slot, identity);
-        Atomics.store(this.slots, this.at(slot, HANDLE), handle + 1);
+        this.publishHandle(slot, handle);
       } catch (error) {
         if (pinned) this.dirtyAdmission.pin(-1, this.residentBytes());
         throw error;
@@ -1115,12 +1120,44 @@ export class SharedFilesystemState {
       this.unlock(this.at(slot, FILE_LOCK));
     }
   }
-  /** Bounded by the resident identity table, not the size of the persisted namespace. */
+  /** Publishes a registered slot's handle, then adds the slot to this state's index. */
+  private publishHandle(slot: number, handle: FileHandle): void {
+    Atomics.store(this.slots, this.at(slot, HANDLE), handle + 1);
+    if (!this.registeredIndex || this.registeredIndex.has(slot)) return;
+    this.registeredIndex.add(slot);
+    this.registeredOrder = undefined;
+  }
+  /** Bounded by the resident identity table, not the size of the persisted namespace. In slot
+   * order. Another agent's registration, or one racing this read, makes the indexed count differ
+   * from the header's, and then the whole table is walked and the index rebuilt. */
   registeredHandles(): FileHandle[] {
+    const expected = Atomics.load(this.cells, REGISTERED_SLOTS);
+    const indexed = this.indexedHandles();
+    if (indexed?.length === expected) return indexed;
     const handles: FileHandle[] = [];
+    const index = new Set<number>();
     for (let slot = 1; slot < MAX_FILES; slot++) {
       const handle = Atomics.load(this.slots, this.at(slot, HANDLE)) - 1;
+      if (handle < 0) continue;
+      handles.push(handle);
+      index.add(slot);
+    }
+    this.registeredIndex = index;
+    this.registeredOrder = undefined;
+    return handles;
+  }
+  private indexedHandles(): FileHandle[] | undefined {
+    const index = this.registeredIndex;
+    if (!index) return undefined;
+    const order = (this.registeredOrder ??= Array.from(index).sort((a, b) => a - b));
+    const handles: FileHandle[] = [];
+    for (const slot of order) {
+      const handle = Atomics.load(this.slots, this.at(slot, HANDLE)) - 1;
       if (handle >= 0) handles.push(handle);
+      else {
+        index.delete(slot);
+        this.registeredOrder = undefined;
+      }
     }
     return handles;
   }

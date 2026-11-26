@@ -62,12 +62,18 @@ export class RingWriter extends RingBase {
 
   /**
    * Appends one record, waiting while the ring is full. Records land in call order (writes are
-   * queued), so callers may fire and forget.
+   * queued), so callers may fire and forget. A record whose `dropped()` turns true before it is
+   * published is never published, and stops waiting for space.
    */
-  write(handle: number, kind: number, payload: Uint8Array = new Uint8Array()): Promise<void> {
+  write(
+    handle: number,
+    kind: number,
+    payload: Uint8Array = new Uint8Array(),
+    dropped?: () => boolean,
+  ): Promise<void> {
     if (payload.length > MAX_RECORD)
       return Promise.reject(new RangeError(`ring record too large: ${payload.length}`));
-    this.queue = this.queue.then(() => this.append(handle, kind, payload));
+    this.queue = this.queue.then(() => this.append(handle, kind, payload, dropped));
     return this.queue;
   }
 
@@ -78,10 +84,16 @@ export class RingWriter extends RingBase {
     Atomics.notify(this.cells, SPACE);
   }
 
-  private async append(handle: number, kind: number, payload: Uint8Array): Promise<void> {
+  private async append(
+    handle: number,
+    kind: number,
+    payload: Uint8Array,
+    dropped?: () => boolean,
+  ): Promise<void> {
     const size = align4(RECORD_HEADER + payload.length);
-    while (!this.disposed && CAPACITY - this.used() < size) await this.waitForSpace(size);
-    if (this.disposed) return;
+    const skip = () => this.disposed || dropped?.() === true;
+    while (!skip() && CAPACITY - this.used() < size) await this.waitForSpace(size);
+    if (skip()) return;
     this.headerView.setInt32(0, handle, true);
     this.headerView.setInt32(4, kind, true);
     this.headerView.setInt32(8, payload.length, true);
