@@ -284,6 +284,24 @@ async function secondGuest(worker: Worker, sources: readonly Int32Array[]) {
     "second relay connection did not arm",
   );
   const parker = notificationParker(state, (request) => channel.port2.postMessage(request), values);
+  let synced: (() => void) | undefined;
+  channel.port2.onmessage = ({ data }) => {
+    if ((data as { type?: string }).type === "synced") synced?.();
+  };
+  /** Parks, then waits for the relay's in-order reply on this port. A park consumed in the
+   * meantime (no source moves after traffic stops, so this is a failure) fails the check. */
+  const activePark = async () => {
+    const id = parker.park();
+    const reply = new Promise<void>((resolve) => {
+      synced = resolve;
+    });
+    channel.port2.postMessage({ type: "probe-sync" });
+    await reply;
+    check(
+      Atomics.load(state, 2) === id,
+      "second guest's park was consumed before its source changed",
+    );
+  };
   let running = true;
   const loop = (async () => {
     while (running) {
@@ -299,9 +317,12 @@ async function secondGuest(worker: Worker, sources: readonly Int32Array[]) {
       running = false;
       await loop;
       const woken: number[] = [];
-      for (let source = 0; source < sources.length; source++) {
-        parker.park();
-        await new Promise((resolve) => setTimeout(resolve, 30));
+      // Each source wakes the guest twice in a row: the second wake needs the relay to have
+      // waited on that source again after the first, so a source left stuck fails here.
+      for (const source of [0, 0, 1, 1, 2, 2]) {
+        // Change the source only once the relay has handled this park and it is still active,
+        // so the wake has to come through the relay's wait on that source.
+        await activePark();
         const before = Atomics.load(state, 0);
         Atomics.add(sources[source]!, index(source), 1);
         Atomics.notify(sources[source]!, index(source));
