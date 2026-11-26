@@ -1144,10 +1144,9 @@ export class MultiTabBackend implements FilesystemBackend {
     if (!entry || entry.stale) throw new FilesystemError(8);
     if (this.role === "host") {
       const admittedTerm = this.hostTerm;
-      if (this.leaseOnlyLapsed(admittedTerm)) {
+      if (!this.hostReadyForLocal(admittedTerm)) {
         return this.watchOpenAfterRenewal(owner, handle, recursive, cancelled, admittedTerm);
       }
-      this.assertHostReadyForLocal(admittedTerm);
       if (entry.remoteHandle === undefined) throw new FilesystemError(8);
       this.watchService ??= new WatchService(this.persistent!);
       const hostWatchId = this.watchService.open(owner, entry.remoteHandle, recursive, cancelled);
@@ -5440,7 +5439,13 @@ export class MultiTabBackend implements FilesystemBackend {
     });
   }
 
-  private assertHostReadyForLocal(admittedTerm: bigint): void {
+  /**
+   * Throws unless this tab is still the Host of the term and may run local work. Returns false
+   * when the lease lapsed only because renewal ran late, so the caller renews and checks again.
+   * It samples the lease once: a second sample could see a lapse the first did not and fail a
+   * call that a renewal would have kept.
+   */
+  private hostReadyForLocal(admittedTerm: bigint): boolean {
     if (this.terminalFailure || this.persistent?.isTerminallyFailed()) {
       throw new FilesystemError(29, describeReason(this.terminalFailure?.reason));
     }
@@ -5455,9 +5460,9 @@ export class MultiTabBackend implements FilesystemBackend {
     if (this.steppingDown && (!this.disposing || this.disposeHostTerm !== admittedTerm)) {
       throw new FilesystemError(11, "host is stepping down");
     }
-    if (!this.isLeaseValid()) {
-      throw new FilesystemError(11, "host lease expired");
-    }
+    if (this.isLeaseValid()) return true;
+    if (this.lapseIsRenewable(admittedTerm)) return false;
+    throw new FilesystemError(11, "host lease expired");
   }
 
   /**
@@ -5465,8 +5470,12 @@ export class MultiTabBackend implements FilesystemBackend {
    * worker. This tab is still the Host of this term, so a local operation renews and retries.
    */
   private leaseOnlyLapsed(admittedTerm: bigint): boolean {
+    return !this.isLeaseValid() && this.lapseIsRenewable(admittedTerm);
+  }
+
+  /** Whether a lapse of the lease would be renewable: everything leaseOnlyLapsed checks but time. */
+  private lapseIsRenewable(admittedTerm: bigint): boolean {
     return (
-      !this.isLeaseValid() &&
       !this.leaseClosed &&
       !this.ownershipLost &&
       !this.terminalFailure &&
@@ -5481,8 +5490,7 @@ export class MultiTabBackend implements FilesystemBackend {
 
   private assertLocalAttempt(admittedTerm: bigint, cancelled?: () => boolean): void {
     if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
-    if (this.leaseOnlyLapsed(admittedTerm)) throw LEASE_LAPSED;
-    this.assertHostReadyForLocal(admittedTerm);
+    if (!this.hostReadyForLocal(admittedTerm)) throw LEASE_LAPSED;
   }
 
   /** Abandon a local attempt's wait: cancelled, a new term, or a lease renewal cannot restore. */
@@ -5504,20 +5512,23 @@ export class MultiTabBackend implements FilesystemBackend {
       } catch (error) {
         if (error !== LEASE_LAPSED) throw error;
       }
-      // A lost term or a step-down fails in the next attempt's assertHostReadyForLocal.
+      // A lost term or a step-down fails in the next attempt's hostReadyForLocal.
       await this.renewLapsedLease(admittedTerm, cancelled, budget);
     }
   }
 
-  /** Renews a lapsed lease, then asserts this tab is still the Host of the term. */
+  /**
+   * Renews a lapsed lease until this tab holds it, then returns; throws once this tab is no
+   * longer the Host of the term or the call's renewal budget runs out.
+   */
   private async assertHostAfterRenewal(
     admittedTerm: bigint,
     cancelled: (() => boolean) | undefined,
     budget: LeaseRenewalBudget,
   ): Promise<void> {
-    if (this.leaseOnlyLapsed(admittedTerm))
+    while (!this.hostReadyForLocal(admittedTerm)) {
       await this.renewLapsedLease(admittedTerm, cancelled, budget);
-    this.assertHostReadyForLocal(admittedTerm);
+    }
   }
 
   /**
@@ -5578,7 +5589,9 @@ export class MultiTabBackend implements FilesystemBackend {
       }
       if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
       if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
-      if (!this.isLeaseValid()) {
+      // A lease renewed with little time left can lapse again before this check; that lapse is
+      // renewed below like any other, not treated as a lost term.
+      if (!this.isLeaseValid() && !this.leaseOnlyLapsed(admittedTerm)) {
         await this.awaitPendingFenceLoss(cancelled);
         if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
         if (this.disposing) throw new FilesystemError(11, "filesystem is disposing");
@@ -5599,7 +5612,10 @@ export class MultiTabBackend implements FilesystemBackend {
     }
 
     if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
-    this.assertHostReadyForLocal(admittedTerm);
+    if (!this.hostReadyForLocal(admittedTerm)) {
+      await this.assertHostAfterRenewal(admittedTerm, cancelled, budget);
+      if (cancelled?.()) throw new FilesystemError(11, "operation cancelled");
+    }
     const persistent = this.persistent!;
     const translated = this.translateArgsToHost(operation, args);
     if (!translated) throw new FilesystemError(8);

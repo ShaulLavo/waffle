@@ -861,6 +861,40 @@ async function pendingRuntimeOpenCase(
   }
 }
 
+/**
+ * A multitab Host renews its lease with verifyEpoch. A readonly epoch read queues behind the
+ * connection's own checkpoint commit, which on a loaded device can hold "metadata" for seconds,
+ * so the lease lapsed and running calls were cancelled. The commit's own epoch read answers.
+ */
+async function epochCheckDuringCommitCase(open: () => Promise<StorageBackend>): Promise<void> {
+  const storage = (await open()) as IndexedDBStorage;
+  await storage.persist(batch(1));
+  const order: string[] = [];
+  let checked: Promise<boolean> | undefined;
+  const get = IDBObjectStore.prototype.get;
+  IDBObjectStore.prototype.get = function (this: IDBObjectStore, key: IDBValidKey | IDBKeyRange) {
+    const read = get.call(this, key);
+    if (key === "epoch" && this.transaction.mode === "readwrite" && !checked)
+      read.addEventListener("success", () => {
+        checked = storage.verifyEpoch().then((owned) => {
+          order.push("verified");
+          return owned;
+        });
+      });
+    return read;
+  };
+  try {
+    await storage.persist(batch(2));
+    order.push("committed");
+  } finally {
+    IDBObjectStore.prototype.get = get;
+  }
+  assert(checked !== undefined, "the commit read the epoch");
+  assert((await checked) === true, "the owner's epoch is confirmed during its commit");
+  assert(order.join() === "verified,committed", `epoch check waited for the commit: ${order}`);
+  await storage.close();
+}
+
 function indexedDBCases(
   filesystemWorkerURL?: string | URL,
   gatedWorkerURL?: string | URL,
@@ -872,6 +906,8 @@ function indexedDBCases(
   };
   test("IndexedDB takeover fences cold pages served from memory", async (_name, open) =>
     warmColdReadTakeoverCase(open));
+  test("IndexedDB epoch check answers during an open commit", async (_name, open) =>
+    epochCheckDuringCommitCase(open));
   test("IndexedDB persists format identity and adopts validated unmarked data", async (name, open) => {
     const storage = await open();
     await storage.persist(batch(1, "legacy data"));
