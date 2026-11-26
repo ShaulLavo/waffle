@@ -4122,20 +4122,29 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       );
 
       let firstChunkReqId: number | undefined;
+      let initialSessionId: string | undefined;
+      let flushSessionId: string | undefined;
       let cancelledMidUpload = false;
       let sawWriteFileReq = false;
       let stagedBytesAtCancel = 0;
+      let holdAck = true;
       let withheldAck: { sender: MockChannel; data: unknown } | undefined;
       hub.interceptor = (_ch, sender, data) => {
         const msg = data as
-          | { kind?: string; op?: string; reqId?: number; offset?: number }
+          | { kind?: string; op?: string; reqId?: number; offset?: number; sessionId?: string }
           | undefined;
         if (!msg) return;
+        // Gate heartbeat delivery while the chunk ack is held so lost-frame reset cannot race the test.
+        if (holdAck && (msg.kind === "ping" || msg.kind === "pong")) return false;
         if (sender.ownerTag === "tab-B" && msg.kind === "chunk-put" && msg.offset === 0) {
           firstChunkReqId = msg.reqId;
+          initialSessionId = msg.sessionId;
         }
         if (sender.ownerTag === "tab-B" && msg.kind === "req" && msg.op === "writeFile") {
           sawWriteFileReq = true;
+        }
+        if (sender.ownerTag === "tab-B" && msg.kind === "req" && msg.op === "flush") {
+          flushSessionId = msg.sessionId;
         }
         // Withhold chunk-put #1 ack after Host stages the upload, and cancel while ack is still pending.
         if (
@@ -4167,8 +4176,16 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       }
 
       // While chunk-put #1 ack is STILL withheld, Host must already free staged bytes and a
-      // following Peer flush must progress immediately instead of waiting behind the cancelled upload.
+      // following Peer flush must progress immediately on the original session.
+      const peerCredits = tabB.backend as unknown as {
+        peerAvailableFrames: number;
+        peerAvailableBytes: number;
+        peerGrantedFrames: number;
+        peerGrantedBytes: number;
+        peerSessionId?: string;
+      };
       expect(cancelledMidUpload).toBe(true);
+      expect(initialSessionId).toBeDefined();
       expect(stagedBytesAtCancel).toBe(payload.byteLength);
       await waitUntil(
         () => (tabA!.backend.resources().multitabHostUsedUploadBytes ?? 0) === 0,
@@ -4176,11 +4193,26 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
         "Host released staged upload while chunk ack was still withheld",
       );
       await tabB.client.asyncCall("flush", []);
+      expect(flushSessionId).toBe(initialSessionId);
+      expect(peerCredits.peerSessionId).toBe(initialSessionId);
       expect(sawWriteFileReq).toBe(false);
+      // The withheld 1 MiB chunk-put's credits must still be charged until the late ack arrives.
+      expect(peerCredits.peerAvailableFrames).toBe(peerCredits.peerGrantedFrames - 1);
+      expect(peerCredits.peerAvailableBytes).toBe(peerCredits.peerGrantedBytes - 1024 * 1024);
 
-      // Deliver the late chunk-put #1 ack and verify credits and subsequent large writes stay healthy.
+      // Deliver the late chunk-put #1 ack on the same session and verify full credit return directly.
+      holdAck = false;
       hub.interceptor = undefined;
       withheldAck?.sender.postMessage(withheldAck.data);
+      await waitUntil(
+        () =>
+          peerCredits.peerAvailableFrames === peerCredits.peerGrantedFrames &&
+          peerCredits.peerAvailableBytes === peerCredits.peerGrantedBytes,
+        4000,
+        "late chunk-put ack returned full Peer credits",
+      );
+      expect(peerCredits.peerSessionId).toBe(initialSessionId);
+
       const afterPayload = new Uint8Array(1_572_864);
       afterPayload.fill(0x52);
       await tabB.client.asyncCall("writeFile", ["/after-cancel.bin", false, false], afterPayload);
@@ -4222,11 +4254,21 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       const completion = tabB.client.submit("writeFile", ["/abort-drop.txt", true, false], payload);
 
       let firstChunkReqId: number | undefined;
+      let initialSessionId: string | undefined;
+      let settledAbortInPong = false;
       let cancelledMidUpload = false;
       let droppedAborts = 0;
       let stagedBytesAtCancel = 0;
       hub.interceptor = (_ch, sender, data) => {
-        const msg = data as { kind?: string; reqId?: number; offset?: number } | undefined;
+        const msg = data as
+          | {
+              kind?: string;
+              reqId?: number;
+              offset?: number;
+              sessionId?: string;
+              settledUploadAborts?: readonly string[];
+            }
+          | undefined;
         if (!msg) return;
         if (sender.ownerTag === "tab-B" && msg.kind === "chunk-abort") {
           droppedAborts++;
@@ -4234,6 +4276,15 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
         }
         if (sender.ownerTag === "tab-B" && msg.kind === "chunk-put" && msg.offset === 0) {
           firstChunkReqId = msg.reqId;
+          initialSessionId = msg.sessionId;
+        }
+        if (
+          sender.ownerTag === "tab-A" &&
+          msg.kind === "pong" &&
+          msg.sessionId === initialSessionId &&
+          (msg.settledUploadAborts?.length ?? 0) > 0
+        ) {
+          settledAbortInPong = true;
         }
         if (
           !cancelledMidUpload &&
@@ -4262,19 +4313,27 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       }
 
       expect(cancelledMidUpload).toBe(true);
+      expect(initialSessionId).toBeDefined();
       expect(stagedBytesAtCancel).toBe(payload.byteLength);
       await waitUntil(
         () => droppedAborts >= 1,
         4000,
         "direct chunk-abort frame emitted and dropped",
       );
-      // Even with direct chunk-abort frames dropped, heartbeat ping/pong settlement frees the staged upload.
+      // Even with direct chunk-abort frames dropped, heartbeat ping/pong settlement frees the staged
+      // upload and clears the Peer's pending settlement without resetting or disconnecting the session.
       await waitUntil(
-        () => (tabA!.backend.resources().multitabHostUsedUploadBytes ?? 0) === 0,
+        () =>
+          (tabA!.backend.resources().multitabHostUsedUploadBytes ?? 0) === 0 &&
+          (tabB!.backend.resources().multitabPeerPendingSettlements ?? -1) === 0,
         4000,
-        "heartbeat settlement freed staged upload after dropped chunk-abort",
+        "heartbeat settlement freed staged upload and cleared Peer pending settlements",
       );
+      expect(settledAbortInPong).toBe(true);
       expect(tabB.backend.currentRole).toBe("peer");
+      expect((tabB.backend as unknown as { peerSessionId?: string }).peerSessionId).toBe(
+        initialSessionId,
+      );
       const unchanged: Uint8Array = await tabA.client.asyncCall("readFile", ["/abort-drop.txt"]);
       expect(new TextDecoder().decode(unchanged)).toBe("old");
     } finally {
