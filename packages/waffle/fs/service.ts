@@ -64,6 +64,7 @@ import {
   releaseFilesystemReservation,
   type FilesystemIdentity,
   type FilesystemConnection,
+  type RequestControl,
   type RequestMessage,
   type SegmentAnnouncement,
 } from "./protocol.js";
@@ -413,7 +414,6 @@ export class FilesystemService {
     }
   }
   private receive(session: Session, data: RequestMessage): void {
-    const connection = session.connection;
     if (requestTransportError(session.requests) || "transportClosed" in data) {
       this.signalTransportFailure(session);
       return;
@@ -430,12 +430,13 @@ export class FilesystemService {
       this.enqueueMaintenance(session, () => this.discardResponse(session, data.discard));
       return;
     }
-    if ("trim" in data) {
-      this.enqueueMaintenance(session, () => {
-        if (this.sessions.has(session) && !isRevoked(connection)) this.trim(session);
-      });
+    if (!("id" in data)) {
+      if ("control" in data) this.receiveControl(session, data);
+      else this.enqueueTrim(session);
       return;
     }
+    // Control a client deferred to this request goes first, in the order it was sent.
+    this.receiveControl(session, data);
     const buffer = receiveRequestBuffer(
       session.requests,
       data.id,
@@ -453,6 +454,23 @@ export class FilesystemService {
     session.pending.set(data.id, buffer);
     if (data.payload) session.privateInputs.set(data.id, new Uint8Array(data.payload));
     this.enqueue(session, data.id, buffer);
+  }
+  private receiveControl(session: Session, control: RequestControl): void {
+    const { discards, trim } = control;
+    if (discards !== undefined) {
+      if (!Array.isArray(discards) || !discards.every(Number.isInteger))
+        throw new FilesystemError(28, "malformed filesystem control");
+      for (const id of discards) session.reader?.cancel(id);
+      this.enqueueMaintenance(session, () => {
+        for (const id of discards) this.discardResponse(session, id);
+      });
+    }
+    if (trim) this.enqueueTrim(session);
+  }
+  private enqueueTrim(session: Session): void {
+    this.enqueueMaintenance(session, () => {
+      if (this.sessions.has(session) && !isRevoked(session.connection)) this.trim(session);
+    });
   }
   private retireTransport(session: Session): void {
     if (session.transportRetirement) return;

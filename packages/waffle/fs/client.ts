@@ -60,6 +60,7 @@ import {
   atomicsWait,
   atomicsWaitAsync,
   afterNativePromise,
+  afterMicrotask,
   typedArrayLength,
   typedArraySet,
   typedArraySubarray,
@@ -275,7 +276,7 @@ export class FilesystemCompletion {
     // release cancels that value and notifies its waiters before removing the completion.
     if (!this.consumed) this.cancel();
     else {
-      this.client.connection.port.postMessage({ discard: this.id });
+      this.client.deferDiscard(this.id);
       this.notify();
     }
     mapDelete(this.client.completions, this.id);
@@ -593,6 +594,12 @@ export class FilesystemClient implements FileSystem {
   readonly shared: SharedFilesystemState;
   readonly watches: WatchFileSystem;
   private watchingRevocation = false;
+  /** Answerless control the next request carries: discards of consumed replies and a pending
+   * trim. A microtask sends whatever no request picked up, so a blocked guest pays one port
+   * message per call while an event-loop caller still sends promptly. */
+  private controlDiscards: number[] = [];
+  private controlTrim = false;
+  private controlQueued = false;
   private resident: ResidentAttachment | undefined;
   private workspaceStop: Promise<void> | undefined;
   readonly #resolveCold: (key: string, args: unknown[]) => ResolvedPath | number;
@@ -993,12 +1000,15 @@ export class FilesystemClient implements FileSystem {
         typedArraySet(requestBytes(buffer), input);
         typedArraySet(requestBytes(buffer), data, inputLength);
         mapSet(this.completions, completion.id, completion);
-        this.connection.port.postMessage(descriptor);
+        this.connection.port.postMessage({ ...descriptor, ...this.takeControl() });
         return completion;
       }
       const payload = privateInput(privateLength, input, data, inputLength);
       mapSet(this.completions, completion.id, completion);
-      this.connection.port.postMessage({ ...descriptor, payload }, transferList(payload));
+      this.connection.port.postMessage(
+        { ...descriptor, ...this.takeControl(), payload },
+        transferList(payload),
+      );
       return completion;
     } catch (error) {
       mapDelete(this.completions, buffer.id);
@@ -1008,6 +1018,42 @@ export class FilesystemClient implements FileSystem {
     }
   }
 
+  deferDiscard(id: number): void {
+    arrayAppend(this.controlDiscards, id);
+    this.queueControl();
+  }
+  private deferTrim(): void {
+    this.controlTrim = true;
+    this.queueControl();
+  }
+  private queueControl(): void {
+    if (this.controlQueued) return;
+    this.controlQueued = true;
+    afterMicrotask(() => {
+      this.controlQueued = false;
+      this.flushControl();
+    });
+  }
+  private takeControl(): { discards?: number[]; trim?: true } {
+    const control: { discards?: number[]; trim?: true } = {};
+    if (this.controlDiscards.length) {
+      control.discards = this.controlDiscards;
+      this.controlDiscards = [];
+    }
+    if (this.controlTrim) {
+      control.trim = true;
+      this.controlTrim = false;
+    }
+    return control;
+  }
+  private flushControl(): void {
+    if (!this.controlDiscards.length && !this.controlTrim) return;
+    try {
+      this.connection.port.postMessage({ control: true, ...this.takeControl() });
+    } catch {
+      // A closed port has no service left to tell.
+    }
+  }
   cancelPublication(admission: PublicationAdmission): void {
     const connection = this.connection.publication;
     if (connection) this.shared.publication!.cancel(connection.session, admission);
@@ -1072,6 +1118,7 @@ export class FilesystemClient implements FileSystem {
     this.clearDisposedCaches();
     mapForEach(this.completions, (completion) => completion.release());
     mapClear(this.completions);
+    this.flushControl();
     this.sweep();
     this.connection.port.close();
   }
@@ -1131,7 +1178,7 @@ export class FilesystemClient implements FileSystem {
           (!this.resident && this.shared.isUnlinked(atomicsLoad(this.capabilities, key))) ||
           atomicsLoad(this.capabilities, 0) > TRANSIENT_HANDLES)
       )
-        this.connection.port.postMessage({ trim: true });
+        this.deferTrim();
       return count - 1;
     }
   }
