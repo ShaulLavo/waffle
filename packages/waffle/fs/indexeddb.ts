@@ -527,10 +527,23 @@ function request<T>(value: IDBRequest<T>): Promise<T> {
   void result.catch(() => {});
   return result;
 }
-/** Every string key in the data store, which in chunked formats names a payload manifest.
- * Binary keys sort between strings and arrays and fall in it too; layout validation rejects them. */
+/** Every string key in the data store, which in chunked formats names a payload manifest. Keys
+ * order numbers, dates, strings, binary, arrays: the empty binary key is the least binary key, so
+ * values under invalid number, date or binary keys are never loaded. Layout validation still
+ * rejects those keys from the key listing. */
 function manifestKeyRange(): IDBKeyRange {
-  return IDBKeyRange.bound("", [], false, true);
+  return IDBKeyRange.bound("", new ArrayBuffer(0), false, true);
+}
+/** Pairs a bulk manifest read; each result is read once (see formatAndManifests). */
+function pairManifests(
+  names: readonly IDBValidKey[],
+  records: readonly unknown[],
+): Map<IDBValidKey, unknown> {
+  if (names.length !== records.length)
+    throw new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Invalid payload manifests");
+  const manifests = new Map<IDBValidKey, unknown>();
+  for (const [index, key] of names.entries()) manifests.set(key, records[index]);
+  return manifests;
 }
 interface FormatRecords {
   readonly format: unknown;
@@ -544,37 +557,42 @@ function formatAndManifests(
   data: IDBObjectStore,
 ): Promise<FormatRecords> {
   return new Promise<FormatRecords>((resolve, reject) => {
-    const failed = (failure: IDBRequest) => () =>
-      reject(failure.error ?? new Error("IndexedDB request failed"));
     const format = metadata.get("format");
-    format.onerror = failed(format);
+    format.onerror = requestFailed(format, reject);
     format.onsuccess = () => {
       if (format.result !== INDEXEDDB_FORMAT && format.result !== STAGED_FORMAT) {
         resolve({ format: format.result });
         return;
       }
-      // Placed from the format's success callback, so they read the same snapshot. Requests
-      // complete in order: the keys are ready when the values arrive.
-      const range = manifestKeyRange();
-      const keys = data.getAllKeys(range);
-      const values = data.getAll(range);
-      keys.onerror = failed(keys);
-      values.onerror = failed(values);
-      values.onsuccess = () => {
-        // Read each result once: WebKit builds a new array on every `result` access, which made
-        // an indexed loop over 17,000 manifests take 6.5 s.
-        const names = keys.result;
-        const records = values.result;
-        const manifests = new Map<IDBValidKey, unknown>();
-        if (names.length !== records.length) {
-          reject(new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Invalid payload manifests"));
-          return;
-        }
-        for (const [index, key] of names.entries()) manifests.set(key, records[index]);
-        resolve({ format: format.result, manifests });
-      };
+      // Placed from the format's success callback, so they read the same snapshot.
+      placeManifestReads(data, format.result, resolve, reject);
     };
   });
+}
+function requestFailed(failure: IDBRequest, reject: (error: unknown) => void): () => void {
+  return () => reject(failure.error ?? new Error("IndexedDB request failed"));
+}
+/** Requests complete in order, so the keys are ready when the values arrive. */
+function placeManifestReads(
+  data: IDBObjectStore,
+  format: unknown,
+  resolve: (records: FormatRecords) => void,
+  reject: (error: unknown) => void,
+): void {
+  const range = manifestKeyRange();
+  const keys = data.getAllKeys(range);
+  const values = data.getAll(range);
+  keys.onerror = requestFailed(keys, reject);
+  values.onerror = requestFailed(values, reject);
+  values.onsuccess = () => {
+    // Read each result once: WebKit builds a new array on every `result` access, which made an
+    // indexed loop over 17,000 manifests take 6.5 s.
+    try {
+      resolve({ format, manifests: pairManifests(keys.result, values.result) });
+    } catch (error) {
+      reject(error);
+    }
+  };
 }
 function completed(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {

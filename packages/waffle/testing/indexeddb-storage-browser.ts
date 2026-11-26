@@ -90,6 +90,33 @@ async function countTransactions<T>(
     IDBDatabase.prototype.transaction = transaction;
   }
 }
+function binaryBytes(values: readonly unknown[]): number {
+  let total = 0;
+  for (const value of values) if (value instanceof Uint8Array) total += value.byteLength;
+  return total;
+}
+/** Bytes of Uint8Array values that bulk data-store reads returned while `action` ran. */
+async function bulkBytesDuring(
+  action: () => Promise<unknown>,
+): Promise<{ bytes: number; failure: unknown }> {
+  const getAll = IDBObjectStore.prototype.getAll;
+  let bytes = 0;
+  IDBObjectStore.prototype.getAll = function (...args: Parameters<IDBObjectStore["getAll"]>) {
+    const request = getAll.apply(this, args);
+    if (this.name !== "data") return request;
+    request.addEventListener("success", () => (bytes += binaryBytes(request.result)));
+    return request;
+  };
+  try {
+    const failure = await action().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    return { bytes, failure };
+  } finally {
+    IDBObjectStore.prototype.getAll = getAll;
+  }
+}
 async function raw(name: string, work: (db: IDBDatabase) => Promise<void>): Promise<void> {
   const db = await request(indexedDB.open(name));
   try {
@@ -1319,6 +1346,26 @@ function indexedDBCases(
         "payload bytes survive reopen",
       );
     await cold.close();
+  });
+
+  test("IndexedDB reopen rejects binary data keys without loading their values", async (name, open) => {
+    const storage = await open();
+    await storage.persist(batch(1));
+    await storage.close();
+    const binary = new Uint8Array([1, 2, 3]).buffer;
+    await change(name, "data", binary, new Uint8Array(8 * 1024 * 1024));
+    const reopened = await open();
+    const loaded = await bulkBytesDuring(() => reopened.load());
+    await reopened.close();
+    assert(
+      String(loaded.failure).includes("Invalid"),
+      `binary key must stay fatal, got ${String(loaded.failure)}`,
+    );
+    assert(loaded.bytes === 0, `reopen loaded ${loaded.bytes} bytes under invalid keys`);
+    await raw(name, async (db) => {
+      const kept = await request(db.transaction("data").objectStore("data").getKey(binary));
+      assert(kept !== undefined, "fatal reopen keeps the invalid record");
+    });
   });
 
   test("IndexedDB pin validation does not hydrate cold payloads", async (_name, open) => {
