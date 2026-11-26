@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { COLD_PAGE_OVERHEAD, ColdReadCache } from "../fs/cold-read-cache";
+import { COLD_PAGE_OVERHEAD, ColdReadCache, READAHEAD_BYTES } from "../fs/cold-read-cache";
 import { PAGE } from "../fs/protocol";
 
 /** Room for exactly this many full pages. */
@@ -72,4 +72,69 @@ test("a range ending in an incomplete page makes room page by page", () => {
   cache.store("next", 0, bytes(PAGE, 2), PAGE);
   expect(cache.read("big", 0, 1)).toBeUndefined();
   expect(cache.read("big", PAGE, 1)).toBeDefined();
+});
+
+test("only a read that continues the previous one gets a readahead window", () => {
+  const cache = new ColdReadCache();
+  const size = 40 * PAGE;
+  expect(cache.readWindow("a", 0, PAGE, size)).toEqual({ offset: 0, length: PAGE });
+  cache.noteRead("a", PAGE);
+  expect(cache.readWindow("a", PAGE, PAGE, size)).toEqual({
+    offset: PAGE,
+    length: READAHEAD_BYTES,
+  });
+  // Another offset, or another payload, is not a continuation.
+  expect(cache.readWindow("a", 3 * PAGE, PAGE, size)).toEqual({ offset: 3 * PAGE, length: PAGE });
+  expect(cache.readWindow("b", PAGE, PAGE, size)).toEqual({ offset: PAGE, length: PAGE });
+  // The window never passes the end of the payload, including a short final page.
+  cache.noteRead("a", size - 2 * PAGE);
+  expect(cache.readWindow("a", size - 2 * PAGE, PAGE, size)).toEqual({
+    offset: size - 2 * PAGE,
+    length: 2 * PAGE,
+  });
+  const oddSize = 3 * PAGE + 100;
+  cache.noteRead("odd", PAGE);
+  expect(cache.readWindow("odd", PAGE, PAGE, oddSize)).toEqual({
+    offset: PAGE,
+    length: 2 * PAGE + 100,
+  });
+  // Small sequential reads align the window start to the current page so page 0 is cached too.
+  cache.noteRead("small", 8192);
+  expect(cache.readWindow("small", 8192, 8192, size)).toEqual({
+    offset: 0,
+    length: READAHEAD_BYTES,
+  });
+  cache.clear();
+  expect(cache.readWindow("a", size - 2 * PAGE, PAGE, size)).toEqual({
+    offset: size - 2 * PAGE,
+    length: PAGE,
+  });
+});
+
+test("a readahead window stays an integer within half of the cache bound", () => {
+  const cache = new ColdReadCache(pages(4));
+  cache.noteRead("a", PAGE);
+  expect(cache.readWindow("a", PAGE, PAGE, 40 * PAGE)).toEqual({ offset: PAGE, length: 2 * PAGE });
+  // Odd or tiny cache limits never produce fractional spans or shrink the request.
+  const odd = new ColdReadCache(100_001);
+  odd.noteRead("a", PAGE);
+  expect(odd.readWindow("a", PAGE, PAGE, 40 * PAGE)).toEqual({ offset: PAGE, length: PAGE });
+  const zero = new ColdReadCache(0);
+  zero.noteRead("a", PAGE);
+  expect(zero.readWindow("a", PAGE, PAGE, 40 * PAGE)).toEqual({ offset: PAGE, length: PAGE });
+  // A one-page readahead budget falls back when a request straddles a page boundary.
+  const tight = new ColdReadCache(pages(2));
+  tight.noteRead("a", PAGE - 2);
+  expect(tight.readWindow("a", PAGE - 2, 5, 40 * PAGE)).toEqual({ offset: PAGE - 2, length: 5 });
+});
+
+test("sequential stream tracking is bounded and evicts the oldest stream", () => {
+  const cache = new ColdReadCache();
+  const size = 40 * PAGE;
+  for (let index = 0; index < 80; index++) cache.noteRead(`stream-${index}`, PAGE);
+  expect(cache.readWindow("stream-0", PAGE, PAGE, size)).toEqual({ offset: PAGE, length: PAGE });
+  expect(cache.readWindow("stream-79", PAGE, PAGE, size)).toEqual({
+    offset: PAGE,
+    length: READAHEAD_BYTES,
+  });
 });

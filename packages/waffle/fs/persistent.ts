@@ -412,12 +412,24 @@ export class PersistentBackend extends MemoryBackend {
     const cached = this.coldReads.read(key, offset, count);
     if (cached) {
       this.storage.checkPayload(key, size);
+      this.coldReads.noteRead(key, offset + count);
       return this.cachedDescriptorRange(cached, cancelled);
     }
+    // A sequential scan fetches a page-aligned readahead window in one storage read; its pages
+    // are verified with it and serve the next requests from the cache.
+    const window = this.coldReads.readWindow(key, offset, count, size);
     const backing = this.coldBacking(node, key, undefined, cancelled);
+    this.coldReads.noteRead(key, offset + count);
     const drained = Promise.withResolvers<void>();
     this.ownWork(drained.promise);
-    return this.readDescriptorRange(backing, offset, count, cancelled).finally(() => {
+    const range = this.readDescriptorRange(backing, window.offset, window.length, cancelled);
+    const reply =
+      window.offset === offset && window.length === count
+        ? range
+        : range.then((bytes) =>
+            bytes.slice(offset - window.offset, offset - window.offset + count),
+          );
+    return reply.finally(() => {
       const release = Promise.resolve().then(() => backing.retention.release());
       void release.then(drained.resolve, drained.reject);
       return release;

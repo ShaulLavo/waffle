@@ -5,6 +5,12 @@ const COLD_READ_CACHE_BYTES = 32 * 1024 * 1024;
 /** Charged per page on top of its bytes: an estimate of its map entry, key string and typed
  * array and buffer headers. It keeps many tiny files from exceeding the bound in real heap. */
 export const COLD_PAGE_OVERHEAD = 256;
+/** Pages one storage read fetches for a sequential cold scan: 1 MiB, so a 13 MB binary costs
+ * 14 storage reads instead of 210, while its transport still moves one page per request. */
+const READAHEAD_PAGES = 16;
+export const READAHEAD_BYTES = READAHEAD_PAGES * PAGE;
+/** Payloads whose last read end is remembered for sequential detection. */
+const STREAMS = 64;
 
 /** Verified bytes of cold payloads, kept by whole aligned page so a file read again while it
  * stays unmodified skips storage and its checksums. A payload key names one immutable stored
@@ -13,8 +19,39 @@ export const COLD_PAGE_OVERHEAD = 256;
  * cache owns private copies, so a caller may transfer or modify what it receives. */
 export class ColdReadCache {
   private readonly pages = new Map<string, Uint8Array>();
+  /** Where the last read of each recent payload ended. */
+  private readonly ends = new Map<string, number>();
   private bytes = 0;
   constructor(private readonly limit = COLD_READ_CACHE_BYTES) {}
+  /** Aligned storage range for a miss at `[offset, offset + count)`. A read that starts exactly
+   * where the previous read of this payload ended is a sequential scan, so it fetches a
+   * page-aligned readahead window (as Linux page-cache readahead does) up to `READAHEAD_BYTES`
+   * and half the cache budget; any other read fetches only what it needs. Aligning the start to a
+   * page boundary lets small sequential reads populate their current page too instead of
+   * repeatedly missing and refetching the window. */
+  readWindow(
+    key: string,
+    offset: number,
+    count: number,
+    size: number,
+  ): { offset: number; length: number } {
+    if (this.ends.get(key) !== offset) return { offset, length: count };
+    const windowPages = Math.min(
+      READAHEAD_PAGES,
+      Math.floor(this.limit / 2 / (PAGE + COLD_PAGE_OVERHEAD)),
+    );
+    if (windowPages < 1) return { offset, length: count };
+    const start = Math.floor(offset / PAGE) * PAGE;
+    const end = Math.min(size, start + windowPages * PAGE);
+    if (end < offset + count) return { offset, length: count };
+    return { offset: start, length: end - start };
+  }
+  /** Record where a read of this payload ended, hit or miss. */
+  noteRead(key: string, end: number): void {
+    this.ends.delete(key);
+    if (this.ends.size >= STREAMS) this.ends.delete(this.ends.keys().next().value!);
+    this.ends.set(key, end);
+  }
   /** A copy of the range, or undefined unless every page it touches is cached. */
   read(key: string, offset: number, length: number): Uint8Array | undefined {
     const first = Math.floor(offset / PAGE);
@@ -54,6 +91,7 @@ export class ColdReadCache {
   }
   clear(): void {
     this.pages.clear();
+    this.ends.clear();
     this.bytes = 0;
   }
   private remove(name: string): void {
