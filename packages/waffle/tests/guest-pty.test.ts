@@ -83,10 +83,12 @@ function pollOnce(
 async function sampleConsistentResizes(
   master: { size(): { cols: number; rows: number; seq: number } },
   iterations: number,
+  checkpointGate: Int32Array,
   isSettled: () => boolean,
-): Promise<void> {
+): Promise<boolean> {
   let lastSeq = 0;
   let samples = 0;
+  let observedIntermediate = false;
   const deadline = Date.now() + 10_000;
   while (lastSeq < iterations && !isSettled() && Date.now() < deadline) {
     const snap = master.size();
@@ -94,8 +96,13 @@ async function sampleConsistentResizes(
     expect(snap.cols).toBe(80 + (snap.seq % 500));
     expect(snap.rows).toBe(24 + (snap.seq % 200));
     lastSeq = snap.seq;
+    if (snap.seq > 0 && snap.seq < iterations) {
+      observedIntermediate = true;
+      if (Atomics.compareExchange(checkpointGate, 0, 0, 1) === 0) Atomics.notify(checkpointGate, 0);
+    }
     if (++samples % 64 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
+  return observedIntermediate;
 }
 
 describe("guest PTY host primitive (runtime_proc.pty_*)", () => {
@@ -392,6 +399,8 @@ describe("guest PTY host primitive (runtime_proc.pty_*)", () => {
       const [master, slave] = host.createPty(80, 24);
       const childSlave = slave.forProcess(31);
       const iterations = 5_000;
+      const checkpoint = new SharedArrayBuffer(4);
+      const checkpointGate = new Int32Array(checkpoint);
       const worker = new Worker(new URL("./fixtures/pty-resize-worker.ts", import.meta.url).href, {
         type: "module",
       });
@@ -413,10 +422,21 @@ describe("guest PTY host primitive (runtime_proc.pty_*)", () => {
           reject(new Error(event.message || "pty resize worker failed"));
         };
       });
-      worker.postMessage({ handle: childSlave.handle(), iterations });
+      worker.postMessage({
+        handle: childSlave.handle(),
+        iterations,
+        checkpoint,
+        checkpointSeq: Math.floor(iterations / 2),
+      });
       try {
-        await sampleConsistentResizes(master, iterations, () => workerSettled);
+        const observedIntermediate = await sampleConsistentResizes(
+          master,
+          iterations,
+          checkpointGate,
+          () => workerSettled,
+        );
         await finished;
+        expect(observedIntermediate).toBe(true);
         expect(master.size()).toEqual({
           cols: 80 + (iterations % 500),
           rows: 24 + (iterations % 200),
@@ -424,6 +444,8 @@ describe("guest PTY host primitive (runtime_proc.pty_*)", () => {
         });
       } finally {
         clearTimeout(timer);
+        Atomics.store(checkpointGate, 0, 1);
+        Atomics.notify(checkpointGate, 0);
         worker.terminate();
         childSlave.close();
         slave.close();
@@ -433,5 +455,5 @@ describe("guest PTY host primitive (runtime_proc.pty_*)", () => {
     } finally {
       broker.dispose();
     }
-  });
+  }, 20_000);
 });
