@@ -1,6 +1,6 @@
 # Vite 8 in the playground
 
-Status: **Completed for stock Vite 8 React (2026-11-27); `@tailwindcss/vite` v4 gap isolated to `bun-wasm` (`O_NONBLOCK`).** Stock Vite 8 React passes the full local finish line across Chromium, Firefox, and WebKit on both `browser` (native) and `quickjs` (`shared-group`) engines. No Waffle runtime bug blocks Vite 8 React or Vite 8 + Tailwind v4.
+Status: **Completed for stock Vite 8 React (2026-11-27); `@tailwindcss/vite` v4 gap isolated to `bun-wasm` (`O_NONBLOCK`).** Stock Vite 8 React passes the full local finish line across Linux Playwright Chromium, Firefox, and WebKit on both `browser` (native) and `quickjs` (`shared-group`) engines. The observed `@tailwindcss/vite` v4 utility-generation failure comes from `bun-wasm`'s `O_NONBLOCK` rejection; with `O_NONBLOCK` masked in a diagnostic wrapper, Vite 8 + Tailwind v4 passed on the `browser` engine across those three Linux Playwright browsers.
 
 Prepared 2026-11-04 from Waffle `745959ed` (package 0.0.110) and bun-wasm `5312b1fb`, which
 consumes the `waffle-v0.0.110` release tarball. Owner request: Waffle track, 2026-10-29 (local
@@ -270,8 +270,8 @@ Verified locally against `waffle` `origin/main` (`e0250d6f5`, packed as `@waffle
 ### Stock Vite 8 React (`vite@8.3.5`, `@vitejs/plugin-react@6.1.2`, `react@19.3.1`, `rolldown@1.2.16`, `@rolldown/binding-wasm32-wasi@1.2.16`)
 
 Unmodified `bun-wasm/sandbox/template` passed all finish-line stages (`bun install`, `vite` dev
-ready, embedded preview frame + click, standalone `__preview/<port>/` load + click, live
-`src/App.tsx` Vite HMR with 0 navigations and preserved counter state, manual reload, keyboard
+ready, injected embedded preview `<iframe>` + click, standalone `__preview/<port>/` load + click,
+live `src/App.tsx` Vite HMR with 0 navigations and preserved counter state, manual reload, keyboard
 `Control+c` stopping dev + unregistering port 5173 + usable prompt, and `vite build` emitting
 nonempty `dist/index.html`, JS, and CSS):
 
