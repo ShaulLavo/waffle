@@ -1,4 +1,4 @@
-import { type FilesystemRequestPool } from "../fs/request-memory.js";
+import { FILESYSTEM_REQUEST_LIMITS, type FilesystemRequestPool } from "../fs/request-memory.js";
 import {
   localMemory,
   localPublication,
@@ -112,6 +112,9 @@ export const WORKSPACE_TAKEN_OVER =
   "This workspace was opened in another tab. Reload to continue here.";
 export const UNSAVED_CHANGES_LOST =
   "Unsaved changes in this tab weren't kept. Copy them before reloading.";
+/** Keep concurrent host requests well below the transport outstanding quota so overflow `take`
+ * follow-ups (up to one per active call) and concurrent workspace/watch traffic never exhaust it. */
+const MAX_CONCURRENT_REQUESTS = Math.max(1, Math.floor(FILESYSTEM_REQUEST_LIMITS.outstanding / 4));
 function workerError(data: unknown): Error | undefined {
   if (
     !data ||
@@ -150,6 +153,9 @@ export class SharedFilesystem {
   readonly workspace: WorkspaceVfs | undefined;
   private worker: Worker;
   private writes: Promise<unknown> = Promise.resolve();
+  private activeRequests = 0;
+  private requestWaiters: (((acquired: boolean) => void) | undefined)[] = [];
+  private requestWaiterHead = 0;
   private socketAttachments = new Set<(error: Error) => void>();
   private fatal: Error | undefined;
   private _state: SharedFilesystemState = Object.freeze({ status: "opening" });
@@ -391,6 +397,7 @@ export class SharedFilesystem {
     const error = new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`);
     for (const cancel of this.socketAttachments) cancel(error);
     this.fatal ??= error;
+    this.abortQueuedRequests();
     if (!this.stopped) {
       revokeFilesystemService(this.client.connection);
       if (!this.joinedReady()) this.stop();
@@ -443,6 +450,7 @@ export class SharedFilesystem {
   private stopClient(): void {
     if (this.clientStopped) return;
     this.clientStopped = true;
+    this.abortQueuedRequests();
     void this.workspace?.close().catch(() => {});
     this.client.dispose();
   }
@@ -628,6 +636,74 @@ export class SharedFilesystem {
     await waitForFilesystemQuiescence(connection);
     this.reap(connection);
   }
+  private requestAbortError(): Error | undefined {
+    if (this.fatal) return this.fatal;
+    if (this.disposal || this.stopped || this.clientStopped) return new FilesystemError(11);
+    const transport = this.client.transportError();
+    if (transport) return transport;
+    if (isRevoked(this.client.connection)) return new FilesystemError(11);
+    return undefined;
+  }
+  private dequeueRequestWaiter(): ((acquired: boolean) => void) | undefined {
+    if (!this.requestWaiters || this.requestWaiterHead >= this.requestWaiters.length)
+      return undefined;
+    const waiter = this.requestWaiters[this.requestWaiterHead];
+    this.requestWaiters[this.requestWaiterHead] = undefined;
+    this.requestWaiterHead++;
+    if (this.requestWaiterHead >= this.requestWaiters.length) {
+      this.requestWaiters.length = 0;
+      this.requestWaiterHead = 0;
+    } else if (
+      this.requestWaiterHead >= 64 &&
+      this.requestWaiterHead * 2 >= this.requestWaiters.length
+    ) {
+      this.requestWaiters = this.requestWaiters.slice(this.requestWaiterHead);
+      this.requestWaiterHead = 0;
+    }
+    return waiter;
+  }
+  private abortQueuedRequests(): void {
+    if (!this.requestWaiters || this.requestWaiterHead >= this.requestWaiters.length) return;
+    const waiters = this.requestWaiters;
+    const start = this.requestWaiterHead;
+    this.requestWaiters = [];
+    this.requestWaiterHead = 0;
+    for (let index = start; index < waiters.length; index++) {
+      waiters[index]?.(false);
+    }
+  }
+  private acquireRequestSlot(): Promise<void> | undefined {
+    const aborted = this.requestAbortError();
+    if (aborted) throw aborted;
+    if (this.activeRequests < MAX_CONCURRENT_REQUESTS) {
+      this.activeRequests++;
+      return undefined;
+    }
+    return this.waitForRequestSlot();
+  }
+  private async waitForRequestSlot(): Promise<void> {
+    const acquired = await new Promise<boolean>((resolve) => {
+      this.requestWaiters.push(resolve);
+    });
+    if (!acquired) throw this.requestAbortError() ?? new FilesystemError(11);
+    const aborted = this.requestAbortError();
+    if (!aborted) return;
+    this.releaseRequestSlot();
+    throw aborted;
+  }
+  private releaseRequestSlot(): void {
+    if (this.requestAbortError()) {
+      this.activeRequests--;
+      this.abortQueuedRequests();
+      return;
+    }
+    const next = this.dequeueRequestWaiter();
+    if (next) {
+      next(true);
+      return;
+    }
+    this.activeRequests--;
+  }
   private async request(
     operation: string,
     args: unknown[] = [],
@@ -635,6 +711,8 @@ export class SharedFilesystem {
     publication?: PublicationAdmission,
   ): Promise<any> {
     this.assertLive();
+    const waiting = this.acquireRequestSlot();
+    if (waiting) await waiting;
     try {
       return await this.client.asyncCall(operation, args, bytes, publication);
     } catch (error) {
@@ -642,6 +720,8 @@ export class SharedFilesystem {
       // actual failure, such as unavailable or corrupt browser storage.
       this.assertLive();
       throw error;
+    } finally {
+      this.releaseRequestSlot();
     }
   }
   private mutate(operation: string, args: unknown[], bytes?: Uint8Array): Promise<any> {
@@ -749,6 +829,7 @@ export class SharedFilesystem {
     // A worker failure can own this rejection before the caller asks for disposal.
     void this.disposal.catch(() => {});
     revokeFilesystemService(this.client.connection);
+    this.abortQueuedRequests();
     const quiescence = waitForFilesystemQuiescence(this.client.connection);
     void quiescence.catch((reason) => {
       this._ownershipRetained = true;
@@ -839,6 +920,7 @@ export class SharedFilesystem {
     this.finishDisposal = finish;
     this.setState("disposed");
     revokeFilesystemService(this.client.connection);
+    this.abortQueuedRequests();
     if (this.stopped || this.startupComplete || !this.cancellableStartup) finish();
     else {
       // Wake pending operations now; the worker is retained only to abort/close startup.
