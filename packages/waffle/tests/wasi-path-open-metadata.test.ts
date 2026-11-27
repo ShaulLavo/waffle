@@ -287,14 +287,21 @@ test("path_open accepts O_DIRECTORY with FDFLAG_NONBLOCK and enumerates entries 
   expect(host.readDirNames(dir.fd).toSorted()).toEqual([".", "..", "index.html", "src"]);
   expect(host.close(dir.fd)).toBe(0);
 
-  // Regular files opened with FDFLAG_NONBLOCK remain readable.
+  // Regular files opened with FDFLAG_NONBLOCK retain the flag in fd_fdstat_get and remain readable.
   const file = host.openRaw(3, "home/user/index.html", {
     fdflags: FDFLAG_NONBLOCK,
     base: RIGHT_FD_READ,
   });
   expect(file.errno).toBe(0);
+  expect(host.fdFlags(file.fd) & FDFLAG_NONBLOCK).toBe(FDFLAG_NONBLOCK);
   expect(host.readAll(file.fd)).toBe("<!doctype html>\n");
   expect(host.close(file.fd)).toBe(0);
+
+  // Opening without FDFLAG_NONBLOCK clears the bit in fd_fdstat_get.
+  const blockingFile = host.openRaw(3, "home/user/index.html", { base: RIGHT_FD_READ });
+  expect(blockingFile.errno).toBe(0);
+  expect(host.fdFlags(blockingFile.fd) & FDFLAG_NONBLOCK).toBe(0);
+  expect(host.close(blockingFile.fd)).toBe(0);
 
   // O_DIRECTORY | FDFLAG_NONBLOCK still rejects a regular file with ENOTDIR (54).
   expect(

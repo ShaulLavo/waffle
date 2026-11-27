@@ -243,18 +243,20 @@ or a fleet host per `.internal/owner-machine.md`. Keep only small results under 
 ## Open questions
 
 1. Why does `node:http` fail where `Bun.serve` succeeds on the standalone preview URL, and which
-   repository owns that point? **Resolved** (November 6 trace and November 27 acceptance: guest
-   lifetime / Vite probe behavior handled in `bun-wasm`; standalone `__preview/<port>/` and
-   embedded frames both pass HTTP 200 across all three browsers).
-2. Did the embedded frame render in run B? **Superseded** by November 27 acceptance, where both
-   the embedded preview frame (playground + `sandbox/dist`) and standalone preview pass across
-   Chromium, Firefox, and WebKit.
+   repository owns that point? **Historical public cause unconfirmed; current local build passes.**
+   The November 6 trace established stdin-induced shutdown in a local noninteractive Vite 7
+   diagnostic, not the exact cause of the historical November 2 public 502. On November 27, the
+   current local `waffle` + `bun-wasm` build passed both standalone `__preview/<port>/` and
+   embedded preview routes with HTTP 200 across Chromium, Firefox, and WebKit.
+2. Did the embedded frame render in run B? **Unrecorded for run B; superseded by November 27
+   acceptance**, where both the embedded preview frame (playground + `sandbox/dist`) and standalone
+   preview pass across Chromium, Firefox, and WebKit.
 3. Does the current local playground reproduce run B, or did the public build differ from current
-   bun-wasm `main`? **Resolved** — current `waffle` (`e0250d6f5`) + `bun-wasm` (`2d6c0e5d8`) passes
-   the complete stock Vite 8 React finish line with zero 502s.
-4. Does the Vite HMR WebSocket upgrade work through the preview at all? **Resolved** — live
-   `src/App.tsx` edits reach open pages via Vite HMR in 90–237 ms (`browser`) with 0 navigations
-   and counter state preserved across Chromium, Firefox, and WebKit.
+   bun-wasm `main`? **Does not reproduce on current `main`** — current `waffle` (`e0250d6f5`) +
+   `bun-wasm` (`2d6c0e5d8`) passes the complete stock Vite 8 React finish line with zero 502s.
+4. Does the Vite HMR WebSocket upgrade work through the preview at all? **Yes on current `main`** —
+   live `src/App.tsx` edits reach open pages via Vite HMR in 90–237 ms (`browser`) with 0
+   navigations and counter state preserved across Chromium, Firefox, and WebKit.
 5. Why did the vinext pins in run C miss the Rolldown WASM binding when run B's install got it?
    Remains a Bun-track follow-on outside this finish line.
 
@@ -307,11 +309,13 @@ Root cause is strictly in `ShaulLavo/bun-wasm`, not Waffle:
 - Waffle's own `path_open` (`packages/waffle/core/wasi.ts`, `packages/waffle/core/fd-reopen.ts`)
   already accepts `O_DIRECTORY | FDFLAG_NONBLOCK` and enumerates entries via `fd_readdir`
   (locked in by `packages/waffle/tests/wasi-path-open-metadata.test.ts`).
-- Masking `O_NONBLOCK` in a diagnostic test-only `fs.openSync` wrapper proves zero secondary gaps
-  remain behind it: full Vite 8 + React 19 + `@tailwindcss/vite@4.3.5` dev styles, live HMR adding
-  a new `text-rose-500` utility class (0 navigations, counter preserved), manual reload, Ctrl-C +
-  prompt, and `vite build` (`5,643 B` CSS with `.flex`, `.bg-slate-900`, `.text-rose-500`) pass on
-  Chromium (12.7 s), Firefox (18.5 s), and WebKit (17.2 s) with 0 console/page errors.
+- Masking `O_NONBLOCK` in a diagnostic test-only `fs.openSync` wrapper shows no secondary
+  Waffle or `bun-wasm` failure on the tested Linux desktop Playwright runs: full Vite 8 + React 19
+  + `@tailwindcss/vite@4.3.5` dev styles, live HMR adding a new `text-rose-500` utility class
+  (0 navigations, counter preserved), manual reload, Ctrl-C + prompt, and `vite build` (`5,643 B`
+  CSS with `.flex`, `.bg-slate-900`, `.text-rose-500`) pass on Chromium (12.7 s), Firefox (18.5 s),
+  and WebKit (17.2 s) with 0 console/page errors. Native macOS Safari and iOS Safari were not run
+  for Tailwind v4.
 - Separate iOS Safari note: `@tailwindcss/oxide-wasm32-wasi@4.3.5/tailwindcss-oxide.wasi.cjs`
   requests `new WebAssembly.Memory({ initial: 16384, maximum: 65536, shared: true })` (1 GiB
   initial / 4 GiB max shared memory), which passes desktop browsers and Linux WebKit 27.2 but
