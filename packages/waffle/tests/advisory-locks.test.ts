@@ -1543,6 +1543,55 @@ describe("runtime_fs advisory locks over WASI", () => {
     coverC.rollback?.();
     expect(cap2.diagnostics().ranges).toBe(2);
     cap2.dispose();
+
+    // Partial F_UNLCK over the bytes covered by an earlier pending grant MUST prune that
+    // unreachable dependency and release its rollback reservation even while a newer pending
+    // grant remains live on non-overlapping bytes.
+    const capPartial = new LockTable({ maxRangeLocks: 2 });
+    expect(
+      capPartial.setRangeLock(1, undefined, 1, 1, { type: F_WRLCK, start: 0, len: 5 }, false).errno,
+    ).toBe(0);
+    expect(
+      capPartial.setRangeLock(1, undefined, 1, 1, { type: F_WRLCK, start: 10, len: 5 }, false)
+        .errno,
+    ).toBe(0);
+    const pA = capPartial.setRangeLock(
+      1,
+      undefined,
+      1,
+      1,
+      { type: F_WRLCK, start: 0, len: 15 },
+      false,
+      true,
+    );
+    const pB = capPartial.setRangeLock(
+      1,
+      undefined,
+      1,
+      1,
+      { type: F_RDLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    expect(pA.errno).toBe(0);
+    expect(pB.errno).toBe(0);
+    expect(
+      capPartial.setRangeLock(1, undefined, 1, 1, { type: F_UNLCK, start: 0, len: 15 }, false)
+        .errno,
+    ).toBe(0);
+    expect(capPartial.diagnostics()).toMatchObject({
+      inodes: 1,
+      ranges: 1,
+      pendingTransactions: 1,
+    });
+    // The second slot is immediately available for an unrelated inode.
+    expect(
+      capPartial.setRangeLock(2, undefined, 2, 2, { type: F_WRLCK, start: 0, len: 5 }, false).errno,
+    ).toBe(0);
+    pA.rollback?.();
+    pB.rollback?.();
+    expect(capPartial.diagnostics()).toMatchObject({ ranges: 1, pendingTransactions: 0 });
+    capPartial.dispose();
   });
 
   test("OFD churn leaves bounded metadata and byte-range/flock/waiter caps return ENOLCK while unlock succeeds", () => {

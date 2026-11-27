@@ -267,12 +267,70 @@ function spliceDeltaSegment(
   if (cursor < seg.end) out.push({ start: cursor, end: seg.end, prevType: F_UNLCK, prevOpId: 0 });
 }
 
-function rollbackReserveForDelta(delta: readonly RangeDeltaSegment[]): number {
+interface ByteInterval {
+  readonly start: number;
+  readonly end: number;
+}
+
+function addInterval(
+  map: Map<number, ByteInterval[]>,
+  opId: number,
+  start: number,
+  end: number,
+): void {
+  let list = map.get(opId);
+  if (!list) {
+    list = [];
+    map.set(opId, list);
+  }
+  list.push({ start, end });
+}
+
+function mergeIntervals(intervals: readonly ByteInterval[]): ByteInterval[] {
+  const sorted = intervals.toSorted((left, right) => left.start - right.start);
+  const merged: ByteInterval[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const cur = sorted[i]!;
+    const prev = merged[merged.length - 1];
+    if (prev && prev.end >= cur.start) {
+      merged[merged.length - 1] = { start: prev.start, end: Math.max(prev.end, cur.end) };
+      continue;
+    }
+    merged.push(cur);
+  }
+  return merged;
+}
+
+function intersectDeltaWithIntervals(
+  delta: readonly RangeDeltaSegment[],
+  intervals: readonly ByteInterval[],
+): RangeDeltaSegment[] {
+  const spans = mergeIntervals(intervals);
+  const out: RangeDeltaSegment[] = [];
+  for (let i = 0; i < spans.length; i++) {
+    const span = spans[i]!;
+    for (let j = 0; j < delta.length; j++) {
+      const piece = delta[j]!;
+      if (piece.end <= span.start) continue;
+      if (piece.start >= span.end) break;
+      out.push({
+        start: Math.max(span.start, piece.start),
+        end: Math.min(span.end, piece.end),
+        prevType: piece.prevType,
+        prevOpId: piece.prevOpId,
+      });
+    }
+  }
+  return out;
+}
+
+function rollbackReserveForDelta(delta: readonly RangeDeltaSegment[], liveCount = 0): number {
   let nonUnlock = 0;
   for (let i = 0; i < delta.length; i++) {
     if (delta[i]!.prevType !== F_UNLCK) nonUnlock += 1;
   }
-  return nonUnlock > 1 ? nonUnlock - 1 : 0;
+  const backing = liveCount > 1 ? liveCount : 1;
+  return nonUnlock > backing ? nonUnlock - backing : 0;
 }
 
 function spliceRangeDelta(
@@ -875,47 +933,44 @@ export class LockTable {
     }
   }
 
-  private collectReachableRangeOps(inode: InodeLocks | undefined, owner: string): Set<number> {
-    const reachable = new Set<number>();
-    const queue: number[] = [];
-    if (inode) {
-      for (let i = 0; i < inode.ranges.length; i++) {
-        const entry = inode.ranges[i]!;
-        if (entry.owner === owner && entry.opId !== 0 && !reachable.has(entry.opId)) {
-          reachable.add(entry.opId);
-          queue.push(entry.opId);
-        }
-      }
-    }
-    while (queue.length > 0) {
-      const record = this.rangeOpDeltas.get(queue.pop()!);
-      if (!record) continue;
-      for (let i = 0; i < record.delta.length; i++) {
-        const prevOpId = record.delta[i]!.prevOpId;
-        if (prevOpId !== 0 && !reachable.has(prevOpId)) {
-          reachable.add(prevOpId);
-          queue.push(prevOpId);
-        }
-      }
-    }
-    return reachable;
-  }
-
   private recomputeOwnerRangeReserves(
     ino: number,
     owner: string,
     inode: InodeLocks | undefined,
   ): void {
-    const reachable = this.collectReachableRangeOps(inode, owner);
+    const liveIntervals = new Map<number, ByteInterval[]>();
+    const liveCounts = new Map<number, number>();
+    if (inode) {
+      for (let i = 0; i < inode.ranges.length; i++) {
+        const entry = inode.ranges[i]!;
+        if (entry.owner !== owner || entry.opId === 0) continue;
+        addInterval(liveIntervals, entry.opId, entry.start, entry.end);
+        liveCounts.set(entry.opId, (liveCounts.get(entry.opId) ?? 0) + 1);
+      }
+    }
+    const ownerOps: number[] = [];
     for (const [opId, record] of this.rangeOpDeltas) {
-      if (record.ino !== ino || record.owner !== owner) continue;
-      if (!reachable.has(opId)) {
+      if (record.ino === ino && record.owner === owner) ownerOps.push(opId);
+    }
+    ownerOps.sort((left, right) => right - left);
+    for (let i = 0; i < ownerOps.length; i++) {
+      const opId = ownerOps[i]!;
+      const record = this.rangeOpDeltas.get(opId)!;
+      const spans = liveIntervals.get(opId);
+      const trimmed = spans ? intersectDeltaWithIntervals(record.delta, spans) : [];
+      if (trimmed.length === 0) {
         this.reservedRangeRollbackSlots -= record.reservedSlots;
         this.rangeOpDeltas.delete(opId);
         this.pendingOps.delete(opId);
         continue;
       }
-      const nextReserve = rollbackReserveForDelta(record.delta);
+      record.delta = trimmed;
+      for (let j = 0; j < trimmed.length; j++) {
+        const piece = trimmed[j]!;
+        if (piece.prevOpId !== 0)
+          addInterval(liveIntervals, piece.prevOpId, piece.start, piece.end);
+      }
+      const nextReserve = rollbackReserveForDelta(trimmed, liveCounts.get(opId) ?? 0);
       this.reservedRangeRollbackSlots += nextReserve - record.reservedSlots;
       record.reservedSlots = nextReserve;
     }
