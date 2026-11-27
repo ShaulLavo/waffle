@@ -48,6 +48,7 @@ import {
   PAGE_CELLS,
   SLOT_WORDS,
   HEADER_WORDS,
+  MACHINE_ID_OFFSET,
   SLOT_OFFSET,
   TABLE_OWNER_OFFSET,
   PAGE_CELL_OFFSET,
@@ -55,6 +56,7 @@ import {
   DATA_OFFSET,
   SHARED_ROOT_BYTES,
 } from "./storage-geometry.js";
+import { validateMachineId } from "../core/devices.js";
 import { SHARED_SEGMENT_BYTES } from "./shared-capacity.js";
 export { SLOT_WORDS } from "./storage-geometry.js";
 
@@ -107,6 +109,50 @@ const RESIDENT = 1;
 // The intrinsic copy, so a guest iovec subclass's set() cannot reenter under a file lock. WASI
 // iovecs are plain views; a subclass's overridden length/buffer/byteOffset getters still run there.
 const copyBytes = Uint8Array.prototype.set;
+const HEX_DIGITS = "0123456789abcdef";
+
+function hexWord(word: number): string {
+  let out = "";
+  for (let shift = 28; shift >= 0; shift -= 4) out += HEX_DIGITS[(word >>> shift) & 0xf]!;
+  return out;
+}
+
+/** Derive a stable 32-char lowercase hex machine-id(5) from a UUID workspace identifier. */
+export function machineIdFromWorkspace(workspaceId: string): string {
+  return validateMachineId(workspaceId.replaceAll("-", "").toLowerCase());
+}
+
+/** Publish a 32-char lowercase hex machine-id into the shared root header using a seqlock. */
+export function writeSharedMachineId(cells: Int32Array, machineId: string): void {
+  const valid = validateMachineId(machineId);
+  const seqWord = MACHINE_ID_OFFSET + 4;
+  const current = Atomics.load(cells, seqWord) >>> 0;
+  const base = current & ~1;
+  Atomics.store(cells, seqWord, (base + 1) | 0);
+  for (let i = 0; i < 4; i++) {
+    const word = Number.parseInt(valid.slice(i * 8, i * 8 + 8), 16) | 0;
+    Atomics.store(cells, MACHINE_ID_OFFSET + i, word);
+  }
+  const nextEven = (base + 2) | 0;
+  Atomics.store(cells, seqWord, nextEven === 0 ? 2 : nextEven);
+}
+
+/** Lock-free read of the shared root header's 32-char lowercase hex machine-id. */
+export function readSharedMachineId(cells: Int32Array): string | undefined {
+  const seqWord = MACHINE_ID_OFFSET + 4;
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const seq1 = atomicsLoad(cells, seqWord);
+    if (seq1 === 0) return undefined;
+    if ((seq1 & 1) !== 0) continue;
+    const w0 = atomicsLoad(cells, MACHINE_ID_OFFSET);
+    const w1 = atomicsLoad(cells, MACHINE_ID_OFFSET + 1);
+    const w2 = atomicsLoad(cells, MACHINE_ID_OFFSET + 2);
+    const w3 = atomicsLoad(cells, MACHINE_ID_OFFSET + 3);
+    const seq2 = atomicsLoad(cells, seqWord);
+    if (seq1 === seq2) return hexWord(w0) + hexWord(w1) + hexWord(w2) + hexWord(w3);
+  }
+  return undefined;
+}
 
 export class MissingSegmentError extends Error {}
 export class MissingDataError extends Error {}
@@ -297,6 +343,12 @@ export class SharedFilesystemState {
   setClientMode(mode: number): void {
     Atomics.store(this.cells, CLIENT_MODE, mode | 0);
   }
+  setMachineId(machineId: string): void {
+    writeSharedMachineId(this.cells, machineId);
+  }
+  getMachineId(): string | undefined {
+    return readSharedMachineId(this.cells);
+  }
   isDirectDisabled(): boolean {
     return (atomicsLoad(this.cells, CLIENT_MODE) & CLIENT_MODE_NO_DIRECT_IO) !== 0;
   }
@@ -308,7 +360,8 @@ export class SharedFilesystemState {
   }
   /** Reset all per-mount filesystem state in place across Host remount/demotion while preserving
    * tab-lifetime header invariants (`MAGIC`, `maxSegments`, owner/probe words, `WATCH_OFFSET`,
-   * `watch.cells[3]`, `CLIENT_MODE`, `UNLINK_GENERATION`) and reusing tab-lifetime segments at their exact indexes. */
+   * `watch.cells[3]`, `CLIENT_MODE`, `UNLINK_GENERATION`, `MACHINE_ID_OFFSET..76`) and reusing
+   * tab-lifetime segments at their exact indexes. */
   resetForRemount(retainedSegments: readonly (SharedArrayBuffer | undefined)[] = []): void {
     Atomics.store(this.cells, GLOBAL_LOCK, 0);
     Atomics.store(this.cells, USED_PAGES, 0);
@@ -316,7 +369,7 @@ export class SharedFilesystemState {
     Atomics.store(this.cells, PHYSICAL_HINT, 0);
     Atomics.store(this.cells, TABLE_HINT, 0);
     Atomics.store(this.cells, PINNED_PAGES, 0);
-    for (let i = 32; i < HEADER_WORDS; i++) Atomics.store(this.cells, i, 0);
+    for (let i = 32; i < MACHINE_ID_OFFSET; i++) Atomics.store(this.cells, i, 0);
     this.owners.fill(0);
     this.slots.fill(0);
     this.tableOwners.fill(0);

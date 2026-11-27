@@ -271,6 +271,7 @@ const filesystemCapabilities = {
   move: "async",
   workspace: "readonly",
   state: "readonly",
+  machineId: "readonly",
   vfs: "readonly",
   ownershipLost: "readonly",
   onOwnershipLost: "callback",

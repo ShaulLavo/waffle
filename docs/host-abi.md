@@ -254,6 +254,29 @@ no preopen and are never rooted.
   in for it. Lookups continuing below a directory descriptor's alias (`/dev/fd/N/name`) use
   that directory and its real parent, within the same 40-link budget.
 
+### Virtual `/etc/machine-id`
+
+Waffle serves a stable, read-only virtual `/etc/machine-id` following `machine-id(5)`: 32 lowercase
+hexadecimal characters plus a trailing newline (33 bytes, regular file, mode `0444`).
+
+- **Stability & source:** Derived deterministically from the filesystem workspace UUID (which
+  persists across browser reloads, restarts, and multi-tab failover on IndexedDB and OPFS backends)
+  or set explicitly via `filesystem.machineId` / `WasiOptions.machineId`. Published lock-free in the
+  shared filesystem root header so all workers and spawned processes observe the same value, and
+  readable from the page via `runtime.filesystem.machineId`.
+- **Empty root preserved:** No `/etc` directory or `/etc/machine-id` node is created in the VFS tree.
+  `stat("/etc")` still returns `ENOENT` unless a physical `/etc` exists.
+- **Physical override:** Unlike `/dev/null`, a real file or symlink created at `/etc/machine-id`
+  always takes precedence over the virtual fallback. If a physical `/etc` directory exists without
+  `machine-id`, both `/etc/machine-id` and `openat(etcFd, "machine-id")` serve the virtual file
+  while still enforcing `/etc`'s search permissions.
+- **WASI & host calls:** `path_open` (read-only), `path_filestat_get`, `path_permissions_get`,
+  `path_probe`, `path_realpath`, `fd_fdstat_get`, `fd_filestat_get`, `fd_read`, `fd_pread`,
+  `fd_seek`, `fd_tell`, `fd_dup`, `fd_reopen`, and `runtime_proc.fd_kind` (returns `3`, regular
+  file) all support virtual `/etc/machine-id`. Write, truncate (`O_TRUNC`), and `fd_filestat_set_size`
+  return `EACCES` (2); `O_CREAT | O_EXCL` returns `EEXIST` (20); `O_DIRECTORY` or a trailing slash
+  returns `ENOTDIR` (54).
+
 The same rules hold on every filesystem backend, since they all resolve through one tree.
 Any other preopen layout, such as `/` mapped to a subdirectory or only non-root preopens,
 keeps each lookup beneath the directory it starts from: an absolute target or a `..` that

@@ -621,6 +621,9 @@ export class FilesystemClient implements FileSystem {
   private readonly section: FilesystemSection;
   readonly shared: SharedFilesystemState;
   readonly watches: WatchFileSystem;
+  get machineId(): string | undefined {
+    return this.shared.getMachineId();
+  }
   private watchingRevocation = false;
   private resident: ResidentAttachment | undefined;
   private workspaceStop: Promise<void> | undefined;

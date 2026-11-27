@@ -41,6 +41,7 @@ import { withFileOffset } from "./open-file.js";
 import {
   FilesystemError,
   fileTimeNow,
+  permissionsFor,
   PROBE_PATH_LIMIT,
   type FileHandle,
   type FileSystem,
@@ -53,16 +54,27 @@ import {
   DescriptorTable,
   OpenDescription,
   MAX_DESCRIPTOR,
+  type Descriptor,
   type Readiness,
   type Resource,
   type Stream,
 } from "./descriptors.js";
 import { memoryViews, type MemoryViews } from "./memory-views.js";
 import { GuestWatchTable, type GuestWatchReadiness } from "../fs/guest-watch.js";
-import { createNullDevice } from "./devices.js";
+import {
+  createMachineIdFile,
+  createNullDevice,
+  MACHINE_ID_FILE_SIZE,
+  MACHINE_ID_INO,
+  readVirtualFileBytes,
+  seekVirtualFile,
+  tellVirtualFile,
+  validateMachineId,
+} from "./devices.js";
 
 // errno
 const SUCCESS = 0;
+const EACCES = 2;
 const EBADF = 8;
 const EEXIST = 20;
 const EFAULT = 21;
@@ -131,6 +143,8 @@ export interface WasiOptions {
   args: readonly string[];
   env: Record<string, string>;
   fs: FileSystem;
+  /** Optional explicit 32-char lowercase hex machine-id(5) override for virtual `/etc/machine-id`. */
+  machineId?: string;
   /** Explicit guest adapter namespaces; unknown imports fail before instantiation. */
   namespaces?: WebAssembly.Imports;
   /** Reserved socket number used by a guest adapter, not an ordinary descriptor. */
@@ -304,6 +318,50 @@ export class Wasi {
   private rootedSnapshot?: boolean;
   /** The handle a `/` preopen spelled exactly `/` opened: the filesystem root, known for free. */
   private literalRoot?: number;
+  private readonly explicitMachineId?: string;
+  private machineId(): string | undefined {
+    return this.explicitMachineId ?? this.opts.fs.machineId;
+  }
+  private virtualMachineIdStat(): FileStat {
+    return {
+      kind: "file",
+      ino: MACHINE_ID_INO,
+      nlink: 1,
+      size: MACHINE_ID_FILE_SIZE,
+      atime: 0n,
+      mtime: 0n,
+      ctime: 0n,
+      mode: 0o444,
+    };
+  }
+  private resolveVirtualMachineId(
+    entry: Descriptor,
+    path: string,
+    follow: boolean,
+  ): "machine-id" | number | undefined {
+    if (this.machineId() === undefined) return undefined;
+    const alias = resolveDescriptorPath(
+      this.descriptors,
+      this.opts.fs,
+      entry,
+      path,
+      follow ? "follow" : "nofollow",
+      this.rooted,
+      true,
+    );
+    if (typeof alias === "number") return alias;
+    if (alias !== undefined && "virtualFile" in alias) return alias.virtualFile;
+    return undefined;
+  }
+  private relativeVirtualMachineId(handle: FileHandle): string {
+    const rootHandle = this.opts.fs.preopen("/");
+    if (
+      handle === rootHandle ||
+      this.opts.fs.stat(handle).ino === this.opts.fs.stat(rootHandle).ino
+    )
+      return "etc/machine-id";
+    return "machine-id";
+  }
   private get rooted(): boolean {
     return (this.rootedSnapshot ??= this.rootNamespace());
   }
@@ -345,6 +403,7 @@ export class Wasi {
   }
 
   constructor(private opts: WasiOptions) {
+    if (opts.machineId !== undefined) this.explicitMachineId = validateMachineId(opts.machineId);
     const reserved = new Set<number>();
     for (const fd of opts.reservedFds ?? []) {
       if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR || reserved.has(fd))
@@ -405,6 +464,26 @@ export class Wasi {
     if (oflags & ~15 || fdflags & ~31) return EINVAL;
     return this.writeResult(
       this.descriptors.open(createNullDevice(fdflags), base, inheriting),
+      out >>> 0,
+    );
+  }
+
+  private openVirtualMachineId(
+    fdflags: number,
+    base: bigint,
+    inheriting: bigint,
+    oflags: number,
+    out: number,
+  ): number {
+    if ((out >>> 0) + 4 > this.bytes().length) return EFAULT;
+    if (oflags & O_DIRECTORY) return ENOTDIR;
+    if (oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
+    if (oflags & ~15 || fdflags & ~31) return EINVAL;
+    if ((oflags & O_TRUNC) !== 0 || (base & RIGHT_FD_WRITE) !== 0n) return EACCES;
+    const id = this.machineId();
+    if (id === undefined) return ENOENT;
+    return this.writeResult(
+      this.descriptors.open(createMachineIdFile(id, fdflags), base, inheriting),
       out >>> 0,
     );
   }
@@ -790,7 +869,15 @@ export class Wasi {
     if (!entry) return EBADF;
     if (entry.resource.kind !== "directory") return ENOTDIR;
     if (!(entry.rightsBase & RIGHT_PATH_FILESTAT_GET)) return ENOTCAPABLE;
-    const real = this.opts.fs.realpath(entry.resource.handle, path, this.rooted);
+    let real = this.opts.fs.realpath(entry.resource.handle, path, this.rooted);
+    if (real === ENOENT) {
+      const virtual = this.resolveVirtualMachineId(entry, path, true);
+      if (typeof virtual === "number") return virtual;
+      if (virtual === "machine-id")
+        real = this.rooted
+          ? "/etc/machine-id"
+          : this.relativeVirtualMachineId(entry.resource.handle);
+    }
     if (typeof real === "number") return real;
     const encoded = encoder.encode(real);
     // Reacquire after the service round trip; another thread may have grown shared memory.
@@ -849,9 +936,17 @@ export class Wasi {
     if (entry.resource.kind !== "directory") return ENOTDIR;
     if (!(entry.rightsBase & RIGHT_PATH_FILESTAT_GET)) return ENOTCAPABLE;
     const resolved = this.opts.fs.resolve(entry.resource.handle, path, false, this.rooted);
-    if (typeof resolved === "number") return resolved;
-    if (resolved.node === undefined) return ENOENT;
-    const result = this.opts.fs.permissions?.(resolved.node);
+    let result =
+      typeof resolved !== "number" && resolved.node !== undefined
+        ? this.opts.fs.permissions?.(resolved.node)
+        : undefined;
+    if (typeof resolved === "number" || resolved.node === undefined) {
+      if (typeof resolved === "number" && resolved !== ENOENT) return resolved;
+      const virtual = this.resolveVirtualMachineId(entry, path, false);
+      if (typeof virtual === "number") return virtual;
+      if (virtual !== "machine-id") return ENOENT;
+      result = permissionsFor("file", 0o444);
+    }
     if (!result) return ENOTSUP;
     const view = this.view();
     view.setUint32(out, result.mode, true);
@@ -1007,27 +1102,22 @@ export class Wasi {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
         const view = this.view();
-        const filetype =
-          entry.resource.kind === "terminal" || entry.resource.kind === "device"
-            ? FT_CHAR
-            : entry.resource.kind === "directory"
-              ? FT_DIR
-              : entry.resource.kind === "socket"
-                ? FT_SOCKET
-                : entry.resource.kind === "pipe"
-                  ? 0
-                  : FT_FILE;
+        const resource = entry.resource;
+        let filetype = FT_FILE;
+        if (resource.kind === "terminal") filetype = FT_CHAR;
+        else if (resource.kind === "device") filetype = resource.virtualFile ? FT_FILE : FT_CHAR;
+        else if (resource.kind === "directory") filetype = FT_DIR;
+        else if (resource.kind === "socket") filetype = FT_SOCKET;
+        else if (resource.kind === "pipe") filetype = 0;
+        let fdflags = 0;
+        if (resource.kind === "file") {
+          fdflags =
+            ((resource.fdflags ?? 0) & ~FDFLAG_APPEND) | (resource.append ? FDFLAG_APPEND : 0);
+        } else if (resource.kind !== "directory") {
+          fdflags = resource.fdflags ?? 0;
+        }
         view.setUint8(ptr, filetype);
-        view.setUint16(
-          ptr + 2,
-          entry.resource.kind === "file"
-            ? ((entry.resource.fdflags ?? 0) & ~FDFLAG_APPEND) |
-                (entry.resource.append ? FDFLAG_APPEND : 0)
-            : entry.resource.kind === "directory"
-              ? 0
-              : (entry.resource.fdflags ?? 0),
-          true,
-        );
+        view.setUint16(ptr + 2, fdflags, true);
         view.setBigUint64(ptr + 8, entry.rightsBase, true);
         view.setBigUint64(ptr + 16, entry.rightsInheriting, true);
         return SUCCESS;
@@ -1064,18 +1154,26 @@ export class Wasi {
         return SUCCESS;
       },
       fd_filestat_get: this.descriptorCall(RIGHT_FD_FILESTAT_GET, (resource, ptr: number) => {
+        if (resource.kind === "device" && resource.virtualFile) {
+          this.writeFilestat(ptr, this.virtualMachineIdStat());
+          return SUCCESS;
+        }
+        let streamType = FT_CHAR;
+        if (resource.kind === "pipe") streamType = 0;
+        else if (resource.kind === "socket") streamType = FT_SOCKET;
         this.writeFilestat(
           ptr,
           resource.kind === "file" || resource.kind === "directory"
             ? this.opts.fs.stat(resource.handle)
             : null,
-          resource.kind === "pipe" ? 0 : resource.kind === "socket" ? FT_SOCKET : FT_CHAR,
+          streamType,
         );
         return SUCCESS;
       }),
       fd_filestat_set_size: this.descriptorCall(
         RIGHT_FD_FILESTAT_SET_SIZE,
         (resource, size: bigint) => {
+          if (resource.kind === "device" && resource.virtualFile) return EACCES;
           if (resource.kind !== "file") return EINVAL;
           if (!isSupportedFileSize(size)) return EFBIG;
           return this.opts.fs.resize(resource.handle, Number(size), true);
@@ -1093,6 +1191,17 @@ export class Wasi {
         RIGHT_FD_READ | RIGHT_FD_SEEK,
         (resource, iovs: number, count: number, offset: bigint, nreadPtr: number) => {
           if (resource.kind === "directory") return EISDIR;
+          if (resource.kind === "device" && resource.virtualFile) {
+            if (offset < 0n) return EINVAL;
+            return this.writeResult(
+              readVirtualFileBytes(
+                resource.virtualFile.data,
+                this.iovecs(iovs, count),
+                Number(offset),
+              ),
+              nreadPtr,
+            );
+          }
           if (resource.kind !== "file") return ESPIPE;
           if (offset < 0n) return EINVAL;
           return this.writeResult(
@@ -1105,6 +1214,7 @@ export class Wasi {
         RIGHT_FD_WRITE | RIGHT_FD_SEEK,
         (resource, iovs: number, count: number, offset: bigint, nwrittenPtr: number) => {
           if (resource.kind === "directory") return EISDIR;
+          if (resource.kind === "device" && resource.virtualFile) return EACCES;
           if (resource.kind !== "file") return ESPIPE;
           if (offset < 0n) return EINVAL;
           return this.writeResult(
@@ -1175,17 +1285,19 @@ export class Wasi {
         const right = offset === 0n && whence === 1 ? RIGHT_FD_TELL | RIGHT_FD_SEEK : RIGHT_FD_SEEK;
         if (!(entry.rightsBase & right)) return ENOTCAPABLE;
         if (entry.resource.kind === "directory") return EISDIR;
+        if (entry.resource.kind === "device" && entry.resource.virtualFile) {
+          const next = seekVirtualFile(entry.resource.virtualFile, offset, whence);
+          if (typeof next === "number") return -next;
+          this.view().setBigUint64(newOffsetPtr, next, true);
+          return SUCCESS;
+        }
         if (entry.resource.kind !== "file") return ESPIPE;
         const file = entry.resource;
         const result = withFileOffset(file, () => {
-          const base =
-            whence === 0
-              ? 0
-              : whence === 1
-                ? file.offset
-                : whence === 2
-                  ? this.opts.fs.stat(file.handle).size
-                  : NaN;
+          let base = Number.NaN;
+          if (whence === 0) base = 0;
+          else if (whence === 1) base = file.offset;
+          else if (whence === 2) base = this.opts.fs.stat(file.handle).size;
           const pos = base + Number(offset);
           if (!(pos >= 0)) return -EINVAL;
           file.offset = pos;
@@ -1195,6 +1307,10 @@ export class Wasi {
         return result < 0 ? -result : result;
       },
       fd_tell: this.descriptorCall(RIGHT_FD_TELL, (resource, ptr: number) => {
+        if (resource.kind === "device" && resource.virtualFile) {
+          this.view().setBigUint64(ptr, tellVirtualFile(resource.virtualFile), true);
+          return SUCCESS;
+        }
         if (resource.kind !== "file") return ESPIPE;
         this.view().setBigUint64(ptr, BigInt(resource.offset), true);
         return SUCCESS;
@@ -1226,11 +1342,22 @@ export class Wasi {
         return typeof result === "number" ? SUCCESS : result.error;
       },
       path_filestat_get: (fd: number, flags: number, ptr: number, len: number, buf: number) => {
-        const path = this.resolve(fd, ptr, len, RIGHT_PATH_FILESTAT_GET, lookupFlags(flags));
-        if (typeof path === "number") return path;
-        const node = path.node;
-        if (node === undefined) return ENOENT;
-        this.writeFilestat(buf, this.opts.fs.stat(node));
+        const follow = lookupFlags(flags);
+        const path = this.resolve(fd, ptr, len, RIGHT_PATH_FILESTAT_GET, follow);
+        if (typeof path === "number" || path.node === undefined) {
+          if (typeof path === "number" && path !== ENOENT) return path;
+          const entry = this.descriptors.get(fd);
+          if (!entry) return EBADF;
+          const name = this.str(ptr, len);
+          const virtual = this.resolveVirtualMachineId(entry, name, followsFinal(follow, name));
+          if (typeof virtual === "number") return virtual;
+          if (virtual === "machine-id") {
+            this.writeFilestat(buf, this.virtualMachineIdStat());
+            return SUCCESS;
+          }
+          return ENOENT;
+        }
+        this.writeFilestat(buf, this.opts.fs.stat(path.node));
         return SUCCESS;
       },
       path_filestat_set_times: (
@@ -1298,16 +1425,24 @@ export class Wasi {
         const name = this.str(ptr, len);
         const exclusive = (oflags & O_CREAT && oflags & O_EXCL) !== 0;
         const follow = !exclusive && followsFinal(lookupFlags(dirflags), name);
+        let finalLink: "exclusive-create" | "follow" | "nofollow" = "nofollow";
+        if (exclusive) finalLink = "exclusive-create";
+        else if (follow) finalLink = "follow";
         const alias = resolveDescriptorPath(
           this.descriptors,
           this.opts.fs,
           dir,
           name,
-          exclusive ? "exclusive-create" : follow ? "follow" : "nofollow",
+          finalLink,
           this.rooted,
+          this.machineId() !== undefined,
         );
         if (typeof alias === "number") return alias;
         if (alias !== undefined && !("resolved" in alias)) {
+          if ("virtualFile" in alias) {
+            if (fdOut + 4 > this.bytes().length) return EFAULT;
+            return this.openVirtualMachineId(fdflags, rightsBase, rightsInheriting, oflags, fdOut);
+          }
           if ("device" in alias) {
             if (fdOut + 4 > this.bytes().length) return EFAULT;
             return this.openDevice(fdflags, rightsBase, rightsInheriting, oflags, fdOut);

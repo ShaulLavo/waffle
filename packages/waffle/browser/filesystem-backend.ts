@@ -18,6 +18,7 @@ export interface FilesystemBackendOptions {
   readonly implementation?: "indexeddb" | "opfs-memory" | "memory";
   readonly startupRoot?: MemoryBudget;
   readonly connect?: MemoryBackendSharedRoot;
+  readonly machineId?: string;
 }
 export interface FilesystemBackendLifecycle {
   readonly retainOpeningDebt?: (debt: Promise<void>) => void;
@@ -37,7 +38,14 @@ export async function openFilesystemBackend(
   const { descriptor, whenBusy } = resolveVfs(options, options.implementation);
   requireVfsCapabilities(descriptor.implementation, whenBusy);
   if (descriptor.implementation === "memory")
-    return new MemoryBackend(undefined, undefined, options.startupRoot, undefined, options.connect);
+    return new MemoryBackend(
+      undefined,
+      undefined,
+      options.startupRoot,
+      undefined,
+      options.connect,
+      options.machineId,
+    );
   if (whenBusy === "attach") {
     const { MultiTabBackend } = await import("../fs/multitab-backend.js");
     return MultiTabBackend.open({
@@ -45,6 +53,7 @@ export async function openFilesystemBackend(
       name: options.name ?? "waffle-workspace",
       startupRoot: options.startupRoot,
       sharedRoot: options.connect,
+      machineId: options.machineId,
       onStartupStage: lifecycle.onStartupStage,
       signal: lifecycle.signal,
       onWaiting: lifecycle.onWaiting,
@@ -71,6 +80,7 @@ export async function openFilesystemBackend(
   backend = await PersistentBackend.open(storage, {
     startupRoot: options.startupRoot,
     sharedRoot: options.connect,
+    machineId: options.machineId,
   });
   if (ownershipLost) {
     backend.dispose();
