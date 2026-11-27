@@ -359,4 +359,54 @@ describe("guest PTY host primitive (runtime_proc.pty_*)", () => {
       broker.dispose();
     }
   });
+
+  test("concurrent cross-worker resize() and size() never observe torn dimensions or sequence", async () => {
+    const broker = new WorkerPipeBroker({ relay: "manual" });
+    const transport = createWorkerProcessTransport({ pid: 30 });
+    const host = new WorkerPipeHost({
+      transport,
+      postMessage(message) {
+        if (message.operation === "pipe") broker.attach(message.handle as PipeEndpointHandle);
+      },
+    });
+    host.registry.registerProcess(31);
+    try {
+      const [master, slave] = host.createPty(80, 24);
+      const childSlave = slave.forProcess(31);
+      const iterations = 5_000;
+      const worker = new Worker(new URL("./fixtures/pty-resize-worker.ts", import.meta.url).href, {
+        type: "module",
+      });
+      const finished = new Promise<void>((resolve, reject) => {
+        worker.onmessage = () => resolve();
+        worker.onerror = (event) => reject(new Error(event.message || "pty resize worker failed"));
+      });
+      worker.postMessage({ handle: childSlave.handle(), iterations });
+      try {
+        let lastSeq = 0;
+        while (lastSeq < iterations) {
+          const snap = master.size();
+          expect(snap.seq).toBeGreaterThanOrEqual(lastSeq);
+          expect(snap.cols).toBe(80 + (snap.seq % 500));
+          expect(snap.rows).toBe(24 + (snap.seq % 200));
+          lastSeq = snap.seq;
+          await Promise.resolve();
+        }
+        await finished;
+        expect(master.size()).toEqual({
+          cols: 80 + (iterations % 500),
+          rows: 24 + (iterations % 200),
+          seq: iterations,
+        });
+      } finally {
+        worker.terminate();
+        childSlave.close();
+        slave.close();
+        master.close();
+        broker.pump();
+      }
+    } finally {
+      broker.dispose();
+    }
+  });
 });

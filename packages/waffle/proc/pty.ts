@@ -2,14 +2,20 @@ import type { Readiness, Stream } from "../core/descriptors.js";
 import { allocateSharedControl } from "../memory/control.ts";
 import { ProcessErrno, ProcessError } from "./errors.ts";
 import {
+  BigInt64ArrayConstructor,
   Int32ArrayConstructor,
   atomicsAdd,
+  atomicsCompareExchange,
   atomicsLoad,
   atomicsNotify,
   atomicsStore,
   isSharedArrayBuffer,
   typedArrayLength,
 } from "./intrinsics.ts";
+
+const bigintConstructor = BigInt;
+const bigIntAsIntN = BigInt.asIntN;
+const numberConstructor = Number;
 import {
   PipeEndpoint,
   attachPipeEndpoint,
@@ -32,7 +38,7 @@ export interface PtyEndpointHandle {
   readonly geometry: SharedArrayBuffer;
 }
 
-/** Four Int32 words: [packed (rows << 16) | cols, resizeSeq, reserved, reserved]. */
+/** Two BigUint64 words: [word0 = (resizeSeq << 32) | (rows << 16) | cols, word1 = reserved]. */
 export const PTY_GEOMETRY_BYTES = 16;
 export const MAX_PTY_DIMENSION = 0xffff;
 
@@ -51,7 +57,14 @@ function isValidPtyGeometryBuffer(buffer: unknown): buffer is SharedArrayBuffer 
 }
 
 function packPtySize(cols: number, rows: number): number {
-  return ((rows & 0xffff) << 16) | (cols & 0xffff);
+  return (((rows & 0xffff) << 16) | (cols & 0xffff)) >>> 0;
+}
+
+function packGeometryWord(cols: number, rows: number, seq: number): bigint {
+  return bigIntAsIntN(
+    64,
+    (bigintConstructor(seq >>> 0) << 32n) | bigintConstructor(packPtySize(cols, rows)),
+  );
 }
 
 export function allocatePtyGeometry(
@@ -63,11 +76,9 @@ export function allocatePtyGeometry(
   const buffer = allocateShared
     ? allocateShared(PTY_GEOMETRY_BYTES)
     : allocateSharedControl(PTY_GEOMETRY_BYTES);
-  const cells = new Int32ArrayConstructor(buffer, 0, 4);
-  atomicsStore(cells, 0, packPtySize(cols, rows));
-  atomicsStore(cells, 1, 0);
-  atomicsStore(cells, 2, 0);
-  atomicsStore(cells, 3, 0);
+  const words = new BigInt64ArrayConstructor(buffer, 0, 2);
+  atomicsStore(words, 0, packGeometryWord(cols, rows, 0));
+  atomicsStore(words, 1, 0n);
   return buffer;
 }
 
@@ -77,7 +88,7 @@ export function allocatePtyGeometry(
 export class PtyEndpoint implements Stream {
   readonly kind: "pipe" | "terminal";
   readonly notification: Int32Array;
-  private readonly geometry: Int32Array;
+  private readonly geometry: BigInt64Array<SharedArrayBuffer>;
   private closed = false;
   constructor(
     readonly role: PtyRole,
@@ -89,7 +100,7 @@ export class PtyEndpoint implements Stream {
       throw new TypeError("invalid pty geometry buffer");
     this.kind = role === "slave" ? "terminal" : "pipe";
     this.notification = readEnd.notification;
-    this.geometry = new Int32ArrayConstructor(geometryBuffer, 0, 4);
+    this.geometry = new BigInt64ArrayConstructor(geometryBuffer, 0, 2);
   }
   get pid(): number {
     return this.readEnd.pid;
@@ -127,22 +138,24 @@ export class PtyEndpoint implements Stream {
     };
   }
   size(): PtySize {
-    for (;;) {
-      const seq1 = atomicsLoad(this.geometry, 1);
-      const packed = atomicsLoad(this.geometry, 0);
-      const seq2 = atomicsLoad(this.geometry, 1);
-      if (seq1 !== seq2) continue;
-      return {
-        cols: packed & 0xffff,
-        rows: (packed >>> 16) & 0xffff,
-        seq: seq1 >>> 0,
-      };
-    }
+    const word = atomicsLoad(this.geometry, 0);
+    const packed = numberConstructor(word & 0xffffffffn);
+    const seq = numberConstructor((word >> 32n) & 0xffffffffn);
+    return {
+      cols: packed & 0xffff,
+      rows: (packed >>> 16) & 0xffff,
+      seq,
+    };
   }
   resize(cols: number, rows: number): void {
     validatePtyDimensions(cols, rows);
-    atomicsStore(this.geometry, 0, packPtySize(cols, rows));
-    atomicsAdd(this.geometry, 1, 1);
+    const dims = bigintConstructor(packPtySize(cols, rows));
+    for (;;) {
+      const prev = atomicsLoad(this.geometry, 0);
+      const nextSeq = (((prev >> 32n) & 0xffffffffn) + 1n) & 0xffffffffn;
+      const next = bigIntAsIntN(64, (nextSeq << 32n) | dims);
+      if (atomicsCompareExchange(this.geometry, 0, prev, next) === prev) break;
+    }
     atomicsAdd(this.notification, 0, 1);
     atomicsNotify(this.notification, 0);
   }
