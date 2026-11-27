@@ -47,6 +47,20 @@ interface RangeDeltaSegment {
   readonly start: number;
   readonly end: number;
   readonly prevType: PrevRangeType;
+  prevOpId: number;
+}
+
+interface FlockOpRecord {
+  readonly ino: number;
+  readonly ofdId: string;
+  prevMode: FlockMode | undefined;
+  prevOpId: number;
+}
+
+interface RangeOpRecord {
+  readonly ino: number;
+  readonly owner: string;
+  delta: RangeDeltaSegment[];
 }
 
 interface Waiter {
@@ -224,12 +238,49 @@ function computeRangeDelta(
     if (entry.start >= end) break;
     const ovStart = Math.max(entry.start, cursor);
     const ovEnd = Math.min(entry.end, end);
-    if (ovStart > cursor) delta.push({ start: cursor, end: ovStart, prevType: F_UNLCK });
-    delta.push({ start: ovStart, end: ovEnd, prevType: entry.type });
+    if (ovStart > cursor)
+      delta.push({ start: cursor, end: ovStart, prevType: F_UNLCK, prevOpId: 0 });
+    delta.push({ start: ovStart, end: ovEnd, prevType: entry.type, prevOpId: entry.opId });
     cursor = ovEnd;
   }
-  if (cursor < end) delta.push({ start: cursor, end, prevType: F_UNLCK });
+  if (cursor < end) delta.push({ start: cursor, end, prevType: F_UNLCK, prevOpId: 0 });
   return delta;
+}
+
+function spliceDeltaSegment(
+  seg: RangeDeltaSegment,
+  cancelledDelta: readonly RangeDeltaSegment[],
+  out: RangeDeltaSegment[],
+): void {
+  let cursor = seg.start;
+  for (let i = 0; i < cancelledDelta.length; i++) {
+    const piece = cancelledDelta[i]!;
+    if (piece.end <= cursor) continue;
+    if (piece.start >= seg.end) break;
+    const ovStart = Math.max(cursor, piece.start);
+    const ovEnd = Math.min(seg.end, piece.end);
+    if (ovStart > cursor) out.push({ start: cursor, end: ovStart, prevType: F_UNLCK, prevOpId: 0 });
+    out.push({ start: ovStart, end: ovEnd, prevType: piece.prevType, prevOpId: piece.prevOpId });
+    cursor = ovEnd;
+  }
+  if (cursor < seg.end) out.push({ start: cursor, end: seg.end, prevType: F_UNLCK, prevOpId: 0 });
+}
+
+function spliceRangeDelta(
+  targetDelta: readonly RangeDeltaSegment[],
+  cancelledOpId: number,
+  cancelledDelta: readonly RangeDeltaSegment[],
+): RangeDeltaSegment[] {
+  const out: RangeDeltaSegment[] = [];
+  for (let i = 0; i < targetDelta.length; i++) {
+    const seg = targetDelta[i]!;
+    if (seg.prevOpId !== cancelledOpId) {
+      out.push(seg);
+      continue;
+    }
+    spliceDeltaSegment(seg, cancelledDelta, out);
+  }
+  return out;
 }
 
 function editOwnerRanges(
@@ -290,6 +341,8 @@ export class LockTable {
   private readonly deadlockWaiters = new Map<string, Set<Waiter>>();
   private readonly waitersBySession = new Map<number, Set<Waiter>>();
   private readonly pendingOps = new Set<number>();
+  private readonly flockOpPrev = new Map<number, FlockOpRecord>();
+  private readonly rangeOpDeltas = new Map<number, RangeOpRecord>();
   private readonly maxRangeLocks: number;
   private readonly maxFlocks: number;
   private readonly maxWaiters: number;
@@ -368,24 +421,40 @@ export class LockTable {
     const mode: FlockMode = parsed.base === LOCK_EX ? "ex" : "sh";
     const prior = this.byIno.get(ino)?.flocks.get(ofdId);
     const previousMode = prior?.mode;
+    const previousOpId = prior?.opId ?? 0;
+    const converting = prior !== undefined && prior.mode !== mode;
     // Per Linux fs/locks.c (flock_lock_inode), converting between LOCK_SH and LOCK_EX drops the
     // existing lock before checking contention, even when LOCK_NB is set.
-    if (prior && prior.mode !== mode) this.removeFlock(ino, ofdId);
+    if (converting) this.detachFlockEntry(ino, ofdId);
+    const detachedOpId = converting ? previousOpId : 0;
     const inode = this.byIno.get(ino);
     const existing = inode?.flocks.get(ofdId);
     const blockers = inode ? this.flockBlockers(inode, ofdId, mode) : [];
     if (blockers.length > 0) {
+      this.discardFlockChain(detachedOpId);
       if (parsed.nonblocking || !allowWait) return { errno: EAGAIN };
       if (this.totalWaiters >= this.maxWaiters) return { errno: ENOLCK };
       throw this.enqueueWaiter(ino, ofdOwnerKey(ofdId), sessionOwner, blockers, false);
     }
-    if (!existing && this.totalFlocks >= this.maxFlocks) return { errno: ENOLCK };
-    if (trackTransaction && this.pendingOps.size >= this.maxPendingTransactions)
+    if (
+      (!existing && this.totalFlocks >= this.maxFlocks) ||
+      (trackTransaction && this.pendingOps.size >= this.maxPendingTransactions)
+    ) {
+      this.discardFlockChain(detachedOpId);
       return { errno: ENOLCK };
+    }
     const originOwner = parseOfdId(ofdId)?.owner ?? sessionOwner;
     this.ensureOfdRecord(ino, handle, ofdId, originOwner);
     this.indexOwnerOfd(sessionOwner, ofdId);
-    return this.installFlock(ino, ofdId, mode, existing, previousMode, trackTransaction);
+    return this.installFlock(
+      ino,
+      ofdId,
+      mode,
+      existing,
+      previousMode,
+      previousOpId,
+      trackTransaction,
+    );
   }
 
   releaseOfd(
@@ -506,6 +575,7 @@ export class LockTable {
     const inode = this.byIno.get(ino);
     if (!inode) return;
     const owner = posixOwnerKey(posixOwner);
+    this.discardOwnerRangeOps(ino, owner);
     const before = inode.ranges.length;
     inode.ranges = inode.ranges.filter((entry) => entry.owner !== owner);
     const removed = before - inode.ranges.length;
@@ -559,6 +629,8 @@ export class LockTable {
     this.deadlockWaiters.clear();
     this.waitersBySession.clear();
     this.pendingOps.clear();
+    this.flockOpPrev.clear();
+    this.rangeOpDeltas.clear();
     this.totalRangeLocks = 0;
     this.totalFlocks = 0;
     this.totalWaiters = 0;
@@ -609,6 +681,8 @@ export class LockTable {
       0,
     );
     const deltaCount = edited.nextCount - edited.previousCount;
+    if (deltaCount > 0 && this.totalRangeLocks + deltaCount > this.maxRangeLocks)
+      return { errno: ENOLCK };
     inode.ranges = edited.next;
     this.adjustRangeCounts(deltaCount, posixOwner !== undefined ? deltaCount : 0);
     if (posixOwner !== undefined && edited.nextCount === 0) this.unindexPosixIno(posixOwner, ino);
@@ -663,10 +737,11 @@ export class LockTable {
     if (flock) {
       inode.flocks.delete(ofdId);
       this.totalFlocks -= 1;
-      if (flock.opId !== 0) this.pendingOps.delete(flock.opId);
+      if (flock.opId !== 0) this.discardFlockChain(flock.opId);
       changed = true;
     }
     const key = ofdOwnerKey(ofdId);
+    this.discardOwnerRangeOps(ino, key);
     const before = inode.ranges.length;
     inode.ranges = inode.ranges.filter((entry) => entry.owner !== key);
     const removed = before - inode.ranges.length;
@@ -775,18 +850,47 @@ export class LockTable {
     return Array.from(blockers);
   }
 
+  private discardFlockChain(opId: number): void {
+    let cursor = opId;
+    while (cursor !== 0) {
+      this.pendingOps.delete(cursor);
+      const record = this.flockOpPrev.get(cursor);
+      this.flockOpPrev.delete(cursor);
+      cursor = record?.prevOpId ?? 0;
+    }
+  }
+
+  private discardOwnerRangeOps(ino: number, owner: string): void {
+    for (const [opId, record] of this.rangeOpDeltas) {
+      if (record.ino !== ino || record.owner !== owner) continue;
+      this.rangeOpDeltas.delete(opId);
+      this.pendingOps.delete(opId);
+    }
+  }
+
+  private detachFlockEntry(ino: number, ofdId: string): void {
+    const inode = this.byIno.get(ino);
+    const existing = inode?.flocks.get(ofdId);
+    if (!inode || !existing) return;
+    inode.flocks.delete(ofdId);
+    this.totalFlocks -= 1;
+    this.wakeInode(ino, inode);
+    this.pruneInode(ino, inode);
+  }
+
   private installFlock(
     ino: number,
     ofdId: string,
     mode: FlockMode,
     existing: FlockEntry | undefined,
     previousMode: FlockMode | undefined,
+    previousOpId: number,
     trackTransaction: boolean,
   ): LockCommit {
     const inode = this.ensureInode(ino);
     const opId = trackTransaction ? this.nextOpId++ : 0;
+    if (!trackTransaction && previousOpId !== 0) this.discardFlockChain(previousOpId);
     if (existing) {
-      if (existing.opId !== 0) this.pendingOps.delete(existing.opId);
       existing.mode = mode;
       existing.opId = opId;
     } else {
@@ -795,42 +899,50 @@ export class LockTable {
     }
     if (!trackTransaction) return { errno: 0 };
     this.pendingOps.add(opId);
+    this.flockOpPrev.set(opId, { ino, ofdId, prevMode: previousMode, prevOpId: previousOpId });
     return {
       errno: 0,
-      rollback: () => this.rollbackFlock(ino, ofdId, previousMode, opId),
+      rollback: () => this.rollbackFlock(ino, ofdId, opId),
       settle: () => this.settleFlock(ino, ofdId, opId),
     };
   }
 
   private settleFlock(ino: number, ofdId: string, opId: number): void {
     if (!this.pendingOps.delete(opId)) return;
+    this.flockOpPrev.delete(opId);
     const current = this.byIno.get(ino)?.flocks.get(ofdId);
     if (current && current.opId === opId) current.opId = 0;
+    for (const record of this.flockOpPrev.values()) {
+      if (record.prevOpId === opId) record.prevOpId = 0;
+    }
   }
 
-  private rollbackFlock(
-    ino: number,
-    ofdId: string,
-    previousMode: FlockMode | undefined,
-    opId: number,
-  ): void {
+  private rollbackFlock(ino: number, ofdId: string, opId: number): void {
     if (!this.pendingOps.delete(opId)) return;
+    const myPrev = this.flockOpPrev.get(opId);
+    this.flockOpPrev.delete(opId);
+    if (!myPrev) return;
+    for (const record of this.flockOpPrev.values()) {
+      if (record.prevOpId !== opId) continue;
+      record.prevMode = myPrev.prevMode;
+      record.prevOpId = myPrev.prevOpId;
+    }
     const inode = this.byIno.get(ino);
     const current = inode?.flocks.get(ofdId);
     if (!inode || !current || current.opId !== opId) return;
-    if (previousMode === undefined) {
+    if (myPrev.prevMode === undefined) {
       inode.flocks.delete(ofdId);
       this.totalFlocks -= 1;
       this.wakeInode(ino, inode);
       this.pruneInode(ino, inode);
       return;
     }
-    if (this.flockBlockers(inode, ofdId, previousMode).length > 0) {
-      current.opId = 0;
+    if (this.flockBlockers(inode, ofdId, myPrev.prevMode).length > 0) {
+      current.opId = myPrev.prevOpId;
       return;
     }
-    current.mode = previousMode;
-    current.opId = 0;
+    current.mode = myPrev.prevMode;
+    current.opId = myPrev.prevOpId;
     this.wakeInode(ino, inode);
   }
 
@@ -840,7 +952,7 @@ export class LockTable {
     if (!inode || !existing) return;
     inode.flocks.delete(ofdId);
     this.totalFlocks -= 1;
-    if (existing.opId !== 0) this.pendingOps.delete(existing.opId);
+    if (existing.opId !== 0) this.discardFlockChain(existing.opId);
     this.wakeInode(ino, inode);
     this.pruneInode(ino, inode);
   }
@@ -887,11 +999,21 @@ export class LockTable {
     if (edited.relaxed) this.wakeInode(ino, inode);
     if (!trackTransaction) return { errno: 0 };
     this.pendingOps.add(opId);
+    this.rangeOpDeltas.set(opId, { ino, owner, delta: edited.delta });
     return {
       errno: 0,
-      rollback: () => this.rollbackRange(ino, owner, posixOwner, ofdId, pid, opId, edited.delta),
+      rollback: () => this.rollbackRange(ino, owner, posixOwner, ofdId, pid, opId),
       settle: () => this.settleRange(ino, owner, posixOwner, opId),
     };
+  }
+
+  private clearSettledRangePrevOp(ino: number, owner: string, opId: number): void {
+    for (const record of this.rangeOpDeltas.values()) {
+      if (record.ino !== ino || record.owner !== owner) continue;
+      for (let i = 0; i < record.delta.length; i++) {
+        if (record.delta[i]!.prevOpId === opId) record.delta[i]!.prevOpId = 0;
+      }
+    }
   }
 
   private settleRange(
@@ -901,6 +1023,8 @@ export class LockTable {
     opId: number,
   ): void {
     if (!this.pendingOps.delete(opId)) return;
+    this.rangeOpDeltas.delete(opId);
+    this.clearSettledRangePrevOp(ino, owner, opId);
     const inode = this.byIno.get(ino);
     if (!inode) return;
     const others: RangeLock[] = [];
@@ -933,9 +1057,15 @@ export class LockTable {
     ofdId: string | undefined,
     pid: number,
     opId: number,
-    delta: readonly RangeDeltaSegment[],
   ): void {
     if (!this.pendingOps.delete(opId)) return;
+    const myRecord = this.rangeOpDeltas.get(opId);
+    this.rangeOpDeltas.delete(opId);
+    if (!myRecord) return;
+    for (const record of this.rangeOpDeltas.values()) {
+      if (record.ino !== ino || record.owner !== owner) continue;
+      record.delta = spliceRangeDelta(record.delta, opId, myRecord.delta);
+    }
     const inode = this.byIno.get(ino);
     if (!inode) return;
     const others: RangeLock[] = [];
@@ -956,7 +1086,18 @@ export class LockTable {
     let woke = false;
     for (let i = 0; i < targetSegments.length; i++) {
       const seg = targetSegments[i]!;
-      if (this.applyDeltaToSegment(inode, seg, delta, owner, posixOwner, ofdId, pid, keptOwned)) {
+      if (
+        this.applyDeltaToSegment(
+          inode,
+          seg,
+          myRecord.delta,
+          owner,
+          posixOwner,
+          ofdId,
+          pid,
+          keptOwned,
+        )
+      ) {
         woke = true;
       }
     }
@@ -992,12 +1133,30 @@ export class LockTable {
       }
       if (piece.prevType === F_RDLCK) {
         if (seg.type === F_WRLCK) woke = true;
-        out.push({ owner, posixOwner, ofdId, pid, type: F_RDLCK, start, end, opId: 0 });
+        out.push({
+          owner,
+          posixOwner,
+          ofdId,
+          pid,
+          type: F_RDLCK,
+          start,
+          end,
+          opId: piece.prevOpId,
+        });
         continue;
       }
       const canRestoreWrite = this.rangeBlockers(inode, owner, F_WRLCK, start, end).length === 0;
       const restoredType: RangeType = canRestoreWrite ? F_WRLCK : F_RDLCK;
-      out.push({ owner, posixOwner, ofdId, pid, type: restoredType, start, end, opId: 0 });
+      out.push({
+        owner,
+        posixOwner,
+        ofdId,
+        pid,
+        type: restoredType,
+        start,
+        end,
+        opId: piece.prevOpId,
+      });
     }
     return woke;
   }

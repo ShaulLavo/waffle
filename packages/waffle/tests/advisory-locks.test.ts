@@ -1338,6 +1338,148 @@ describe("runtime_fs advisory locks over WASI", () => {
     table.dispose();
   });
 
+  test("cancelling two overlapping unsettled grants in either order leaves no phantom range or flock lock", () => {
+    const table = new LockTable();
+
+    // Range locks: A-then-B rollback order
+    const rA1 = table.setRangeLock(
+      10,
+      "1:1",
+      1,
+      10,
+      { type: F_WRLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    const rB1 = table.setRangeLock(
+      10,
+      "1:1",
+      1,
+      10,
+      { type: F_RDLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    expect(rA1.errno).toBe(0);
+    expect(rB1.errno).toBe(0);
+    rA1.rollback?.();
+    rB1.rollback?.();
+    expect(
+      table.setRangeLock(10, "2:1", 2, 20, { type: F_WRLCK, start: 0, len: 20 }, false).errno,
+    ).toBe(0);
+    table.releaseOfd(10, "2:1", 2);
+
+    // Range locks: B-then-A rollback order
+    const rA2 = table.setRangeLock(
+      11,
+      "1:2",
+      1,
+      10,
+      { type: F_WRLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    const rB2 = table.setRangeLock(
+      11,
+      "1:2",
+      1,
+      10,
+      { type: F_RDLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    rB2.rollback?.();
+    rA2.rollback?.();
+    expect(
+      table.setRangeLock(11, "2:2", 2, 20, { type: F_WRLCK, start: 0, len: 20 }, false).errno,
+    ).toBe(0);
+    table.releaseOfd(11, "2:2", 2);
+
+    // Range locks: A settles then B rolls back -> A's settled WRLCK is preserved
+    const rA3 = table.setRangeLock(
+      12,
+      "1:3",
+      1,
+      10,
+      { type: F_WRLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    const rB3 = table.setRangeLock(
+      12,
+      "1:3",
+      1,
+      10,
+      { type: F_RDLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    rA3.settle?.();
+    rB3.rollback?.();
+    expect(
+      table.setRangeLock(12, "2:3", 2, 20, { type: F_RDLCK, start: 0, len: 20 }, false).errno,
+    ).toBe(EAGAIN);
+    table.releaseOfd(12, "1:3", 1);
+
+    // Flock: A-then-B rollback order on one OFD
+    const fA1 = table.flock(20, "1:4", 1, LOCK_EX, true);
+    const fB1 = table.flock(20, "1:4", 1, LOCK_SH, true);
+    expect(fA1.errno).toBe(0);
+    expect(fB1.errno).toBe(0);
+    fA1.rollback?.();
+    fB1.rollback?.();
+    expect(table.flock(20, "2:4", 2, LOCK_EX | LOCK_NB).errno).toBe(0);
+    table.releaseOfd(20, "2:4", 2);
+
+    // Flock: B-then-A rollback order (even when peer enters SH while downgraded)
+    const fA2 = table.flock(21, "1:5", 1, LOCK_EX, true);
+    const fB2 = table.flock(21, "1:5", 1, LOCK_SH, true);
+    expect(table.flock(21, "3:5", 3, LOCK_SH | LOCK_NB).errno).toBe(0);
+    fB2.rollback?.();
+    fA2.rollback?.();
+    table.releaseOfd(21, "3:5", 3);
+    expect(table.flock(21, "2:5", 2, LOCK_EX | LOCK_NB).errno).toBe(0);
+    table.releaseOfd(21, "2:5", 2);
+
+    // Flock: A settles then B rolls back -> A's settled EX is preserved
+    const fA3 = table.flock(22, "1:6", 1, LOCK_EX, true);
+    const fB3 = table.flock(22, "1:6", 1, LOCK_SH, true);
+    fA3.settle?.();
+    fB3.rollback?.();
+    expect(table.flock(22, "2:6", 2, LOCK_SH | LOCK_NB).errno).toBe(EAGAIN);
+    table.releaseOfd(22, "1:6", 1);
+
+    expect(table.diagnostics()).toMatchObject({
+      flocks: 0,
+      ranges: 0,
+      pendingTransactions: 0,
+    });
+    table.dispose();
+  });
+
+  test("partial middle F_UNLCK split enforces maxRangeLocks while whole-range unlock succeeds", () => {
+    const capped = new LockTable({ maxRangeLocks: 1 });
+    expect(
+      capped.setRangeLock(1, undefined, 1, 1, { type: F_WRLCK, start: 0, len: 100 }, false).errno,
+    ).toBe(0);
+    // Splitting [0,100) into [0,20) and [40,100) would require 2 segments > maxRangeLocks(1)
+    expect(
+      capped.setRangeLock(1, undefined, 1, 1, { type: F_UNLCK, start: 20, len: 20 }, false).errno,
+    ).toBe(ENOLCK);
+    expect(capped.diagnostics().ranges).toBe(1);
+    // Prefix unlock keeps 1 segment (deltaCount = 0) -> succeeds
+    expect(
+      capped.setRangeLock(1, undefined, 1, 1, { type: F_UNLCK, start: 0, len: 20 }, false).errno,
+    ).toBe(0);
+    expect(capped.diagnostics().ranges).toBe(1);
+    // Whole-range unlock drops to 0 segments -> succeeds
+    expect(
+      capped.setRangeLock(1, undefined, 1, 1, { type: F_UNLCK, start: 0, len: 0 }, false).errno,
+    ).toBe(0);
+    expect(capped.diagnostics().ranges).toBe(0);
+    capped.dispose();
+  });
+
   test("OFD churn leaves bounded metadata and byte-range/flock/waiter caps return ENOLCK while unlock succeeds", () => {
     const churn = new LockTable();
     expect(
@@ -1758,6 +1900,38 @@ describe("runtime_fs advisory locks over WASI", () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       expect(flockAcquired).toBe(true);
+
+      // Unlinked file + transient EAGAIN on fd_close + service.sweep() must retain handle until retry succeeds.
+      f.backend.fs.writeFile("/unlinked-lock.dat", new Uint8Array(64));
+      const uOwnerFd = await owner.call<number>({ op: "open", path: "unlinked-lock.dat" });
+      const uPeerFd = await peer.call<number>({ op: "open", path: "unlinked-lock.dat" });
+      expect(
+        await owner.call<number>({ op: "flock", fd: uOwnerFd, operation: LOCK_EX | LOCK_NB }),
+      ).toBe(0);
+      const rootHandle = f.backend.fs.preopen("/");
+      const unlinkedResolved = f.backend.fs.resolve(rootHandle, "unlinked-lock.dat", false);
+      expect(typeof unlinkedResolved).toBe("object");
+      if (typeof unlinkedResolved === "object") {
+        expect(f.backend.fs.removePath(unlinkedResolved, false)).toBe(0);
+      }
+      await owner.call({ op: "failNextRelease", operation: "lockReleaseOfd", errno: EAGAIN });
+      expect(await owner.call<number>({ op: "close", fd: uOwnerFd })).toBe(0);
+      f.service.sweep();
+
+      let unlinkedAcquired = false;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const err = await peer.call<number>({
+          op: "flock",
+          fd: uPeerFd,
+          operation: LOCK_EX | LOCK_NB,
+        });
+        if (err === 0) {
+          unlinkedAcquired = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(unlinkedAcquired).toBe(true);
     } finally {
       await f.cleanup();
     }

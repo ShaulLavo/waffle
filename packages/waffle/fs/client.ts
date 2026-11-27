@@ -721,6 +721,7 @@ export class FilesystemClient implements FileSystem {
   private pendingLockReleases: {
     readonly operation: "lockReleaseOfd" | "lockReleasePosix";
     readonly args: unknown[];
+    readonly retainedHandle?: number;
   }[] = [];
   private lockReleaseTimer?: ReturnType<typeof scheduleTimeout>;
   private flushingLockReleases = false;
@@ -1212,12 +1213,35 @@ export class FilesystemClient implements FileSystem {
     const completion = mapGet(this.completions, id);
     return completion && { kind: 3, id, ready: completion.ready };
   }
+  private retainLockReleaseHandle(handle: number): number | undefined {
+    if (!Number.isInteger(handle) || handle < 0) return undefined;
+    try {
+      this.retain(handle);
+      return handle;
+    } catch {
+      return undefined;
+    }
+  }
+  private releaseLockReleaseHandle(retainedHandle: number | undefined): void {
+    if (retainedHandle === undefined) return;
+    try {
+      this.release(retainedHandle);
+    } catch {
+      // Session already revoked or disposed; server teardown drops locks.
+    }
+  }
+  private finishNextLockRelease(): void {
+    const removed = this.pendingLockReleases.splice(0, 1);
+    if (removed.length > 0) this.releaseLockReleaseHandle(removed[0]!.retainedHandle);
+  }
   private enqueueLockRelease(
     operation: "lockReleaseOfd" | "lockReleasePosix",
     args: unknown[],
   ): void {
     if (this.disposed || this.revoked()) return;
-    arrayAppend(this.pendingLockReleases, { operation, args });
+    const handle = typeof args[0] === "number" ? args[0] : -1;
+    const retainedHandle = this.retainLockReleaseHandle(handle);
+    arrayAppend(this.pendingLockReleases, { operation, args, retainedHandle });
     this.flushPendingLockReleases();
   }
   private scheduleLockReleaseRetry(): void {
@@ -1228,7 +1252,9 @@ export class FilesystemClient implements FileSystem {
     }, 1);
   }
   private clearLockReleaseQueue(): void {
-    this.pendingLockReleases.length = 0;
+    const pending = this.pendingLockReleases.splice(0);
+    for (let i = 0; i < pending.length; i++)
+      this.releaseLockReleaseHandle(pending[i]!.retainedHandle);
     if (this.lockReleaseTimer !== undefined) {
       cancelTimeout(this.lockReleaseTimer);
       this.lockReleaseTimer = undefined;
@@ -1241,7 +1267,7 @@ export class FilesystemClient implements FileSystem {
       completion = this.submit(next.operation, next.args);
     } catch (error) {
       if (this.revoked() || isTerminalLockReleaseErrno(errno(error))) {
-        this.pendingLockReleases.splice(0, 1);
+        this.finishNextLockRelease();
         return true;
       }
       this.scheduleLockReleaseRetry();
@@ -1249,11 +1275,11 @@ export class FilesystemClient implements FileSystem {
     }
     try {
       completion.wait();
-      this.pendingLockReleases.splice(0, 1);
+      this.finishNextLockRelease();
       return true;
     } catch (error) {
       if (this.revoked() || isTerminalLockReleaseErrno(errno(error))) {
-        this.pendingLockReleases.splice(0, 1);
+        this.finishNextLockRelease();
         return true;
       }
       this.scheduleLockReleaseRetry();
