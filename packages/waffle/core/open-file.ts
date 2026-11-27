@@ -6,10 +6,10 @@ import {
   atomicsNotify,
   atomicsStore,
   atomicsWait,
-  descriptor,
   Int32ArrayConstructor,
   reflectApply,
   typedArrayBuffer,
+  typedArrayLength,
 } from "../proc/intrinsics/core.ts";
 import type { Resource } from "./descriptors.js";
 import { FilesystemError, type FileSystem } from "./filesystem.js";
@@ -18,13 +18,14 @@ import type { FilesystemIdentity } from "../fs/protocol.js";
 
 const atomicsOr = Atomics.or;
 const atomicsAnd = Atomics.and;
+const bigintConstructor = BigInt;
+const numberConstructor = Number;
 const BigUint64ArrayConstructor = BigUint64Array;
 const Float64ArrayConstructor = Float64Array;
 const WeakMapConstructor = WeakMap;
 const weakMapGet = WeakMap.prototype.get;
 const weakMapSet = WeakMap.prototype.set;
 const objectDefineProperties = Object.defineProperties;
-const sabByteLengthGetter = descriptor(SharedArrayBuffer.prototype, "byteLength")!.get!;
 
 type FileResource = Extract<Resource, { kind: "file" }>;
 type DirectoryResource = Extract<Resource, { kind: "directory" }>;
@@ -75,13 +76,13 @@ function formatOfdId(owner: number, seq: number): string {
 }
 
 function packOfdPair(owner: number, seq: number): bigint {
-  return (BigInt(seq >>> 0) << 32n) | BigInt(owner >>> 0);
+  return (bigintConstructor(seq >>> 0) << 32n) | bigintConstructor(owner >>> 0);
 }
 
 function unpackOfdPair(packed: bigint): { readonly owner: number; readonly seq: number } | null {
-  const seq = Number((packed >> 32n) & 0xffffffffn);
+  const seq = numberConstructor((packed >> 32n) & 0xffffffffn);
   if (seq === 0) return null;
-  return { owner: Number(packed & 0xffffffffn), seq };
+  return { owner: numberConstructor(packed & 0xffffffffn), seq };
 }
 
 function initOfdCells(
@@ -188,8 +189,8 @@ export function retainSharedOfdTransfer(buffer: SharedArrayBuffer): void {
 
 /** Read shared OFD identity and flags from a promoted open-file control block. */
 export function readSharedOfdBuffer(buffer: SharedArrayBuffer): SharedOfdMetadata | undefined {
-  if ((reflectApply(sabByteLengthGetter, buffer, []) as number) < 32) return undefined;
   const cells = new Int32ArrayConstructor(buffer);
+  if (typedArrayLength(cells) < 8) return undefined;
   const idPair = new BigUint64ArrayConstructor(buffer, 16, 1);
   const pair = unpackOfdPair(atomicsLoad(idPair, 0));
   if (!pair) return undefined;

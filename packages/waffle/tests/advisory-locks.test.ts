@@ -1058,4 +1058,97 @@ describe("runtime_fs advisory locks over WASI", () => {
       await f.cleanup();
     }
   });
+
+  test("cross-inode ofdId reuse is rejected, downgrade rollback preserves mutual exclusion, and DescriptorTable.close releases POSIX locks", () => {
+    const table = new LockTable();
+    // Binding an ofdId to inode 1 rejects reusing the same ofdId on inode 2.
+    expect(table.flock(1, "1:1", 1, LOCK_EX | LOCK_NB).errno).toBe(0);
+    expect(table.flock(2, "1:1", 1, LOCK_EX | LOCK_NB).errno).toBe(2);
+    expect(
+      table.setRangeLock(2, "1:1", 1, 10, { type: F_WRLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(2);
+
+    // Downgrade EX -> SH has no conflicting rollback after a peer acquires LOCK_SH.
+    const downgrade = table.flock(1, "1:1", 1, LOCK_SH | LOCK_NB);
+    expect(downgrade.errno).toBe(0);
+    expect(table.flock(1, "2:1", 2, LOCK_SH | LOCK_NB).errno).toBe(0);
+    downgrade.rollback?.();
+    // Peer still holds LOCK_SH and a third shared locker can still acquire LOCK_SH.
+    expect(table.flock(1, "3:1", 3, LOCK_SH | LOCK_NB).errno).toBe(0);
+
+    // Same for range-lock downgrade WRLCK -> RDLCK.
+    expect(
+      table.setRangeLock(5, undefined, 1, 10, { type: F_WRLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(0);
+    const rangeDown = table.setRangeLock(
+      5,
+      undefined,
+      1,
+      10,
+      { type: F_RDLCK, start: 0, len: 10 },
+      false,
+    );
+    expect(rangeDown.errno).toBe(0);
+    expect(
+      table.setRangeLock(5, undefined, 2, 20, { type: F_RDLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(0);
+    rangeDown.rollback?.();
+    expect(
+      table.setRangeLock(5, undefined, 3, 30, { type: F_RDLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(0);
+    table.dispose();
+
+    // Closing via DescriptorTable.close directly (as ThreadService does) releases POSIX locks.
+    const fs = new MemFS();
+    fs.writeFile("/t.txt", new Uint8Array(16));
+    const { wasi, fdLock } = makeMemWasi(fs, 77);
+    const fd1 = openMemFile(wasi, fs, "t.txt", RIGHTS_ALL);
+    const fd2 = openMemFile(wasi, fs, "t.txt", RIGHTS_ALL);
+    expect(fdLock(fd1, F_SETLK, F_WRLCK, 0, 0n, 16n, 0)).toBe(0);
+    // Invalid flock op returns EINVAL even with signal pending; F_SETLKW + F_UNLCK never returns EINTR.
+    expect(wasi.descriptors.close(fd2)).toBe(true);
+    // POSIX lock on inode was released by DescriptorTable.close(fd2).
+    const probe = fs.locks.getRangeLock(
+      (wasi.descriptors.get(fd1)!.resource as { handle: number }).handle,
+      "99:1",
+      { type: F_WRLCK, start: 0, len: 16 },
+    );
+    expect(probe).toEqual({ type: F_UNLCK, pid: 0, start: 0, len: 0 });
+    wasi.descriptors.dispose();
+  });
+
+  test("F_SETLKW unlock and invalid fd_flock op do not fail with EINTR when a signal is pending", async () => {
+    const f = createServiceFixture();
+    try {
+      const worker = await f.spawnWorker(95);
+      const fd = await worker.call<number>({ op: "open", path: "lock.dat" });
+      expect(
+        await worker.call<{ errno: number }>({
+          op: "lock",
+          fd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "32",
+        }),
+      ).toEqual({ errno: 0 });
+
+      Atomics.store(worker.interrupt, 0, 1);
+      expect(await worker.call<number>({ op: "flock", fd, operation: 0 })).toBe(EINVAL);
+      expect(
+        await worker.call<{ errno: number }>({
+          op: "lock",
+          fd,
+          cmd: F_SETLKW,
+          type: F_UNLCK,
+          whence: 0,
+          start: "0",
+          len: "32",
+        }),
+      ).toEqual({ errno: 0 });
+    } finally {
+      await f.cleanup();
+    }
+  });
 });

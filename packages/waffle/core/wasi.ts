@@ -54,7 +54,9 @@ import {
   F_WRLCK,
   FilesystemError,
   fileTimeNow,
+  LOCK_EX,
   LOCK_NB,
+  LOCK_SH,
   LOCK_UN,
   PROBE_PATH_LIMIT,
   type FileHandle,
@@ -868,19 +870,21 @@ export class Wasi {
     const entry = this.descriptors.get(fd >>> 0);
     if (!entry) return EBADF;
     if (entry.resource.kind !== "file" && entry.resource.kind !== "directory") return EINVAL;
+    if ((operation & ~(LOCK_SH | LOCK_EX | LOCK_NB | LOCK_UN)) !== 0) return EINVAL;
+    const base = operation & ~LOCK_NB;
+    if (base !== LOCK_SH && base !== LOCK_EX && base !== LOCK_UN) return EINVAL;
     const locks = this.opts.fs.locks;
     if (!locks) return ENOTSUP;
     const owner = locks.owner ?? 0;
     const ofdId = resourceOfdId(entry.resource, owner);
-    const blocking = (operation & LOCK_NB) === 0 && (operation & ~LOCK_NB) !== LOCK_UN;
+    const blocking = (operation & LOCK_NB) === 0 && base !== LOCK_UN;
     const err = locks.flock(
       entry.resource.handle,
       ofdId,
       operation,
       blocking ? this.lockWaitControl() : undefined,
     );
-    if (err === SUCCESS && (operation & ~LOCK_NB) !== LOCK_UN)
-      markResourceOfdLocked(entry.resource, owner);
+    if (err === SUCCESS && base !== LOCK_UN) markResourceOfdLocked(entry.resource, owner);
     return err;
   }
 
@@ -924,7 +928,7 @@ export class Wasi {
       view.setBigInt64(out + 16, BigInt(conflict.len), true);
       return SUCCESS;
     }
-    const blocking = cmd === F_SETLKW || cmd === F_OFD_SETLKW;
+    const blocking = (cmd === F_SETLKW || cmd === F_OFD_SETLKW) && type !== F_UNLCK;
     const err = locks.setRangeLock(
       entry.resource.handle,
       ofdId,
@@ -935,7 +939,13 @@ export class Wasi {
     );
     if (err === SUCCESS && type !== F_UNLCK) {
       if (isOfd) markResourceOfdLocked(entry.resource, owner);
-      else (this.posixLockedHandles ??= new Set()).add(entry.resource.handle);
+      else {
+        if (!this.posixLockedHandles) {
+          this.posixLockedHandles = new Set();
+          this.descriptors.setOnClose((closed) => this.releasePosixHandle(closed.resource));
+        }
+        this.posixLockedHandles.add(entry.resource.handle);
+      }
     }
     return err;
   }
@@ -1177,14 +1187,7 @@ export class Wasi {
           return this.opts.fs.resize(resource.handle, Number(end), false);
         },
       ),
-      fd_close: (fd: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        // Per POSIX fcntl(2), closing ANY descriptor for an inode releases all process-scoped
-        // POSIX record locks held by this process on that inode (leaving OFD/flock locks intact).
-        this.releasePosixHandle(entry.resource);
-        return this.descriptors.close(fd) ? SUCCESS : EBADF;
-      },
+      fd_close: (fd: number) => (this.descriptors.close(fd) ? SUCCESS : EBADF),
       fd_datasync: this.descriptorCall(RIGHT_FD_DATASYNC, sync),
       fd_sync: this.descriptorCall(RIGHT_FD_SYNC, sync),
       fd_fdstat_get: (fd: number, ptr: number) => {
@@ -1350,13 +1353,8 @@ export class Wasi {
           return SUCCESS;
         },
       ),
-      fd_renumber: (from: number, to: number) => {
-        if (from !== to && this.descriptors.get(from)) {
-          const replaced = this.descriptors.get(to);
-          if (replaced) this.releasePosixHandle(replaced.resource);
-        }
-        return this.descriptors.renumber(from, to) ? SUCCESS : EBADF;
-      },
+      fd_renumber: (from: number, to: number) =>
+        this.descriptors.renumber(from, to) ? SUCCESS : EBADF,
       fd_seek: (fd: number, offset: bigint, whence: number, newOffsetPtr: number) => {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;

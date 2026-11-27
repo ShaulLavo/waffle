@@ -94,6 +94,11 @@ export class DescriptorTable {
   private entries = new MapConstructor<number, Descriptor>();
   private next = 0;
   private cleanupFailures: unknown[] = [];
+  #onClose?: (entry: Descriptor) => void;
+  /** Host-internal hook invoked before dropping a closed descriptor's open description. */
+  setOnClose(callback: ((entry: Descriptor) => void) | undefined): void {
+    this.#onClose = callback;
+  }
   /** Deliver a failed transferred-resource release to this table's teardown owner once. */
   recordCleanupFailure(error: unknown): void {
     arrayAppend(this.cleanupFailures, error);
@@ -242,6 +247,7 @@ export class DescriptorTable {
     if (!entry) return false;
     mapDelete(this.entries, fd);
     this.next = Math.min(this.next, fd);
+    this.#onClose?.(entry);
     entry.description.drop();
     return true;
   }

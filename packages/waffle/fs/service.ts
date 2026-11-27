@@ -134,6 +134,7 @@ interface Session {
   lockTransactions: Map<number, () => void>;
   lockResponses: Map<number, () => void>;
   lockWaiters: Map<number, () => void>;
+  pendingOfdAdoptions: Set<Promise<void>>;
   locksReleased?: boolean;
   walks?: WalkTable;
   walkTransactions: Map<number, WalkTransaction>;
@@ -218,6 +219,7 @@ export class FilesystemService {
   }
 
   private sessions = new Set<Session>();
+  private sessionsByOwner = new Map<number, Session>();
   private requestBudget?: SharedArrayBuffer;
   private readBudget?: WorkspaceReadBudget;
   private queue = Promise.resolve();
@@ -302,6 +304,7 @@ export class FilesystemService {
       lockTransactions: new Map(),
       lockResponses: new Map(),
       lockWaiters: new Map(),
+      pendingOfdAdoptions: new Set(),
       requests: captureRequestMemory(connection.requests),
       handles: new Map(),
       capabilities: new Int32Array(connection.capabilities, 0, CAPABILITY_LENGTH),
@@ -325,6 +328,7 @@ export class FilesystemService {
       ...(connection.publication?.observer ? { publicationPins: new Set<number>() } : {}),
     };
     this.sessions.add(session);
+    this.sessionsByOwner.set(connection.owner, session);
     for (const reservation of connection.reservations) {
       const state = new Int32Array(reservation.state);
       if (Atomics.compareExchange(state, 1, 0, 1) !== 0) continue;
@@ -355,7 +359,8 @@ export class FilesystemService {
           releaseOfdTransfer = undefined;
         }
       } finally {
-        if (releaseOfdTransfer) Atomics.sub(new Int32Array(releaseOfdTransfer), 6, 1);
+        if (releaseOfdTransfer && releaseOfdTransfer.byteLength >= 32)
+          Atomics.sub(new Int32Array(releaseOfdTransfer), 6, 1);
         Atomics.sub(
           new Int32Array(reservation.source, 0, CAPABILITY_LENGTH),
           reservation.sourceKey + 2,
@@ -554,7 +559,8 @@ export class FilesystemService {
         releaseOfdTransfer = undefined;
       }
     } finally {
-      if (releaseOfdTransfer) Atomics.sub(new Int32Array(releaseOfdTransfer), 6, 1);
+      if (releaseOfdTransfer && releaseOfdTransfer.byteLength >= 32)
+        Atomics.sub(new Int32Array(releaseOfdTransfer), 6, 1);
       Atomics.sub(source.capabilities, reservation.sourceKey + 2, 1);
     }
   }
@@ -1208,7 +1214,7 @@ export class FilesystemService {
   ): void {
     const ofd = readSharedOfdBuffer(ofdBuffer);
     if (!ofd) {
-      Atomics.sub(new Int32Array(ofdBuffer), 6, 1);
+      if (ofdBuffer.byteLength >= 32) Atomics.sub(new Int32Array(ofdBuffer), 6, 1);
       return;
     }
     const finish = (ino: number) => {
@@ -1228,9 +1234,8 @@ export class FilesystemService {
     };
     const resolved = this.resolveLockIno(handle);
     if (resolved instanceof Promise) {
-      this.trackWork(
-        session,
-        resolved.then(
+      const pending = resolved
+        .then(
           (ino) => {
             finish(ino);
             this.sweep();
@@ -1239,26 +1244,26 @@ export class FilesystemService {
             Atomics.sub(new Int32Array(ofdBuffer), 6, 1);
             this.sweep();
           },
-        ),
-      );
+        )
+        .finally(() => {
+          session.pendingOfdAdoptions.delete(pending);
+        });
+      session.pendingOfdAdoptions.add(pending);
+      this.trackWork(session, pending);
       return;
     }
     finish(resolved);
   }
   private isSessionLive(owner: number): boolean {
-    for (const session of this.sessions) {
-      if (session.connection.owner !== owner) continue;
-      return !session.closed && !session.locksReleased && !sessionRevoked(session);
-    }
-    return false;
+    const session = this.sessionsByOwner.get(owner);
+    if (!session) return false;
+    return !session.closed && !session.locksReleased && !sessionRevoked(session);
   }
   private hasPendingHandleTransfer(owner: number, handle: number): boolean {
-    for (const session of this.sessions) {
-      if (session.connection.owner !== owner) continue;
-      const key = session.handles.get(handle);
-      return key !== undefined && Atomics.load(session.capabilities, key + 2) > 0;
-    }
-    return false;
+    const session = this.sessionsByOwner.get(owner);
+    if (!session) return false;
+    const key = session.handles.get(handle);
+    return key !== undefined && Atomics.load(session.capabilities, key + 2) > 0;
   }
   private ofdLiveness(): OfdLiveness {
     return {
@@ -1340,6 +1345,15 @@ export class FilesystemService {
   ): unknown | Promise<unknown> {
     const handle = args[0];
     if (typeof handle !== "number") throw new FilesystemError(28);
+    if (session.pendingOfdAdoptions.size > 0) {
+      return this.trackRequestWork(
+        session,
+        Promise.all(Array.from(session.pendingOfdAdoptions)),
+      ).then(() => {
+        if (sessionRevoked(session) || !this.sessions.has(session)) throw new FilesystemError(11);
+        return this.lockRequest(session, id, operation, args);
+      });
+    }
     const resolved = this.resolveLockIno(handle);
     if (resolved instanceof Promise)
       return this.trackRequestWork(session, resolved).then((ino) => {
@@ -1749,7 +1763,7 @@ export class FilesystemService {
         session.privateInputs.delete(id);
         this.retainRequestReply(session, id, buffer);
         session.connection.port.postMessage({ completed: id });
-        this.sweep();
+        this.sweepSessions(false);
       } else {
         session.inFlightWrites.delete(id);
       }
@@ -2212,6 +2226,9 @@ export class FilesystemService {
     return { ...pin, bytes: Array.from(pin.bytes) };
   }
   sweep(): void {
+    this.sweepSessions(true);
+  }
+  private sweepSessions(reapOfds: boolean): void {
     if (this.shutdownOwner) return;
     // A close can itself wait for a holder that dies later. Recover dead owners even
     // on reentry, while keeping session close and release bookkeeping non-reentrant.
@@ -2222,7 +2239,7 @@ export class FilesystemService {
     this.sweeping = true;
     try {
       for (const session of this.sessions) if (sessionRevoked(session)) this.close(session);
-      this.lockTable?.reapOfds(this.ofdLiveness());
+      if (reapOfds) this.lockTable?.reapOfds(this.ofdLiveness());
     } finally {
       this.sweeping = false;
     }
@@ -2361,6 +2378,7 @@ export class FilesystemService {
       const publication = session.connection.publication;
       if (publication && !this.retirePublication(session)) return;
       this.sessions.delete(session);
+      this.sessionsByOwner.delete(session.connection.owner);
     }
     this.closeDisposedWatchAccount();
     if (

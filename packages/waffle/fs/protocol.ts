@@ -149,7 +149,7 @@ export interface FilesystemReservation {
   targetOwner: number;
   /** Closed once; transfer state: 0 pending, 1 adopted, 2 cancelled. */
   state: SharedArrayBuffer;
-  /** Shared open-file control block when transferring a regular file description. */
+  /** Shared open-file control block when transferring a file or directory description. */
   ofd?: SharedArrayBuffer;
 }
 export type FilesystemIdentity = Omit<FilesystemConnection, "port" | "requests">;
