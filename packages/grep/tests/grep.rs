@@ -506,6 +506,7 @@ fn grep_recursive_options_traversal_and_exclude_dir() {
     rig.write("src/nested/b.ts", b"second ERROR\n");
     rig.write("node_modules/pkg/index.js", b"ignored error\n");
     rig.write("dist-web/bundle.js", b"built error\n");
+    rig.write("cache*old/stale.js", b"cached error\n");
 
     // -ri with trailing slash keeps clean paths (no double slash)
     assert_run(
@@ -516,7 +517,8 @@ fn grep_recursive_options_traversal_and_exclude_dir() {
         b"src/a.ts:first Error\nsrc/nested/b.ts:second ERROR\n",
     );
 
-    // --recursive with no file operands defaults to '.' and respects --exclude-dir globs
+    // --recursive with no file operands omits './' (matching GNU grep) and excludes glob names
+    // containing literal '*' characters such as 'cache*old'
     assert_run(
         &rig,
         &[
@@ -525,7 +527,24 @@ fn grep_recursive_options_traversal_and_exclude_dir() {
             "--exclude-dir=node_modules",
             "--exclude-dir",
             "dist-*",
+            "--exclude-dir=cache*",
             "error",
+        ],
+        b"",
+        0,
+        b"src/a.ts:1:first Error\nsrc/nested/b.ts:1:second ERROR\n",
+    );
+
+    // Explicit '.' operand retains its './' prefix (matching GNU grep)
+    assert_run(
+        &rig,
+        &[
+            "-rin",
+            "--exclude-dir=node_modules",
+            "--exclude-dir=dist-*",
+            "--exclude-dir=cache*",
+            "error",
+            ".",
         ],
         b"",
         0,

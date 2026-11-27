@@ -354,14 +354,14 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
     let (mut p, mut t) = (0usize, 0usize);
     let mut star: Option<(usize, usize)> = None;
     while t < txt.len() {
-        if p < pat.len() && (pat[p] == b'?' || pat[p] == txt[t]) {
-            p += 1;
-            t += 1;
-            continue;
-        }
         if p < pat.len() && pat[p] == b'*' {
             p += 1;
             star = Some((p, t));
+            continue;
+        }
+        if p < pat.len() && (pat[p] == b'?' || pat[p] == txt[t]) {
+            p += 1;
+            t += 1;
             continue;
         }
         let Some((star_p, star_t)) = star else {
@@ -394,6 +394,9 @@ fn is_excluded_dir(name: &str, patterns: &[String]) -> bool {
 }
 
 fn join_display_path(parent: &str, child: &str) -> String {
+    if parent.is_empty() {
+        return child.to_owned();
+    }
     if parent == "/" {
         return format!("/{child}");
     }
@@ -780,7 +783,9 @@ impl Runner<'_> {
         root_abs: String,
         root_identity: Option<(u64, u64)>,
     ) -> Result<bool, i32> {
-        if is_excluded_dir(dir_basename(root_display), &self.options.exclude_dirs) {
+        if !root_display.is_empty()
+            && is_excluded_dir(dir_basename(root_display), &self.options.exclude_dirs)
+        {
             return Ok(false);
         }
         let mut stack = Vec::new();
@@ -821,14 +826,15 @@ impl Runner<'_> {
         Ok(false)
     }
 
-    async fn process_operand(&mut self, file: &str) -> Result<bool, i32> {
+    async fn process_operand(&mut self, file: &str, implicit_root: bool) -> Result<bool, i32> {
         if file != "-" && self.options.recursive != Recursive::None {
             let abs = absolute(self.cwd, file);
             if descriptor_number(&abs).is_none() {
                 match stat_path(&abs, true, self.context).await {
                     Ok(meta) if meta.kind == FileKind::Directory => {
+                        let root_display = if implicit_root { "" } else { file };
                         return self
-                            .walk_directory(file, abs, directory_identity(&meta))
+                            .walk_directory(root_display, abs, directory_identity(&meta))
                             .await;
                     }
                     Err(IoError::Cancelled) => return Err(130),
@@ -860,12 +866,9 @@ pub(crate) async fn run(
             return Err(2);
         }
     };
+    let implicit_root = files.is_empty() && options.recursive != Recursive::None;
     if files.is_empty() {
-        let default_operand = if options.recursive != Recursive::None {
-            "."
-        } else {
-            "-"
-        };
+        let default_operand = if implicit_root { "." } else { "-" };
         files.push(default_operand.into());
     }
     let multi_operand = files.len() > 1;
@@ -887,7 +890,7 @@ pub(crate) async fn run(
             .await
             .map_err(|_| 130)?;
         // GNU quiet success takes priority over earlier input errors.
-        if runner.process_operand(file).await? {
+        if runner.process_operand(file, implicit_root).await? {
             return Ok(0);
         }
     }
