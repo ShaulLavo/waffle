@@ -86,6 +86,8 @@ export type {
   SharedFilesystemStatus,
   SharedFilesystemStateObserver,
   RemoveCondition,
+  StatOptions,
+  PathStat,
 } from "./browser/shared-fs.js";
 export { getVfsDescriptor, VfsError } from "./fs/vfs.js";
 export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "./fs/vfs.js";
@@ -259,6 +261,7 @@ const filesystemCapabilities = {
   drain: "async",
   flush: "async",
   resolvePath: "async",
+  stat: "async",
   lookup: "async",
   readFile: "async",
   listFiles: "async",
@@ -954,9 +957,15 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         // A controller may be awaiting an adapter's launch handle when suspension wins.
         // Its late handle and asynchronous stop still belong to this page, not the next owner.
         while (launching.size) await Promise.allSettled(Array.from(launching));
-        if (!pendingStartup) {
+        if (!pendingStartup && !filesystem.ownershipLost) {
           filesystem.beginRuntimeDispose();
-          await attempt(() => filesystem.drain());
+          await attempt(async () => {
+            try {
+              await filesystem.drain();
+            } catch (error) {
+              if (!filesystem.ownershipLost) throw error;
+            }
+          });
         }
         // Keep the backend and relays alive while every admitted filesystem request fences.
         const failuresBeforeFences = failures.length;

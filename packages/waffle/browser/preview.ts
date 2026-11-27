@@ -22,7 +22,14 @@ export interface PreviewServer {
   connect(port: number, sink: ConnectionSink): PreviewConnection | null;
 }
 
-interface MountPreviewOptions {
+interface SocketLivenessOptions {
+  /** Interval in ms between liveness pings on open socket tunnels (0 disables). Default 15000. */
+  readonly socketPingIntervalMs?: number;
+  /** Consecutive unanswered pings before closing a silent socket tunnel. Default 3. */
+  readonly socketMissedPings?: number;
+}
+
+interface MountPreviewOptions extends SocketLivenessOptions {
   baseURL: string;
   /** Consumer-owned mount directory, relative to baseURL (without a trailing slash). */
   prefix: string;
@@ -30,12 +37,16 @@ interface MountPreviewOptions {
 
 export type PreviewOptions =
   | MountPreviewOptions
-  | { mode: "root"; originForPort(port: number): string };
+  | ({ mode: "root"; originForPort(port: number): string } & SocketLivenessOptions);
+
+const DEFAULT_SOCKET_PING_MS = 15_000;
+const DEFAULT_SOCKET_MISSED_PINGS = 3;
 
 /** Page-side request/socket routing. The consumer owns service-worker registration. */
 export class PreviewRouter {
   private servers = new Map<number, PreviewServer>();
   private hosts = new Map<number, PreviewHostRelay>();
+  private sockets = new Map<number, Set<() => void>>();
   private owner: string | undefined;
   constructor(private options: PreviewOptions) {}
 
@@ -85,6 +96,22 @@ export class PreviewRouter {
     return host;
   }
 
+  private closePortSockets(port: number): void {
+    const active = this.sockets.get(port);
+    if (!active) return;
+    this.sockets.delete(port);
+    for (const close of Array.from(active)) close();
+  }
+
+  /** Close every active host relay and open socket tunnel owned by this router. */
+  close(): void {
+    for (const port of Array.from(this.sockets.keys())) this.closePortSockets(port);
+    for (const [port, host] of Array.from(this.hosts)) {
+      this.hosts.delete(port);
+      host.close();
+    }
+  }
+
   serves(port: number): boolean {
     return this.servers.has(port);
   }
@@ -92,6 +119,7 @@ export class PreviewRouter {
     if (this.servers.get(port) === server) return;
     const previous = this.hosts.get(port);
     this.hosts.delete(port);
+    this.closePortSockets(port);
     this.servers.set(port, server);
     previous?.close();
   }
@@ -100,6 +128,7 @@ export class PreviewRouter {
     this.servers.delete(port);
     const previous = this.hosts.get(port);
     this.hosts.delete(port);
+    this.closePortSockets(port);
     previous?.close();
   }
 
@@ -107,46 +136,113 @@ export class PreviewRouter {
     const pending: { message: PreviewReply; transfer: Transferable[] }[] = [];
     let ready = false;
     let finished = false;
+    let missedPings = 0;
     let connection: PreviewConnection | null = null;
+    let pingTimer: ReturnType<typeof setInterval> | undefined;
     const send = (message: PreviewReply, transfer: Transferable[] = []) => {
       if (finished) return;
       if (!ready) {
         pending.push({ message, transfer });
         return;
       }
-      reply.postMessage(message, transfer);
+      try {
+        reply.postMessage(message, transfer);
+      } catch {
+        closeTunnel();
+      }
     };
-    const finish = (message: PreviewReply) => {
-      send(message);
+    const onPeerClose = () => closeTunnel();
+    let closing = false;
+    const closeTunnel = (finalMessage?: PreviewReply) => {
+      if (finished) return;
+      if (finalMessage) {
+        send(finalMessage);
+        finished = true;
+      }
+      if (closing) return;
+      closing = true;
+      if (pingTimer !== undefined) {
+        clearInterval(pingTimer);
+        pingTimer = undefined;
+      }
+      this.sockets.get(port)?.delete(closeTunnel);
+      reply.removeEventListener?.("close", onPeerClose);
+      reply.onmessage = null;
+      const activeConnection = connection;
+      connection = null;
+      try {
+        activeConnection?.close();
+      } catch {}
       finished = true;
       if (ready) reply.close();
     };
+    reply.addEventListener?.("close", onPeerClose);
     reply.onmessage = (event: MessageEvent<unknown>) => {
       const message = event.data;
-      if (!message || typeof message !== "object" || !("type" in message) || !connection) return;
-      if (message.type === "data" && "chunk" in message && message.chunk instanceof Uint8Array)
-        connection.write(message.chunk);
+      if (!message || typeof message !== "object" || !("type" in message)) return;
+      missedPings = 0;
+      if (message.type === "ping") {
+        send({ type: "pong" });
+        return;
+      }
+      if (message.type === "pong") return;
       if (message.type === "end") {
-        connection.close();
-        reply.close();
+        closeTunnel();
+        return;
+      }
+      if (
+        message.type === "data" &&
+        "chunk" in message &&
+        message.chunk instanceof Uint8Array &&
+        connection
+      ) {
+        connection.write(message.chunk);
       }
     };
     connection =
       this.servers.get(port)?.connect(port, {
         data: (chunk) => send({ type: "data", chunk }, [chunk.buffer]),
-        end: () => finish({ type: "end" }),
-        error: (message) => finish({ type: "error", message }),
+        end: () => closeTunnel({ type: "end" }),
+        error: (message) => closeTunnel({ type: "error", message }),
       }) ?? null;
     if (!connection) {
       ready = true;
-      finish({ type: "error", message: "no server" });
+      closeTunnel({ type: "error", message: "no server" });
       return;
     }
+    let portSockets = this.sockets.get(port);
+    if (!portSockets) {
+      portSockets = new Set();
+      this.sockets.set(port, portSockets);
+    }
+    portSockets.add(closeTunnel);
     ready = true;
-    reply.postMessage({ type: "accepted" });
-    for (const item of pending) reply.postMessage(item.message, item.transfer);
+    try {
+      reply.postMessage({ type: "accepted" });
+      for (const item of pending) reply.postMessage(item.message, item.transfer);
+    } catch {
+      pending.length = 0;
+      closeTunnel();
+      return;
+    }
     pending.length = 0;
-    if (finished) reply.close();
+    if (finished) {
+      reply.close();
+      return;
+    }
+    const pingIntervalMs = this.options.socketPingIntervalMs ?? DEFAULT_SOCKET_PING_MS;
+    const maxMissedPings = this.options.socketMissedPings ?? DEFAULT_SOCKET_MISSED_PINGS;
+    if (pingIntervalMs > 0 && maxMissedPings > 0) {
+      pingTimer = setInterval(() => {
+        if (finished) return;
+        if (missedPings >= maxMissedPings) {
+          closeTunnel();
+          return;
+        }
+        missedPings++;
+        send({ type: "ping" });
+      }, pingIntervalMs);
+    }
   }
 
   onMessage(event: Pick<MessageEvent<PreviewMessage>, "data" | "ports">): void {

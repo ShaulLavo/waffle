@@ -14,6 +14,7 @@ import {
   type FilesystemConnection,
 } from "../fs/protocol.js";
 import { MemoryBackend } from "../fs/backend.js";
+import { FilesystemClient } from "../fs/client.js";
 import { FilesystemService } from "../fs/service.js";
 import type { ProcessContext } from "../proc/types.js";
 import { runtimeStopControlPath } from "./fixtures/runtime-stop-control.js";
@@ -45,7 +46,17 @@ beforeEach(() => {
       if (!listeners) workerListeners.set(type, (listeners = []));
       listeners.push(listener);
     }
-    postMessage(message: { connect: FilesystemConnection }) {
+    postMessage(message: { connect?: FilesystemConnection; dispose?: boolean }) {
+      if (message.dispose === true) {
+        const ack = new MessageEvent("message", {
+          data: { type: "filesystem-disposed", released: true },
+        });
+        queueMicrotask(() => {
+          for (const listener of workerListeners.get("message") ?? []) listener(ack);
+        });
+        return;
+      }
+      if (!message.connect) return;
       ports.push(message.connect.port);
       this.service.connect(message.connect);
     }
@@ -271,7 +282,7 @@ test("process activation is lazy, shared, and adopts the runtime identity alloca
   expect("dispose" in runtime.filesystem).toBe(false);
 });
 
-test("page filesystem writeFile supports atomic exclusive creation", async () => {
+test("page filesystem writeFile supports atomic exclusive creation without duplicate errors", async () => {
   const runtime = create();
   await runtime.filesystem.writeFile("/exclusive", "winner", { exclusive: true });
   try {
@@ -280,11 +291,10 @@ test("page filesystem writeFile supports atomic exclusive creation", async () =>
   } catch (error) {
     expect(error).toMatchObject({ errno: 20 });
   }
-  try {
-    await runtime.filesystem.drain();
-  } catch (error) {
-    expect(error).toMatchObject({ errno: 20 });
-  }
+  // A failed exclusive write reports EEXIST once; subsequent reads, flush, and drain succeed.
+  expect(new TextDecoder().decode(await runtime.filesystem.readFile("/exclusive"))).toBe("winner");
+  await runtime.filesystem.drain();
+  await runtime.filesystem.flush();
 
   await runtime.filesystem.mkdirp("/directory");
   try {
@@ -293,11 +303,7 @@ test("page filesystem writeFile supports atomic exclusive creation", async () =>
   } catch (error) {
     expect(error).toMatchObject({ errno: 20 });
   }
-  try {
-    await runtime.filesystem.drain();
-  } catch (error) {
-    expect(error).toMatchObject({ errno: 20 });
-  }
+  await runtime.filesystem.drain();
 
   const outcomes = await Promise.allSettled([
     runtime.filesystem.writeFile("/race", "first", { exclusive: true }),
@@ -308,11 +314,6 @@ test("page filesystem writeFile supports atomic exclusive creation", async () =>
   expect(outcomes.find((result) => result.status === "rejected")).toMatchObject({
     reason: { errno: 20 },
   });
-  try {
-    await runtime.filesystem.drain();
-  } catch (error) {
-    expect(error).toMatchObject({ errno: 20 });
-  }
   expect(new TextDecoder().decode(await runtime.filesystem.readFile("/race"))).toMatch(
     /^(first|second)$/,
   );
@@ -322,6 +323,50 @@ test("page filesystem writeFile supports atomic exclusive creation", async () =>
   expect(() =>
     runtime.filesystem.writeFile("/invalid", "value", { append: true, exclusive: true }),
   ).toThrow("writeFile cannot append and create exclusively");
+});
+
+test("page filesystem stat reports metadata and live sizes without reading file bytes", async () => {
+  const runtime = create();
+  expect(await runtime.filesystem.stat("/missing")).toBeUndefined();
+  await runtime.filesystem.mkdirp("/sub");
+  await runtime.filesystem.writeFile("/sub/data.bin", new Uint8Array([1, 2, 3, 4, 5]));
+  const fileStat = await runtime.filesystem.stat("/sub/data.bin");
+  expect(fileStat).toBeDefined();
+  expect(fileStat!.kind).toBe("file");
+  expect(fileStat!.size).toBe(5);
+  expect(fileStat!.ino).toBeGreaterThan(0);
+  expect(fileStat!.nlink).toBe(1);
+  expect(typeof fileStat!.mtime).toBe("number");
+  expect(typeof fileStat!.ctime).toBe("number");
+  expect(typeof fileStat!.atime).toBe("number");
+  expect(typeof fileStat!.mode).toBe("number");
+
+  const dirStat = await runtime.filesystem.stat("/sub");
+  expect(dirStat).toBeDefined();
+  expect(dirStat!.kind).toBe("dir");
+  expect(dirStat!.size).toBe(0);
+
+  // Symlink: follow=true (default) resolves target; follow=false reports the symlink itself.
+  const client = new FilesystemClient(runtime.filesystem.fork());
+  try {
+    const root = (await client.asyncCall("preopen", ["/"])) as number;
+    const sub = (await client.asyncCall("resolve", [root, "sub", true])) as { node: number };
+    const linkTarget = await client.asyncCall("resolve", [sub.node, "link.bin", false]);
+    const danglingTarget = await client.asyncCall("resolve", [sub.node, "dangling", false]);
+    await client.asyncCall("symlink", [linkTarget, "data.bin"]);
+    await client.asyncCall("symlink", [danglingTarget, "nope"]);
+  } finally {
+    client.dispose();
+  }
+  const followed = await runtime.filesystem.stat("/sub/link.bin");
+  expect(followed).toMatchObject({ kind: "file", size: 5, ino: fileStat!.ino });
+  const unfollowed = await runtime.filesystem.stat("/sub/link.bin", { follow: false });
+  expect(unfollowed).toMatchObject({ kind: "symlink", target: "data.bin" });
+  expect(await runtime.filesystem.stat("/sub/dangling")).toBeUndefined();
+  expect(await runtime.filesystem.stat("/sub/dangling", { follow: false })).toMatchObject({
+    kind: "symlink",
+    target: "nope",
+  });
 });
 
 test("the public admission observer reaches the lazily activated process host unchanged", async () => {
@@ -850,11 +895,42 @@ test("borrowed filesystem forwards its allowlisted ownership callback and preser
   expect(Reflect.set(runtime.filesystem, "ownershipLost", false)).toBe(false);
   expect(() => runtime.filesystem.fork()).toThrow(/another tab/i);
   await expect(runtime.filesystem.writeFile("/lost", "no")).rejects.toThrow(/another tab/i);
-  await expect(runtime.dispose()).rejects.toThrow(/another tab/i);
+  await runtime.dispose();
   expect(() => {
     runtime.filesystem.onOwnershipLost = undefined;
   }).toThrow(/disposed/i);
   expect(create().disposed).toBe(false);
+});
+
+test("Runtime.dispose resolves cleanly after shared-host ownership loss and frees the workspace owner", async () => {
+  const runtime = create({
+    filesystem: {
+      mode: "fast",
+      name: "shared-host-takeover-dispose",
+      whenBusy: "attach",
+      workerURL: "https://example.test/fs.js",
+    },
+  });
+  for (const listener of workerListeners.get("message") ?? []) {
+    listener(new MessageEvent("message", { data: { type: "filesystem-state", status: "ready" } }));
+  }
+  for (const listener of workerListeners.get("message") ?? []) {
+    listener(new MessageEvent("message", { data: { type: "filesystem-ownership-lost" } }));
+  }
+  expect(runtime.filesystem.ownershipLost).toBe(true);
+  await runtime.dispose();
+  expect(runtime.disposed).toBe(true);
+  // A fresh Runtime for the same workspace is no longer blocked by the taken-over owner.
+  const replacement = create({
+    filesystem: {
+      mode: "fast",
+      name: "shared-host-takeover-dispose",
+      whenBusy: "attach",
+      workerURL: "https://example.test/fs.js",
+    },
+  });
+  expect(replacement.disposed).toBe(false);
+  await replacement.dispose();
 });
 
 test("an activation racing disposal is awaited and cleaned before filesystem ownership closes", async () => {
@@ -1893,8 +1969,7 @@ test("an unrelated failed mutation cannot reject a later valid executable admiss
   await supervisor.start(pid);
   expect(await supervisor.waitForExit(root, pid)).toEqual({ kind: "exited", code: 23, status: 23 });
   expect(loads).toBe(1);
-  // Admission orders writes but must not consume errors owned by the explicit drain API.
-  await expect(runtime.filesystem.drain()).rejects.toThrow();
+  // Failed writes report their error once to their caller; drain orders writes cleanly.
   await runtime.filesystem.drain();
 });
 

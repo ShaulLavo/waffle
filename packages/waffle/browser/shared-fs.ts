@@ -89,6 +89,23 @@ export interface RemoveCondition {
   /** Remove only a regular file whose bytes equal these. */
   readonly ifContent: Uint8Array;
 }
+export interface StatOptions {
+  /** Follow a final symbolic link. Defaults to true, matching POSIX `stat`; false matches `lstat`. */
+  readonly follow?: boolean;
+}
+/** Metadata for a single path without reading file bytes or enumerating directory children. */
+export interface PathStat {
+  readonly kind: "file" | "dir" | "socket" | "symlink";
+  readonly size: number;
+  readonly ino: number;
+  /** Times in whole milliseconds since 1970. */
+  readonly mtime: number;
+  readonly ctime: number;
+  readonly atime: number;
+  readonly mode: number;
+  readonly nlink: number;
+  readonly target?: string;
+}
 export type EntryMetadata = LeafEntry | (EntryStat & { kind: "dir" });
 export type Entry = LeafEntry | (EntryStat & { kind: "dir"; children: Map<string, EntryMetadata> });
 export const WORKSPACE_TAKEN_OVER =
@@ -133,7 +150,6 @@ export class SharedFilesystem {
   readonly workspace: WorkspaceVfs | undefined;
   private worker: Worker;
   private writes: Promise<unknown> = Promise.resolve();
-  private failure: unknown;
   private socketAttachments = new Set<(error: Error) => void>();
   private fatal: Error | undefined;
   private _state: SharedFilesystemState = Object.freeze({ status: "opening" });
@@ -328,6 +344,10 @@ export class SharedFilesystem {
     }
     if (this.stopped || (this.disposal && !this.joinedReady())) return;
     if (event.data?.type === "filesystem-ownership-lost") {
+      if (this.vfs.multiTab === "shared-host") {
+        this.loseOwnership();
+        return;
+      }
       this.ownershipLost = true;
       this.fail(new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`));
       this.onOwnershipLost?.();
@@ -362,6 +382,21 @@ export class SharedFilesystem {
     } catch {
       /* State observers cannot own filesystem startup or teardown. */
     }
+  }
+  private canCleanDisposeAfterOwnershipLoss(): boolean {
+    return this.ownershipLost && this.vfs.multiTab === "shared-host" && !this._ownershipRetained;
+  }
+  private loseOwnership(): void {
+    this.ownershipLost = true;
+    const error = new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`);
+    for (const cancel of this.socketAttachments) cancel(error);
+    this.fatal ??= error;
+    if (!this.stopped) {
+      revokeFilesystemService(this.client.connection);
+      if (!this.joinedReady()) this.stop();
+    }
+    if (!this.disposal) this.setState("failed", this.fatal);
+    this.onOwnershipLost?.();
   }
   private fail(error: Error, released?: boolean): void {
     for (const cancel of this.socketAttachments) cancel(error);
@@ -624,21 +659,14 @@ export class SharedFilesystem {
       .finally(() => {
         if (publication) this.client.cancelPublication(publication);
       });
-    // Keep ordering after an error, while returning the failure to the caller that owns it.
-    this.writes = result.catch((error) => {
-      this.failure ??= error;
-    });
+    // Keep ordering after an error; the returned promise delivers the failure to its caller.
+    this.writes = result.catch(() => {});
     return result;
   }
   /** Wait for this page's queued mutations, without waiting for background persistence. */
   async drain(): Promise<void> {
     await this.writes;
     this.assertLive();
-    if (this.failure !== undefined) {
-      const error = this.failure;
-      this.failure = undefined;
-      throw error;
-    }
   }
   /** A save is durable only once both data and metadata have reached storage. */
   async flush(path?: string): Promise<void> {
@@ -647,9 +675,13 @@ export class SharedFilesystem {
   }
   /** Walk the actual tree before canonicalizing; metadata only, without reading file contents. */
   async resolvePath(path: string): Promise<ResolvedEntry | undefined> {
-    // Order earlier mutations without consuming the failure owned by an explicit drain.
-    await this.writes;
+    await this.drain();
     return this.request("resolvePath", [path]);
+  }
+  /** Read metadata for a single path without reading file bytes or listing directory children. */
+  async stat(path: string, options?: StatOptions): Promise<PathStat | undefined> {
+    await this.drain();
+    return this.request("statPath", [path, options?.follow !== false]);
   }
   async lookup(path: string): Promise<Entry | undefined> {
     await this.drain();
@@ -778,7 +810,8 @@ export class SharedFilesystem {
       void this.disposal.catch(() => {});
       return this.disposal;
     }
-    if (this.joinedReady() && !this.stopped) return this.disposeReady(this.fatal);
+    if (this.joinedReady() && !this.stopped)
+      return this.disposeReady(this.canCleanDisposeAfterOwnershipLoss() ? undefined : this.fatal);
     let finish!: (error?: Error, released?: boolean) => void;
     this.disposal = new Promise<void>((resolve, reject) => {
       finish = (error, released) => {

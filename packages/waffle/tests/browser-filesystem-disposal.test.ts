@@ -302,11 +302,12 @@ for (const reason of [new Error("original postMessage failure"), undefined, null
   });
 }
 
-async function fatalReadyDisposal(
+function prepareReadyDisposalFault(
   type: string,
   at: "before-dispose" | "pending-ack" | "ack-with-held-root",
-): Promise<void> {
-  const { fs, worker, hold } = fixture();
+  options: SharedFilesystemOptions = {},
+) {
+  const { fs, worker, hold } = fixture(options);
   worker.ready();
   const release = hold();
   let ownershipLost = 0;
@@ -322,17 +323,35 @@ async function fatalReadyDisposal(
   const outcome = observe(stopping);
   if (at === "ack-with-held-root") worker.acknowledge();
   if (at !== "before-dispose") worker.fault(type);
+  return {
+    fs,
+    worker,
+    release,
+    stopping,
+    outcome,
+    get ownershipLost() {
+      return ownershipLost;
+    },
+    get reentered() {
+      return reentered;
+    },
+  };
+}
+
+async function fatalReadyDisposal(
+  type: string,
+  at: "before-dispose" | "pending-ack" | "ack-with-held-root",
+): Promise<void> {
+  const ctx = prepareReadyDisposalFault(type, at);
+  const { fs, worker, release, stopping, outcome } = ctx;
   const result = await outcome.result;
   expect(result.kind).toBe("rejected");
   if (result.kind === "rejected") expect(result.reason).toBe(fs.state.error);
   expect(fs.state.status).toBe("failed");
   expectRetained(fs, worker);
   expect(worker.requests).toBe(at === "before-dispose" ? 0 : 1);
-  expect(ownershipLost).toBe(type === "filesystem-ownership-lost" ? 1 : 0);
-  if (type === "filesystem-ownership-lost") {
-    expect(fs.ownershipLost).toBe(true);
-    expect(reentered).toBe(stopping);
-  }
+  expect(ctx.ownershipLost).toBe(type === "filesystem-ownership-lost" ? 1 : 0);
+  if (type === "filesystem-ownership-lost") expect(ctx.reentered).toBe(stopping);
   release();
   worker.acknowledge();
   worker.ready();
@@ -346,6 +365,47 @@ for (const type of ["error", "messageerror", "filesystem-error", "filesystem-own
   for (const at of ["before-dispose", "pending-ack", "ack-with-held-root"] as const)
     test(`${type} at ${at} retains one original ready disposal failure`, () =>
       fatalReadyDisposal(type, at));
+
+async function ownershipLostReadyDisposal(
+  at: "before-dispose" | "pending-ack" | "ack-with-held-root",
+): Promise<void> {
+  const ctx = prepareReadyDisposalFault("filesystem-ownership-lost", at, { whenBusy: "attach" });
+  const { fs, worker, release, stopping, outcome } = ctx;
+  await checkpoint();
+  expect(outcome.settled).toBe(false);
+  expect(ctx.ownershipLost).toBe(1);
+  expect(fs.ownershipLost).toBe(true);
+  expect(ctx.reentered).toBe(stopping);
+  expect(worker.requests).toBe(1);
+  if (at !== "ack-with-held-root") worker.acknowledge();
+  await checkpoint();
+  expect(outcome.settled).toBe(false);
+  release();
+  const result = await outcome.result;
+  expect(result.kind).toBe("fulfilled");
+  expect(fs.state.status).toBe("disposed");
+  expect(fs.ownershipRetained()).toBe(false);
+  expect(worker.terminations).toBe(1);
+  expect(fs.dispose()).toBe(stopping);
+}
+
+for (const at of ["before-dispose", "pending-ack", "ack-with-held-root"] as const)
+  test(`shared-host filesystem-ownership-lost at ${at} fences and disposes cleanly`, () =>
+    ownershipLostReadyDisposal(at));
+
+test("shared-host filesystem-ownership-lost still fails closed when worker shutdown reports unreleased", async () => {
+  const { fs, worker } = fixture({ whenBusy: "attach" });
+  worker.ready();
+  worker.fault("filesystem-ownership-lost");
+  expect(fs.ownershipLost).toBe(true);
+  expect(fs.state.status).toBe("failed");
+  const stopping = fs.dispose();
+  const outcome = observe(stopping);
+  worker.acknowledge("storage still locked");
+  const result = await outcome.result;
+  expect(result.kind).toBe("rejected");
+  expectRetained(fs, worker);
+});
 
 test("a success ACK cannot lock out an error ACK before the original root fence", async () => {
   const { fs, worker, hold } = fixture();

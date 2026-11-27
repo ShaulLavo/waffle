@@ -353,7 +353,7 @@ test("D3 real page memory worker preserves creation policy and queued writes aft
   }
   const before = await page.lookup("/a");
   await expectErrno(() => page.mkdirp("/bad/explicit"), 44);
-  await expectErrno(() => page.drain(), 44);
+  await page.drain();
   expect(await page.lookup("/a")).toEqual(before);
   expect(await page.lookup("/a/missing")).toBeUndefined();
   expect(await page.lookup("/bad")).toMatchObject({ kind: "symlink", target: "a/missing/dir" });

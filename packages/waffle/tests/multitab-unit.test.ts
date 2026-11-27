@@ -973,10 +973,8 @@ describe("multitab failover, cooperative step-down, and terminal storage failure
       expect(batch.kind).toBe("overflow");
     } finally {
       await tabB.close();
-      tabA.client.dispose();
-      tabA.connection.client.port.close();
-      tabA.connection.server.port.close();
       hub.killOwner("tab-A");
+      await tabA.close().catch(() => {});
     }
   });
 
@@ -1179,10 +1177,8 @@ describe("multitab failover, cooperative step-down, and terminal storage failure
       ctrl.close();
     } finally {
       await tabB.close();
-      tabA.client.dispose();
-      tabA.connection.client.port.close();
-      tabA.connection.server.port.close();
       hub.killOwner("tab-A");
+      await tabA.close().catch(() => {});
     }
   });
 
@@ -2058,10 +2054,8 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     } finally {
       hub.interceptor = undefined;
       await tabB.close();
-      tabA.client.dispose();
-      tabA.connection.client.port.close();
-      tabA.connection.server.port.close();
       hub.killOwner("tab-A");
+      await tabA.close().catch(() => {});
     }
   });
 
@@ -2100,9 +2094,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
         expect(tabB.backend.currentRole).toBe("host");
       } finally {
         await tabB.close();
-        tabA.client.dispose();
-        tabA.connection.client.port.close();
-        tabA.connection.server.port.close();
+        await tabA.close().catch(() => {});
       }
     }
   });
@@ -2292,9 +2284,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     } finally {
       hub.interceptor = undefined;
       await tabB.close();
-      tabA.client.dispose();
-      tabA.connection.client.port.close();
-      tabA.connection.server.port.close();
+      await tabA.close().catch(() => {});
     }
   });
 
@@ -2340,12 +2330,8 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       expect(broker.heldNames()).toEqual([]);
     } finally {
       releaseCutover.resolve();
-      tabB.client.dispose();
-      tabB.connection.client.port.close();
-      tabB.connection.server.port.close();
-      tabA.client.dispose();
-      tabA.connection.client.port.close();
-      tabA.connection.server.port.close();
+      await tabB.close().catch(() => {});
+      await tabA.close().catch(() => {});
     }
   });
 
@@ -3021,9 +3007,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       holdForever.resolve();
     } finally {
       await tabB.close();
-      tabA.client.dispose();
-      tabA.connection.client.port.close();
-      tabA.connection.server.port.close();
+      await tabA.close().catch(() => {});
     }
   });
 
@@ -3208,10 +3192,8 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     } finally {
       gate.resolve();
       await tabB.close();
-      tabA.client.dispose();
-      tabA.connection.client.port.close();
-      tabA.connection.server.port.close();
       hub.killOwner("tab-A");
+      await tabA.close().catch(() => {});
     }
   }
 
@@ -3502,7 +3484,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     }
   });
 
-  test("chunk-get rejects without publishing and reclaims download reservation when lease expires before reply", async () => {
+  test("chunk-get renews a lapsed lease on the same Host and reclaims download reservation when the term actually ends", async () => {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();
     const store = new MockSharedStore();
@@ -3510,7 +3492,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
 
     const chunkPaused = Promise.withResolvers<void>();
     const releaseChunk = Promise.withResolvers<void>();
-    let sawChunkGet = false;
+    let pauseChunkGets = 1;
 
     const tabA = await openTab(broker, hub, store, {
       clientId: "tab-A",
@@ -3518,8 +3500,8 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       timings: { leaseDurationMs: 90, leaseRenewMs: 5000 },
       hooks: {
         async beforeHostReplyPublish(op) {
-          if (op === "chunk-get" && !sawChunkGet) {
-            sawChunkGet = true;
+          if (op === "chunk-get" && pauseChunkGets > 0) {
+            pauseChunkGets--;
             chunkPaused.resolve();
             await releaseChunk.promise;
           }
@@ -3532,28 +3514,119 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       payload.fill(0x33);
       await tabA.client.asyncCall("writeFile", ["/big.bin", false, false], payload);
 
-      const readOutcome = tabB.client.asyncCall("readFile", ["/big.bin"]).then(
-        (v) => ({ ok: true, value: v }),
-        (err) => err,
-      );
+      const readPromise = tabB.client.asyncCall("readFile", ["/big.bin"]);
       await chunkPaused.promise;
-      // Expire Host A's lease while chunk-get is paused before publishing!
+      // Let Host A's lease lapse while still owning its locks -> chunk-get renews and succeeds!
       await new Promise((r) => setTimeout(r, 120));
       expect(tabA.backend.isLeaseValid()).toBe(false);
       releaseChunk.resolve();
 
-      // Host A must reject the stale chunk AND reclaim its 1,048,577-byte download reservation!
-      expect(await readOutcome).toMatchObject({ errno: 11 });
-      expect(tabA.backend.resources().multitabHostUsedDownloadBytes).toBe(0);
-
-      // A retry on the same Host session (after automatic lease renewal) must succeed with 0 leaked bytes!
-      const retryOut: Uint8Array = await tabB.client.asyncCall("readFile", ["/big.bin"]);
-      expect(retryOut.byteLength).toBe(payload.byteLength);
+      const out: Uint8Array = await readPromise;
+      expect(out.byteLength).toBe(payload.byteLength);
       expect(tabA.backend.resources().multitabHostUsedDownloadBytes).toBe(0);
     } finally {
       releaseChunk.resolve();
       await tabB.close();
       await tabA.close();
+    }
+
+    // Separate scenario: Host term actually ends (storage epoch stolen) while chunk-get is paused ->
+    // Host MUST reject without publishing and reclaim the full 1,048,577-byte reservation!
+    const broker2 = new MockLockBroker();
+    const hub2 = new MockBroadcastHub();
+    const store2 = new MockSharedStore();
+    const name2 = `ws-chunk-get-fenced-${crypto.randomUUID()}`;
+    const fencedPaused = Promise.withResolvers<void>();
+    const releaseFenced = Promise.withResolvers<void>();
+    let sawFenced = false;
+    const host2 = await openTab(broker2, hub2, store2, {
+      clientId: "tab-A2",
+      name: name2,
+      timings: { leaseDurationMs: 90, leaseRenewMs: 5000 },
+      hooks: {
+        async beforeHostReplyPublish(op) {
+          if (op === "chunk-get" && !sawFenced) {
+            sawFenced = true;
+            fencedPaused.resolve();
+            await releaseFenced.promise;
+          }
+        },
+      },
+    });
+    const peer2 = await openTab(broker2, hub2, store2, { clientId: "tab-B2", name: name2 });
+    try {
+      const payload = new Uint8Array(1_048_577);
+      payload.fill(0x44);
+      await host2.client.asyncCall("writeFile", ["/big2.bin", false, false], payload);
+      const readOutcome = peer2.client.asyncCall("readFile", ["/big2.bin"]).then(
+        (v) => ({ ok: true, value: v }),
+        (err) => err,
+      );
+      await fencedPaused.promise;
+      // Advance storage epoch so renewal fails (term genuinely lost), then let lease expire.
+      store2.epoch += 1;
+      store2.lastExclusiveEpoch = store2.epoch;
+      await new Promise((r) => setTimeout(r, 120));
+      releaseFenced.resolve();
+      expect(await readOutcome).toMatchObject({ errno: 11 });
+      expect(host2.backend.resources().multitabHostUsedDownloadBytes).toBe(0);
+    } finally {
+      releaseFenced.resolve();
+      await peer2.close();
+      await host2.close();
+    }
+  });
+
+  test("Peer reads, writes, statPath, and flush renew a lapsed Host lease instead of failing with ECANCELED", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-peer-lapsed-lease-${crypto.randomUUID()}`;
+
+    const host = await openTab(broker, hub, store, {
+      clientId: "tab-host",
+      name,
+      timings: { leaseDurationMs: 80, leaseRenewMs: 5000, waitPollMs: 10 },
+    });
+    const peer = await openTab(broker, hub, store, { clientId: "tab-peer", name });
+    try {
+      await host.client.asyncCall(
+        "writeFile",
+        ["/seed.txt", false, false],
+        new TextEncoder().encode("hello-peer"),
+      );
+      // Let Host's lease lapse while Host still holds all its locks.
+      await new Promise((r) => setTimeout(r, 110));
+      expect(host.backend.isLeaseValid()).toBe(false);
+
+      // Peer readFile, statPath, lookup, listFiles, writeFile, and flush must all renew and succeed.
+      const readBytes: Uint8Array = await peer.client.asyncCall("readFile", ["/seed.txt"]);
+      expect(new TextDecoder().decode(readBytes)).toBe("hello-peer");
+
+      await new Promise((r) => setTimeout(r, 110));
+      expect(host.backend.isLeaseValid()).toBe(false);
+      const st = (await peer.client.asyncCall("statPath", ["/seed.txt", true])) as {
+        kind: string;
+        size: number;
+      };
+      expect(st).toMatchObject({ kind: "file", size: 10 });
+
+      await new Promise((r) => setTimeout(r, 110));
+      expect(host.backend.isLeaseValid()).toBe(false);
+      await peer.client.asyncCall(
+        "writeFile",
+        ["/from-peer.txt", false, false],
+        new TextEncoder().encode("peer-wrote"),
+      );
+      await peer.client.asyncCall("flush", []);
+
+      const verify: Uint8Array = await host.client.asyncCall("readFile", ["/from-peer.txt"]);
+      expect(new TextDecoder().decode(verify)).toBe("peer-wrote");
+      const missing = await peer.client.asyncCall("statPath", ["/missing.txt", true]);
+      expect(missing).toBeUndefined();
+    } finally {
+      await peer.close();
+      await host.close();
     }
   });
 
@@ -3646,9 +3719,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       await tabA.service.shutdown().catch(() => {});
       tabA.conn.client.port.close();
       tabA.conn.server.port.close();
-      tabB.client.dispose();
-      tabB.connection.client.port.close();
-      tabB.connection.server.port.close();
+      await tabB.close().catch(() => {});
     }
   });
 
@@ -3931,9 +4002,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       await serviceB.shutdown().catch(() => {});
       connB.client.port.close();
       connB.server.port.close();
-      tabA.client.dispose();
-      tabA.connection.client.port.close();
-      tabA.connection.server.port.close();
+      await tabA.close().catch(() => {});
     }
   });
 
