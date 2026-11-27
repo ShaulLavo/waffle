@@ -1,3 +1,4 @@
+import { validateMachineId } from "../core/devices.js";
 import { DirectoryPages, checkDirectoryPage } from "./directory-pages.js";
 import { utf8ByteLength } from "./utf8-size.js";
 import type { FileIdentity } from "./file-identity.js";
@@ -633,8 +634,84 @@ export class MemFS implements FileSystem {
       if (path.startsWith("/")) continue;
       const resolved = this.walkNodes(start, path, false, true, undefined, rooted);
       if (typeof resolved !== "number" && resolved.node?.kind === wanted) return index;
+      if (wanted === "file" && this.matchesVirtualMachineId(start, path, resolved, rooted))
+        return index;
     }
     return -1;
+  }
+  private matchesVirtualMachineId(
+    start: DirNode,
+    path: string,
+    resolved: TreePath | number,
+    rooted: boolean,
+  ): boolean {
+    if (typeof resolved !== "number") {
+      if (resolved.node !== undefined || resolved.trailingSlash || resolved.name !== "machine-id")
+        return false;
+      const etc = this.walkNodes(this.root, "etc", false, true, undefined, true);
+      return typeof etc !== "number" && etc.node?.kind === "dir" && resolved.parent === etc.node;
+    }
+    if (resolved !== 44) return false;
+    return this.walkSyntheticMachineId(start, path, rooted);
+  }
+  private walkSyntheticMachineId(start: DirNode, path: string, rooted: boolean): boolean {
+    if (path.endsWith("/")) return false;
+    let current: DirNode = start;
+    let pending = path.split("/");
+    let offset = 0;
+    let expansions = 0;
+    while (offset < pending.length) {
+      const part = pending[offset++]!;
+      if (!part || part === ".") continue;
+      if (!(current.mode & 0o100)) return false;
+      if (part === "..") {
+        const parent = this.stepParentForProbe(current, start, rooted);
+        if (!parent) return false;
+        current = parent;
+        continue;
+      }
+      const child = current.children.get(part);
+      if (!child) return this.isSyntheticMachineIdTail(current, part, pending, offset);
+      if (child.kind === "dir") {
+        this.directoryParents.set(child, current);
+        current = child;
+        continue;
+      }
+      if (child.kind !== "symlink" || ++expansions > 40 || !child.target) return false;
+      if (child.target.startsWith("/")) {
+        if (!rooted) return false;
+        current = this.root;
+      }
+      pending = child.target.split("/").concat(pending.slice(offset));
+      offset = 0;
+    }
+    return false;
+  }
+  private stepParentForProbe(current: DirNode, start: DirNode, rooted: boolean): DirNode | null {
+    if (current === this.root) return rooted ? this.root : null;
+    if (!rooted && current === start) return null;
+    const parent = this.liveParent(current);
+    return typeof parent === "number" ? null : parent;
+  }
+  private isSyntheticMachineIdTail(
+    current: DirNode,
+    part: string,
+    pending: readonly string[],
+    offset: number,
+  ): boolean {
+    if (current !== this.root || part !== "etc") return false;
+    let sawMachineId = false;
+    for (let i = offset; i < pending.length; i++) {
+      const next = pending[i]!;
+      if (sawMachineId) return false;
+      if (!next || next === ".") continue;
+      if (next === "machine-id") {
+        sawMachineId = true;
+        continue;
+      }
+      return false;
+    }
+    return sawMachineId;
   }
   /** The absolute path of a live directory, by its parent edges up to the root. */
   private pathOf(dir: DirNode): string | number {
@@ -1333,7 +1410,15 @@ export class MemFS implements FileSystem {
     }
   }
 
-  constructor(public root: DirNode = newDir()) {
+  readonly machineId: string;
+  constructor(
+    public root: DirNode = newDir(),
+    machineId?: string,
+  ) {
+    this.machineId =
+      machineId !== undefined
+        ? validateMachineId(machineId)
+        : validateMachineId(crypto.randomUUID().replaceAll("-", "").toLowerCase());
     adoptInodes(root);
     this.changeLinkCount(root, 1);
     const pending = [root];

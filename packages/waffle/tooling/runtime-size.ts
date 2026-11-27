@@ -1,9 +1,9 @@
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
-// path_realpath, watch_next and path_probe: 14,331 B gzip on Bun 1.4.4 (2026-11-26).
-// Allow 10% headroom so the gate catches material growth, not small additions.
-export const CORE_BUDGET_BYTES = 15_800;
+// path_realpath, watch_next, path_probe, and virtual /etc/machine-id (shared cursor):
+// 15,852 B gzip on Bun 1.4.4 (2026-11-27). Allow ~10% headroom to catch accidental growth.
+export const CORE_BUDGET_BYTES = 17_500;
 export function checkCoreBudget(gzipBytes: number): void {
   if (gzipBytes > CORE_BUDGET_BYTES)
     throw new Error(

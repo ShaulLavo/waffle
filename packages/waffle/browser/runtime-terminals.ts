@@ -1,10 +1,22 @@
 // Original browser adapter: terminal destinations are host sinks, not shared pipe rings.
 import { OpenDescription, type DescriptorTable, type Stream } from "../core/descriptors.js";
-import { createNullDevice } from "../core/devices.js";
+import {
+  createMachineIdFile,
+  createNullDevice,
+  isValidMachineId,
+  shareMachineIdOffset,
+} from "../core/devices.js";
 import { guardedStream } from "./guarded-stream.js";
 import { ProcessError } from "../proc/types.js";
 import type { WorkerDescriptorCodec } from "../proc/worker-client.js";
-import { WeakMapConstructor, weakMapGet, weakMapHas, weakMapSet } from "../proc/intrinsics.ts";
+import {
+  isSharedArrayBuffer,
+  sharedArrayBufferByteLength,
+  WeakMapConstructor,
+  weakMapGet,
+  weakMapHas,
+  weakMapSet,
+} from "../proc/intrinsics.ts";
 import { hostTerminalStream, type RuntimeTerminalOutput } from "./terminal-output.js";
 
 type TerminalTarget = 0 | 1 | 2;
@@ -16,6 +28,12 @@ interface TerminalToken {
 }
 interface NullDeviceToken {
   kind: "null-device";
+  fdflags: number;
+}
+interface MachineIdFileToken {
+  kind: "machine-id-file";
+  machineId: string;
+  offset: SharedArrayBuffer;
   fdflags: number;
 }
 // A remapped fd is not a new destination. Imported terminals retain their provenance across
@@ -45,32 +63,41 @@ export interface RuntimeTerminalCodecOptions {
   resolveTerminal?(target: TerminalTarget): Stream | undefined;
   checkActive?(): void;
 }
-function nullDeviceToken(value: unknown): NullDeviceToken | undefined {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("kind" in value) ||
-    value.kind !== "null-device"
-  )
-    return;
-  const fdflags = "fdflags" in value ? value.fdflags : undefined;
+function hasTokenKind(value: unknown, kind: string): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && "kind" in value && value.kind === kind;
+}
+
+function validateFdflags(value: Record<string, unknown>, label: string): number {
+  const fdflags = value.fdflags;
   if (typeof fdflags !== "number" || !Number.isInteger(fdflags) || fdflags < 0 || fdflags > 31)
-    throw new TypeError("invalid null device flags");
-  return value as NullDeviceToken;
+    throw new TypeError(`invalid ${label} flags`);
+  return fdflags;
+}
+
+function nullDeviceToken(value: unknown): NullDeviceToken | undefined {
+  if (!hasTokenKind(value, "null-device")) return;
+  validateFdflags(value, "null device");
+  return value as unknown as NullDeviceToken;
+}
+
+function machineIdFileToken(value: unknown): MachineIdFileToken | undefined {
+  if (!hasTokenKind(value, "machine-id-file")) return;
+  const machineId = value.machineId;
+  if (typeof machineId !== "string" || !isValidMachineId(machineId))
+    throw new TypeError("invalid machine-id file token");
+  const offset = value.offset;
+  if (!isSharedArrayBuffer(offset) || sharedArrayBufferByteLength(offset) !== 8)
+    throw new TypeError("invalid machine-id file offset");
+  validateFdflags(value, "machine-id file");
+  return value as unknown as MachineIdFileToken;
 }
 
 function terminalToken(value: unknown): TerminalToken | undefined {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("kind" in value) ||
-    value.kind !== "web-terminal"
-  )
-    return;
-  if (!("target" in value) || (value.target !== 0 && value.target !== 1 && value.target !== 2))
+  if (!hasTokenKind(value, "web-terminal")) return;
+  if (value.target !== 0 && value.target !== 1 && value.target !== 2)
     throw new TypeError("invalid browser terminal target");
   if ("pipe" in value && value.pipe !== true) throw new TypeError("invalid browser terminal kind");
-  return value as TerminalToken;
+  return value as unknown as TerminalToken;
 }
 function resolveTerminal(
   options: RuntimeTerminalCodecOptions,
@@ -100,6 +127,13 @@ export function createRuntimeTerminalCodec(
       const resource = descriptor.resource;
       if (resource.kind === "device" && resource.device === "null")
         return { kind: "null-device", fdflags: resource.fdflags ?? 0 } satisfies NullDeviceToken;
+      if (resource.kind === "device" && resource.device === "machine-id" && resource.virtualFile)
+        return {
+          kind: "machine-id-file",
+          machineId: resource.virtualFile.machineId,
+          offset: shareMachineIdOffset(resource.virtualFile),
+          fdflags: resource.fdflags ?? 0,
+        } satisfies MachineIdFileToken;
       if (resource.kind !== "terminal" && resource.kind !== "pipe")
         return options.fallback.export(descriptor, pid);
       const target = weakMapGet(targets, resource);
@@ -116,6 +150,11 @@ export function createRuntimeTerminalCodec(
     import(value, pid) {
       const nullDevice = nullDeviceToken(value);
       if (nullDevice) return new OpenDescription(createNullDevice(nullDevice.fdflags));
+      const machineIdFile = machineIdFileToken(value);
+      if (machineIdFile)
+        return new OpenDescription(
+          createMachineIdFile(machineIdFile.machineId, machineIdFile.fdflags, machineIdFile.offset),
+        );
       const token = terminalToken(value);
       if (!token) return options.fallback.import(value, pid);
       // A pipe destination is never an interactive terminal, so it never resolves to one.
@@ -144,7 +183,7 @@ export function createRuntimeTerminalCodec(
       return new OpenDescription(stream);
     },
     discard(value) {
-      if (nullDeviceToken(value) || terminalToken(value)) return;
+      if (nullDeviceToken(value) || machineIdFileToken(value) || terminalToken(value)) return;
       options.fallback.discard(value);
     },
   };

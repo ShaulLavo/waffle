@@ -160,6 +160,8 @@ export interface FileSystem {
   rename(from: ResolvedPath, to: ResolvedPath): number;
   /** Synchronous committed-watch subscriptions for guest imports; absent means ENOTSUP. */
   readonly watches?: WatchFileSystem;
+  /** Stable 32-char lowercase hex machine identifier served via virtual `/etc/machine-id`. */
+  readonly machineId?: string;
 }
 
 /** One ready subscription returned by a batched owner drain. */
