@@ -903,20 +903,7 @@ export class Wasi {
     if (!entry) return EBADF;
     if (entry.resource.kind !== "directory") return ENOTDIR;
     if (!(entry.rightsBase & RIGHT_PATH_FILESTAT_GET)) return ENOTCAPABLE;
-    let index = this.opts.fs.probe(entry.resource.handle, paths, wanted, this.rooted);
-    if (wanted === "file" && this.machineId() !== undefined) {
-      const limit = index < 0 ? paths.length : index;
-      for (let i = 0; i < limit; i++) {
-        const candidate = paths[i]!;
-        if (
-          candidate.includes("machine-id") &&
-          this.resolveVirtualMachineId(entry, candidate, true) === "machine-id"
-        ) {
-          index = i;
-          break;
-        }
-      }
-    }
+    const index = this.opts.fs.probe(entry.resource.handle, paths, wanted, this.rooted);
     // Reacquire after the service round trip; another thread may have grown shared memory.
     this.view().setUint32(found, index < 0 ? 0xffffffff : index, true);
     return SUCCESS;

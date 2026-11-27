@@ -179,10 +179,11 @@ describe("virtual /etc/machine-id", () => {
     expect(first.text).toBe(`${fs.machineId}\n`);
     expect(first.text.length).toBe(33);
 
-    // Normalized relative spellings resolve identically
-    const normalized = h.openPath(h.rootFd, "./etc/../etc/machine-id");
+    // Normalized relative spellings resolve identically (without crossing a missing /etc/..)
+    const normalized = h.openPath(h.rootFd, "./etc/./machine-id");
     expect(normalized.errno).toBe(0);
     expect(h.readAll(normalized.fd).text).toBe(`${fs.machineId}\n`);
+    expect(h.openPath(h.rootFd, "./etc/../etc/machine-id").errno).toBe(44);
 
     // Seek, tell, pread, dup, and fdReopen
     expect(h.exports.fd_tell!(opened.fd, 3000)).toBe(0);
@@ -256,9 +257,17 @@ describe("virtual /etc/machine-id", () => {
     const realLen = v.getUint32(3000, true);
     expect(h.readStr(3100, realLen)).toBe("/etc/machine-id");
 
-    // path_probe: virtual /etc/machine-id beats later physical file
+    // Missing /etc must NOT let synthetic traversal cross etc/.. into /dev/null
+    expect(h.openPath(h.rootFd, "etc/../dev/null").errno).toBe(44); // ENOENT
+    expect(h.openPath(h.rootFd, "etc/./machine-id").errno).toBe(0);
+
+    // path_probe: virtual /etc/machine-id and symlinks pointing to it beat later physical files
+    fs.symlink(fs.resolve(fs.preopen("/"), "id-link") as any, "/etc/machine-id");
     const probeLen = h.writeStr(1024, "missing\0etc/machine-id\0fallback.txt\0");
     expect(h.fsImports.path_probe!(h.rootFd, 1024, probeLen, 1, 3000)).toBe(0);
+    expect(v.getUint32(3000, true)).toBe(1);
+    const linkProbeLen = h.writeStr(1024, "missing\0id-link\0fallback.txt\0");
+    expect(h.fsImports.path_probe!(h.rootFd, 1024, linkProbeLen, 1, 3000)).toBe(0);
     expect(v.getUint32(3000, true)).toBe(1);
 
     // fd_filestat_set_size rejected on virtual file
@@ -292,7 +301,7 @@ describe("virtual /etc/machine-id", () => {
     expect(relOpened.errno).toBe(0);
     expect(h.readAll(relOpened.fd).text).toBe("fedcba9876543210fedcba9876543210\n");
 
-    // Symlink mid-link -> /etc/machine-id
+    // Symlink mid-link -> /etc/machine-id (with physical /etc present)
     const linkLen = h.writeStr(1024, "mid-link");
     expect(h.exports.path_filestat_get!(h.rootFd, 0, 1024, linkLen, 3000)).toBe(0);
     expect(v.getUint8(3016)).toBe(7); // symlink when not following
@@ -302,6 +311,11 @@ describe("virtual /etc/machine-id", () => {
     expect(h.readAll(h.openPath(h.rootFd, "mid-link", { dirflags: 1 }).fd).text).toBe(
       "fedcba9876543210fedcba9876543210\n",
     );
+    const midProbeLen = h.writeStr(1024, "missing\0mid-link\0");
+    expect(h.fsImports.path_probe!(h.rootFd, 1024, midProbeLen, 1, 3000)).toBe(0);
+    expect(v.getUint32(3000, true)).toBe(1);
+    // Physical /etc still allows crossing etc/../dev/null
+    expect(h.openPath(h.rootFd, "etc/../dev/null").errno).toBe(0);
 
     // Physical /etc search permission (mode 0o000) is enforced
     const etcNode = fs.lookup("/etc")!;
@@ -396,14 +410,32 @@ describe("virtual /etc/machine-id", () => {
     expect(imported.resource.kind).toBe("device");
     if (imported.resource.kind === "device") {
       expect(imported.resource.virtualFile?.offset).toBe(10);
-      const out = new Uint8Array(32);
-      const n = imported.resource.read([out]);
-      expect(new TextDecoder().decode(out.subarray(0, n))).toBe(`${explicit.slice(10)}\n`);
+      // Reading 4 bytes through the imported descriptor advances the shared cursor for the source too
+      const part = new Uint8Array(4);
+      expect(imported.resource.read([part])).toBe(4);
+      expect(new TextDecoder().decode(part)).toBe(explicit.slice(10, 14));
+      const v = new DataView(h.memory.buffer);
+      expect(h.exports.fd_tell!(opened.fd, 3000)).toBe(0);
+      expect(v.getBigUint64(3000, true)).toBe(14n);
+      // Source continues reading from the shared offset 14
+      expect(h.readAll(opened.fd).text).toBe(`${explicit.slice(14)}\n`);
+      expect(imported.resource.virtualFile?.offset).toBe(33);
     }
     codec.discard(token);
 
     expect(() =>
-      codec.import({ kind: "machine-id-file", machineId: "INVALID", offset: 0, fdflags: 0 }, 2),
+      codec.import(
+        {
+          kind: "machine-id-file",
+          machineId: "INVALID",
+          offset: new SharedArrayBuffer(4),
+          fdflags: 0,
+        },
+        2,
+      ),
+    ).toThrow(TypeError);
+    expect(() =>
+      codec.import({ kind: "machine-id-file", machineId: explicit, offset: 0, fdflags: 0 }, 2),
     ).toThrow(TypeError);
   });
 

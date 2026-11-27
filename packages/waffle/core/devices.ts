@@ -1,10 +1,29 @@
+import { allocateSharedControl } from "../memory/allocator.ts";
+import {
+  atomicsCompareExchange,
+  atomicsLoad,
+  atomicsStore,
+  Int32ArrayConstructor,
+  reflectApply,
+} from "../proc/intrinsics/core.ts";
 import type { Stream, VirtualFileState } from "./descriptors.js";
 
 const Uint8ArrayConstructor = Uint8Array;
+const WeakMapConstructor = WeakMap;
+const weakMapGet = WeakMap.prototype.get;
+const weakMapSet = WeakMap.prototype.set;
 const stringCharCodeAt = String.prototype.charCodeAt;
 const copyBytes = Uint8Array.prototype.set;
 const sliceBytes = Uint8Array.prototype.subarray;
-const apply = Reflect.apply;
+const apply = reflectApply;
+
+interface SharedVirtualCursor {
+  buffer?: SharedArrayBuffer;
+  cell?: Int32Array<SharedArrayBuffer>;
+  local: number;
+}
+
+const virtualCursors = new WeakMapConstructor<VirtualFileState, SharedVirtualCursor>();
 
 /** Synthetic inode for virtual `/etc/machine-id` (distinct from physical VFS inodes). */
 export const MACHINE_ID_INO = 0x7fff_fffe;
@@ -80,19 +99,80 @@ export function createNullDevice(fdflags = 0): Stream {
   };
 }
 
+function readCursor(cursor: SharedVirtualCursor): number {
+  return cursor.cell ? atomicsLoad(cursor.cell, 0) : cursor.local;
+}
+
+function writeCursor(cursor: SharedVirtualCursor, next: number): void {
+  const clamped = Math.min(0x7fffffff, Math.max(0, next));
+  if (cursor.cell) atomicsStore(cursor.cell, 0, clamped);
+  else cursor.local = clamped;
+}
+
+function claimCursorSpan(
+  cursor: SharedVirtualCursor,
+  dataLength: number,
+  requested: number,
+): number {
+  if (!cursor.cell) {
+    const start = cursor.local;
+    const count = Math.min(requested, Math.max(0, dataLength - start));
+    cursor.local = start + count;
+    return start;
+  }
+  for (;;) {
+    const start = atomicsLoad(cursor.cell, 0);
+    const count = Math.min(requested, Math.max(0, dataLength - start));
+    if (count === 0) return start;
+    if (atomicsCompareExchange(cursor.cell, 0, start, start + count) === start) return start;
+  }
+}
+
+/** Promote a virtual `/etc/machine-id` file cursor to shared memory for cross-process transfer. */
+export function shareMachineIdOffset(state: VirtualFileState): SharedArrayBuffer {
+  const cursor = apply(weakMapGet, virtualCursors, [state]) as SharedVirtualCursor | undefined;
+  if (!cursor) throw new TypeError("missing virtual file cursor");
+  if (cursor.buffer) return cursor.buffer;
+  const buffer = allocateSharedControl(4);
+  const cell = new Int32ArrayConstructor(buffer);
+  atomicsStore(cell, 0, cursor.local);
+  cursor.buffer = buffer;
+  cursor.cell = cell;
+  return buffer;
+}
+
 /** Read-only virtual regular file serving `/etc/machine-id` when no physical file exists. */
-export function createMachineIdFile(machineId: string, fdflags = 0, offset = 0): Stream {
+export function createMachineIdFile(
+  machineId: string,
+  fdflags = 0,
+  offsetOrBuffer: number | SharedArrayBuffer = 0,
+): Stream {
   const data = encodeMachineIdBytes(machineId);
+  const cursor: SharedVirtualCursor =
+    typeof offsetOrBuffer === "number"
+      ? { local: offsetOrBuffer }
+      : {
+          buffer: offsetOrBuffer,
+          cell: new Int32ArrayConstructor(offsetOrBuffer),
+          local: 0,
+        };
   const state: VirtualFileState = {
     ino: MACHINE_ID_INO,
     machineId,
     data,
-    offset,
+    get offset(): number {
+      return readCursor(cursor);
+    },
+    set offset(next: number) {
+      writeCursor(cursor, next);
+    },
   };
+  apply(weakMapSet, virtualCursors, [state, cursor]);
   const read = (chunks: readonly Uint8Array[]): number => {
-    const count = readVirtualFileBytes(data, chunks, state.offset);
-    state.offset += count;
-    return count;
+    let requested = 0;
+    for (let i = 0; i < chunks.length; i++) requested += chunks[i]!.length;
+    const start = claimCursorSpan(cursor, data.length, requested);
+    return readVirtualFileBytes(data, chunks, start);
   };
   return {
     kind: "device",
@@ -107,7 +187,7 @@ export function createMachineIdFile(machineId: string, fdflags = 0, offset = 0):
       readable: true,
       writable: false,
       hangup: false,
-      nbytes: Math.max(0, data.length - state.offset),
+      nbytes: Math.max(0, data.length - readCursor(cursor)),
     }),
     close() {},
   };

@@ -1,10 +1,21 @@
 // Original browser adapter: terminal destinations are host sinks, not shared pipe rings.
 import { OpenDescription, type DescriptorTable, type Stream } from "../core/descriptors.js";
-import { createMachineIdFile, createNullDevice, isValidMachineId } from "../core/devices.js";
+import {
+  createMachineIdFile,
+  createNullDevice,
+  isValidMachineId,
+  shareMachineIdOffset,
+} from "../core/devices.js";
 import { guardedStream } from "./guarded-stream.js";
 import { ProcessError } from "../proc/types.js";
 import type { WorkerDescriptorCodec } from "../proc/worker-client.js";
-import { WeakMapConstructor, weakMapGet, weakMapHas, weakMapSet } from "../proc/intrinsics.ts";
+import {
+  isSharedArrayBuffer,
+  WeakMapConstructor,
+  weakMapGet,
+  weakMapHas,
+  weakMapSet,
+} from "../proc/intrinsics.ts";
 import { hostTerminalStream, type RuntimeTerminalOutput } from "./terminal-output.js";
 
 type TerminalTarget = 0 | 1 | 2;
@@ -21,7 +32,7 @@ interface NullDeviceToken {
 interface MachineIdFileToken {
   kind: "machine-id-file";
   machineId: string;
-  offset: number;
+  offset: SharedArrayBuffer;
   fdflags: number;
 }
 // A remapped fd is not a new destination. Imported terminals retain their provenance across
@@ -74,7 +85,7 @@ function machineIdFileToken(value: unknown): MachineIdFileToken | undefined {
   if (typeof machineId !== "string" || !isValidMachineId(machineId))
     throw new TypeError("invalid machine-id file token");
   const offset = value.offset;
-  if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 0)
+  if (!isSharedArrayBuffer(offset) || offset.byteLength < 4)
     throw new TypeError("invalid machine-id file offset");
   validateFdflags(value, "machine-id file");
   return value as unknown as MachineIdFileToken;
@@ -119,7 +130,7 @@ export function createRuntimeTerminalCodec(
         return {
           kind: "machine-id-file",
           machineId: resource.virtualFile.machineId,
-          offset: resource.virtualFile.offset,
+          offset: shareMachineIdOffset(resource.virtualFile),
           fdflags: resource.fdflags ?? 0,
         } satisfies MachineIdFileToken;
       if (resource.kind !== "terminal" && resource.kind !== "pipe")

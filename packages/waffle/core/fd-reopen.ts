@@ -112,6 +112,7 @@ interface PathEntry {
   handle?: number;
   source?: number;
   resolved?: ResolvedPath;
+  syntheticEtc?: true;
 }
 const virtualDirectories = ["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"];
 
@@ -147,10 +148,8 @@ function lookupEntry(
   if (path?.node !== undefined)
     return { prefix, handle: path.node, kind: fs.stat(path.node).kind, resolved: path };
   if (hasMachineId && prefix === "/etc/machine-id") return { prefix, kind: "virtual-file" };
-  if (
-    prefix !== undefined &&
-    (virtualDirectories.includes(prefix) || (hasMachineId && prefix === "/etc"))
-  )
+  if (hasMachineId && prefix === "/etc") return { prefix, kind: "directory", syntheticEtc: true };
+  if (prefix !== undefined && virtualDirectories.includes(prefix))
     return { prefix, kind: "directory" };
   return path ? { prefix, kind: "missing", resolved: path } : 44;
 }
@@ -274,6 +273,7 @@ class AliasWalk {
     if (!part) return undefined;
     const error = searchEntry(this.fs, this.current);
     if (error) return error;
+    if (this.current.syntheticEtc && part !== "." && part !== "machine-id") return 44;
     this.dot = part === "." || part === "..";
     if (part === ".") return undefined;
     if (part === "..") return this.up();
