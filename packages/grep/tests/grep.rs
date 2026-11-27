@@ -719,4 +719,62 @@ fn grep_handles_eisdir_fallback_and_recursive_symlinks_and_cycles() {
         b"dir/link_file:linked error\ndir/real.txt:real error\n"
     );
     assert!(String::from_utf8_lossy(&res_big_r.stderr).contains("recursive directory loop"));
+
+    // Implicit recursion discovering a literal file named '-' reads that file, not stdin
+    let dash_rig = Rig::new();
+    dash_rig.write("-", b"disk match\n");
+    let dash_out = dash_rig.run(&["-r", "match"], b"stdin match\n");
+    assert_eq!(dash_out.status, 0);
+    assert_eq!(dash_out.stdout, b"-:disk match\n");
+    assert!(dash_out.stderr.is_empty());
+
+    // Implicit root directory open failure reports '.' rather than an empty path
+    struct OpenDirFailFs {
+        inner: MemoryFs,
+    }
+    impl FileSystem for OpenDirFailFs {
+        fn mkdir<'a>(
+            &'a self,
+            path: &'a str,
+            parents: bool,
+        ) -> LocalBoxFuture<'a, Result<(), IoError>> {
+            let result = self.inner.mkdir(path, parents);
+            Box::pin(async move { result })
+        }
+        fn stat<'a>(
+            &'a self,
+            path: &'a str,
+            follow_symlinks: bool,
+        ) -> LocalBoxFuture<'a, Result<FileMetadata, IoError>> {
+            let result = self.inner.stat(path, follow_symlinks);
+            Box::pin(async move { result })
+        }
+        fn open_dir<'a>(
+            &'a self,
+            _path: &'a str,
+        ) -> LocalBoxFuture<'a, Result<Rc<dyn Directory>, IoError>> {
+            Box::pin(async { Err(IoError::Runtime(2)) })
+        }
+        fn open<'a>(
+            &'a self,
+            path: &'a str,
+            options: &'a OpenOptions,
+        ) -> LocalBoxFuture<'a, Result<Endpoint, IoError>> {
+            let result = self.inner.open(path, options);
+            Box::pin(async move { result })
+        }
+    }
+    let fail_rig = Rig::new();
+    fail_rig.write("keep.txt", b"match\n");
+    let (mut fail_inv, fail_out, fail_err) = fail_rig.invocation(&["-r", "match"], None);
+    fail_inv.context.filesystem = Rc::new(OpenDirFailFs {
+        inner: fail_rig.filesystem.clone(),
+    });
+    let fail_res = fail_rig.run_fds(fail_inv, fail_out, fail_err);
+    assert_eq!(fail_res.status, 2);
+    assert!(fail_res.stdout.is_empty());
+    assert_eq!(
+        fail_res.stderr,
+        b"grep: .: read, output or record limit error\n"
+    );
 }

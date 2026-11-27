@@ -557,6 +557,23 @@ async fn stat_path(
         .map_err(|_| IoError::Cancelled)?
 }
 
+async fn open_fs_path(path: &str, fds: &FdTable, context: &Context) -> Result<Endpoint, ScanError> {
+    if descriptor_number(path).is_none()
+        && let Ok(meta) = stat_path(path, true, context).await
+        && meta.kind == FileKind::Directory
+    {
+        return Err(ScanError::IsDirectory);
+    }
+    let options = OpenOptions::default();
+    let opening = open_path(path, fds, &options).map_err(scan_io_error)?;
+    context
+        .cancel
+        .run(opening.open(context.fs(), &options))
+        .await
+        .map_err(|_| ScanError::Fatal(130))?
+        .map_err(scan_io_error)
+}
+
 async fn open_input(
     file: &str,
     cwd: &str,
@@ -567,20 +584,7 @@ async fn open_input(
         return endpoint(fds, 0).map_err(|_| ScanError::Other);
     }
     let path = absolute(cwd, file);
-    if descriptor_number(&path).is_none()
-        && let Ok(meta) = stat_path(&path, true, context).await
-        && meta.kind == FileKind::Directory
-    {
-        return Err(ScanError::IsDirectory);
-    }
-    let options = OpenOptions::default();
-    let opening = open_path(&path, fds, &options).map_err(scan_io_error)?;
-    context
-        .cancel
-        .run(opening.open(context.fs(), &options))
-        .await
-        .map_err(|_| ScanError::Fatal(130))?
-        .map_err(scan_io_error)
+    open_fs_path(&path, fds, context).await
 }
 
 async fn list_directory_names(
@@ -642,20 +646,29 @@ struct Runner<'a> {
 }
 
 impl Runner<'_> {
-    async fn scan_file(&mut self, display: &str, from_dir: bool) -> Result<bool, i32> {
+    async fn scan_file(
+        &mut self,
+        display: &str,
+        open_abs: Option<&str>,
+        from_dir: bool,
+    ) -> Result<bool, i32> {
         let show_filename = self
             .options
             .filename
             .unwrap_or(self.multi_operand || from_dir);
-        let input = open_input(display, self.cwd, self.fds, self.context).await;
+        let input = match open_abs {
+            Some(abs) => open_fs_path(abs, self.fds, self.context).await,
+            None => open_input(display, self.cwd, self.fds, self.context).await,
+        };
+        let label = if open_abs.is_none() && display == "-" {
+            "(standard input)"
+        } else {
+            display
+        };
         let mut scan = Scan {
             options: self.options,
             matcher: self.matcher,
-            filename: show_filename.then_some(if display == "-" {
-                "(standard input)"
-            } else {
-                display
-            }),
+            filename: show_filename.then_some(label),
             fds: self.fds,
             context: self.context,
             line_number: 0,
@@ -753,13 +766,14 @@ impl Runner<'_> {
         abs: String,
         identity: Option<(u64, u64)>,
     ) -> Result<(), i32> {
+        let diag_display = if display.is_empty() { "." } else { &display };
         let is_cycle = identity.is_some_and(|id| stack.iter().any(|f| f.identity == Some(id)));
         if is_cycle || stack.len() >= MAX_RECURSION_DEPTH {
             self.failed = true;
             diagnostic(
                 self.fds,
                 self.context,
-                &format!("{display}: recursive directory loop"),
+                &format!("{diag_display}: recursive directory loop"),
             )
             .await?;
             return Ok(());
@@ -772,7 +786,7 @@ impl Runner<'_> {
                 next_index: 0,
                 identity,
             }),
-            Err(error) => self.report_scan_error(&display, error).await?,
+            Err(error) => self.report_scan_error(diag_display, error).await?,
         }
         Ok(())
     }
@@ -819,7 +833,10 @@ impl Runner<'_> {
                 }
                 continue;
             }
-            if self.scan_file(&child_display, true).await? {
+            if self
+                .scan_file(&child_display, Some(&child_abs), true)
+                .await?
+            {
                 return Ok(true);
             }
         }
@@ -842,7 +859,7 @@ impl Runner<'_> {
                 }
             }
         }
-        self.scan_file(file, false).await
+        self.scan_file(file, None, false).await
     }
 }
 
