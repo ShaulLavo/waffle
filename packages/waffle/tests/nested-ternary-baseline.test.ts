@@ -138,7 +138,7 @@ describe("nested-ternary shrinking baseline", () => {
     });
   });
 
-  test("preserves whitespace inside literals, regexes, and after comments with quotes", () => {
+  test("hashes exact UTF-8 expression bytes (literals, regexes, TS type args, private fields)", () => {
     expect(fingerprintExpression('a ? (b ? "x  y" : "z") : "w"')).not.toBe(
       fingerprintExpression('a ? (b ? "x y" : "z") : "w"'),
     );
@@ -151,9 +151,20 @@ describe("nested-ternary shrinking baseline", () => {
     expect(fingerprintExpression("a ? (b ? /x  y/ : /z/) : /w/")).not.toBe(
       fingerprintExpression("a ? (b ? /x y/ : /z/) : /w/"),
     );
-    expect(fingerprintExpression("a ?\n  (b ? 'x  y' : 'z')\n  : 'w'")).toBe(
-      fingerprintExpression("a ? (b ? 'x  y' : 'z') : 'w'"),
+    expect(fingerprintExpression("a ? (b ? f<number>() : 2) : 3")).not.toBe(
+      fingerprintExpression("a ? (b ? f<string>() : 2) : 3"),
     );
+    withTempRoot((dir) => {
+      writeOxlintRc(dir, ["legacy.ts"]);
+      const expr = "a ? (b ? this.#x : 2) : 3";
+      writeFileSync(
+        join(dir, "legacy.ts"),
+        `export class Box { #x = 1; read(a: boolean, b: boolean) { return ${expr}; } }\n`,
+      );
+      expect(
+        checkNestedTernaryBaseline(dir, { "legacy.ts": [fingerprintExpression(expr)] }, oxlintBin),
+      ).toEqual([]);
+    });
   });
 
   test("fails closed when the requested git base ref cannot be resolved", () => {
