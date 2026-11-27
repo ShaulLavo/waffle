@@ -6,7 +6,7 @@ import {
 } from "./rights.js";
 import type { Descriptor, DescriptorTable } from "./descriptors.js";
 import type { FileStat, FileSystem, ResolvedPath } from "./filesystem.js";
-import { markOriginOfdClosed, resourceOfdLockState } from "./open-file.js";
+import { releaseOriginOfd } from "./open-file.js";
 import { normalize } from "./path.js";
 
 export type DescriptorPath = { source: number } | { device: "null" } | { resolved: ResolvedPath };
@@ -69,16 +69,7 @@ export function openInode(
     kind === "directory"
       ? ({ kind, handle } as const)
       : { kind, handle, offset: 0, append: (fdflags & 1) !== 0, fdflags };
-  return table.open(resource, base, inheriting, () => {
-    markOriginOfdClosed(resource);
-    const lock = resourceOfdLockState(resource);
-    if (lock) {
-      try {
-        fs.locks?.releaseOfd(handle, lock.id);
-      } catch {}
-    }
-    fs.release(handle);
-  });
+  return table.open(resource, base, inheriting, () => releaseOriginOfd(fs, resource));
 }
 
 /** These names are process-local WASI paths, never entries in the shared filesystem. */

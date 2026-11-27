@@ -540,14 +540,21 @@ export class FilesystemService {
     const state = new Int32Array(reservation.state);
     if (Atomics.load(state, 0) || Atomics.compareExchange(state, 1, 0, 1))
       throw new FilesystemError(11);
+    let releaseOfdTransfer = reservation.ofd;
     try {
-      if (target.handles.has(reservation.handle)) return;
-      this.backend.retain(reservation.handle);
-      target.handles.set(reservation.handle, reservation.targetKey);
-      target.transient.set(reservation.handle, true);
-      const free = target.freeEntries.indexOf(reservation.targetKey);
-      if (free >= 0) target.freeEntries.splice(free, 1);
+      if (!target.handles.has(reservation.handle)) {
+        this.backend.retain(reservation.handle);
+        target.handles.set(reservation.handle, reservation.targetKey);
+        target.transient.set(reservation.handle, true);
+        const free = target.freeEntries.indexOf(reservation.targetKey);
+        if (free >= 0) target.freeEntries.splice(free, 1);
+      }
+      if (releaseOfdTransfer) {
+        this.adoptReservationOfd(target, reservation.handle, releaseOfdTransfer, reservation.state);
+        releaseOfdTransfer = undefined;
+      }
     } finally {
+      if (releaseOfdTransfer) Atomics.sub(new Int32Array(releaseOfdTransfer), 6, 1);
       Atomics.sub(source.capabilities, reservation.sourceKey + 2, 1);
     }
   }
@@ -742,8 +749,7 @@ export class FilesystemService {
     if (cancelledWalk) cancelWalk?.();
     const cancelLock = session.lockResponses.get(id);
     session.lockResponses.delete(id);
-    if (cancelLock && (sessionRevoked(session) || !this.sessions.has(session) || cancelledWalk))
-      cancelLock();
+    if (cancelLock && cancelledWalk) cancelLock();
     if (retained) releaseRequestBuffer(retained, REQUEST_SERVICE);
     session.retainedRequests.delete(id);
     const response = session.responses.get(id);
@@ -1239,23 +1245,25 @@ export class FilesystemService {
     }
     finish(resolved);
   }
+  private isSessionLive(owner: number): boolean {
+    for (const session of this.sessions) {
+      if (session.connection.owner !== owner) continue;
+      return !session.closed && !session.locksReleased && !sessionRevoked(session);
+    }
+    return false;
+  }
+  private hasPendingHandleTransfer(owner: number, handle: number): boolean {
+    for (const session of this.sessions) {
+      if (session.connection.owner !== owner) continue;
+      const key = session.handles.get(handle);
+      return key !== undefined && Atomics.load(session.capabilities, key + 2) > 0;
+    }
+    return false;
+  }
   private ofdLiveness(): OfdLiveness {
     return {
-      isSessionLive: (owner) => {
-        for (const session of this.sessions) {
-          if (session.connection.owner === owner)
-            return !session.closed && !session.locksReleased && !sessionRevoked(session);
-        }
-        return false;
-      },
-      hasPendingTransfer: (owner, handle) => {
-        for (const session of this.sessions) {
-          if (session.connection.owner !== owner) continue;
-          const key = session.handles.get(handle);
-          return key !== undefined && Atomics.load(session.capabilities, key + 2) > 0;
-        }
-        return false;
-      },
+      isSessionLive: (owner) => this.isSessionLive(owner),
+      hasPendingTransfer: (owner, handle) => this.hasPendingHandleTransfer(owner, handle),
     };
   }
   private applyLockOperation(
@@ -1281,6 +1289,7 @@ export class FilesystemService {
       if (
         (ofdId !== undefined && typeof ofdId !== "string") ||
         typeof pid !== "number" ||
+        !Number.isInteger(pid) ||
         typeof type !== "number" ||
         typeof start !== "number" ||
         typeof len !== "number" ||
@@ -1357,6 +1366,22 @@ export class FilesystemService {
     const input = unpack(bytes.subarray(0, inputLength));
     this.checkRequest(session, input.operation, input.args, next.handles);
     return next;
+  }
+  private tryHoldRetryHandles(
+    session: Session,
+    bytes: Uint8Array,
+    inputLength: number,
+    prepared: PreparedRequest | undefined,
+    retryError: LockContentionError | undefined,
+  ):
+    | { readonly ok: true; readonly prepared: PreparedRequest }
+    | { readonly ok: false; readonly error: unknown } {
+    try {
+      return { ok: true, prepared: this.holdRetryHandles(session, bytes, inputLength, prepared) };
+    } catch (error) {
+      retryError?.cancel();
+      return { ok: false, error };
+    }
   }
   private scheduleRetry(
     session: Session,
@@ -1686,13 +1711,18 @@ export class FilesystemService {
     } catch (error) {
       this.discardResponse(session, id);
       const dirtyChange = this.dirtyRetryChange(error);
-      if (error instanceof LockContentionError || dirtyChange !== undefined) {
-        if (error instanceof LockContentionError) lockRetry = error;
-        else dirtyRetry = dirtyChange;
-        prepared = this.holdRetryHandles(session, bytes, cells[1]!, prepared);
+      const retryError = error instanceof LockContentionError ? error : undefined;
+      const retry =
+        retryError || dirtyChange !== undefined
+          ? this.tryHoldRetryHandles(session, bytes, cells[1]!, prepared, retryError)
+          : undefined;
+      if (retry?.ok) {
+        prepared = retry.prepared;
+        lockRetry = retryError;
+        dirtyRetry = dirtyChange;
         preparing = true;
       } else {
-        cells[3] = errno(error);
+        cells[3] = errno(retry ? retry.error : error);
         state = cells[3] === 11 ? State.Cancelled : State.Failed;
       }
     } finally {

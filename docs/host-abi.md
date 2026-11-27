@@ -1515,8 +1515,9 @@ return `EINVAL` (`28`); offsets above `Number.MAX_SAFE_INTEGER` return `EOVERFLO
 - `F_SETLK` / `F_SETLKW` (and their `F_OFD_*` variants) require `RIGHT_FD_READ` for `F_RDLCK` and
   `RIGHT_FD_WRITE` for `F_WRLCK` (`EBADF`, `8`, otherwise).
 - A lock owner never conflicts with itself: overlapping edits split, replace and coalesce ranges.
-- `F_GETLK` / `F_OFD_GETLK` validate the 24-byte little-endian output span at `out_ptr` (`EFAULT`,
-  `21`, if invalid) and write `{ u32 type, i32 pid, i64 start, i64 len }` (`type = F_UNLCK` when no
+- `F_GETLK` / `F_OFD_GETLK` require `type` to be `F_RDLCK` or `F_WRLCK` (`F_UNLCK` returns
+  `EINVAL`, `28`), validate the 24-byte little-endian output span at `out_ptr` (`EFAULT`, `21`, if
+  invalid), and write `{ u32 type, i32 pid, i64 start, i64 len }` (`type = F_UNLCK` when no
   conflict exists; `pid = -1` for conflicting OFD locks).
 - Blocking waits (`F_SETLKW`, `F_OFD_SETLKW`, and `fd_flock` without `LOCK_NB`) wait outside the
   filesystem service's serial mutation queue so lock holders can unlock, close or exit without

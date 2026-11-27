@@ -14,7 +14,7 @@ import {
   LOCK_SH,
   LOCK_UN,
 } from "../core/filesystem.js";
-import { markOriginOfdClosed, resourceOfdLockState } from "../core/open-file.js";
+import { releaseOriginOfd } from "../core/open-file.js";
 import { RIGHTS_ALL, RIGHT_FD_READ, RIGHT_FD_WRITE } from "../core/rights.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemClient } from "../fs/client.js";
@@ -82,12 +82,7 @@ function openMemFile(wasi: Wasi, fs: MemFS, path: string, rights: bigint = RIGHT
   const handle = resolved.node;
   fs.retain(handle);
   const resource = { kind: "file" as const, handle, offset: 0, append: false, fdflags: 0 };
-  return wasi.descriptors.open(resource, rights, 0n, () => {
-    markOriginOfdClosed(resource);
-    const lock = resourceOfdLockState(resource);
-    if (lock) fs.locks.releaseOfd(handle, lock.id);
-    fs.release(handle);
-  });
+  return wasi.descriptors.open(resource, rights, 0n, () => releaseOriginOfd(fs, resource));
 }
 
 function readConflict(memory: WebAssembly.Memory, ptr: number) {
@@ -342,7 +337,9 @@ describe("runtime_fs advisory locks over WASI", () => {
       len: 16n,
     });
 
-    // Invalid ranges and out-of-bounds out_ptr.
+    // Invalid ranges, F_GETLK with F_UNLCK, and out-of-bounds out_ptr.
+    expect(fdLock(fd2, F_GETLK, F_UNLCK, 0, 0n, 10n, conflictPtr)).toBe(EINVAL);
+    expect(fdLock(fd2, F_OFD_GETLK, F_UNLCK, 0, 0n, 10n, conflictPtr)).toBe(EINVAL);
     expect(fdLock(fd2, F_SETLK, F_WRLCK, 0, -5n, 10n, 0)).toBe(EINVAL);
     expect(fdLock(fd2, F_SETLK, F_WRLCK, 0, BigInt(Number.MAX_SAFE_INTEGER) + 1n, 0n, 0)).toBe(
       EOVERFLOW,
@@ -968,6 +965,95 @@ describe("runtime_fs advisory locks over WASI", () => {
       expect(
         await workerB.call<number>({ op: "flock", fd: b1, operation: LOCK_EX | LOCK_NB }),
       ).toBe(EAGAIN);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("fatal ExecutionUnwind unwinds through blocking lock wait, nonblocking flock ignores handled signals, and spoofed ofdId is rejected", async () => {
+    const f = createServiceFixture();
+    try {
+      const holder = await f.spawnWorker(81);
+      const peer = await f.spawnWorker(82);
+      const hFd = await holder.call<number>({ op: "open", path: "lock.dat" });
+      const pFd = await peer.call<number>({ op: "open", path: "lock.dat" });
+      expect(
+        await holder.call<number>({ op: "flock", fd: hFd, operation: LOCK_EX | LOCK_NB }),
+      ).toBe(0);
+
+      // Unauthorized cross-session OFD spoofing is rejected with EACCES (2).
+      expect(
+        await peer.call<number>({
+          op: "rawFlock",
+          fd: pFd,
+          ofdId: `${holder.connection.owner}:1`,
+          operation: LOCK_UN,
+        }),
+      ).toBe(2);
+
+      // Nonblocking LOCK_NB and LOCK_UN must not fail with EINTR when a handled signal is pending.
+      Atomics.store(peer.interrupt, 0, 1);
+      expect(await peer.call<number>({ op: "flock", fd: pFd, operation: LOCK_EX | LOCK_NB })).toBe(
+        EAGAIN,
+      );
+      expect(await peer.call<number>({ op: "flock", fd: pFd, operation: LOCK_UN })).toBe(0);
+
+      // Fatal ExecutionUnwind from checkActive propagates instead of returning EIO or EINTR.
+      await peer.call({ op: "setFatal", fatal: true });
+      expect(await peer.call<unknown>({ op: "flock", fd: pFd, operation: LOCK_EX })).toBe(
+        "FATAL_UNWIND",
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("inherited directory descriptor shares OFD flock identity and lifetime across workers", async () => {
+    const f = createServiceFixture();
+    try {
+      const parent = await f.spawnWorker(91);
+      const other = await f.spawnWorker(92);
+
+      // fd 3 is the `/` preopened directory.
+      expect(await parent.call<number>({ op: "flock", fd: 3, operation: LOCK_EX | LOCK_NB })).toBe(
+        0,
+      );
+      expect(await other.call<number>({ op: "flock", fd: 3, operation: LOCK_EX | LOCK_NB })).toBe(
+        EAGAIN,
+      );
+
+      const childPair = createFilesystemConnection(f.rootConnection);
+      const token = await parent.call<FilesystemDescriptorToken>({
+        op: "export",
+        fd: 3,
+        target: {
+          ...childPair.client,
+          port: undefined as unknown as MessagePort,
+        },
+      });
+      childPair.client.reservations.push(token.reservation);
+      childPair.server.reservations.push(token.reservation);
+      f.service.connect(childPair.server);
+      const child = await f.spawnWorker(93, childPair);
+      const cDir = await child.call<number>({ op: "import", token });
+
+      // Child shares the same OFD so re-locking LOCK_EX succeeds instead of EAGAIN.
+      expect(
+        await child.call<number>({ op: "flock", fd: cDir, operation: LOCK_EX | LOCK_NB }),
+      ).toBe(0);
+
+      // Parent revokes -> child still holds the directory OFD -> lock stays held.
+      revokeFilesystem(parent.connection);
+      f.service.sweep();
+      expect(await other.call<number>({ op: "flock", fd: 3, operation: LOCK_EX | LOCK_NB })).toBe(
+        EAGAIN,
+      );
+
+      // Child closes -> lock releases immediately.
+      expect(await child.call<number>({ op: "close", fd: cDir })).toBe(0);
+      expect(await other.call<number>({ op: "flock", fd: 3, operation: LOCK_EX | LOCK_NB })).toBe(
+        0,
+      );
     } finally {
       await f.cleanup();
     }

@@ -1232,6 +1232,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         }
         checkActive();
       },
+      checkActive,
       interrupt,
       interruptPending: runtimeState
         ? () => signalPending(runtimeState.signals)

@@ -48,6 +48,7 @@ import {
   type ProbeKind,
   type WatchFileSystem,
 } from "../core/filesystem.js";
+import { ExecutionUnwind } from "../core/unwind.js";
 import {
   ArrayBufferConstructor,
   Int32ArrayConstructor,
@@ -384,19 +385,37 @@ export class FilesystemCompletion {
   waitInterruptible(control?: LockWaitControl): any {
     return this.#wait(undefined, control);
   }
+  private checkWaitControl(control: LockWaitControl | undefined): void {
+    if (!control) return;
+    try {
+      control.checkActive?.();
+    } catch (error) {
+      this.cancel();
+      throw error;
+    }
+    if (!control.interruptPending?.()) return;
+    this.cancel();
+    throw new FilesystemError(27);
+  }
+  private parkWait(signal: Int32Array, observed: number, control?: LockWaitControl): void {
+    if (control?.wait) {
+      try {
+        control.wait(signal, observed, 10);
+      } catch (error) {
+        this.cancel();
+        throw error;
+      }
+      return;
+    }
+    atomicsWait(signal, 0, observed, control?.interruptPending ? 10 : undefined);
+  }
   #wait(cancellation?: WaitCancellation, control?: LockWaitControl): any {
     const signal = this.client.signal;
     while (!this.ready) {
       const observed = atomicsLoad(signal, 0);
       this.check(cancellation);
-      if (control?.interruptPending?.()) {
-        this.cancel();
-        throw new FilesystemError(27);
-      }
-      if (!this.ready) {
-        if (control?.wait) control.wait(signal, observed, 10);
-        else atomicsWait(signal, 0, observed, control?.interruptPending ? 10 : undefined);
-      }
+      this.checkWaitControl(control);
+      if (!this.ready) this.parkWait(signal, observed, control);
     }
     this.check(cancellation);
     if (this.consumed) return this.decoded;
@@ -552,6 +571,7 @@ function clientLocks(
       try {
         return call("lockFlock", [handle, ofdId, operation], control);
       } catch (error) {
+        if (isInstance(error, ExecutionUnwind)) throw error;
         return errno(error);
       }
     },
@@ -563,6 +583,7 @@ function clientLocks(
           blocking ? control : undefined,
         );
       } catch (error) {
+        if (isInstance(error, ExecutionUnwind)) throw error;
         return errno(error);
       }
     },

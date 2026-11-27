@@ -35,10 +35,9 @@ import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.
 import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import {
-  markOriginOfdClosed,
   markResourceOfdLocked,
+  releaseOriginOfd,
   resourceOfdId,
-  resourceOfdLockState,
   withFileOffset,
 } from "./open-file.js";
 // WASI preview1 adapter over filesystem handles and shared open descriptions.
@@ -55,6 +54,7 @@ import {
   F_WRLCK,
   FilesystemError,
   fileTimeNow,
+  LOCK_NB,
   LOCK_UN,
   PROBE_PATH_LIMIT,
   type FileHandle,
@@ -168,6 +168,8 @@ export interface WasiOptions {
   diagnostic?(data: Uint8Array): void;
   /** Blocks the calling thread for `ms` milliseconds when no shared notification exists. */
   sleep(ms: number): void;
+  /** Checked before blocking waits so fatal signals unwind instead of returning EINTR. */
+  checkActive?(): void;
   /** Wake word; without interruptPending, a nonzero value is ready. Poll never consumes it. */
   interrupt?: ControlCells;
   /** Nonconsuming readiness when interrupt is advisory (for example handled process signals). */
@@ -442,16 +444,7 @@ export class Wasi {
       resource,
       base,
       inheriting,
-      () => {
-        markOriginOfdClosed(resource);
-        const lock = resourceOfdLockState(resource);
-        if (lock) {
-          try {
-            this.opts.fs.locks?.releaseOfd(resource.handle, lock.id);
-          } catch {}
-        }
-        this.opts.fs.release(resource.handle);
-      },
+      () => releaseOriginOfd(this.opts.fs, resource),
       preopen,
     );
   }
@@ -807,8 +800,15 @@ export class Wasi {
   }
 
   private lockWaitControl(): LockWaitControl | undefined {
-    if (!this.opts.interruptPending && !this.opts.interrupt && !this.opts.wait) return undefined;
+    if (
+      !this.opts.checkActive &&
+      !this.opts.interruptPending &&
+      !this.opts.interrupt &&
+      !this.opts.wait
+    )
+      return undefined;
     return {
+      checkActive: this.opts.checkActive,
       interruptPending: () =>
         this.opts.interruptPending?.() ??
         (this.opts.interrupt !== undefined && controlLoad(this.opts.interrupt, 0) !== 0),
@@ -818,20 +818,29 @@ export class Wasi {
     };
   }
 
+  private resolveRangeBase(
+    resource: Extract<Resource, { kind: "file" | "directory" }>,
+    whence: number,
+  ): bigint | null {
+    switch (whence) {
+      case 0:
+        return 0n;
+      case 1:
+        return BigInt(resource.kind === "file" ? resource.offset : 0);
+      case 2:
+        return BigInt(this.opts.fs.stat(resource.handle).size);
+      default:
+        return null;
+    }
+  }
+
   private resolveRange(
     resource: Extract<Resource, { kind: "file" | "directory" }>,
     whence: number,
     start: bigint,
     len: bigint,
   ): { readonly start: number; readonly len: number } | number {
-    const base =
-      whence === 0
-        ? 0n
-        : whence === 1
-          ? BigInt(resource.kind === "file" ? resource.offset : 0)
-          : whence === 2
-            ? BigInt(this.opts.fs.stat(resource.handle).size)
-            : null;
+    const base = this.resolveRangeBase(resource, whence);
     if (base === null) return EINVAL;
     const pos = base + start;
     if (len === 0n) {
@@ -846,6 +855,14 @@ export class Wasi {
     return { start: Number(rangeStart), len: Number(rangeEnd - rangeStart) };
   }
 
+  private releasePosixHandle(resource: Resource): void {
+    if (resource.kind !== "file" && resource.kind !== "directory") return;
+    if (!this.posixLockedHandles?.delete(resource.handle)) return;
+    try {
+      this.opts.fs.locks?.releasePosix(resource.handle);
+    } catch {}
+  }
+
   /** runtime_fs.fd_flock: advisory whole-file lock (flock(2)), OFD-scoped. */
   private fdFlock(fd: number, operation: number): number {
     const entry = this.descriptors.get(fd >>> 0);
@@ -855,8 +872,14 @@ export class Wasi {
     if (!locks) return ENOTSUP;
     const owner = locks.owner ?? 0;
     const ofdId = resourceOfdId(entry.resource, owner);
-    const err = locks.flock(entry.resource.handle, ofdId, operation, this.lockWaitControl());
-    if (err === SUCCESS && (operation & ~4) !== LOCK_UN)
+    const blocking = (operation & LOCK_NB) === 0 && (operation & ~LOCK_NB) !== LOCK_UN;
+    const err = locks.flock(
+      entry.resource.handle,
+      ofdId,
+      operation,
+      blocking ? this.lockWaitControl() : undefined,
+    );
+    if (err === SUCCESS && (operation & ~LOCK_NB) !== LOCK_UN)
       markResourceOfdLocked(entry.resource, owner);
     return err;
   }
@@ -1159,12 +1182,7 @@ export class Wasi {
         if (!entry) return EBADF;
         // Per POSIX fcntl(2), closing ANY descriptor for an inode releases all process-scoped
         // POSIX record locks held by this process on that inode (leaving OFD/flock locks intact).
-        if (
-          (entry.resource.kind === "file" || entry.resource.kind === "directory") &&
-          this.posixLockedHandles?.delete(entry.resource.handle)
-        ) {
-          this.opts.fs.locks?.releasePosix(entry.resource.handle);
-        }
+        this.releasePosixHandle(entry.resource);
         return this.descriptors.close(fd) ? SUCCESS : EBADF;
       },
       fd_datasync: this.descriptorCall(RIGHT_FD_DATASYNC, sync),
@@ -1335,13 +1353,7 @@ export class Wasi {
       fd_renumber: (from: number, to: number) => {
         if (from !== to && this.descriptors.get(from)) {
           const replaced = this.descriptors.get(to);
-          if (
-            replaced &&
-            (replaced.resource.kind === "file" || replaced.resource.kind === "directory") &&
-            this.posixLockedHandles?.delete(replaced.resource.handle)
-          ) {
-            this.opts.fs.locks?.releasePosix(replaced.resource.handle);
-          }
+          if (replaced) this.releasePosixHandle(replaced.resource);
         }
         return this.descriptors.renumber(from, to) ? SUCCESS : EBADF;
       },

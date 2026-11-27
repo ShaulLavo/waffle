@@ -198,6 +198,8 @@ export interface FileLockConflict {
 }
 
 export interface LockWaitControl {
+  /** Checks for fatal signals / process termination before sleeping; throws ExecutionUnwind if fatal. */
+  checkActive?(): void;
   /** Returns true when a signal is pending so a blocking lock wait returns EINTR. */
   interruptPending?(): boolean;
   /** Optional custom wait hook for deterministic tests or embedders. */

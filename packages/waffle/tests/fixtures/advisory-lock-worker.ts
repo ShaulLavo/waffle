@@ -1,6 +1,7 @@
 import { Wasi } from "../../core/wasi.js";
+import { ExecutionUnwind } from "../../core/unwind.js";
 import { RIGHTS_ALL } from "../../core/rights.js";
-import { markOriginOfdClosed, resourceOfdLockState } from "../../core/open-file.js";
+import { releaseOriginOfd } from "../../core/open-file.js";
 import { FilesystemClient } from "../../fs/client.js";
 import type { FilesystemConnection } from "../../fs/protocol.js";
 import {
@@ -15,6 +16,14 @@ type Command =
   | { readonly id: number; readonly op: "renumber"; readonly from: number; readonly to: number }
   | { readonly id: number; readonly op: "close"; readonly fd: number }
   | { readonly id: number; readonly op: "flock"; readonly fd: number; readonly operation: number }
+  | {
+      readonly id: number;
+      readonly op: "rawFlock";
+      readonly fd: number;
+      readonly ofdId: string;
+      readonly operation: number;
+    }
+  | { readonly id: number; readonly op: "setFatal"; readonly fatal: boolean }
   | {
       readonly id: number;
       readonly op: "lock";
@@ -52,6 +61,13 @@ let fdLock:
 let fdClose: ((fd: number) => number) | undefined;
 let fdRenumber: ((from: number, to: number) => number) | undefined;
 let interruptCell: Int32Array | undefined;
+let fatalActive = false;
+
+class WorkerFatalSignal extends ExecutionUnwind {
+  constructor() {
+    super("fatal-signal");
+  }
+}
 
 function openPath(path: string, rights: bigint): number {
   const root = client!.preopen("/");
@@ -61,12 +77,7 @@ function openPath(path: string, rights: bigint): number {
   const handle = resolved.node;
   client!.retain(handle);
   const resource = { kind: "file" as const, handle, offset: 0, append: false, fdflags: 0 };
-  return wasi!.descriptors.open(resource, rights, 0n, () => {
-    markOriginOfdClosed(resource);
-    const lock = resourceOfdLockState(resource);
-    if (lock) client!.locks.releaseOfd(handle, lock.id);
-    client!.release(handle);
-  });
+  return wasi!.descriptors.open(resource, rights, 0n, () => releaseOriginOfd(client!, resource));
 }
 
 function handleCommand(cmd: Command): unknown {
@@ -74,7 +85,24 @@ function handleCommand(cmd: Command): unknown {
   if (cmd.op === "dup") return wasi!.descriptors.dup(cmd.fd);
   if (cmd.op === "renumber") return fdRenumber!(cmd.from, cmd.to);
   if (cmd.op === "close") return fdClose!(cmd.fd);
-  if (cmd.op === "flock") return fdFlock!(cmd.fd, cmd.operation);
+  if (cmd.op === "flock") {
+    try {
+      return fdFlock!(cmd.fd, cmd.operation);
+    } catch (error) {
+      if (error instanceof WorkerFatalSignal) return "FATAL_UNWIND";
+      throw error;
+    }
+  }
+  if (cmd.op === "rawFlock") {
+    const entry = wasi!.descriptors.get(cmd.fd);
+    if (!entry || (entry.resource.kind !== "file" && entry.resource.kind !== "directory"))
+      throw new Error("bad fd");
+    return client!.locks.flock(entry.resource.handle, cmd.ofdId, cmd.operation);
+  }
+  if (cmd.op === "setFatal") {
+    fatalActive = cmd.fatal;
+    return true;
+  }
   if (cmd.op === "lock") {
     const outPtr = 64;
     const errno = fdLock!(
@@ -131,6 +159,9 @@ self.onmessage = ({ data }: MessageEvent) => {
       stdout() {},
       stderr() {},
       sleep() {},
+      checkActive: () => {
+        if (fatalActive) throw new WorkerFatalSignal();
+      },
       interruptPending: interruptCell ? () => Atomics.load(interruptCell!, 0) !== 0 : undefined,
     });
     const lockMod = guestModule("runtime_fs", [
