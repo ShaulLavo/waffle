@@ -104,8 +104,8 @@ function compareRows(left: ProcessRow, right: ProcessRow, keys: readonly Sort[])
   for (const key of keys) {
     const a = readField(left, key.field);
     const b = readField(right, key.field);
-    const difference = a < b ? -1 : a > b ? 1 : 0;
-    if (difference) return difference * key.direction;
+    if (a < b) return -key.direction;
+    if (a > b) return key.direction;
   }
   return left.pid - right.pid;
 }
