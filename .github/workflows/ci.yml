@@ -603,6 +603,9 @@ jobs:
         run: |
           packages/waffle/node_modules/.bin/oxlint --config packages/waffle/.oxlintrc.json --deny-warnings packages/waffle-relay/scripts/prepare-native.ts packages/waffle-relay/tests/prepare-native.test.ts
           packages/waffle/node_modules/.bin/oxfmt --check --config packages/waffle/.oxfmtrc.json packages/waffle-relay/scripts/prepare-native.ts packages/waffle-relay/tests/prepare-native.test.ts
+      - name: Fetch PR base ref for baseline checks
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
       - run: bun run --cwd packages/waffle quality
       - run: bun run relay:check
       - name: Prepare pinned ledger-free allocation reference
