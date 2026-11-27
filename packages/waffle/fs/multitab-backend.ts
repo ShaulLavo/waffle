@@ -18,7 +18,10 @@ import {
   CLIENT_MODE_NO_CLIENT_CACHE,
   CLIENT_MODE_NO_DIRECT_IO,
   CLIENT_MODE_NO_WATCH_DRAIN,
+  machineIdFromWorkspace,
+  writeSharedMachineId,
 } from "./shared.js";
+import { validateMachineId } from "../core/devices.js";
 import type { RuntimeStartupObserver } from "./startup.js";
 import type { StorageBackend } from "./storage.js";
 import { HEADER_WORDS, WATCH_OFFSET } from "./storage-geometry.js";
@@ -143,6 +146,7 @@ export interface MultiTabBackendOptions {
   readonly name: string;
   readonly startupRoot?: MemoryBudget;
   readonly sharedRoot?: MemoryBackendSharedRoot;
+  readonly machineId?: string;
   readonly onStartupStage?: RuntimeStartupObserver;
   readonly signal?: AbortSignal;
   readonly onWaiting?: () => void;
@@ -814,6 +818,26 @@ export class MultiTabBackend implements FilesystemBackend {
     const ring = new WatchRing(buffer, WATCH_OFFSET);
     this.watchCells = ring.cells;
     this.syncClientMode();
+    this.syncMachineId();
+  }
+
+  private resolveMachineId(): string | undefined {
+    if (this.options.machineId !== undefined) return validateMachineId(this.options.machineId);
+    if (this.cohortWorkspaceId !== undefined) return machineIdFromWorkspace(this.cohortWorkspaceId);
+    return undefined;
+  }
+
+  private syncMachineId(): void {
+    const id = this.resolveMachineId();
+    if (!id) return;
+    if (this.persistent) {
+      this.persistent.shared.setMachineId(id);
+      return;
+    }
+    if (this.sharedBuffer) {
+      const header = new Int32Array(this.sharedBuffer, 0, HEADER_WORDS);
+      writeSharedMachineId(header, id);
+    }
   }
 
   private syncClientMode(): void {
@@ -1826,6 +1850,7 @@ export class MultiTabBackend implements FilesystemBackend {
               segments: this.retainedSegments,
             }
           : undefined,
+        machineId: this.options.machineId,
         signal,
       });
 
@@ -3499,6 +3524,7 @@ export class MultiTabBackend implements FilesystemBackend {
   private commitCohortEpoch(workspaceId: string, storageEpoch: number): void {
     this.cohortWorkspaceId = workspaceId;
     this.cohortLastAcceptedEpoch = Math.max(this.cohortLastAcceptedEpoch ?? 0, storageEpoch);
+    this.syncMachineId();
   }
 
   // ---------------------------------------------------------------------------

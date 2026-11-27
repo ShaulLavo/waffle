@@ -1,3 +1,4 @@
+import { validateMachineId } from "../core/devices.js";
 import { DirectoryPages, checkDirectoryPage } from "./directory-pages.js";
 import { utf8ByteLength } from "./utf8-size.js";
 import type { FileIdentity } from "./file-identity.js";
@@ -1333,7 +1334,15 @@ export class MemFS implements FileSystem {
     }
   }
 
-  constructor(public root: DirNode = newDir()) {
+  readonly machineId: string;
+  constructor(
+    public root: DirNode = newDir(),
+    machineId?: string,
+  ) {
+    this.machineId =
+      machineId !== undefined
+        ? validateMachineId(machineId)
+        : validateMachineId(crypto.randomUUID().replaceAll("-", "").toLowerCase());
     adoptInodes(root);
     this.changeLinkCount(root, 1);
     const pending = [root];

@@ -5,10 +5,15 @@ import {
   RIGHT_PATH_FILESTAT_SET_SIZE as PATH_RESIZE,
 } from "./rights.js";
 import type { Descriptor, DescriptorTable } from "./descriptors.js";
+import { createMachineIdFile } from "./devices.js";
 import type { FileStat, FileSystem, ResolvedPath } from "./filesystem.js";
 import { normalize } from "./path.js";
 
-export type DescriptorPath = { source: number } | { device: "null" } | { resolved: ResolvedPath };
+export type DescriptorPath =
+  | { source: number }
+  | { device: "null" }
+  | { virtualFile: "machine-id" }
+  | { resolved: ResolvedPath };
 
 /** Open the inode again, not its old pathname. Negative results are WASI errno. */
 export function reopenDescriptor(
@@ -25,6 +30,17 @@ export function reopenDescriptor(
   if (oflags & ~15 || fdflags & ~31 || oflags & 5) return -28;
   base = BigInt.asUintN(64, base);
   inheriting = BigInt.asUintN(64, inheriting);
+  if (source.resource.kind === "device" && source.resource.virtualFile) {
+    if (oflags & 2) return -54;
+    if ((oflags & 8) !== 0 || (base & WRITE) !== 0n) return -2;
+    if ((base & source.rightsBase) !== base) return -2;
+    if ((inheriting & source.rightsInheriting) !== inheriting) return -2;
+    return table.open(
+      createMachineIdFile(source.resource.virtualFile.machineId, fdflags),
+      base,
+      inheriting,
+    );
+  }
   if (source.resource.kind !== "file") {
     if (oflags & 2 && source.resource.kind !== "directory") return -54;
     if (oflags & 8 && source.resource.kind === "directory") return -31;
@@ -92,7 +108,7 @@ function devicePath(path: string): "null" | undefined {
  * climbing from a directory descriptor are physical only. `resolved` is the lookup that found it. */
 interface PathEntry {
   prefix: string | undefined;
-  kind: FileStat["kind"] | "device" | "missing";
+  kind: FileStat["kind"] | "device" | "virtual-file" | "missing";
   handle?: number;
   source?: number;
   resolved?: ResolvedPath;
@@ -118,6 +134,7 @@ function lookupEntry(
   fs: FileSystem,
   parent: PathEntry,
   name: string,
+  hasMachineId: boolean,
 ): PathEntry | number {
   const prefix =
     parent.prefix === undefined || parent.source !== undefined
@@ -129,7 +146,11 @@ function lookupEntry(
   if (typeof path === "number") return path;
   if (path?.node !== undefined)
     return { prefix, handle: path.node, kind: fs.stat(path.node).kind, resolved: path };
-  if (prefix !== undefined && virtualDirectories.includes(prefix))
+  if (hasMachineId && prefix === "/etc/machine-id") return { prefix, kind: "virtual-file" };
+  if (
+    prefix !== undefined &&
+    (virtualDirectories.includes(prefix) || (hasMachineId && prefix === "/etc"))
+  )
     return { prefix, kind: "directory" };
   return path ? { prefix, kind: "missing", resolved: path } : 44;
 }
@@ -162,6 +183,21 @@ function virtualShadow(fs: FileSystem, root: number, path: ResolvedPath): boolea
   return false;
 }
 
+function virtualMachineIdMatch(
+  fs: FileSystem,
+  root: number,
+  resolved: ResolvedPath,
+  hasMachineId: boolean,
+): { virtualFile: "machine-id" } | number | undefined {
+  if (!hasMachineId || resolved.node !== undefined || resolved.name !== "machine-id")
+    return undefined;
+  if (resolved.parent === undefined) return undefined;
+  const etc = fs.resolve(root, "etc", true, true);
+  if (typeof etc === "number" || etc.node === undefined) return undefined;
+  if (!sameInode(fs, etc.node, resolved.parent)) return undefined;
+  return resolved.trailingSlash ? 54 : { virtualFile: "machine-id" };
+}
+
 type FinalLinkPolicy = "follow" | "nofollow" | "exclusive-create";
 
 function resolveOrdinaryPath(
@@ -171,7 +207,8 @@ function resolveOrdinaryPath(
   path: string,
   finalLink: FinalLinkPolicy,
   rooted: boolean,
-): { resolved: ResolvedPath } | number | undefined {
+  hasMachineId: boolean,
+): DescriptorPath | number | undefined {
   if (path.includes("dev") || path.includes("proc")) {
     const normalized = normalize(path);
     if (descriptorPath(normalized) !== undefined || devicePath(normalized) !== undefined)
@@ -179,7 +216,10 @@ function resolveOrdinaryPath(
   }
   const resolved = fs.resolve(handle, path, finalLink === "follow", rooted);
   if (typeof resolved === "number") return resolved === 44 ? undefined : resolved;
-  return virtualShadow(fs, root(), resolved) ? undefined : { resolved };
+  if (virtualShadow(fs, root(), resolved)) return undefined;
+  const virtualFile = virtualMachineIdMatch(fs, root(), resolved, hasMachineId);
+  if (virtualFile !== undefined) return virtualFile;
+  return { resolved };
 }
 
 /** The target of a link the alias walker meets with `rest` still to walk, or the errno that stops it. */
@@ -217,6 +257,7 @@ class AliasWalk {
     path: string,
     private readonly finalLink: FinalLinkPolicy,
     private readonly rooted: boolean,
+    private readonly hasMachineId: boolean,
   ) {
     this.current = start;
     this.pending = path.split("/");
@@ -236,7 +277,7 @@ class AliasWalk {
     this.dot = part === "." || part === "..";
     if (part === ".") return undefined;
     if (part === "..") return this.up();
-    const next = lookupEntry(this.table, this.fs, this.current, part);
+    const next = lookupEntry(this.table, this.fs, this.current, part, this.hasMachineId);
     if (typeof next === "number") return next;
     if (next.kind === "missing") return this.missing(next);
     if (next.kind === "symlink" && next.handle !== undefined) return this.expand(next.handle);
@@ -306,6 +347,7 @@ class AliasWalk {
     if (trailing && current.kind !== "directory") return 54;
     if (current.source !== undefined) return { source: current.source };
     if (current.kind === "device") return { device: "null" };
+    if (current.kind === "virtual-file") return { virtualFile: "machine-id" };
     // A virtual directory with no physical one behind it: ordinary resolution answers.
     if (current.handle === undefined) return undefined;
     if (!this.dot && current.resolved)
@@ -336,21 +378,37 @@ export function resolveDescriptorPath(
   path: string,
   finalLink: FinalLinkPolicy,
   rooted = false,
+  hasMachineId = fs.machineId !== undefined,
 ): DescriptorPath | number | undefined {
   if (directory.resource.kind !== "directory") return undefined;
   const handle = directory.resource.handle;
-  if (!rooted && directory.preopen !== "/" && fs.stat(handle).ino !== fs.stat(fs.preopen("/")).ino)
-    return undefined;
+  const isRootDir =
+    directory.preopen === "/" || fs.stat(handle).ino === fs.stat(fs.preopen("/")).ino;
+  if (!rooted && !isRootDir) {
+    if (!hasMachineId || !path) return undefined;
+    const resolved = fs.resolve(handle, path, finalLink === "follow", false);
+    if (typeof resolved === "number") return undefined;
+    return virtualMachineIdMatch(fs, fs.preopen("/"), resolved, true);
+  }
   let rootCache: number | undefined;
   const root = () => (rootCache ??= rooted ? rootHandle(table, fs, directory) : handle);
-  const ordinary = resolveOrdinaryPath(fs, handle, root, path, finalLink, rooted);
+  const ordinary = resolveOrdinaryPath(fs, handle, root, path, finalLink, rooted, hasMachineId);
   if (ordinary !== undefined || !path) return ordinary;
   const rootEntry = { prefix: "", kind: "directory", handle: root() } as const;
   if (!sameInode(fs, handle, rootEntry.handle)) {
     // Preview1 paths are relative to their directory; only the root binding spells `/dev/...`.
     if (path.startsWith("/")) return 63;
     const start: PathEntry = { prefix: undefined, kind: "directory", handle };
-    return new AliasWalk(table, fs, rootEntry, start, path, finalLink, rooted).run();
+    return new AliasWalk(table, fs, rootEntry, start, path, finalLink, rooted, hasMachineId).run();
   }
-  return new AliasWalk(table, fs, rootEntry, rootEntry, path, finalLink, rooted).run();
+  return new AliasWalk(
+    table,
+    fs,
+    rootEntry,
+    rootEntry,
+    path,
+    finalLink,
+    rooted,
+    hasMachineId,
+  ).run();
 }

@@ -25,6 +25,9 @@ export const PAGE_CELLS = ROOT_CELL_BASE + MAX_FILES * FILE_ROOT_WORDS;
 // Even, so each slot's 64-bit time fields stay 8-byte aligned for a BigUint64Array view.
 export const SLOT_WORDS = 28;
 const DIRTY_HEADER_WORDS = 48;
+/** DirtyAdmission owns words 32..71 (20 Float64 slots); words 72..76 hold the 128-bit machine-id + seqlock. */
+const DIRTY_LEDGER_WORDS = 40;
+export const MACHINE_ID_OFFSET = 32 + DIRTY_LEDGER_WORDS;
 export const HEADER_WORDS = 32 + DIRTY_HEADER_WORDS;
 export const WATCH_CAPACITY = 128;
 export const WATCH_RECORD_WORDS = 288;

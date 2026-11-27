@@ -1,3 +1,4 @@
+import { validateMachineId } from "../core/devices.js";
 import { FILESYSTEM_REQUEST_LIMITS, type FilesystemRequestPool } from "../fs/request-memory.js";
 import {
   localMemory,
@@ -69,6 +70,8 @@ export type SharedFilesystemOptions = VfsSelection & {
   [localMemory]?: MemoryBudget;
   workerURL?: string | URL;
   name?: string;
+  /** Optional explicit 32-char lowercase hex machine-id(5) served via virtual `/etc/machine-id`. */
+  machineId?: string;
   /** Called when startup enters or leaves the queued ownership state. */
   onStateChange?: SharedFilesystemStateObserver;
 };
@@ -175,6 +178,8 @@ export class SharedFilesystem {
     onStartupStage?: RuntimeStartupObserver,
     reservations?: RuntimeReservations,
   ) {
+    const explicitMachineId =
+      options.machineId !== undefined ? validateMachineId(options.machineId) : undefined;
     const projectionBudget = options[localMemory];
     if (projectionBudget !== undefined && !(projectionBudget instanceof MemoryBudget))
       throw new TypeError("localMemory requires a same-realm MemoryBudget");
@@ -240,6 +245,7 @@ export class SharedFilesystem {
       this.client = client = new FilesystemClient(connection.client, {
         connect: (identity) => this.connect(identity),
       });
+      if (explicitMachineId !== undefined) client.shared.setMachineId(explicitMachineId);
       this.workspace = options.workspace ? createWorkspaceVfs(client, projectionBudget) : undefined;
       worker.addEventListener("message", (event) => this.receiveMessage(event, onStartupStage));
       worker.addEventListener("error", (event) => {
@@ -256,6 +262,7 @@ export class SharedFilesystem {
       const message: {
         connect: FilesystemConnection;
         name?: string;
+        machineId?: string;
         mode: VfsDescriptor["mode"];
         implementation: VfsDescriptor["implementation"];
         whenBusy?: "takeover" | "wait" | "attach";
@@ -263,6 +270,7 @@ export class SharedFilesystem {
       } = {
         connect: connection.server,
         name: options.name,
+        machineId: explicitMachineId,
         mode: this.vfs.mode,
         implementation: this.vfs.implementation,
         whenBusy: selection.whenBusy,
@@ -323,6 +331,10 @@ export class SharedFilesystem {
 
   get state(): SharedFilesystemState {
     return this._state;
+  }
+  /** Stable 32-char lowercase hex machine-id(5) served via virtual `/etc/machine-id`. */
+  get machineId(): string | undefined {
+    return this.client.machineId;
   }
   /** True when the filesystem worker/storage ownership could not be confirmed released. */
   ownershipRetained(): boolean {
