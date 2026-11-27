@@ -420,14 +420,61 @@ describe("virtual /etc/machine-id", () => {
       // Source continues reading from the shared offset 14
       expect(h.readAll(opened.fd).text).toBe(`${explicit.slice(14)}\n`);
       expect(imported.resource.virtualFile?.offset).toBe(33);
+
+      // 64-bit offsets past 2^31 - 1 round-trip identically through fd_seek and fd_tell
+      const beyondInt32 = 2147483648n;
+      expect(h.exports.fd_seek!(opened.fd, beyondInt32, 0, 3000)).toBe(0);
+      expect(v.getBigUint64(3000, true)).toBe(beyondInt32);
+      expect(h.exports.fd_tell!(opened.fd, 3000)).toBe(0);
+      expect(v.getBigUint64(3000, true)).toBe(beyondInt32);
+      expect(imported.resource.read([new Uint8Array(4)])).toBe(0);
+      expect(h.exports.fd_tell!(opened.fd, 3000)).toBe(0);
+      expect(v.getBigUint64(3000, true)).toBe(beyondInt32);
+
+      // SEEK_CUR relative seek works over 64-bit shared cursor and rejects overflow
+      expect(h.exports.fd_seek!(opened.fd, -2147483638n, 1, 3000)).toBe(0);
+      expect(v.getBigUint64(3000, true)).toBe(10n);
+      expect(h.exports.fd_seek!(opened.fd, 0x7fff_ffff_ffff_ffffn, 1, 3000)).toBe(28);
+      expect(h.exports.fd_tell!(opened.fd, 3000)).toBe(0);
+      expect(v.getBigUint64(3000, true)).toBe(10n);
     }
     codec.discard(token);
+
+    // Token validation must not invoke guest-mutable SharedArrayBuffer.prototype.byteLength
+    const sabProtoDesc = Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, "byteLength");
+    let getterCalls = 0;
+    Object.defineProperty(SharedArrayBuffer.prototype, "byteLength", {
+      configurable: true,
+      get() {
+        getterCalls++;
+        return 8;
+      },
+    });
+    try {
+      const checked = codec.import(token, 2);
+      expect(checked.resource.kind).toBe("device");
+      expect(getterCalls).toBe(0);
+    } finally {
+      if (sabProtoDesc)
+        Object.defineProperty(SharedArrayBuffer.prototype, "byteLength", sabProtoDesc);
+    }
 
     expect(() =>
       codec.import(
         {
           kind: "machine-id-file",
           machineId: "INVALID",
+          offset: new SharedArrayBuffer(8),
+          fdflags: 0,
+        },
+        2,
+      ),
+    ).toThrow(TypeError);
+    expect(() =>
+      codec.import(
+        {
+          kind: "machine-id-file",
+          machineId: explicit,
           offset: new SharedArrayBuffer(4),
           fdflags: 0,
         },
@@ -437,6 +484,36 @@ describe("virtual /etc/machine-id", () => {
     expect(() =>
       codec.import({ kind: "machine-id-file", machineId: explicit, offset: 0, fdflags: 0 }, 2),
     ).toThrow(TypeError);
+  });
+
+  test("path_probe matches path_open for symlinked /etc and rejects trailing dot/slash segments", () => {
+    const explicit = "fedcba9876543210fedcba9876543210";
+    // Empty fs (no /etc): etc/machine-id/. and symlink to /etc/machine-id/ must not match
+    const emptyFs = new MemFS(undefined, explicit);
+    const emptyRoot = emptyFs.preopen("/");
+    emptyFs.symlink(emptyFs.resolve(emptyRoot, "slash-link", false) as never, "/etc/machine-id/");
+    expect(emptyFs.probe(emptyRoot, ["etc/machine-id/.", "slash-link"], "file", true)).toBe(-1);
+    expect(emptyFs.probe(emptyRoot, ["etc/./machine-id"], "file", true)).toBe(0);
+
+    // Symlink /etc -> /real-etc: matches probe and open identically
+    const symFs = new MemFS(undefined, explicit);
+    symFs.mkdirp("/real-etc");
+    const symRoot = symFs.preopen("/");
+    symFs.symlink(symFs.resolve(symRoot, "etc", false) as never, "/real-etc");
+    symFs.symlink(symFs.resolve(symRoot, "id-link", false) as never, "/etc/machine-id");
+    expect(symFs.probe(symRoot, ["etc/machine-id"], "file", true)).toBe(0);
+    expect(symFs.probe(symRoot, ["id-link"], "file", true)).toBe(0);
+    expect(symFs.probe(symRoot, ["etc/machine-id/."], "file", true)).toBe(-1);
+
+    const h = createHarness(symFs);
+    const opened = h.openPath(h.rootFd, "etc/machine-id");
+    expect(opened.errno).toBe(0);
+    expect(h.readAll(opened.fd).text).toBe(`${explicit}\n`);
+
+    // Unsearchable symlink target rejects both probe and open
+    symFs.lookup("/real-etc")!.mode = 0o000;
+    expect(symFs.probe(symRoot, ["etc/machine-id", "id-link"], "file", true)).toBe(-1);
+    expect(h.openPath(h.rootFd, "etc/machine-id").errno).toBe(2);
   });
 
   test("rejects invalid explicit machineId values and supports SharedFilesystemState seqlock", () => {

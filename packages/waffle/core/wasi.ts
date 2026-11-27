@@ -67,6 +67,8 @@ import {
   MACHINE_ID_FILE_SIZE,
   MACHINE_ID_INO,
   readVirtualFileBytes,
+  seekVirtualFile,
+  tellVirtualFile,
   validateMachineId,
 } from "./devices.js";
 
@@ -1284,15 +1286,9 @@ export class Wasi {
         if (!(entry.rightsBase & right)) return ENOTCAPABLE;
         if (entry.resource.kind === "directory") return EISDIR;
         if (entry.resource.kind === "device" && entry.resource.virtualFile) {
-          const vf = entry.resource.virtualFile;
-          let base = Number.NaN;
-          if (whence === 0) base = 0;
-          else if (whence === 1) base = vf.offset;
-          else if (whence === 2) base = vf.data.length;
-          const pos = base + Number(offset);
-          if (!(pos >= 0)) return EINVAL;
-          vf.offset = pos;
-          this.view().setBigUint64(newOffsetPtr, BigInt(pos), true);
+          const next = seekVirtualFile(entry.resource.virtualFile, offset, whence);
+          if (typeof next === "number") return -next;
+          this.view().setBigUint64(newOffsetPtr, next, true);
           return SUCCESS;
         }
         if (entry.resource.kind !== "file") return ESPIPE;
@@ -1312,7 +1308,7 @@ export class Wasi {
       },
       fd_tell: this.descriptorCall(RIGHT_FD_TELL, (resource, ptr: number) => {
         if (resource.kind === "device" && resource.virtualFile) {
-          this.view().setBigUint64(ptr, BigInt(resource.virtualFile.offset), true);
+          this.view().setBigUint64(ptr, tellVirtualFile(resource.virtualFile), true);
           return SUCCESS;
         }
         if (resource.kind !== "file") return ESPIPE;

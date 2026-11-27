@@ -648,8 +648,8 @@ export class MemFS implements FileSystem {
     if (typeof resolved !== "number") {
       if (resolved.node !== undefined || resolved.trailingSlash || resolved.name !== "machine-id")
         return false;
-      const etc = this.root.children.get("etc");
-      return etc?.kind === "dir" && resolved.parent === etc;
+      const etc = this.walkNodes(this.root, "etc", false, true, undefined, true);
+      return typeof etc !== "number" && etc.node?.kind === "dir" && resolved.parent === etc.node;
     }
     if (resolved !== 44) return false;
     return this.walkSyntheticMachineId(start, path, rooted);
@@ -703,8 +703,9 @@ export class MemFS implements FileSystem {
     let sawMachineId = false;
     for (let i = offset; i < pending.length; i++) {
       const next = pending[i]!;
+      if (sawMachineId) return false;
       if (!next || next === ".") continue;
-      if (!sawMachineId && next === "machine-id") {
+      if (next === "machine-id") {
         sawMachineId = true;
         continue;
       }

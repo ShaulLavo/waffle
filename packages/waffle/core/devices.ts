@@ -3,11 +3,12 @@ import {
   atomicsCompareExchange,
   atomicsLoad,
   atomicsStore,
-  Int32ArrayConstructor,
+  BigInt64ArrayConstructor,
   reflectApply,
 } from "../proc/intrinsics/core.ts";
 import type { Stream, VirtualFileState } from "./descriptors.js";
 
+const BigIntConstructor = BigInt;
 const Uint8ArrayConstructor = Uint8Array;
 const WeakMapConstructor = WeakMap;
 const weakMapGet = WeakMap.prototype.get;
@@ -17,10 +18,12 @@ const copyBytes = Uint8Array.prototype.set;
 const sliceBytes = Uint8Array.prototype.subarray;
 const apply = reflectApply;
 
+const MAX_VIRTUAL_OFFSET = 0x7fff_ffff_ffff_ffffn;
+
 interface SharedVirtualCursor {
   buffer?: SharedArrayBuffer;
-  cell?: Int32Array<SharedArrayBuffer>;
-  local: number;
+  cell?: BigInt64Array<SharedArrayBuffer>;
+  local: bigint;
 }
 
 const virtualCursors = new WeakMapConstructor<VirtualFileState, SharedVirtualCursor>();
@@ -99,12 +102,16 @@ export function createNullDevice(fdflags = 0): Stream {
   };
 }
 
-function readCursor(cursor: SharedVirtualCursor): number {
-  return cursor.cell ? atomicsLoad(cursor.cell, 0) : cursor.local;
+function readCursorBigInt(cursor: SharedVirtualCursor): bigint {
+  if (!cursor.cell) return cursor.local;
+  const raw = atomicsLoad(cursor.cell, 0);
+  return raw < 0n ? 0n : raw;
 }
 
-function writeCursor(cursor: SharedVirtualCursor, next: number): void {
-  const clamped = Math.min(0x7fffffff, Math.max(0, next));
+function writeCursorBigInt(cursor: SharedVirtualCursor, next: bigint): void {
+  let clamped = next;
+  if (clamped < 0n) clamped = 0n;
+  if (clamped > MAX_VIRTUAL_OFFSET) clamped = MAX_VIRTUAL_OFFSET;
   if (cursor.cell) atomicsStore(cursor.cell, 0, clamped);
   else cursor.local = clamped;
 }
@@ -114,27 +121,76 @@ function claimCursorSpan(
   dataLength: number,
   requested: number,
 ): number {
+  const dataLenBig = BigIntConstructor(dataLength);
   if (!cursor.cell) {
     const start = cursor.local;
-    const count = Math.min(requested, Math.max(0, dataLength - start));
-    cursor.local = start + count;
-    return start;
+    if (start >= dataLenBig) return dataLength;
+    const startNum = Number(start);
+    const count = Math.min(requested, dataLength - startNum);
+    cursor.local = start + BigIntConstructor(count);
+    return startNum;
   }
   for (;;) {
-    const start = atomicsLoad(cursor.cell, 0);
-    const count = Math.min(requested, Math.max(0, dataLength - start));
-    if (count === 0) return start;
-    if (atomicsCompareExchange(cursor.cell, 0, start, start + count) === start) return start;
+    const raw = atomicsLoad(cursor.cell, 0);
+    const start = raw < 0n ? 0n : raw;
+    if (start >= dataLenBig) return dataLength;
+    const startNum = Number(start);
+    const count = Math.min(requested, dataLength - startNum);
+    if (count === 0) return startNum;
+    const next = start + BigIntConstructor(count);
+    if (atomicsCompareExchange(cursor.cell, 0, raw, next) === raw) return startNum;
+  }
+}
+
+function cursorForState(state: VirtualFileState): SharedVirtualCursor {
+  const cursor = apply(weakMapGet, virtualCursors, [state]) as SharedVirtualCursor | undefined;
+  if (!cursor) throw new TypeError("missing virtual file cursor");
+  return cursor;
+}
+
+/** Atomically read the current 64-bit byte offset of a virtual regular file. */
+export function tellVirtualFile(state: VirtualFileState): bigint {
+  return readCursorBigInt(cursorForState(state));
+}
+
+/** Atomically seek a virtual regular file; returns the new 64-bit offset or negative WASI errno. */
+export function seekVirtualFile(
+  state: VirtualFileState,
+  delta: bigint,
+  whence: number,
+): bigint | number {
+  const cursor = cursorForState(state);
+  if (whence === 0 || whence === 2) {
+    const base = whence === 0 ? 0n : BigIntConstructor(state.data.length);
+    const next = base + delta;
+    if (next < 0n || next > MAX_VIRTUAL_OFFSET) return -28;
+    if (cursor.cell) atomicsStore(cursor.cell, 0, next);
+    else cursor.local = next;
+    return next;
+  }
+  if (whence !== 1) return -28;
+  if (!cursor.cell) {
+    const next = cursor.local + delta;
+    if (next < 0n || next > MAX_VIRTUAL_OFFSET) return -28;
+    cursor.local = next;
+    return next;
+  }
+  for (;;) {
+    const raw = atomicsLoad(cursor.cell, 0);
+    const current = raw < 0n ? 0n : raw;
+    const next = current + delta;
+    if (next < 0n || next > MAX_VIRTUAL_OFFSET) return -28;
+    if (delta === 0n) return current;
+    if (atomicsCompareExchange(cursor.cell, 0, raw, next) === raw) return next;
   }
 }
 
 /** Promote a virtual `/etc/machine-id` file cursor to shared memory for cross-process transfer. */
 export function shareMachineIdOffset(state: VirtualFileState): SharedArrayBuffer {
-  const cursor = apply(weakMapGet, virtualCursors, [state]) as SharedVirtualCursor | undefined;
-  if (!cursor) throw new TypeError("missing virtual file cursor");
+  const cursor = cursorForState(state);
   if (cursor.buffer) return cursor.buffer;
-  const buffer = allocateSharedControl(4);
-  const cell = new Int32ArrayConstructor(buffer);
+  const buffer = allocateSharedControl(8);
+  const cell = new BigInt64ArrayConstructor(buffer);
   atomicsStore(cell, 0, cursor.local);
   cursor.buffer = buffer;
   cursor.cell = cell;
@@ -150,21 +206,22 @@ export function createMachineIdFile(
   const data = encodeMachineIdBytes(machineId);
   const cursor: SharedVirtualCursor =
     typeof offsetOrBuffer === "number"
-      ? { local: offsetOrBuffer }
+      ? { local: BigIntConstructor(Math.max(0, Math.trunc(offsetOrBuffer))) }
       : {
           buffer: offsetOrBuffer,
-          cell: new Int32ArrayConstructor(offsetOrBuffer),
-          local: 0,
+          cell: new BigInt64ArrayConstructor(offsetOrBuffer),
+          local: 0n,
         };
   const state: VirtualFileState = {
     ino: MACHINE_ID_INO,
     machineId,
     data,
     get offset(): number {
-      return readCursor(cursor);
+      return Number(readCursorBigInt(cursor));
     },
     set offset(next: number) {
-      writeCursor(cursor, next);
+      if (!Number.isFinite(next)) return;
+      writeCursorBigInt(cursor, BigIntConstructor(Math.max(0, Math.trunc(next))));
     },
   };
   apply(weakMapSet, virtualCursors, [state, cursor]);
@@ -183,12 +240,16 @@ export function createMachineIdFile(
     tryRead: read,
     write: () => -2,
     tryWrite: () => -2,
-    readiness: () => ({
-      readable: true,
-      writable: false,
-      hangup: false,
-      nbytes: Math.max(0, data.length - readCursor(cursor)),
-    }),
+    readiness: () => {
+      const current = readCursorBigInt(cursor);
+      const dataLenBig = BigIntConstructor(data.length);
+      return {
+        readable: true,
+        writable: false,
+        hangup: false,
+        nbytes: current >= dataLenBig ? 0 : data.length - Number(current),
+      };
+    },
     close() {},
   };
 }
