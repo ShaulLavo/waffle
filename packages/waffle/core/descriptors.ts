@@ -17,12 +17,20 @@ export interface Readiness {
   nbytes?: number;
   error?: number;
 }
+export interface VirtualFileState {
+  readonly ino: number;
+  readonly machineId: string;
+  readonly data: Uint8Array;
+  offset: number;
+}
 /** Pipe and terminal services supply I/O and level-triggered readiness, never guest pointers.
  * I/O returns a byte count or negative WASI errno. Preview1 adapters may block inside read/write.
  */
 export interface Stream {
   kind: "pipe" | "terminal" | "device" | "socket";
-  device?: "null";
+  device?: "null" | "machine-id";
+  /** Present on read-only virtual regular files backed by a Stream (such as `/etc/machine-id`). */
+  readonly virtualFile?: VirtualFileState;
   /** Supported fdflags share open-description state across duplication and endpoint transfer. */
   fdflags?: number;
   read(chunks: readonly Uint8Array[]): number;
@@ -144,7 +152,7 @@ export class DescriptorTable {
       case "terminal":
         return 2;
       case "device":
-        return 0;
+        return entry.resource.virtualFile ? 3 : 0;
       case "file":
         return 3;
       case "directory":

@@ -103,8 +103,9 @@ export class PersistentBackend extends MemoryBackend {
     private readonly dirtyLimits: Partial<DirtyLimits> | false = {},
     startupRoot?: MemoryBudget,
     sharedRoot?: MemoryBackendSharedRoot,
+    machineId?: string,
   ) {
-    super(fs, reservation, startupRoot, undefined, sharedRoot);
+    super(fs, reservation, startupRoot, undefined, sharedRoot, machineId);
     this.initialWorkspaceId = reservation.workspace;
     this.initialEra = reservation.era;
     this.loadedIndex = index !== undefined;
@@ -211,6 +212,7 @@ export class PersistentBackend extends MemoryBackend {
       dirtyLimits?: Partial<DirtyLimits> | false;
       startupRoot?: MemoryBudget;
       sharedRoot?: MemoryBackendSharedRoot;
+      machineId?: string;
       signal?: AbortSignal;
     } = {},
   ): Promise<PersistentBackend> {
@@ -232,6 +234,7 @@ export class PersistentBackend extends MemoryBackend {
         options.dirtyLimits,
         options.startupRoot,
         options.sharedRoot,
+        options.machineId,
       );
     const fs = restoreTree(index);
     const root = fs.root;
@@ -246,6 +249,7 @@ export class PersistentBackend extends MemoryBackend {
       options.dirtyLimits,
       options.startupRoot,
       options.sharedRoot,
+      options.machineId,
     );
     try {
       if (!index.nodes[0]?.identity) {

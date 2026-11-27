@@ -1,9 +1,9 @@
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
-// path_realpath, watch_next, path_probe, and advisory file locks (fd_flock/fd_lock + OFD):
-// 15,861 B gzip on Bun 1.4.4 (2026-11-27). Allow ~10% headroom to catch accidental growth.
-export const CORE_BUDGET_BYTES = 17_500;
+// path_realpath, watch_next, path_probe, virtual /etc/machine-id, and advisory file locks:
+// 17,596 B gzip on Bun 1.4.4 (2026-11-28). Allow ~10% headroom to catch accidental growth.
+export const CORE_BUDGET_BYTES = 19_500;
 export function checkCoreBudget(gzipBytes: number): void {
   if (gzipBytes > CORE_BUDGET_BYTES)
     throw new Error(

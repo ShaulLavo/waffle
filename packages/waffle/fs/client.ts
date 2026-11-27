@@ -718,6 +718,9 @@ export class FilesystemClient implements FileSystem {
   readonly shared: SharedFilesystemState;
   readonly watches: WatchFileSystem;
   readonly locks: FileLockSystem;
+  get machineId(): string | undefined {
+    return this.shared.getMachineId();
+  }
   private pendingLockReleases: {
     readonly operation: "lockReleaseOfd" | "lockReleasePosix";
     readonly args: unknown[];

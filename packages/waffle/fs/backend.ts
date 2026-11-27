@@ -26,7 +26,8 @@ import {
 } from "../core/filesystem.js";
 import { MemFS, type Node, type NamespacePlan } from "./memory.js";
 import { FilesystemError, type FilesystemIdentity } from "./protocol.js";
-import { SharedFilesystemState, type SharedSegment } from "./shared.js";
+import { machineIdFromWorkspace, SharedFilesystemState, type SharedSegment } from "./shared.js";
+import { validateMachineId } from "../core/devices.js";
 
 /** Storage boundary. 3b can add asynchronous loading/commit without changing guest transport. */
 export interface FilesystemBackend {
@@ -210,6 +211,7 @@ export class MemoryBackend implements FilesystemBackend {
     return (node.identity ??= this.shared.identities.create());
   }
   readonly workspaceId: string;
+  readonly machineId: string;
   readonly fs: MemFS;
   readonly watchAccount: RootWatchAccount;
   constructor(
@@ -218,6 +220,7 @@ export class MemoryBackend implements FilesystemBackend {
     startupRoot?: MemoryBudget | MemoryBackend,
     watchLimits?: WatchResourceLimits,
     sharedRoot?: MemoryBackendSharedRoot,
+    machineId?: string,
   ) {
     if (sharedRoot && startupRoot)
       throw new TypeError("an imported root cannot also own a startup root");
@@ -227,6 +230,7 @@ export class MemoryBackend implements FilesystemBackend {
       this.watchAccount = startupRoot.watchAccount;
       this.fs = startupRoot.fs;
       this.workspaceId = startupRoot.workspaceId;
+      this.machineId = startupRoot.machineId;
       this.shared = startupRoot.shared;
       this.startupRoot = startupRoot.startupRoot;
       this.sharedPhase = startupRoot.sharedPhase;
@@ -248,7 +252,12 @@ export class MemoryBackend implements FilesystemBackend {
     if (sharedRoot) this.sharedPhase = "imported";
     this.fs = fs;
     this.workspaceId = reservation.workspace;
+    this.machineId =
+      machineId !== undefined
+        ? validateMachineId(machineId)
+        : machineIdFromWorkspace(reservation.workspace);
     this.shared.identities.configure(reservation);
+    this.shared.setMachineId(this.machineId);
     const seen = new Set<Node>();
     const pending: Node[] = [fs.root];
     while (pending.length) {
@@ -302,6 +311,7 @@ export class MemoryBackend implements FilesystemBackend {
       publication,
     );
     if (this.sharedPhase !== "imported") this.shared.identities.copyFrom(previous.identities);
+    this.shared.setMachineId(this.machineId);
     this.shared.continueUnlinks(previous);
     this.sharedPhase = "attached";
   }

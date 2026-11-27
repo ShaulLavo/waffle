@@ -162,6 +162,8 @@ export interface FileSystem {
   readonly watches?: WatchFileSystem;
   /** Advisory whole-file (flock) and byte-range (fcntl) locks; absent means ENOTSUP. */
   readonly locks?: FileLockSystem;
+  /** Stable 32-char lowercase hex machine identifier served via virtual `/etc/machine-id`. */
+  readonly machineId?: string;
 }
 
 /** Advisory whole-file lock operations matching sys/file.h (flock(2)). */
