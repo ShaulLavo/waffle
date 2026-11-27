@@ -6,6 +6,7 @@ import {
   checkBaselineMonotonic,
   checkNestedTernaryBaseline,
   fingerprintExpression,
+  loadBaseBaseline,
 } from "../tooling/nested-ternary-baseline.js";
 
 const waffleRoot = resolve(import.meta.dir, "..");
@@ -121,5 +122,36 @@ describe("nested-ternary shrinking baseline", () => {
       writeOxlintRc(dir, []);
       expect(checkNestedTernaryBaseline(dir, {}, oxlintBin)).toEqual([]);
     });
+  });
+
+  test("slices UTF-8 byte offsets accurately after non-ASCII text", () => {
+    withTempRoot((dir) => {
+      writeOxlintRc(dir, ["legacy.ts"]);
+      const expr = "a ? (b ? 1 : 2) : 3";
+      writeFileSync(
+        join(dir, "legacy.ts"),
+        `// 日本語コメント 🚀 — multi-byte UTF-8 prefix\nexport const v = (a: boolean, b: boolean) => (${expr});\n`,
+      );
+      expect(
+        checkNestedTernaryBaseline(dir, { "legacy.ts": [fingerprintExpression(expr)] }, oxlintBin),
+      ).toEqual([]);
+    });
+  });
+
+  test("preserves whitespace inside string and template literals when fingerprinting", () => {
+    expect(fingerprintExpression('a ? (b ? "x  y" : "z") : "w"')).not.toBe(
+      fingerprintExpression('a ? (b ? "x y" : "z") : "w"'),
+    );
+    expect(fingerprintExpression("a ? (b ? `x  y` : `z`) : `w`")).not.toBe(
+      fingerprintExpression("a ? (b ? `x y` : `z`) : `w`"),
+    );
+    expect(fingerprintExpression("a ?\n  (b ? 'x  y' : 'z')\n  : 'w'")).toBe(
+      fingerprintExpression("a ? (b ? 'x  y' : 'z') : 'w'"),
+    );
+  });
+
+  test("fails closed when the requested git base ref cannot be resolved", () => {
+    const result = loadBaseBaseline(waffleRoot, "nonexistent-branch-for-monotonic-check");
+    expect(result.error).toContain("unavailable");
   });
 });

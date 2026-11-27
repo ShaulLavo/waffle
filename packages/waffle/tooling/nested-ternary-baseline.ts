@@ -17,7 +17,7 @@ export const LEGACY_NESTED_TERNARY_BASELINE: NestedTernaryBaseline = {
   "browser/gpu/replay.ts": ["4fb376bd0851", "b11dd6202124", "b72b596d185a"],
   "browser/gpu/service.ts": ["9dcbecf9774e"],
   "browser/guarded-stream.ts": ["c853f6587737"],
-  "browser/net/helper.ts": ["eec8bab43115"],
+  "browser/net/helper.ts": ["318c4c0b70ed"],
   "browser/net/namespace.ts": ["0bb2987e34db"],
   "browser/operations/guest.ts": ["c3c6552caff5"],
   "browser/operations/owner.ts": ["5abd5d5878a7"],
@@ -126,7 +126,7 @@ export const LEGACY_NESTED_TERNARY_BASELINE: NestedTernaryBaseline = {
   ],
   "testing/storage-navigation-diagnostics.ts": ["e35844cc58bb"],
   "tests/browser-matrix.test.ts": ["24d757bbc13b", "261a1d58c1ad", "3cf3ef40fc0c", "4ed95b36dfa7"],
-  "tests/browser-worker.test.ts": ["5d1465c30653", "5d1465c30653"],
+  "tests/browser-worker.test.ts": ["1df216578e79", "1df216578e79"],
   "tests/c-threads-safari-runner.ts": ["aeaa050a66b6", "b49049bc5c51"],
   "tests/filesystem-retired-release.test.ts": ["691f97de542f"],
   "tests/filesystem-shutdown-close-observation.test.ts": ["e5f53bb97503"],
@@ -172,7 +172,7 @@ export const LEGACY_NESTED_TERNARY_BASELINE: NestedTernaryBaseline = {
   "tests/gpu-async-payload.test.ts": ["e81b3f3c09b3"],
   "tests/gpu-browser-shared.ts": ["1746c6fed546"],
   "tests/gpu-ci.test.ts": ["1b109e435ba7", "db9e05055a95"],
-  "tests/gpu-copy-draw-replay.test.ts": ["a1a36bfb3544"],
+  "tests/gpu-copy-draw-replay.test.ts": ["cac8e1fed214"],
   "tests/gpu-desktop-measure.test.ts": ["977da724f0b6"],
   "tests/gpu-disposal-controls.test.ts": ["5bf163d50829", "fcfd35af21b7"],
   "tests/gpu-grant-quota-browser.ts": ["97fbbe9ddda7"],
@@ -209,12 +209,12 @@ export const LEGACY_NESTED_TERNARY_BASELINE: NestedTernaryBaseline = {
   "tests/gpu-service-failure-controls.test.ts": ["580398a08b19"],
   "tests/indexeddb-chunks-browser.ts": ["d4bb29a30d3d"],
   "tests/indexeddb-chunks.test.ts": ["b0fd6ae3cc6b"],
-  "tests/installer-symlinks-borrow.test.ts": ["6b6a4372d8b5"],
+  "tests/installer-symlinks-borrow.test.ts": ["a042cc220e3a"],
   "tests/installer-symlinks-readlink.test.ts": ["a042cc220e3a"],
   "tests/interrupt-wait-profile.test.ts": ["841f8d3c5f29"],
   "tests/link-program.test.ts": ["202ced5d666c"],
   "tests/memory-budget.test.ts": ["3211e66449d2"],
-  "tests/namespace-projection-table.test.ts": ["a55b39fbe553", "d351b0878bfd"],
+  "tests/namespace-projection-table.test.ts": ["70c7640c976b", "e0f5ba992966"],
   "tests/network-address.test.ts": ["3678d1748a15"],
   "tests/notification-command.ts": ["a915ddad1572"],
   "tests/notification-lifetime-cases.ts": ["36b0199ebe1d"],
@@ -227,8 +227,8 @@ export const LEGACY_NESTED_TERNARY_BASELINE: NestedTernaryBaseline = {
   "tests/page-runner/consumer-controls.ts": ["77c451606941"],
   "tests/page-runner/framework-host.test.ts": ["04ae8f3a12d2", "04ae8f3a12d2"],
   "tests/page-runner/gpu-async-failure-controls.ts": ["e9980b87dcb7"],
-  "tests/page-runner/host-drive-controls.ts": ["33051ea2f6b5", "557bb046730a", "b8066928b181"],
-  "tests/page-runner/host-drive.test.ts": ["f5e1d1347216"],
+  "tests/page-runner/host-drive-controls.ts": ["232391314a76", "55d40743694e", "db84cd964674"],
+  "tests/page-runner/host-drive.test.ts": ["c499f8547683"],
   "tests/page-runner/host-storage-controls.ts": ["b64564651c59"],
   "tests/page-runner/peer-controls.ts": ["ea647484eecb"],
   "tests/page-runner/process-recycling-controls.ts": ["7879159a01cf", "cf77feb829b3"],
@@ -240,8 +240,8 @@ export const LEGACY_NESTED_TERNARY_BASELINE: NestedTernaryBaseline = {
   "tests/page-runner/threads-runtime-suite.test.ts": ["561109469906"],
   "tests/page-runner/threads-runtime-suite.ts": ["561109469906"],
   "tests/preview1-network-launch.test.ts": ["22744dd51c9f", "9efbcd39c8cb"],
-  "tests/process-abi.test.ts": ["a1af90f54c09", "c41058be6489", "e3497c8e5982"],
-  "tests/process-access.test.ts": ["43eabba76481"],
+  "tests/process-abi.test.ts": ["4770dc41aa49", "97e1c2734b6b", "a6714057ae84"],
+  "tests/process-access.test.ts": ["be238fc1ecda"],
   "tests/process-admission.test.ts": ["742be413858a"],
   "tests/process-execve.test.ts": ["c264333b4b2a", "ec090a609412", "ec090a609412", "fc115c5dab8a"],
   "tests/process-navigation-observer.test.ts": ["62e171a180e0", "af49d5ff97ea"],
@@ -265,7 +265,7 @@ export const LEGACY_NESTED_TERNARY_BASELINE: NestedTernaryBaseline = {
   "tests/threads-safari-runner.ts": ["77b70c2656ca", "b49049bc5c51"],
   "tests/watch-root-runtime.test.ts": ["2091dd08ad44"],
   "tests/workspace-archive-pulls.test.ts": ["56b1aa61401b"],
-  "tests/workspace-export.test.ts": ["269a7068141b"],
+  "tests/workspace-export.test.ts": ["daa68848d59f"],
   "tests/workspace-safari-runner.test.ts": ["c1d778b46f9d", "e61b00548da5"],
   "tests/workspace-vfs-read-stream.test.ts": ["d85b9ae62b4b"],
   "tests/workspace-vfs-read.test.ts": [
@@ -305,8 +305,107 @@ interface OxlintDiagnostic {
   labels?: { span?: { offset: number; length: number } }[];
 }
 
+function scanQuoted(source: string, start: number, quote: string): number {
+  let i = start + 1;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+    if (ch === quote) return i + 1;
+    i += 1;
+  }
+  return source.length;
+}
+
+function scanTemplateSegment(source: string, start: number): { end: number; enteredExpr: boolean } {
+  let i = start;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+    if (ch === "`") return { end: i + 1, enteredExpr: false };
+    if (ch === "$" && source[i + 1] === "{") return { end: i + 2, enteredExpr: true };
+    i += 1;
+  }
+  return { end: source.length, enteredExpr: false };
+}
+
+function appendTemplateSegment(
+  source: string,
+  start: number,
+  out: string[],
+  templateBraceDepths: number[],
+): number {
+  const seg = scanTemplateSegment(source, start + 1);
+  out.push(source.slice(start, seg.end));
+  if (seg.enteredExpr) templateBraceDepths.push(0);
+  return seg.end;
+}
+
+function normalizeExpressionWhitespace(source: string): string {
+  const out: string[] = [];
+  const templateBraceDepths: number[] = [];
+  let pendingSpace = false;
+  let i = 0;
+
+  const flushSpace = (): void => {
+    if (pendingSpace && out.length > 0) out.push(" ");
+    pendingSpace = false;
+  };
+
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "'" || ch === '"') {
+      flushSpace();
+      const end = scanQuoted(source, i, ch);
+      out.push(source.slice(i, end));
+      i = end;
+      continue;
+    }
+    if (ch === "`") {
+      flushSpace();
+      i = appendTemplateSegment(source, i, out, templateBraceDepths);
+      continue;
+    }
+    if (ch === "{" && templateBraceDepths.length > 0) {
+      flushSpace();
+      templateBraceDepths[templateBraceDepths.length - 1]! += 1;
+      out.push(ch);
+      i += 1;
+      continue;
+    }
+    if (ch === "}" && templateBraceDepths.length > 0) {
+      const top = templateBraceDepths[templateBraceDepths.length - 1]!;
+      if (top === 0) {
+        templateBraceDepths.pop();
+        pendingSpace = false;
+        i = appendTemplateSegment(source, i, out, templateBraceDepths);
+        continue;
+      }
+      flushSpace();
+      templateBraceDepths[templateBraceDepths.length - 1] = top - 1;
+      out.push(ch);
+      i += 1;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      pendingSpace = true;
+      i += 1;
+      continue;
+    }
+    flushSpace();
+    out.push(ch);
+    i += 1;
+  }
+  return out.join("");
+}
+
 export function fingerprintExpression(source: string): string {
-  const normalized = source.replace(/\s+/g, " ").trim();
+  const normalized = normalizeExpressionWhitespace(source);
   return createHash("sha256").update(normalized).digest("hex").slice(0, 12);
 }
 
@@ -392,17 +491,44 @@ export function checkBaselineMonotonic(
   return findings;
 }
 
-function loadBaseBaseline(root: string, baseRef: string): NestedTernaryBaseline | undefined {
-  const proc = Bun.spawnSync(
-    ["git", "show", `origin/${baseRef}:packages/waffle/tooling/nested-ternary-baseline.ts`],
-    { cwd: root, stdout: "pipe", stderr: "pipe" },
-  );
-  if (proc.exitCode !== 0) return undefined;
+export function loadBaseBaseline(
+  root: string,
+  baseRef: string,
+): { baseline?: NestedTernaryBaseline; error?: string } {
+  const verify = Bun.spawnSync(["git", "rev-parse", "--verify", `origin/${baseRef}`], {
+    cwd: root,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (verify.exitCode !== 0) {
+    return {
+      error: `monotonic baseline check failed: git ref origin/${baseRef} is unavailable (fetch origin/${baseRef} first)`,
+    };
+  }
+  const spec = `origin/${baseRef}:packages/waffle/tooling/nested-ternary-baseline.ts`;
+  const exists = Bun.spawnSync(["git", "cat-file", "-e", spec], {
+    cwd: root,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (exists.exitCode !== 0) return {};
+  const proc = Bun.spawnSync(["git", "show", spec], {
+    cwd: root,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (proc.exitCode !== 0) {
+    return { error: `monotonic baseline check failed: could not read ${spec}` };
+  }
   const text = proc.stdout.toString();
   const match =
     /LEGACY_NESTED_TERNARY_BASELINE:\s*NestedTernaryBaseline\s*=\s*(\{[\s\S]*?\n\});/.exec(text);
-  if (!match) return undefined;
-  return Bun.JSONC.parse(match[1]!.replace(/,\s*([}\]])/g, "$1")) as NestedTernaryBaseline;
+  if (!match) {
+    return { error: `monotonic baseline check failed: could not parse baseline in ${spec}` };
+  }
+  return {
+    baseline: Bun.JSONC.parse(match[1]!.replace(/,\s*([}\]])/g, "$1")) as NestedTernaryBaseline,
+  };
 }
 
 function collectActualFingerprints(
@@ -438,7 +564,7 @@ function collectActualFingerprints(
       };
     }
     const parsed = JSON.parse(stdout) as { diagnostics?: OxlintDiagnostic[] };
-    const sourceCache = new Map<string, string>();
+    const sourceCache = new Map<string, Buffer>();
     for (const diagnostic of parsed.diagnostics ?? []) {
       if (diagnostic.code !== "eslint(no-nested-ternary)" || !diagnostic.filename) continue;
       const normalized = diagnostic.filename.replaceAll("\\", "/");
@@ -446,10 +572,11 @@ function collectActualFingerprints(
       if (!span) continue;
       let source = sourceCache.get(normalized);
       if (source === undefined) {
-        source = readFileSync(join(root, normalized), "utf8");
+        source = readFileSync(join(root, normalized));
         sourceCache.set(normalized, source);
       }
-      const fp = fingerprintExpression(source.slice(span.offset, span.offset + span.length));
+      const snippet = source.subarray(span.offset, span.offset + span.length).toString("utf8");
+      const fp = fingerprintExpression(snippet);
       const list = byFile.get(normalized);
       if (list) list.push(fp);
       else byFile.set(normalized, [fp]);
@@ -512,8 +639,10 @@ if (import.meta.main) {
   const baseRef = process.env.GITHUB_BASE_REF;
   if (baseRef) {
     const previous = loadBaseBaseline(root, baseRef);
-    if (previous)
-      findings.push(...checkBaselineMonotonic(previous, LEGACY_NESTED_TERNARY_BASELINE));
+    if (previous.error) findings.push(previous.error);
+    else if (previous.baseline) {
+      findings.push(...checkBaselineMonotonic(previous.baseline, LEGACY_NESTED_TERNARY_BASELINE));
+    }
   }
   if (findings.length > 0) {
     for (const finding of findings) console.error(finding);
