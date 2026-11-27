@@ -1,6 +1,11 @@
 import { isInstance, isSharedArrayBuffer } from "./intrinsics.ts";
 import { OpenDescription, type Descriptor, type Resource } from "../core/descriptors.js";
-import { shareFileResource } from "../core/open-file.js";
+import {
+  readSharedOfdBuffer,
+  retainSharedOfdTransfer,
+  shareDirectoryOfd,
+  shareFileResource,
+} from "../core/open-file.js";
 import { FilesystemClient } from "../fs/client.js";
 import {
   releaseFilesystemReservation,
@@ -14,11 +19,25 @@ export interface FilesystemDescriptorToken {
   resource: "file" | "directory";
   reservation: FilesystemReservation;
   offset?: SharedArrayBuffer;
+  ofd?: SharedArrayBuffer;
 }
 export function isFilesystemDescriptorToken(token: unknown): token is FilesystemDescriptorToken {
   return (
     typeof token === "object" && token !== null && "kind" in token && token.kind === "filesystem"
   );
+}
+
+function tokenOfdBuffer(token: FilesystemDescriptorToken): SharedArrayBuffer | undefined {
+  const candidate = token.resource === "file" ? token.offset : token.ofd;
+  return isSharedArrayBuffer(candidate) ? candidate : undefined;
+}
+
+function releaseTokenOfd(client: FilesystemClient, token: FilesystemDescriptorToken): void {
+  const buffer = tokenOfdBuffer(token);
+  if (!buffer) return;
+  const ofd = readSharedOfdBuffer(buffer);
+  if (!ofd?.locked) return;
+  client.locks.releaseOfd(token.reservation.handle, ofd.id, ofd.pendingTransfers > 0);
 }
 
 /** Controller imports need only the identity and a live controller sweep notifier; guests pass
@@ -34,12 +53,11 @@ export function createFilesystemDescriptorCodec(
   const discard = (token: unknown) => {
     if (!isFilesystemDescriptorToken(token))
       throw new TypeError("not a filesystem descriptor token");
-    if (client && token.reservation.targetOwner === client.connection.owner)
-      client.releaseReservation(token.reservation);
-    else {
-      releaseFilesystemReservation(token.reservation);
-      (sweep ?? (() => client?.sweep()))();
-    }
+    const won = releaseFilesystemReservation(token.reservation);
+    const localOwner = client && token.reservation.targetOwner === client.connection.owner;
+    if (won && localOwner) releaseTokenOfd(client, token);
+    if (localOwner) client.finishReleasedReservation(token.reservation, won);
+    else if (won) (sweep ?? (() => client?.sweep()))();
   };
   return {
     export(descriptor: Descriptor): FilesystemDescriptorToken {
@@ -51,11 +69,20 @@ export function createFilesystemDescriptorCodec(
       // Promote before reserving: a failed offset conversion cannot strand a child pin.
       const offset =
         resource.kind === "file" ? shareFileResource(resource, client.connection) : undefined;
+      const dirOfd =
+        resource.kind === "directory" ? shareDirectoryOfd(resource, client.connection) : undefined;
+      const reservation = client.reserve(resource.handle, target);
+      const ofd = offset ?? dirOfd;
+      if (ofd) {
+        reservation.ofd = ofd;
+        retainSharedOfdTransfer(ofd);
+      }
       return {
         kind: "filesystem",
         resource: resource.kind,
-        reservation: client.reserve(resource.handle, target),
+        reservation,
         offset,
+        ...(dirOfd ? { ofd: dirOfd } : {}),
       };
     },
     import(token: unknown): OpenDescription {
@@ -70,7 +97,10 @@ export function createFilesystemDescriptorCodec(
         if (!isSharedArrayBuffer(token.offset)) throw new TypeError("file offset is missing");
         resource = { kind: "file", handle, offset: 0, append: false };
         shareFileResource(resource, identity, token.offset);
-      } else resource = { kind: "directory", handle };
+      } else {
+        resource = { kind: "directory", handle };
+        if (isSharedArrayBuffer(token.ofd)) shareDirectoryOfd(resource, identity, token.ofd);
+      }
       client?.adopt(token.reservation);
       return new OpenDescription(resource, () => discard(token));
     },

@@ -1,42 +1,227 @@
 import { allocateSharedControl } from "../memory/allocator.ts";
+import {
+  atomicsAdd,
+  atomicsCompareExchange,
+  atomicsLoad,
+  atomicsNotify,
+  atomicsStore,
+  atomicsWait,
+  Int32ArrayConstructor,
+  reflectApply,
+  typedArrayBuffer,
+  typedArrayLength,
+} from "../proc/intrinsics/core.ts";
 import type { Resource } from "./descriptors.js";
-import { FilesystemError } from "./filesystem.js";
+import { FilesystemError, type FileSystem } from "./filesystem.js";
 import { FilesystemSection, isRevoked } from "../fs/section.js";
 import type { FilesystemIdentity } from "../fs/protocol.js";
 
-const atomicsLoad = Atomics.load;
-const atomicsStore = Atomics.store;
-const atomicsCompareExchange = Atomics.compareExchange;
 const atomicsOr = Atomics.or;
 const atomicsAnd = Atomics.and;
-const atomicsNotify = Atomics.notify;
-const atomicsWait = Atomics.wait;
-const Int32ArrayConstructor = Int32Array;
+const bigintConstructor = BigInt;
+const numberConstructor = Number;
 const BigUint64ArrayConstructor = BigUint64Array;
 const Float64ArrayConstructor = Float64Array;
 const WeakMapConstructor = WeakMap;
 const weakMapGet = WeakMap.prototype.get;
 const weakMapSet = WeakMap.prototype.set;
 const objectDefineProperties = Object.defineProperties;
-const typedArrayPrototype = Object.getPrototypeOf(Int32Array.prototype);
-const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer")!.get!;
-const reflectApply = Reflect.apply;
 
 type FileResource = Extract<Resource, { kind: "file" }>;
-interface SharedOffset {
-  buffer: SharedArrayBuffer;
-  cells: Int32Array<SharedArrayBuffer>;
+type DirectoryResource = Extract<Resource, { kind: "directory" }>;
+type LockableResource = FileResource | DirectoryResource;
+
+interface LocalOfd {
+  readonly id: string;
+  readonly originOwner: number;
+  readonly originSeq: number;
+  locked: boolean;
+}
+interface SharedOfdCells {
+  readonly buffer: SharedArrayBuffer;
+  readonly cells: Int32Array<SharedArrayBuffer>;
+  readonly idPair: BigUint64Array<SharedArrayBuffer>;
+  readonly identity: FilesystemIdentity;
+}
+interface SharedOffset extends SharedOfdCells {
   ownerStates: Int32Array<SharedArrayBuffer>;
-  identity: FilesystemIdentity;
   section: FilesystemSection;
   readOffset(): number;
   writeOffset(next: number): void;
   readAppend(): boolean;
 }
+
+const OFD_FLAG_LOCKED = 1;
+const OFD_FLAG_ORIGIN_CLOSED = 2;
+
 const offsets = new WeakMapConstructor<FileResource, SharedOffset>();
+const sharedOfds = new WeakMapConstructor<LockableResource, SharedOfdCells>();
+const localOfds = new WeakMapConstructor<LockableResource, LocalOfd>();
+let nextLocalOfdSeq = 1;
 
 function getSharedOffset(resource: FileResource): SharedOffset | undefined {
   return reflectApply(weakMapGet, offsets, [resource]) as SharedOffset | undefined;
+}
+
+function getSharedOfd(resource: LockableResource): SharedOfdCells | undefined {
+  return reflectApply(weakMapGet, sharedOfds, [resource]) as SharedOfdCells | undefined;
+}
+
+function getLocalOfd(resource: LockableResource): LocalOfd | undefined {
+  return reflectApply(weakMapGet, localOfds, [resource]) as LocalOfd | undefined;
+}
+
+function formatOfdId(owner: number, seq: number): string {
+  return `${owner}:${seq}`;
+}
+
+function packOfdPair(owner: number, seq: number): bigint {
+  return (bigintConstructor(seq >>> 0) << 32n) | bigintConstructor(owner >>> 0);
+}
+
+function unpackOfdPair(packed: bigint): { readonly owner: number; readonly seq: number } | null {
+  const seq = numberConstructor((packed >> 32n) & 0xffffffffn);
+  if (seq === 0) return null;
+  return { owner: numberConstructor(packed & 0xffffffffn), seq };
+}
+
+function initOfdCells(
+  buffer: SharedArrayBuffer,
+  resource: LockableResource,
+  identity: FilesystemIdentity,
+): { cells: Int32Array<SharedArrayBuffer>; idPair: BigUint64Array<SharedArrayBuffer> } {
+  const cells = new Int32ArrayConstructor(buffer);
+  const idPair = new BigUint64ArrayConstructor(buffer, 16, 1);
+  const local = getLocalOfd(resource);
+  const originOwner = local ? local.originOwner || identity.owner : identity.owner;
+  const originSeq = local ? local.originSeq : nextLocalOfdSeq++;
+  atomicsStore(idPair, 0, packOfdPair(originOwner, originSeq));
+  atomicsStore(cells, 6, 0);
+  if (local?.locked) atomicsStore(cells, 7, OFD_FLAG_LOCKED);
+  return { cells, idPair };
+}
+
+function sharedOfdId(shared: SharedOfdCells, sessionOwner: number): string {
+  const existing = unpackOfdPair(atomicsLoad(shared.idPair, 0));
+  if (existing) return formatOfdId(existing.owner, existing.seq);
+  const owner = sessionOwner || shared.identity.owner;
+  const seq = nextLocalOfdSeq++;
+  const packed = packOfdPair(owner, seq);
+  const prev = atomicsCompareExchange(shared.idPair, 0, 0n, packed);
+  const winner = unpackOfdPair(prev === 0n ? packed : prev)!;
+  return formatOfdId(winner.owner, winner.seq);
+}
+
+export interface SharedOfdMetadata {
+  readonly id: string;
+  readonly originOwner: number;
+  readonly locked: boolean;
+  readonly originClosed: boolean;
+  readonly pendingTransfers: number;
+}
+
+/** Return (and lazily assign) the open-file-description lock ID for a file or directory resource. */
+export function resourceOfdId(resource: LockableResource, sessionOwner = 0): string {
+  const shared = getSharedOfd(resource);
+  if (shared) return sharedOfdId(shared, sessionOwner);
+  let local = getLocalOfd(resource);
+  if (!local) {
+    const seq = nextLocalOfdSeq++;
+    local = {
+      id: formatOfdId(sessionOwner, seq),
+      originOwner: sessionOwner,
+      originSeq: seq,
+      locked: false,
+    };
+    reflectApply(weakMapSet, localOfds, [resource, local]);
+  }
+  return local.id;
+}
+
+export function markResourceOfdLocked(resource: LockableResource, sessionOwner = 0): string {
+  const id = resourceOfdId(resource, sessionOwner);
+  const shared = getSharedOfd(resource);
+  if (shared) {
+    atomicsOr(shared.cells, 7, OFD_FLAG_LOCKED);
+    return id;
+  }
+  const local = getLocalOfd(resource);
+  if (local) local.locked = true;
+  return id;
+}
+
+export function markOriginOfdClosed(resource: LockableResource): void {
+  const shared = getSharedOfd(resource);
+  if (shared) atomicsOr(shared.cells, 7, OFD_FLAG_ORIGIN_CLOSED);
+}
+
+export function resourceOfdLockState(
+  resource: LockableResource,
+): { readonly id: string; readonly shared: boolean; readonly inFlight: boolean } | undefined {
+  const shared = getSharedOfd(resource);
+  if (shared) {
+    if ((atomicsLoad(shared.cells, 7) & OFD_FLAG_LOCKED) === 0) return undefined;
+    const pair = unpackOfdPair(atomicsLoad(shared.idPair, 0));
+    if (!pair) return undefined;
+    return {
+      id: formatOfdId(pair.owner, pair.seq),
+      shared: true,
+      inFlight: atomicsLoad(shared.cells, 6) > 0,
+    };
+  }
+  const local = getLocalOfd(resource);
+  if (!local || !local.locked) return undefined;
+  return { id: local.id, shared: false, inFlight: false };
+}
+
+/** Teardown helper shared by Wasi and fd-reopen for originating file/directory descriptions. */
+export function releaseOriginOfd(fs: FileSystem, resource: LockableResource): void {
+  markOriginOfdClosed(resource);
+  const lock = resourceOfdLockState(resource);
+  if (lock) fs.locks?.releaseOfd(resource.handle, lock.id, lock.inFlight);
+  fs.release(resource.handle);
+}
+
+/** Record an in-flight exported reservation referencing this shared OFD buffer. */
+export function retainSharedOfdTransfer(buffer: SharedArrayBuffer): void {
+  const cells = new Int32ArrayConstructor(buffer);
+  atomicsAdd(cells, 6, 1);
+}
+
+/** Read shared OFD identity and flags from a promoted open-file control block. */
+export function readSharedOfdBuffer(buffer: SharedArrayBuffer): SharedOfdMetadata | undefined {
+  const cells = new Int32ArrayConstructor(buffer);
+  if (typedArrayLength(cells) < 8) return undefined;
+  const idPair = new BigUint64ArrayConstructor(buffer, 16, 1);
+  const pair = unpackOfdPair(atomicsLoad(idPair, 0));
+  if (!pair) return undefined;
+  const flags = atomicsLoad(cells, 7);
+  return {
+    id: formatOfdId(pair.owner, pair.seq),
+    originOwner: pair.owner,
+    locked: (flags & OFD_FLAG_LOCKED) !== 0,
+    originClosed: (flags & OFD_FLAG_ORIGIN_CLOSED) !== 0,
+    pendingTransfers: atomicsLoad(cells, 6),
+  };
+}
+
+/** Promote a directory description so inherited copies share one OFD identity and lock lifetime. */
+export function shareDirectoryOfd(
+  resource: DirectoryResource,
+  identity: FilesystemIdentity,
+  buffer?: SharedArrayBuffer,
+): SharedArrayBuffer {
+  const existing = getSharedOfd(resource);
+  if (existing) return existing.buffer;
+  const shared = buffer ?? allocateSharedControl(32);
+  const { cells, idPair } = buffer
+    ? {
+        cells: new Int32ArrayConstructor(shared),
+        idPair: new BigUint64ArrayConstructor(shared, 16, 1),
+      }
+    : initOfdCells(shared, resource, identity);
+  reflectApply(weakMapSet, sharedOfds, [resource, { buffer: shared, cells, idPair, identity }]);
+  return shared;
 }
 
 /** Promote the existing description in place, so every local dup keeps the same offset. */
@@ -47,14 +232,13 @@ export function shareFileResource(
 ): SharedArrayBuffer {
   const existing = getSharedOffset(resource);
   if (existing) return existing.buffer;
-  const shared = buffer ?? allocateSharedControl(16);
-  const cells = new Int32ArrayConstructor(shared);
+  const shared = buffer ?? allocateSharedControl(32);
   const ownerStates = new Int32ArrayConstructor(identity.ownerStates);
   // Atomics has no Float64 operation. Share the number's bits, not a signed integer
   // conversion: existing JS offsets above 2^63 must not wrap into negative positions.
   const offset = new BigUint64ArrayConstructor(shared, 8, 1);
   const value = new Float64ArrayConstructor(1);
-  const valueBuffer = reflectApply(typedArrayBufferGetter, value, []) as ArrayBuffer;
+  const valueBuffer = typedArrayBuffer(value as unknown as Int32Array) as ArrayBuffer;
   const bits = new BigUint64ArrayConstructor(valueBuffer);
   const readOffset = (): number => {
     bits[0] = atomicsLoad(offset, 0);
@@ -64,14 +248,23 @@ export function shareFileResource(
     value[0] = next;
     atomicsStore(offset, 0, bits[0]!);
   };
-  const readAppend = (): boolean => (atomicsLoad(cells, 1) & 1) !== 0;
+  let cells: Int32Array<SharedArrayBuffer>;
+  let idPair: BigUint64Array<SharedArrayBuffer>;
   if (!buffer) {
+    const initialized = initOfdCells(shared, resource, identity);
+    cells = initialized.cells;
+    idPair = initialized.idPair;
     atomicsStore(cells, 1, ((resource.fdflags ?? 0) & ~1) | (resource.append ? 1 : 0));
     writeOffset(resource.offset);
+  } else {
+    cells = new Int32ArrayConstructor(shared);
+    idPair = new BigUint64ArrayConstructor(shared, 16, 1);
   }
+  const readAppend = (): boolean => (atomicsLoad(cells, 1) & 1) !== 0;
   const state: SharedOffset = {
     buffer: shared,
     cells,
+    idPair,
     ownerStates,
     identity,
     section: new FilesystemSection(identity),
@@ -105,6 +298,7 @@ export function shareFileResource(
   } as unknown as PropertyDescriptorMap;
   objectDefineProperties(resource, descriptors);
   reflectApply(weakMapSet, offsets, [resource, state]);
+  reflectApply(weakMapSet, sharedOfds, [resource, state]);
   return shared;
 }
 

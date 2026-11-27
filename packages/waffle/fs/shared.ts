@@ -79,6 +79,8 @@ const FREED_REVISION_HIGH = 8;
 // signals, 16 to 24 the identity allocator, and 32 onward the dirty-admission ledger.
 const REGISTERED_SLOTS = 11;
 const CHANGE_SEQUENCE = 12;
+/** Active POSIX byte-range lock count maintained by FilesystemService so fd_close skips RPCs when 0. */
+export const POSIX_LOCK_COUNT = 13;
 // Unlinks of this table, for capability trimming. Kept across remount, so it never repeats.
 const UNLINK_GENERATION = 31;
 // Global-lock accelerators. Nothing below a hint is free; ownership stays authoritative.
@@ -2493,6 +2495,9 @@ export class SharedFilesystemState {
    * Capability trimming compares it to skip rescans while nothing was unlinked. */
   unlinkGeneration(): number {
     return Atomics.load(this.cells, UNLINK_GENERATION);
+  }
+  posixLockCount(): number {
+    return atomicsLoad(this.cells, POSIX_LOCK_COUNT);
   }
   /** A table that replaces another starts past its count, so the generation never repeats. */
   continueUnlinks(previous: SharedFilesystemState): void {

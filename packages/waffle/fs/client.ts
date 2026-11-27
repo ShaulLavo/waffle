@@ -40,10 +40,15 @@ import {
   fileTimeNow,
   isFileTime,
   permissionsFor,
+  type FileLockConflict,
+  type FileLockRange,
+  type FileLockSystem,
   type FileTime,
+  type LockWaitControl,
   type ProbeKind,
   type WatchFileSystem,
 } from "../core/filesystem.js";
+import { ExecutionUnwind } from "../core/unwind.js";
 import {
   ArrayBufferConstructor,
   Int32ArrayConstructor,
@@ -377,12 +382,40 @@ export class FilesystemCompletion {
   wait(): any {
     return this.#wait();
   }
-  #wait(cancellation?: WaitCancellation): any {
+  waitInterruptible(control?: LockWaitControl): any {
+    return this.#wait(undefined, control);
+  }
+  private checkWaitControl(control: LockWaitControl | undefined): void {
+    if (!control) return;
+    try {
+      control.checkActive?.();
+    } catch (error) {
+      this.cancel();
+      throw error;
+    }
+    if (!control.interruptPending?.()) return;
+    this.cancel();
+    throw new FilesystemError(27);
+  }
+  private parkWait(signal: Int32Array, observed: number, control?: LockWaitControl): void {
+    if (control?.wait) {
+      try {
+        control.wait(signal, observed, 10);
+      } catch (error) {
+        this.cancel();
+        throw error;
+      }
+      return;
+    }
+    atomicsWait(signal, 0, observed, control?.interruptPending ? 10 : undefined);
+  }
+  #wait(cancellation?: WaitCancellation, control?: LockWaitControl): any {
     const signal = this.client.signal;
     while (!this.ready) {
       const observed = atomicsLoad(signal, 0);
       this.check(cancellation);
-      if (!this.ready) atomicsWait(signal, 0, observed);
+      this.checkWaitControl(control);
+      if (!this.ready) this.parkWait(signal, observed, control);
     }
     this.check(cancellation);
     if (this.consumed) return this.decoded;
@@ -528,6 +561,69 @@ function clientWatches(
   };
 }
 
+function isTerminalLockReleaseErrno(code: number): boolean {
+  // Non-retryable release outcomes (already gone, bad fd, unsupported, revoked/cancelled/reset).
+  return (
+    code === 2 ||
+    code === 8 ||
+    code === 11 ||
+    code === 15 ||
+    code === 28 ||
+    code === 44 ||
+    code === 58
+  );
+}
+
+function clientLocks(
+  owner: number,
+  call: (operation: string, args: unknown[], control?: LockWaitControl) => any,
+  release: (operation: "lockReleaseOfd" | "lockReleasePosix", args: unknown[]) => void,
+  hasActivePosixLocks: () => boolean,
+): FileLockSystem {
+  return {
+    owner,
+    flock: (handle, ofdId, operation, control) => {
+      try {
+        return call("lockFlock", [handle, ofdId, operation], control);
+      } catch (error) {
+        if (isInstance(error, ExecutionUnwind)) throw error;
+        return errno(error);
+      }
+    },
+    setRangeLock: (handle, ofdId, pid, range: FileLockRange, blocking, control) => {
+      try {
+        return call(
+          "lockRange",
+          [handle, ofdId ?? null, pid, range.type, range.start, range.len, blocking],
+          blocking ? control : undefined,
+        );
+      } catch (error) {
+        if (isInstance(error, ExecutionUnwind)) throw error;
+        return errno(error);
+      }
+    },
+    getRangeLock: (handle, ofdId, range: FileLockRange): FileLockConflict | number => {
+      try {
+        return call("lockGetRange", [handle, ofdId ?? null, range.type, range.start, range.len]);
+      } catch (error) {
+        return errno(error);
+      }
+    },
+    releaseOfd: (handle, ofdId, inFlight = false) => {
+      release("lockReleaseOfd", [handle, ofdId, inFlight]);
+    },
+    releasePosix: (handle) => {
+      release("lockReleasePosix", [handle]);
+    },
+    handoffPosix: (successorOwner) => {
+      try {
+        call("lockHandoffPosix", [successorOwner]);
+      } catch {}
+    },
+    hasActivePosixLocks,
+  };
+}
+
 /** Blocking preview1 adapter and non-blocking request/completion API for the async host.
  * Read/stat caches are validated by the service's global seqlock. A concurrent mutation invalidates
  * before changing data; a cached read that overlaps it is discarded, never returned as fresh.
@@ -621,9 +717,17 @@ export class FilesystemClient implements FileSystem {
   private readonly section: FilesystemSection;
   readonly shared: SharedFilesystemState;
   readonly watches: WatchFileSystem;
+  readonly locks: FileLockSystem;
   get machineId(): string | undefined {
     return this.shared.getMachineId();
   }
+  private pendingLockReleases: {
+    readonly operation: "lockReleaseOfd" | "lockReleasePosix";
+    readonly args: unknown[];
+    readonly retainedHandle?: number;
+  }[] = [];
+  private lockReleaseTimer?: ReturnType<typeof scheduleTimeout>;
+  private flushingLockReleases = false;
   private watchingRevocation = false;
   private resident: ResidentAttachment | undefined;
   private workspaceStop: Promise<void> | undefined;
@@ -660,6 +764,20 @@ export class FilesystemClient implements FileSystem {
       () => this.shared.isDirectDisabled(),
       () => !this.shared.isWatchDrainDisabled(),
       (operation, args) => this.call(operation, args),
+    );
+    this.locks = clientLocks(
+      connection.owner,
+      (operation, args, control) => {
+        if (this.pendingLockReleases.length > 0) this.flushPendingLockReleases();
+        const completion = this.submit(operation, args);
+        try {
+          return control ? completion.waitInterruptible(control) : completion.wait();
+        } finally {
+          completion.release();
+        }
+      },
+      (operation, args) => this.enqueueLockRelease(operation, args),
+      () => this.shared.posixLockCount() > 0,
     );
     connection.port.onmessage = ({ data }) => {
       if (data.segment) this.attachSegment(data.segment, data.buffer);
@@ -938,10 +1056,11 @@ export class FilesystemClient implements FileSystem {
     mapSet(this.capabilityEntries, reservation.handle, reservation.targetKey);
   }
   releaseReservation(reservation: FilesystemReservation): void {
-    const state = new Int32ArrayConstructor(reservation.state);
-    const wasClosed = atomicsLoad(state, 0);
-    releaseFilesystemReservation(reservation);
-    if (!wasClosed) {
+    this.finishReleasedReservation(reservation, releaseFilesystemReservation(reservation));
+  }
+  /** Drop local handle accounting after `releaseFilesystemReservation` has already run. */
+  finishReleasedReservation(reservation: FilesystemReservation, released: boolean): void {
+    if (released) {
       const count = mapGet(this.openHandles, reservation.handle) ?? 0;
       if (count > 1) mapSet(this.openHandles, reservation.handle, count - 1);
       else {
@@ -1097,7 +1216,102 @@ export class FilesystemClient implements FileSystem {
     const completion = mapGet(this.completions, id);
     return completion && { kind: 3, id, ready: completion.ready };
   }
+  private retainLockReleaseHandle(handle: number): number | undefined {
+    if (!Number.isInteger(handle) || handle < 0) return undefined;
+    try {
+      this.retain(handle);
+      return handle;
+    } catch {
+      return undefined;
+    }
+  }
+  private releaseLockReleaseHandle(retainedHandle: number | undefined): void {
+    if (retainedHandle === undefined) return;
+    try {
+      this.release(retainedHandle);
+    } catch {
+      // Session already revoked or disposed; server teardown drops locks.
+    }
+  }
+  private finishNextLockRelease(): void {
+    const removed = this.pendingLockReleases.splice(0, 1);
+    if (removed.length > 0) this.releaseLockReleaseHandle(removed[0]!.retainedHandle);
+  }
+  private enqueueLockRelease(
+    operation: "lockReleaseOfd" | "lockReleasePosix",
+    args: unknown[],
+  ): void {
+    if (this.disposed || this.revoked()) return;
+    const handle = typeof args[0] === "number" ? args[0] : -1;
+    const retainedHandle = this.retainLockReleaseHandle(handle);
+    arrayAppend(this.pendingLockReleases, { operation, args, retainedHandle });
+    this.flushPendingLockReleases();
+  }
+  private scheduleLockReleaseRetry(): void {
+    if (this.lockReleaseTimer !== undefined || this.disposed || this.revoked()) return;
+    this.lockReleaseTimer = scheduleTimeout(() => {
+      this.lockReleaseTimer = undefined;
+      this.flushPendingLockReleases();
+    }, 1);
+  }
+  private clearLockReleaseQueue(): void {
+    const pending = this.pendingLockReleases.splice(0);
+    for (let i = 0; i < pending.length; i++)
+      this.releaseLockReleaseHandle(pending[i]!.retainedHandle);
+    if (this.lockReleaseTimer !== undefined) {
+      cancelTimeout(this.lockReleaseTimer);
+      this.lockReleaseTimer = undefined;
+    }
+  }
+  private deliverNextLockRelease(): boolean {
+    const next = this.pendingLockReleases[0]!;
+    let completion: FilesystemCompletion;
+    try {
+      completion = this.submit(next.operation, next.args);
+    } catch (error) {
+      if (this.revoked() || isTerminalLockReleaseErrno(errno(error))) {
+        this.finishNextLockRelease();
+        return true;
+      }
+      this.scheduleLockReleaseRetry();
+      return false;
+    }
+    try {
+      completion.wait();
+      this.finishNextLockRelease();
+      return true;
+    } catch (error) {
+      if (this.revoked() || isTerminalLockReleaseErrno(errno(error))) {
+        this.finishNextLockRelease();
+        return true;
+      }
+      this.scheduleLockReleaseRetry();
+      return false;
+    } finally {
+      completion.release();
+    }
+  }
+  private flushPendingLockReleases(): void {
+    if (this.flushingLockReleases || this.pendingLockReleases.length === 0) return;
+    if (this.disposed || this.revoked()) {
+      this.clearLockReleaseQueue();
+      return;
+    }
+    this.flushingLockReleases = true;
+    try {
+      while (this.pendingLockReleases.length > 0) {
+        if (this.disposed || this.revoked()) {
+          this.clearLockReleaseQueue();
+          return;
+        }
+        if (!this.deliverNextLockRelease()) return;
+      }
+    } finally {
+      this.flushingLockReleases = false;
+    }
+  }
   call(operation: string, args: unknown[] = [], data?: Uint8Array): any {
+    if (this.pendingLockReleases.length > 0) this.flushPendingLockReleases();
     const completion = this.submit(operation, args, data);
     try {
       return completion.wait();
@@ -1158,6 +1372,8 @@ export class FilesystemClient implements FileSystem {
   }
   dispose(): void {
     if (this.finishedDispose) return;
+    this.flushPendingLockReleases();
+    this.clearLockReleaseQueue();
     this.disposed = true;
     this.resident?.invalidate();
     this.beginWorkspaceStop();

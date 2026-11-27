@@ -300,8 +300,16 @@ export interface WorkerProcessClientOptions {
   postMessage(message: WorkerProcessMessage): void;
   codec: WorkerDescriptorCodec;
   beginSpawnTransfer?(): () => void;
-  prepareSpawn?(pid: number, cleanupFailed?: (error: unknown) => void): WorkerSpawnTransfer;
-  prepareExec?(pid: number, cleanupFailed?: (error: unknown) => void): WorkerSpawnTransfer;
+  prepareSpawn?(
+    pid: number,
+    cleanupFailed?: (error: unknown) => void,
+    processKind?: ProcessKind,
+  ): WorkerSpawnTransfer;
+  prepareExec?(
+    pid: number,
+    cleanupFailed?: (error: unknown) => void,
+    keptFds?: readonly number[],
+  ): WorkerSpawnTransfer;
   registerRevocation?(hook: () => void): () => void;
   /** Synchronously freeze shared endpoint cursors after default signal death is selected.
    * A shared pipe publication registry supplies this hook without entering the guest worker.
@@ -401,9 +409,16 @@ export class WorkerProcessClient {
     };
     const handoff = commandExecTransfer(staged);
     let published = false;
+    const keptFds: number[] = [];
+    for (let index = 0; index < snapshot.fds.length; index++) {
+      arrayAppend(keptFds, snapshot.fds[index]!.parent);
+    }
     try {
-      transfer = this.options.prepareExec(pid, (error) =>
-        recordCommandTransferFailure(this.options.transport, "exec", staged.generation, error),
+      transfer = this.options.prepareExec(
+        pid,
+        (error) =>
+          recordCommandTransferFailure(this.options.transport, "exec", staged.generation, error),
+        keptFds,
       );
       codec = transfer.codec ?? codec;
       staged.data = transfer.data;
@@ -644,8 +659,10 @@ export class WorkerProcessClient {
     try {
       // Acquire the host admission fence before touching shared membership. Fatal
       // teardown must not stop this worker with an anonymous outstanding reservation.
-      transfer = this.options.prepareSpawn?.(pid, (error) =>
-        recordCommandTransferFailure(this.options.transport, "spawn", pid, error),
+      transfer = this.options.prepareSpawn?.(
+        pid,
+        (error) => recordCommandTransferFailure(this.options.transport, "spawn", pid, error),
+        processKind,
       );
       codec = transfer?.codec ?? codec;
       child = reserveRecord(

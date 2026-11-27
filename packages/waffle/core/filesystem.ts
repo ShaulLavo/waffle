@@ -160,8 +160,77 @@ export interface FileSystem {
   rename(from: ResolvedPath, to: ResolvedPath): number;
   /** Synchronous committed-watch subscriptions for guest imports; absent means ENOTSUP. */
   readonly watches?: WatchFileSystem;
+  /** Advisory whole-file (flock) and byte-range (fcntl) locks; absent means ENOTSUP. */
+  readonly locks?: FileLockSystem;
   /** Stable 32-char lowercase hex machine identifier served via virtual `/etc/machine-id`. */
   readonly machineId?: string;
+}
+
+/** Advisory whole-file lock operations matching sys/file.h (flock(2)). */
+export const LOCK_SH = 1;
+export const LOCK_EX = 2;
+export const LOCK_NB = 4;
+export const LOCK_UN = 8;
+
+/** Advisory byte-range lock commands (fcntl(2) POSIX and OFD locks). */
+export const F_GETLK = 0;
+export const F_SETLK = 1;
+export const F_SETLKW = 2;
+export const F_OFD_GETLK = 3;
+export const F_OFD_SETLK = 4;
+export const F_OFD_SETLKW = 5;
+
+/** Advisory byte-range lock types (fcntl(2)). */
+export const F_RDLCK = 0;
+export const F_WRLCK = 1;
+export const F_UNLCK = 2;
+
+export interface FileLockRange {
+  readonly type: 0 | 1 | 2;
+  readonly start: number;
+  /** Length in bytes; 0 means to EOF (infinity). */
+  readonly len: number;
+}
+
+export interface FileLockConflict {
+  readonly type: 0 | 1 | 2;
+  readonly pid: number;
+  readonly start: number;
+  readonly len: number;
+}
+
+export interface LockWaitControl {
+  /** Checks for fatal signals / process termination before sleeping; throws ExecutionUnwind if fatal. */
+  checkActive?(): void;
+  /** Returns true when a signal is pending so a blocking lock wait returns EINTR. */
+  interruptPending?(): boolean;
+  /** Optional custom wait hook for deterministic tests or embedders. */
+  wait?(word: Int32Array, expected: number, milliseconds: number): void;
+}
+
+/** Advisory file-lock service attached to a FileSystem. */
+export interface FileLockSystem {
+  /** Session owner token used to namespace local OFD lock IDs across workers (0 for MemFS). */
+  readonly owner?: number;
+  flock(handle: FileHandle, ofdId: string, operation: number, control?: LockWaitControl): number;
+  setRangeLock(
+    handle: FileHandle,
+    ofdId: string | undefined,
+    pid: number,
+    range: FileLockRange,
+    blocking: boolean,
+    control?: LockWaitControl,
+  ): number;
+  getRangeLock(
+    handle: FileHandle,
+    ofdId: string | undefined,
+    range: FileLockRange,
+    pid?: number,
+  ): FileLockConflict | number;
+  releaseOfd(handle: FileHandle, ofdId: string, inFlight?: boolean): void;
+  releasePosix(handle: FileHandle, pid?: number): void;
+  handoffPosix?(successorOwner: number): void;
+  hasActivePosixLocks?(): boolean;
 }
 
 /** One ready subscription returned by a batched owner drain. */

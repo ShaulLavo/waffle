@@ -1,4 +1,6 @@
 import { WalkTable, type WalkTransaction } from "./walk.js";
+import { LockContentionError, LockTable, type OfdLiveness } from "./locks.js";
+import { readSharedOfdBuffer } from "../core/open-file.js";
 import type { OperationBinding } from "../browser/operations/protocol.js";
 import {
   requestMemorySections,
@@ -41,7 +43,8 @@ import {
 } from "./publication.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import { MemoryBackend, type FilesystemBackend } from "./backend.js";
-import type { SharedFilesystemState, StagedWrite } from "./shared.js";
+import { POSIX_LOCK_COUNT, type SharedFilesystemState, type StagedWrite } from "./shared.js";
+import { HEADER_WORDS } from "./storage-geometry.js";
 import {
   CAPABILITY_HEADER,
   CAPABILITY_LENGTH,
@@ -126,9 +129,18 @@ interface WatchResponseSettlement {
   readonly cancel: () => void;
   readonly release: (() => void) | undefined;
 }
+interface LockSettlement {
+  readonly rollback: () => void;
+  readonly settle?: () => void;
+}
 interface Session {
   watchTransactions: Map<number, WatchTransaction>;
   watchResponses: Map<number, WatchResponseSettlement>;
+  lockTransactions: Map<number, LockSettlement>;
+  lockResponses: Map<number, LockSettlement>;
+  lockWaiters: Map<number, () => void>;
+  pendingOfdAdoptions: Set<Promise<void>>;
+  locksReleased?: boolean;
   walks?: WalkTable;
   walkTransactions: Map<number, WalkTransaction>;
   walkResponses: Map<number, () => void>;
@@ -212,6 +224,11 @@ export class FilesystemService {
   }
 
   private sessions = new Set<Session>();
+  private sessionsByOwner = new Map<number, Session>();
+  private sessionsByPosixOwner = new Map<number, Set<Session>>();
+  private pendingPosixSuccessors = new Map<number, Set<number>>();
+  private sharedCells?: Int32Array;
+  private ownerStates?: Int32Array;
   private requestBudget?: SharedArrayBuffer;
   private readBudget?: WorkspaceReadBudget;
   private queue = Promise.resolve();
@@ -225,6 +242,7 @@ export class FilesystemService {
   private refusedConnections = new Set<FilesystemConnection>();
   residentPublication: ResidentGrantAuthority | undefined;
   private watchService?: WatchService;
+  private lockTable?: LockTable;
   private disposingWatches = false;
   constructor(private backend: FilesystemBackend) {}
   attachSocketScope(
@@ -292,6 +310,10 @@ export class FilesystemService {
       walkResponses: new Map(),
       watchTransactions: new Map(),
       watchResponses: new Map(),
+      lockTransactions: new Map(),
+      lockResponses: new Map(),
+      lockWaiters: new Map(),
+      pendingOfdAdoptions: new Set(),
       requests: captureRequestMemory(connection.requests),
       handles: new Map(),
       capabilities: new Int32Array(connection.capabilities, 0, CAPABILITY_LENGTH),
@@ -315,9 +337,26 @@ export class FilesystemService {
       ...(connection.publication?.observer ? { publicationPins: new Set<number>() } : {}),
     };
     this.sessions.add(session);
+    this.sessionsByOwner.set(connection.owner, session);
+    this.sharedCells ??= new Int32Array(connection.shared, 0, HEADER_WORDS);
+    this.ownerStates ??= new Int32Array(connection.ownerStates);
+    const posixOwner = this.sessionPosixOwner(session);
+    let group = this.sessionsByPosixOwner.get(posixOwner);
+    if (!group) {
+      group = new Set();
+      this.sessionsByPosixOwner.set(posixOwner, group);
+    }
+    group.add(session);
+    const pendingSuccessors = this.pendingPosixSuccessors.get(posixOwner);
+    if (pendingSuccessors) {
+      pendingSuccessors.delete(connection.owner);
+      if (pendingSuccessors.size === 0) this.pendingPosixSuccessors.delete(posixOwner);
+    }
+    this.clearMismatchedPosixSuccessor(connection.owner, posixOwner);
     for (const reservation of connection.reservations) {
       const state = new Int32Array(reservation.state);
       if (Atomics.compareExchange(state, 1, 0, 1) !== 0) continue;
+      let releaseOfdTransfer = reservation.ofd;
       try {
         if (!isRevoked(connection) && !session.handles.has(reservation.handle)) {
           this.backend.retain(reservation.handle);
@@ -330,9 +369,22 @@ export class FilesystemService {
           session.transient.set(reservation.handle, true);
           const index = session.freeEntries.indexOf(reservation.targetKey);
           if (index >= 0) session.freeEntries.splice(index, 1);
-        } else if (isRevoked(connection))
+        } else if (isRevoked(connection)) {
           Atomics.store(session.capabilities, reservation.targetKey + 1, -1);
+          continue;
+        }
+        if (releaseOfdTransfer) {
+          this.adoptReservationOfd(
+            session,
+            reservation.handle,
+            releaseOfdTransfer,
+            reservation.state,
+          );
+          releaseOfdTransfer = undefined;
+        }
       } finally {
+        if (releaseOfdTransfer && releaseOfdTransfer.byteLength >= 32)
+          Atomics.sub(new Int32Array(releaseOfdTransfer), 6, 1);
         Atomics.sub(
           new Int32Array(reservation.source, 0, CAPABILITY_LENGTH),
           reservation.sourceKey + 2,
@@ -435,6 +487,7 @@ export class FilesystemService {
     }
     if ("discard" in data) {
       session.reader?.cancel(data.discard);
+      this.cancelLockWaiter(session, data.discard);
       this.enqueueMaintenance(session, () => this.discardResponse(session, data.discard));
       return;
     }
@@ -516,14 +569,22 @@ export class FilesystemService {
     const state = new Int32Array(reservation.state);
     if (Atomics.load(state, 0) || Atomics.compareExchange(state, 1, 0, 1))
       throw new FilesystemError(11);
+    let releaseOfdTransfer = reservation.ofd;
     try {
-      if (target.handles.has(reservation.handle)) return;
-      this.backend.retain(reservation.handle);
-      target.handles.set(reservation.handle, reservation.targetKey);
-      target.transient.set(reservation.handle, true);
-      const free = target.freeEntries.indexOf(reservation.targetKey);
-      if (free >= 0) target.freeEntries.splice(free, 1);
+      if (!target.handles.has(reservation.handle)) {
+        this.backend.retain(reservation.handle);
+        target.handles.set(reservation.handle, reservation.targetKey);
+        target.transient.set(reservation.handle, true);
+        const free = target.freeEntries.indexOf(reservation.targetKey);
+        if (free >= 0) target.freeEntries.splice(free, 1);
+      }
+      if (releaseOfdTransfer) {
+        this.adoptReservationOfd(target, reservation.handle, releaseOfdTransfer, reservation.state);
+        releaseOfdTransfer = undefined;
+      }
     } finally {
+      if (releaseOfdTransfer && releaseOfdTransfer.byteLength >= 32)
+        Atomics.sub(new Int32Array(releaseOfdTransfer), 6, 1);
       Atomics.sub(source.capabilities, reservation.sourceKey + 2, 1);
     }
   }
@@ -716,6 +777,12 @@ export class FilesystemService {
     const cancelWalk = session.walkResponses.get(id);
     session.walkResponses.delete(id);
     if (cancelledWalk) cancelWalk?.();
+    const lockSettlement = session.lockResponses.get(id);
+    session.lockResponses.delete(id);
+    if (lockSettlement) {
+      if (cancelledWalk) lockSettlement.rollback();
+      else lockSettlement.settle?.();
+    }
     if (retained) releaseRequestBuffer(retained, REQUEST_SERVICE);
     session.retainedRequests.delete(id);
     const response = session.responses.get(id);
@@ -968,6 +1035,11 @@ export class FilesystemService {
         "resolve",
         "realpath",
         "probe",
+        "lockFlock",
+        "lockRange",
+        "lockGetRange",
+        "lockReleaseOfd",
+        "lockReleasePosix",
       ].includes(operation)
     )
       this.check(session, a, held);
@@ -1148,6 +1220,345 @@ export class FilesystemService {
       ? execute()
       : backend.shared.mutate(undefined, () => sessionRevoked(session), execute);
   }
+  private cancelLockWaiter(session: Session, id: number): void {
+    const cancel = session.lockWaiters.get(id);
+    if (!cancel) return;
+    session.lockWaiters.delete(id);
+    cancel();
+  }
+  private resolveLockIno(handle: number): number | Promise<number> {
+    if (this.backend instanceof MemoryBackend) return this.backend.fs.stat(handle).ino;
+    const result = this.backend.execute("stat", [handle], new Uint8Array());
+    if (result instanceof Promise)
+      return result.then((stat) => (stat as { readonly ino: number }).ino);
+    return (result as { readonly ino: number }).ino;
+  }
+  private ensureLockTable(): LockTable {
+    if (this.lockTable) return this.lockTable;
+    this.lockTable = new LockTable({
+      onPosixLockCountChange: (count) => {
+        if (this.sharedCells) Atomics.store(this.sharedCells, POSIX_LOCK_COUNT, count);
+      },
+    });
+    return this.lockTable;
+  }
+  private sessionPosixOwner(session: Session): number {
+    const candidate = session.connection.posixOwner;
+    if (
+      candidate !== undefined &&
+      Number.isInteger(candidate) &&
+      candidate > 0 &&
+      (!this.ownerStates || candidate < this.ownerStates.length)
+    ) {
+      return candidate;
+    }
+    return session.connection.owner;
+  }
+  private hasLivePosixSession(posixOwner: number): boolean {
+    const group = this.sessionsByPosixOwner.get(posixOwner);
+    if (!group) return false;
+    for (const member of group) {
+      if (!member.closed && !member.locksReleased && !sessionRevoked(member)) return true;
+    }
+    return false;
+  }
+  private hasLivePendingPosixSuccessor(posixOwner: number): boolean {
+    const pending = this.pendingPosixSuccessors.get(posixOwner);
+    if (!pending) return false;
+    for (const owner of Array.from(pending)) {
+      if (this.isSessionLive(owner)) continue;
+      if (this.ownerStates && Atomics.load(this.ownerStates, owner) === 0) continue;
+      pending.delete(owner);
+    }
+    if (pending.size > 0) return true;
+    this.pendingPosixSuccessors.delete(posixOwner);
+    return false;
+  }
+  private isPosixOwnerAlive(posixOwner: number): boolean {
+    return this.hasLivePosixSession(posixOwner) || this.hasLivePendingPosixSuccessor(posixOwner);
+  }
+  private clearMismatchedPosixSuccessor(connectedOwner: number, actualPosixOwner: number): void {
+    if (this.pendingPosixSuccessors.size === 0) return;
+    let removed = false;
+    for (const [posixOwner, pending] of Array.from(this.pendingPosixSuccessors.entries())) {
+      if (posixOwner === actualPosixOwner) continue;
+      if (!pending.delete(connectedOwner)) continue;
+      removed = true;
+      if (pending.size === 0) this.pendingPosixSuccessors.delete(posixOwner);
+    }
+    if (removed) this.reapPendingPosixSuccessors();
+  }
+  private reapPendingPosixSuccessors(): void {
+    if (this.pendingPosixSuccessors.size === 0) return;
+    for (const posixOwner of Array.from(this.pendingPosixSuccessors.keys())) {
+      if (this.isPosixOwnerAlive(posixOwner)) continue;
+      this.lockTable?.releasePosixOwner(posixOwner);
+    }
+  }
+  private adoptReservationOfd(
+    session: Session,
+    handle: number,
+    ofdBuffer: SharedArrayBuffer,
+    reservationState: SharedArrayBuffer,
+  ): void {
+    const ofd = readSharedOfdBuffer(ofdBuffer);
+    if (!ofd) {
+      if (ofdBuffer.byteLength >= 32) Atomics.sub(new Int32Array(ofdBuffer), 6, 1);
+      return;
+    }
+    const finish = (ino: number) => {
+      try {
+        this.ensureLockTable().adoptReservation(
+          ino,
+          handle,
+          ofd.id,
+          ofd.originOwner,
+          ofdBuffer,
+          session.connection.owner,
+          reservationState,
+        );
+      } finally {
+        Atomics.sub(new Int32Array(ofdBuffer), 6, 1);
+      }
+    };
+    const resolved = this.resolveLockIno(handle);
+    if (resolved instanceof Promise) {
+      const pending = resolved
+        .then(
+          (ino) => {
+            finish(ino);
+            this.sweep();
+          },
+          () => {
+            Atomics.sub(new Int32Array(ofdBuffer), 6, 1);
+            this.sweep();
+          },
+        )
+        .finally(() => {
+          session.pendingOfdAdoptions.delete(pending);
+        });
+      session.pendingOfdAdoptions.add(pending);
+      this.trackWork(session, pending);
+      return;
+    }
+    finish(resolved);
+  }
+  private isSessionLive(owner: number): boolean {
+    const session = this.sessionsByOwner.get(owner);
+    if (!session) return false;
+    return !session.closed && !session.locksReleased && !sessionRevoked(session);
+  }
+  private hasPendingHandleTransfer(owner: number, handle: number): boolean {
+    const session = this.sessionsByOwner.get(owner);
+    if (!session) return false;
+    const key = session.handles.get(handle);
+    return key !== undefined && Atomics.load(session.capabilities, key + 2) > 0;
+  }
+  private ofdLiveness(): OfdLiveness {
+    return {
+      isSessionLive: (owner) => this.isSessionLive(owner),
+      hasPendingTransfer: (owner, handle) => this.hasPendingHandleTransfer(owner, handle),
+    };
+  }
+  private applyLockOperation(
+    session: Session,
+    id: number,
+    operation: string,
+    args: any[],
+    ino: number,
+  ): unknown {
+    const table = this.ensureLockTable();
+    const owner = session.connection.owner;
+    const posixOwner = this.sessionPosixOwner(session);
+    const handle = args[0] as number;
+    if (operation === "lockFlock") {
+      const [, ofdId, op] = args;
+      if (typeof ofdId !== "string" || typeof op !== "number") throw new FilesystemError(28);
+      const commit = table.flock(ino, ofdId, owner, op, true, handle);
+      if (commit.rollback)
+        session.lockTransactions.set(id, { rollback: commit.rollback, settle: commit.settle });
+      return commit.errno;
+    }
+    if (operation === "lockRange") {
+      const [, ofdRaw, pid, type, start, len, blocking] = args;
+      const ofdId = ofdRaw === null ? undefined : ofdRaw;
+      if (
+        (ofdId !== undefined && typeof ofdId !== "string") ||
+        typeof pid !== "number" ||
+        !Number.isInteger(pid) ||
+        typeof type !== "number" ||
+        typeof start !== "number" ||
+        typeof len !== "number" ||
+        typeof blocking !== "boolean"
+      )
+        throw new FilesystemError(28);
+      const commit = table.setRangeLock(
+        ino,
+        ofdId,
+        owner,
+        pid,
+        { type: type as 0 | 1 | 2, start, len },
+        blocking,
+        true,
+        handle,
+        posixOwner,
+      );
+      if (commit.rollback)
+        session.lockTransactions.set(id, { rollback: commit.rollback, settle: commit.settle });
+      return commit.errno;
+    }
+    if (operation === "lockGetRange") {
+      const [, ofdRaw, type, start, len] = args;
+      const ofdId = ofdRaw === null ? undefined : ofdRaw;
+      if (
+        (ofdId !== undefined && typeof ofdId !== "string") ||
+        typeof type !== "number" ||
+        typeof start !== "number" ||
+        typeof len !== "number"
+      )
+        throw new FilesystemError(28);
+      return table.getRangeLock(
+        ino,
+        ofdId,
+        owner,
+        { type: type as 0 | 1 | 2, start, len },
+        posixOwner,
+      );
+    }
+    if (operation === "lockReleaseOfd") {
+      if (typeof args[1] !== "string") throw new FilesystemError(28);
+      table.releaseOfd(ino, args[1], owner, this.ofdLiveness(), args[2] === true);
+      return 0;
+    }
+    if (operation === "lockReleasePosix") {
+      table.releasePosix(ino, posixOwner);
+      return 0;
+    }
+    throw new FilesystemError(58);
+  }
+  private lockRequest(
+    session: Session,
+    id: number,
+    operation: string,
+    args: any[],
+  ): unknown | Promise<unknown> {
+    if (this.backend.supportsLocks === false) throw new FilesystemError(58);
+    if (operation === "lockHandoffPosix") {
+      const successorOwner = args[0];
+      if (
+        typeof successorOwner !== "number" ||
+        !Number.isInteger(successorOwner) ||
+        successorOwner <= 0 ||
+        successorOwner === session.connection.owner ||
+        (this.ownerStates && successorOwner >= this.ownerStates.length)
+      ) {
+        throw new FilesystemError(28);
+      }
+      const posixOwner = this.sessionPosixOwner(session);
+      const existing = this.sessionsByOwner.get(successorOwner);
+      if (existing) {
+        if (this.sessionPosixOwner(existing) !== posixOwner) throw new FilesystemError(2);
+        return 0;
+      }
+      if (!this.ownerStates || Atomics.load(this.ownerStates, successorOwner) === 0) {
+        let pending = this.pendingPosixSuccessors.get(posixOwner);
+        if (!pending) {
+          pending = new Set();
+          this.pendingPosixSuccessors.set(posixOwner, pending);
+        }
+        pending.add(successorOwner);
+      }
+      return 0;
+    }
+    const handle = args[0];
+    if (typeof handle !== "number") throw new FilesystemError(28);
+    if (session.pendingOfdAdoptions.size > 0) {
+      return this.trackRequestWork(
+        session,
+        Promise.all(Array.from(session.pendingOfdAdoptions)),
+      ).then(() => {
+        if (sessionRevoked(session) || !this.sessions.has(session)) throw new FilesystemError(11);
+        return this.lockRequest(session, id, operation, args);
+      });
+    }
+    const resolved = this.resolveLockIno(handle);
+    if (resolved instanceof Promise)
+      return this.trackRequestWork(session, resolved).then((ino) => {
+        if (sessionRevoked(session) || !this.sessions.has(session)) throw new FilesystemError(11);
+        return this.applyLockOperation(session, id, operation, args, ino);
+      });
+    return this.applyLockOperation(session, id, operation, args, resolved);
+  }
+  private requestInactive(session: Session, buffer: FilesystemRequestBuffer): boolean {
+    return (
+      this.ownerStopping ||
+      sessionRevoked(session) ||
+      !this.sessions.has(session) ||
+      requestCancelled(buffer)
+    );
+  }
+  private holdRetryHandles(
+    session: Session,
+    bytes: Uint8Array,
+    inputLength: number,
+    prepared: PreparedRequest | undefined,
+  ): PreparedRequest {
+    const next = prepared ?? { handles: [] };
+    const input = unpack(bytes.subarray(0, inputLength));
+    this.checkRequest(session, input.operation, input.args, next.handles);
+    return next;
+  }
+  private tryHoldRetryHandles(
+    session: Session,
+    bytes: Uint8Array,
+    inputLength: number,
+    prepared: PreparedRequest | undefined,
+    retryError: LockContentionError | undefined,
+  ):
+    | { readonly ok: true; readonly prepared: PreparedRequest }
+    | { readonly ok: false; readonly error: unknown } {
+    try {
+      return { ok: true, prepared: this.holdRetryHandles(session, bytes, inputLength, prepared) };
+    } catch (error) {
+      retryError?.cancel();
+      return { ok: false, error };
+    }
+  }
+  private scheduleRetry(
+    session: Session,
+    id: number,
+    buffer: FilesystemRequestBuffer,
+    prepared: PreparedRequest,
+    lockRetry: LockContentionError | undefined,
+    dirtyRetry: number | undefined,
+  ): void {
+    if (lockRetry !== undefined) {
+      if (this.requestInactive(session, buffer)) lockRetry.cancel();
+      session.lockWaiters.set(id, lockRetry.cancel);
+      const wait = lockRetry.wait.then(() => {
+        session.lockWaiters.delete(id);
+      });
+      this.joinPreparation(session, id, buffer, prepared, wait);
+      return;
+    }
+    if (dirtyRetry !== undefined) {
+      const wait = this.backend.waitForDirtyCapacity!(
+        dirtyRetry,
+        () => sessionRevoked(session) || requestCancelled(buffer),
+      );
+      this.joinPreparation(session, id, buffer, prepared, wait);
+    }
+  }
+  private settleLock(session: Session, id: number, success: boolean): void {
+    const settlement = session.lockTransactions.get(id);
+    if (!settlement) return;
+    session.lockTransactions.delete(id);
+    if (!success) {
+      settlement.rollback();
+      return;
+    }
+    session.lockResponses.set(id, settlement);
+  }
   private settleWalk(session: Session, id: number, success: boolean): void {
     const transaction = session.walkTransactions.get(id);
     if (!transaction) return;
@@ -1185,6 +1596,7 @@ export class FilesystemService {
     this.checkSocketTree(session, operation, args);
     if (operation.startsWith("walk")) return this.walkRequest(session, id, operation, args);
     if (operation.startsWith("watch")) return this.watchRequest(session, id, operation, args);
+    if (operation.startsWith("lock")) return this.lockRequest(session, id, operation, args);
     if (operation === "stageWrite") return this.stageWrite(session, id, a, b, c, data);
     if (operation === "take") return this.takeResponseChunk(session, a, b, c);
     if (operation === "retain") {
@@ -1384,10 +1796,10 @@ export class FilesystemService {
     let committedWrite = false;
     let admission: PublicationAdmission | undefined;
     let dirtyRetry: number | undefined;
+    let lockRetry: LockContentionError | undefined;
     const epoch = session.epoch;
     try {
-      if (sessionRevoked(session) || !this.sessions.has(session) || requestCancelled(buffer))
-        throw new FilesystemError(11);
+      if (this.requestInactive(session, buffer)) throw new FilesystemError(11);
       const { inputLength, dataLength } = requestLengths(buffer, bytes);
       const input = decoded ?? unpack(bytes.subarray(0, inputLength));
       const { operation, args } = input;
@@ -1440,14 +1852,18 @@ export class FilesystemService {
     } catch (error) {
       this.discardResponse(session, id);
       const dirtyChange = this.dirtyRetryChange(error);
-      if (dirtyChange !== undefined) {
+      const retryError = error instanceof LockContentionError ? error : undefined;
+      const retry =
+        retryError || dirtyChange !== undefined
+          ? this.tryHoldRetryHandles(session, bytes, cells[1]!, prepared, retryError)
+          : undefined;
+      if (retry?.ok) {
+        prepared = retry.prepared;
+        lockRetry = retryError;
         dirtyRetry = dirtyChange;
-        prepared ??= { handles: [] };
-        const input = unpack(bytes.subarray(0, cells[1]!));
-        this.checkRequest(session, input.operation, input.args, prepared.handles);
         preparing = true;
       } else {
-        cells[3] = errno(error);
+        cells[3] = errno(retry ? retry.error : error);
         state = cells[3] === 11 ? State.Cancelled : State.Failed;
       }
     } finally {
@@ -1465,6 +1881,7 @@ export class FilesystemService {
         state = this.settleCancelledState(session, id, buffer, state, staging, committedWrite);
         this.settleWalk(session, id, state === State.Complete);
         this.settleWatch(session, id, state === State.Complete || state === State.Overflow);
+        this.settleLock(session, id, state === State.Complete);
         Atomics.store(cells, 0, state);
         Atomics.notify(cells, 0);
         wake(session.connection);
@@ -1473,18 +1890,12 @@ export class FilesystemService {
         session.privateInputs.delete(id);
         this.retainRequestReply(session, id, buffer);
         session.connection.port.postMessage({ completed: id });
-        this.sweep();
+        this.sweepSessions(false);
       } else {
         session.inFlightWrites.delete(id);
       }
     }
-    if (dirtyRetry !== undefined && prepared) {
-      const wait = this.backend.waitForDirtyCapacity!(
-        dirtyRetry,
-        () => sessionRevoked(session) || requestCancelled(buffer),
-      );
-      this.joinPreparation(session, id, buffer, prepared, wait);
-    }
+    if (prepared) this.scheduleRetry(session, id, buffer, prepared, lockRetry, dirtyRetry);
   }
   private settleCancelledState(
     session: Session,
@@ -1533,6 +1944,7 @@ export class FilesystemService {
       session.responses.has(id) ||
       session.walkResponses.has(id) ||
       session.watchResponses.has(id) ||
+      session.lockResponses.has(id) ||
       session.stages.has(id)
     ) {
       session.retainedRequests.set(id, buffer);
@@ -1941,6 +2353,9 @@ export class FilesystemService {
     return { ...pin, bytes: Array.from(pin.bytes) };
   }
   sweep(): void {
+    this.sweepSessions(true);
+  }
+  private sweepSessions(reapOfds: boolean): void {
     if (this.shutdownOwner) return;
     // A close can itself wait for a holder that dies later. Recover dead owners even
     // on reentry, while keeping session close and release bookkeeping non-reentrant.
@@ -1951,6 +2366,10 @@ export class FilesystemService {
     this.sweeping = true;
     try {
       for (const session of this.sessions) if (sessionRevoked(session)) this.close(session);
+      if (reapOfds) {
+        this.reapPendingPosixSuccessors();
+        this.lockTable?.reapOfds(this.ofdLiveness());
+      }
     } finally {
       this.sweeping = false;
     }
@@ -2023,6 +2442,29 @@ export class FilesystemService {
     this.cancelSessionWatchResponses(session);
     this.watchService?.closeOwner(session.connection.owner);
     this.backend.closeWatchOwner?.(session.connection.owner);
+    session.locksReleased = true;
+    const posixOwner = this.sessionPosixOwner(session);
+    const posixGroup = this.sessionsByPosixOwner.get(posixOwner);
+    if (posixGroup) {
+      posixGroup.delete(session);
+      if (posixGroup.size === 0) this.sessionsByPosixOwner.delete(posixOwner);
+    }
+    for (const cancel of Array.from(session.lockWaiters.values())) cancel();
+    session.lockWaiters.clear();
+    for (const id of Array.from(session.lockTransactions.keys()))
+      this.settleLock(session, id, false);
+    for (const [id, settlement] of Array.from(session.lockResponses.entries())) {
+      const retained = session.retainedRequests.get(id);
+      if (retained && requestCancelled(retained)) settlement.rollback();
+      else settlement.settle?.();
+    }
+    session.lockResponses.clear();
+    this.lockTable?.releaseSession(
+      session.connection.owner,
+      this.ofdLiveness(),
+      posixOwner,
+      !this.isPosixOwnerAlive(posixOwner),
+    );
     session.namespace?.close();
     this.stopSessionReader(session);
     if (!session.transportFailed) revokeFilesystem(session.connection);
@@ -2078,6 +2520,7 @@ export class FilesystemService {
       const publication = session.connection.publication;
       if (publication && !this.retirePublication(session)) return;
       this.sessions.delete(session);
+      this.sessionsByOwner.delete(session.connection.owner);
     }
     this.closeDisposedWatchAccount();
     if (
@@ -2198,6 +2641,7 @@ export class FilesystemService {
   dispose(): void {
     if (this.shutdownOwner) return;
     this.disposingWatches = true;
+    this.lockTable?.dispose();
     this.residentPublication?.dispose();
     for (const session of this.sessions) this.close(session);
     this.closeDisposedWatchAccount();
@@ -2221,6 +2665,7 @@ export class FilesystemService {
     const owner = { done, sessions };
     this.shutdownOwner = owner;
     this.ownerStopping = true;
+    this.lockTable?.dispose();
     this.backend.beginShutdown?.();
     for (const session of sessions) this.stopSessionReader(session);
     const fences = sessions.map((session) => this.shutdownFence(session));

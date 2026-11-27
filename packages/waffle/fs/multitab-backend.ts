@@ -676,6 +676,7 @@ export class MultiTabBackend implements FilesystemBackend {
   private peerPendingWatchCloses = new Set<number>();
   private peerPendingUploadAborts = new Set<string>();
   readonly supportsSockets = false;
+  readonly supportsLocks = false;
   readonly asyncErrorsAreClientResults = true;
   private peerFailoverInFlight?: Promise<void>;
   private pendingDirectHostReady?: Extract<ControlMessage, { kind: "host-ready" }>;

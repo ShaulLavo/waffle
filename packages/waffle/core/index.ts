@@ -13,6 +13,10 @@ export type {
   FileStat,
   FileTime,
   FilePermissions,
+  FileLockSystem,
+  FileLockRange,
+  FileLockConflict,
+  LockWaitControl,
   DirectoryEntry,
   ResolvedPath,
 } from "./filesystem.js";

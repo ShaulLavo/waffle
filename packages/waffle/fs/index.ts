@@ -70,6 +70,22 @@ export {
 export { WorkspaceArchiveError } from "./workspace-archive.js";
 
 export { FilesystemWatch, type WatchOptions, type WatchEvent, type WatchBatch } from "./watch.js";
+export {
+  LOCK_SH,
+  LOCK_EX,
+  LOCK_NB,
+  LOCK_UN,
+  F_GETLK,
+  F_SETLK,
+  F_SETLKW,
+  F_OFD_GETLK,
+  F_OFD_SETLK,
+  F_OFD_SETLKW,
+  F_RDLCK,
+  F_WRLCK,
+  F_UNLCK,
+} from "../core/filesystem.js";
+export { LockTable, LockContentionError, type LockCommit } from "./locks.js";
 
 export {
   openWorkspaceRead,

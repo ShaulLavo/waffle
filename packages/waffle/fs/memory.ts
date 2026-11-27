@@ -1,5 +1,6 @@
 import { validateMachineId } from "../core/devices.js";
 import { DirectoryPages, checkDirectoryPage } from "./directory-pages.js";
+import { LockTable } from "./locks.js";
 import { utf8ByteLength } from "./utf8-size.js";
 import type { FileIdentity } from "./file-identity.js";
 import type { NodeMetadata } from "./workspace-types.js";
@@ -8,6 +9,7 @@ import {
   FilesystemError,
   fileTimeNow,
   PROBE_PATH_LIMIT,
+  type FileLockSystem,
   type FileTime,
   type ProbeKind,
   type SocketBinding,
@@ -376,6 +378,32 @@ export class MemFS implements FileSystem {
   private nodeHandles = new WeakMap<Node, FileHandle>();
   private nextHandle = 0;
   private references = new Map<FileHandle, number>();
+  private lockTable?: LockTable;
+  private lockAdapter?: FileLockSystem;
+  get locks(): FileLockSystem {
+    if (this.lockAdapter) return this.lockAdapter;
+    const table = (this.lockTable ??= new LockTable());
+    const inoOf = (handle: FileHandle): number => this.nodeForHandle(handle).ino;
+    this.lockAdapter = {
+      flock: (handle, ofdId, operation) =>
+        table.flock(inoOf(handle), ofdId, 0, operation, false, handle, false).errno,
+      setRangeLock: (handle, ofdId, pid, range, blocking) =>
+        table.setRangeLock(inoOf(handle), ofdId, 0, pid, range, blocking, false, handle, pid, false)
+          .errno,
+      getRangeLock: (handle, ofdId, range, pid = 1) =>
+        table.getRangeLock(inoOf(handle), ofdId, 0, range, pid),
+      releaseOfd: (handle, ofdId) => {
+        const node = this.handles.get(handle);
+        if (node) table.releaseOfd(node.ino, ofdId, 0);
+      },
+      releasePosix: (handle, pid = 1) => {
+        const node = this.handles.get(handle);
+        if (node) table.releasePosix(node.ino, pid);
+      },
+      hasActivePosixLocks: () => table.hasActivePosixLocks(),
+    };
+    return this.lockAdapter;
+  }
   private directoryParents = new WeakMap<DirNode, DirNode>();
   private removedDirectories = new WeakSet<DirNode>();
   private rootedCache?: RootedWalk;
