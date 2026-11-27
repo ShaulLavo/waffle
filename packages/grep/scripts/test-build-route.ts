@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import type { WasiGuestVerification } from "../../../tools/program-build-tools.ts";
@@ -32,9 +33,10 @@ test("grep builds pinned FreeBSD grep against the shared patched WASI sysroot", 
     return Buffer.alloc(0);
   };
   const checks: { path: string; options: WasiGuestVerification }[] = [];
-  const scratch = mkdtempSync(
-    resolve(process.env.GREP_SCRATCH_ROOT ?? "/work/tmp", "waffle-grep-route-"),
-  );
+  const scratchRoot =
+    process.env.GREP_SCRATCH_ROOT ?? process.env.RUNNER_TEMP ?? process.env.TMPDIR ?? tmpdir();
+  mkdirSync(scratchRoot, { recursive: true });
+  const scratch = mkdtempSync(resolve(scratchRoot, "waffle-grep-route-"));
   context.after(() => rmSync(scratch, { recursive: true, force: true }));
 
   await buildGrep({

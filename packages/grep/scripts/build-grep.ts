@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -56,6 +57,10 @@ export interface GrepBuildOptions {
 
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
+function scratchRoot(): string {
+  return process.env.GREP_SCRATCH_ROOT ?? process.env.RUNNER_TEMP ?? process.env.TMPDIR ?? tmpdir();
+}
+
 function defaultExecute(
   command: string,
   args: readonly string[],
@@ -64,7 +69,7 @@ function defaultExecute(
   return execFileSync("timeout", ["--kill-after=2s", "600s", command].concat(args), {
     cwd: options.cwd,
     input: options.input,
-    env: options.env ?? { ...process.env, TMPDIR: process.env.GREP_SCRATCH_ROOT ?? "/work/tmp" },
+    env: options.env ?? { ...process.env, TMPDIR: scratchRoot() },
     stdio: ["pipe", "pipe", "inherit"],
     maxBuffer: 16 * 1024 * 1024,
   });
@@ -231,7 +236,7 @@ export async function buildGrep(options: GrepBuildOptions = {}): Promise<void> {
   const sysrootCommand = options.sysrootCommand ?? wasiSysrootCommand;
   const buildConfig = options.buildConfig ?? wasiBuildConfiguration;
   const lock = readSourceLock();
-  const scratch = process.env.GREP_SCRATCH_ROOT ?? "/work/tmp";
+  const scratch = scratchRoot();
   mkdirSync(scratch, { recursive: true });
   const work = mkdtempSync(resolve(scratch, "waffle-grep-build-"));
   try {
