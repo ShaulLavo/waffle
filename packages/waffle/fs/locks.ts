@@ -582,10 +582,10 @@ export class LockTable {
 
   releasePosix(ino: number, posixOwner: number): void {
     this.unindexPosixIno(posixOwner, ino);
-    const inode = this.byIno.get(ino);
-    if (!inode) return;
     const owner = posixOwnerKey(posixOwner);
     this.discardOwnerRangeOps(ino, owner);
+    const inode = this.byIno.get(ino);
+    if (!inode) return;
     const before = inode.ranges.length;
     inode.ranges = inode.ranges.filter((entry) => entry.owner !== owner);
     const removed = before - inode.ranges.length;
@@ -700,6 +700,7 @@ export class LockTable {
     inode.ranges = edited.next;
     this.adjustRangeCounts(deltaCount, posixOwner !== undefined ? deltaCount : 0);
     if (posixOwner !== undefined && edited.nextCount === 0) this.unindexPosixIno(posixOwner, ino);
+    this.recomputeOwnerRangeReserves(ino, owner, inode);
     if (edited.relaxed) this.wakeInode(ino, inode);
     this.pruneInode(ino, inode);
     return { errno: 0 };
@@ -744,6 +745,8 @@ export class LockTable {
   }
 
   private dropOfdLocks(ino: number, ofdId: string): void {
+    const key = ofdOwnerKey(ofdId);
+    this.discardOwnerRangeOps(ino, key);
     const inode = this.byIno.get(ino);
     if (!inode) return;
     let changed = false;
@@ -754,8 +757,6 @@ export class LockTable {
       if (flock.opId !== 0) this.discardFlockChain(flock.opId);
       changed = true;
     }
-    const key = ofdOwnerKey(ofdId);
-    this.discardOwnerRangeOps(ino, key);
     const before = inode.ranges.length;
     inode.ranges = inode.ranges.filter((entry) => entry.owner !== key);
     const removed = before - inode.ranges.length;
@@ -871,6 +872,52 @@ export class LockTable {
       const record = this.flockOpPrev.get(cursor);
       this.flockOpPrev.delete(cursor);
       cursor = record?.prevOpId ?? 0;
+    }
+  }
+
+  private collectReachableRangeOps(inode: InodeLocks | undefined, owner: string): Set<number> {
+    const reachable = new Set<number>();
+    const queue: number[] = [];
+    if (inode) {
+      for (let i = 0; i < inode.ranges.length; i++) {
+        const entry = inode.ranges[i]!;
+        if (entry.owner === owner && entry.opId !== 0 && !reachable.has(entry.opId)) {
+          reachable.add(entry.opId);
+          queue.push(entry.opId);
+        }
+      }
+    }
+    while (queue.length > 0) {
+      const record = this.rangeOpDeltas.get(queue.pop()!);
+      if (!record) continue;
+      for (let i = 0; i < record.delta.length; i++) {
+        const prevOpId = record.delta[i]!.prevOpId;
+        if (prevOpId !== 0 && !reachable.has(prevOpId)) {
+          reachable.add(prevOpId);
+          queue.push(prevOpId);
+        }
+      }
+    }
+    return reachable;
+  }
+
+  private recomputeOwnerRangeReserves(
+    ino: number,
+    owner: string,
+    inode: InodeLocks | undefined,
+  ): void {
+    const reachable = this.collectReachableRangeOps(inode, owner);
+    for (const [opId, record] of this.rangeOpDeltas) {
+      if (record.ino !== ino || record.owner !== owner) continue;
+      if (!reachable.has(opId)) {
+        this.reservedRangeRollbackSlots -= record.reservedSlots;
+        this.rangeOpDeltas.delete(opId);
+        this.pendingOps.delete(opId);
+        continue;
+      }
+      const nextReserve = rollbackReserveForDelta(record.delta);
+      this.reservedRangeRollbackSlots += nextReserve - record.reservedSlots;
+      record.reservedSlots = nextReserve;
     }
   }
 
@@ -1017,10 +1064,14 @@ export class LockTable {
     this.adjustRangeCounts(deltaCount, posixOwner !== undefined ? deltaCount : 0);
     if (posixOwner !== undefined) this.indexPosixIno(posixOwner, ino);
     if (edited.relaxed) this.wakeInode(ino, inode);
-    if (!trackTransaction) return { errno: 0 };
+    if (!trackTransaction) {
+      this.recomputeOwnerRangeReserves(ino, owner, inode);
+      return { errno: 0 };
+    }
     this.pendingOps.add(opId);
     this.reservedRangeRollbackSlots += reservedSlots;
     this.rangeOpDeltas.set(opId, { ino, owner, delta: edited.delta, reservedSlots });
+    this.recomputeOwnerRangeReserves(ino, owner, inode);
     return {
       errno: 0,
       rollback: () => this.rollbackRange(ino, owner, posixOwner, ofdId, pid, opId),
@@ -1067,12 +1118,16 @@ export class LockTable {
       }
       owned.push(entry);
     }
-    if (!touched) return;
+    if (!touched) {
+      this.recomputeOwnerRangeReserves(ino, owner, inode);
+      return;
+    }
     const coalesced = coalesceOwned(owned);
     const deltaCount = coalesced.length - owned.length;
     inode.ranges = others.concat(coalesced);
     if (deltaCount !== 0)
       this.adjustRangeCounts(deltaCount, posixOwner !== undefined ? deltaCount : 0);
+    this.recomputeOwnerRangeReserves(ino, owner, inode);
   }
 
   private rollbackRange(
@@ -1091,12 +1146,12 @@ export class LockTable {
     for (const record of this.rangeOpDeltas.values()) {
       if (record.ino !== ino || record.owner !== owner) continue;
       record.delta = spliceRangeDelta(record.delta, opId, myRecord.delta);
-      const nextReserve = rollbackReserveForDelta(record.delta);
-      this.reservedRangeRollbackSlots += nextReserve - record.reservedSlots;
-      record.reservedSlots = nextReserve;
     }
     const inode = this.byIno.get(ino);
-    if (!inode) return;
+    if (!inode) {
+      this.recomputeOwnerRangeReserves(ino, owner, undefined);
+      return;
+    }
     const others: RangeLock[] = [];
     const keptOwned: RangeLock[] = [];
     const targetSegments: RangeLock[] = [];
@@ -1111,7 +1166,10 @@ export class LockTable {
       if (entry.opId === opId) targetSegments.push(entry);
       else keptOwned.push(entry);
     }
-    if (targetSegments.length === 0) return;
+    if (targetSegments.length === 0) {
+      this.recomputeOwnerRangeReserves(ino, owner, inode);
+      return;
+    }
     let woke = false;
     for (let i = 0; i < targetSegments.length; i++) {
       const seg = targetSegments[i]!;
@@ -1135,6 +1193,7 @@ export class LockTable {
     inode.ranges = others.concat(coalesced);
     this.adjustRangeCounts(deltaCount, posixOwner !== undefined ? deltaCount : 0);
     if (posixOwner !== undefined && coalesced.length === 0) this.unindexPosixIno(posixOwner, ino);
+    this.recomputeOwnerRangeReserves(ino, owner, inode);
     if (woke) this.wakeInode(ino, inode);
     this.pruneInode(ino, inode);
   }

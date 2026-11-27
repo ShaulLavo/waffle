@@ -1517,6 +1517,31 @@ describe("runtime_fs advisory locks over WASI", () => {
     ).toBe(ENOLCK);
     coverB.rollback?.();
     expect(cap2.diagnostics().ranges).toBe(2);
+
+    // Full F_UNLCK over a pending covering grant MUST release its rollback reservation immediately.
+    const coverC = cap2.setRangeLock(
+      1,
+      undefined,
+      1,
+      1,
+      { type: F_WRLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    expect(coverC.errno).toBe(0);
+    expect(
+      cap2.setRangeLock(1, undefined, 1, 1, { type: F_UNLCK, start: 0, len: 0 }, false).errno,
+    ).toBe(0);
+    expect(cap2.diagnostics()).toMatchObject({ inodes: 0, ranges: 0, pendingTransactions: 0 });
+    // Both slots up to maxRangeLocks(2) are immediately usable on unrelated inodes before coverC rolls back.
+    expect(
+      cap2.setRangeLock(2, undefined, 2, 2, { type: F_WRLCK, start: 0, len: 5 }, false).errno,
+    ).toBe(0);
+    expect(
+      cap2.setRangeLock(3, undefined, 3, 3, { type: F_WRLCK, start: 0, len: 5 }, false).errno,
+    ).toBe(0);
+    coverC.rollback?.();
+    expect(cap2.diagnostics().ranges).toBe(2);
     cap2.dispose();
   });
 
