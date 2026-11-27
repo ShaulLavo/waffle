@@ -186,6 +186,7 @@ const PURE_STATELESS_READ_OPS = new Set<string>([
   "lookup",
   "listFiles",
   "resolvePath",
+  "statPath",
   "stat",
   "permissions",
   "read",

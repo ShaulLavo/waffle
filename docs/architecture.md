@@ -255,8 +255,8 @@ used by the page runtime; registration keys in that mode must be canonical absol
 The lookup receives the original absolute path and returns `{ path, kind }`, where `path` is
 canonical only after a successful real-tree walk. `check(name, cwd)` applies these same live
 admission rules without loading or compiling a module; `resolve` checks again on each spawn.
-Executable admission orders earlier queued filesystem mutations without consuming unrelated
-mutation failures reserved for an explicit filesystem `drain()`.
+Executable admission orders earlier queued filesystem mutations without being rejected by unrelated
+failed mutations; each mutation promise owns its own rejection.
 
 ## Guest executor extensions
 

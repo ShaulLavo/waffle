@@ -187,11 +187,17 @@ function nextMessage(port: MessagePort): Promise<any> {
 
 test("socket transport delivers acceptance before synchronous connection finish", async () => {
   const f = fixture();
+  let closes = 0;
   f.router.register(8123, {
     request: f.server.request,
     connect(_port, sink) {
       sink.end();
-      return { write() {}, close() {} };
+      return {
+        write() {},
+        close() {
+          closes++;
+        },
+      };
     },
   });
   const socket = new MessageChannel();
@@ -205,6 +211,9 @@ test("socket transport delivers acceptance before synchronous connection finish"
   try {
     await f.worker.socket(8123, `${scope}8123/page`, socket.port2);
     expect(await messagesPromise).toEqual([{ type: "accepted" }, { type: "end" }]);
+    expect(closes).toBe(1);
+    f.router.close();
+    expect(closes).toBe(1);
   } finally {
     socket.port1.close();
     socket.port2.close();
@@ -457,4 +466,193 @@ test("activation helper accepts an active worker whose state object never update
   next.dispatchEvent(new Event("statechange"));
   await ready;
   expect(settled).toBe(true);
+});
+
+test("socket tunnel closes backend connection on MessagePort close event (peer crash)", async () => {
+  let closes = 0;
+  let sinkRef: { data(chunk: Uint8Array): void; end(): void } | undefined;
+  const router = new PreviewRouter({
+    baseURL: "https://example.test/nested/index.html",
+    prefix: "custom.preview",
+    socketPingIntervalMs: 0,
+  });
+  router.register(8123, {
+    request: () => false,
+    connect(_port, sink) {
+      sinkRef = sink;
+      return {
+        write() {},
+        close() {
+          closes++;
+        },
+      };
+    },
+  });
+  const closeListeners = new Set<() => void>();
+  let portClosed = false;
+  const posted: unknown[] = [];
+  const fakePort = {
+    onmessage: null as ((event: MessageEvent<unknown>) => void) | null,
+    postMessage(msg: unknown) {
+      if (portClosed) throw new Error("posted to closed port");
+      posted.push(msg);
+    },
+    close() {
+      portClosed = true;
+    },
+    addEventListener(type: string, fn: () => void) {
+      if (type === "close") closeListeners.add(fn);
+    },
+    removeEventListener(type: string, fn: () => void) {
+      if (type === "close") closeListeners.delete(fn);
+    },
+  } as unknown as MessagePort;
+  router.onMessage({ data: { type: "preview-socket", port: 8123 }, ports: [fakePort] });
+  expect(posted).toEqual([{ type: "accepted" }]);
+  expect(closes).toBe(0);
+  // Simulate browser reporting that the peer page crashed / closed its MessagePort.
+  for (const fn of Array.from(closeListeners)) fn();
+  expect(closes).toBe(1);
+  expect(portClosed).toBe(true);
+  // Subsequent backend writes after teardown must be ignored without posting to the closed port.
+  sinkRef!.data(encoder.encode("late"));
+  sinkRef!.end();
+  expect(closes).toBe(1);
+});
+
+test("socket tunnel closes silent crashed peer after missed pings while keeping live peers open", async () => {
+  let closes = 0;
+  const router = new PreviewRouter({
+    baseURL: "https://example.test/nested/index.html",
+    prefix: "custom.preview",
+    socketPingIntervalMs: 15,
+    socketMissedPings: 2,
+  });
+  router.register(8123, {
+    request: () => false,
+    connect() {
+      return {
+        write() {},
+        close() {
+          closes++;
+        },
+      };
+    },
+  });
+  // Live peer replies to pings with pong and stays open across >4 intervals.
+  const live = new MessageChannel();
+  let livePings = 0;
+  live.port1.onmessage = (event) => {
+    if (event.data?.type === "ping") {
+      livePings++;
+      live.port1.postMessage({ type: "pong" });
+    }
+  };
+  // Silent peer ignores all pings (simulating Firefox/WebKit tab crash with no port close event).
+  const silent = new MessageChannel();
+  silent.port1.onmessage = () => {};
+  try {
+    router.onMessage({ data: { type: "preview-socket", port: 8123 }, ports: [live.port2] });
+    router.onMessage({ data: { type: "preview-socket", port: 8123 }, ports: [silent.port2] });
+    const deadline = Date.now() + 2000;
+    while (closes < 1 && Date.now() < deadline) await Bun.sleep(10);
+    expect(closes).toBe(1);
+    while (livePings < 3 && Date.now() < deadline) await Bun.sleep(10);
+    expect(livePings).toBeGreaterThanOrEqual(3);
+    expect(closes).toBe(1);
+    // Unregistering the server closes remaining live tunnels cleanly.
+    router.close();
+    expect(closes).toBe(2);
+  } finally {
+    router.close();
+    live.port1.close();
+    live.port2.close();
+    silent.port1.close();
+    silent.port2.close();
+  }
+});
+
+test("unregister and server replacement close open preview socket tunnels", () => {
+  let closes = 0;
+  const server: PreviewServer = {
+    request: () => false,
+    connect() {
+      return {
+        write() {},
+        close() {
+          closes++;
+        },
+      };
+    },
+  };
+  const router = new PreviewRouter({
+    baseURL: "https://example.test/nested/index.html",
+    prefix: "custom.preview",
+    socketPingIntervalMs: 0,
+  });
+  router.register(8123, server);
+  const first = new MessageChannel();
+  const second = new MessageChannel();
+  try {
+    router.onMessage({ data: { type: "preview-socket", port: 8123 }, ports: [first.port2] });
+    const replacement: PreviewServer = { ...server };
+    router.register(8123, replacement);
+    expect(closes).toBe(1);
+    router.onMessage({ data: { type: "preview-socket", port: 8123 }, ports: [second.port2] });
+    router.unregister(8123, replacement);
+    expect(closes).toBe(2);
+  } finally {
+    first.port1.close();
+    first.port2.close();
+    second.port1.close();
+    second.port2.close();
+  }
+});
+
+test("PreviewRouter.close attempts every bound relay even when an earlier relay close throws", async () => {
+  const router = new PreviewRouter({
+    mode: "root",
+    originForPort: (port) => `https://p${port}.preview.test`,
+  });
+  const closed: number[] = [];
+  const server = (port: number): PreviewServer => ({
+    request: () => false,
+    connect() {
+      return {
+        write() {},
+        close() {
+          closed.push(port);
+          if (port === 8123) throw new Error("first relay close boom");
+        },
+      };
+    },
+  });
+  router.register(8123, server(8123));
+  router.register(8124, server(8124));
+  const relay1 = await router.bindHost({ port: 8123 });
+  const relay2 = await router.bindHost({ port: 8124 });
+  const sink = { data() {}, end() {}, error() {} };
+  const req = (port: number) => ({
+    url: `https://p${port}.preview.test/`,
+    method: "GET",
+    headers: [
+      ["upgrade", "websocket"],
+      ["connection", "Upgrade"],
+    ] as [string, string][],
+  });
+  expect(relay1.connect(relay1.authorization, req(8123), sink)).not.toBeNull();
+  expect(relay2.connect(relay2.authorization, req(8124), sink)).not.toBeNull();
+  let caught: unknown;
+  try {
+    router.close();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(AggregateError);
+  const inner = (caught as AggregateError).errors[0];
+  expect(inner).toBeInstanceOf(AggregateError);
+  expect((inner as AggregateError).errors[0]).toMatchObject({ message: "first relay close boom" });
+  expect(closed).toEqual([8123, 8124]);
+  expect(() => router.url(8123)).toThrow();
+  expect(() => router.url(8124)).toThrow();
 });

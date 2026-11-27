@@ -523,6 +523,8 @@ export class MemoryBackend implements FilesystemBackend {
       }
       case "lookup":
         return this.lookup(a);
+      case "statPath":
+        return this.statPath(a, b !== false);
       case "readFile": {
         const existing = this.existing(a);
         if (!existing) return;
@@ -534,6 +536,24 @@ export class MemoryBackend implements FilesystemBackend {
       default:
         throw new FilesystemError(52, `unknown filesystem operation ${operation}`);
     }
+  }
+  private statPath(path: string, follow: boolean): unknown {
+    const node = this.fs.lookup(path, follow);
+    if (!node) return;
+    const handle = this.fs.handleForNode(node);
+    const fsStat = this.fs.stat(handle);
+    const stat = this.shared.stat(handle);
+    return {
+      kind: node.kind,
+      size: stat ? stat.size : fsStat.size,
+      ino: node.ino,
+      mtime: fileTimeMs(stat ? stat.mtime : fsStat.mtime),
+      ctime: fileTimeMs(stat ? stat.ctime : fsStat.ctime),
+      atime: fileTimeMs(stat ? stat.atime : fsStat.atime),
+      mode: stat ? stat.mode : fsStat.mode,
+      nlink: stat ? stat.nlink : fsStat.nlink,
+      ...(node.kind === "symlink" ? { target: node.target } : {}),
+    };
   }
   private lookup(path: string): unknown {
     const node = this.fs.lookup(path, false);

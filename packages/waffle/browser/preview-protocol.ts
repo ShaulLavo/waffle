@@ -13,6 +13,8 @@ export type PreviewReply =
   | { type: "accepted" }
   | { type: "head"; status: number; statusText: string; headers: [string, string][] }
   | { type: "data"; chunk: Uint8Array }
+  | { type: "ping" }
+  | { type: "pong" }
   | { type: "end" }
   | { type: "error"; message: string };
 

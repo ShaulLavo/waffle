@@ -12,8 +12,8 @@ import { publicationAdapter } from "./publication-suite.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const originalHashes = {
-  // Moved to setTimes and nanosecond records with file times (plans/file-times.md).
-  "publication-browser.ts": "10f86e3f045867bcc1f45becfd223c62747f533a30dae357174bfcbe7501855d",
+  // Updated for setTimes/nanoseconds and single-delivery write failures (drain no longer re-throws).
+  "publication-browser.ts": "ab0c399cbb7184275b0716f5be2a04ab79bdb1186aaa11b32a295e13a06d6371",
   "workspace-browser.ts": "efd231caac240a656454f8bce4c16c466bd12f9f211b797bba9d308229c27e18",
   // File-only fixture supplies the required bound logical pair; its publication body is unchanged.
   "fixtures/publication-guest.ts":

@@ -180,7 +180,10 @@ export class PersistentBackend extends MemoryBackend {
     return this.storage.terminalFailureReason?.();
   }
   setTerminalFailureListener(listener: (reason: unknown) => void): void {
-    this.storage.setTerminalFailureListener?.(listener);
+    this.storage.setTerminalFailureListener?.((reason) => {
+      this.cancelTimer();
+      listener(reason);
+    });
   }
   private hasPendingChanges(): boolean {
     if (this.dirty.size > 0 || this.removed.size > 0 || this.shared.publication) return true;
@@ -192,7 +195,11 @@ export class PersistentBackend extends MemoryBackend {
   private startTimer(intervalMs: number): void {
     if (intervalMs > 0)
       this.timer = setInterval(() => {
-        if (!this.stopped && !this.pendingCheckpoints && this.hasPendingChanges())
+        if (this.stopped || this.isTerminallyFailed()) {
+          this.cancelTimer();
+          return;
+        }
+        if (!this.pendingCheckpoints && this.hasPendingChanges())
           void this.checkpoint().catch(() => {});
       }, intervalMs);
   }
