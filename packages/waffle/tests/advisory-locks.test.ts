@@ -1650,6 +1650,51 @@ describe("runtime_fs advisory locks over WASI", () => {
     expect(capFrag.diagnostics().ranges).toBeLessThanOrEqual(4);
     capFrag.dispose();
 
+    // Rolling back an earlier grant while a newer grant remains pending on an unlock-only span
+    // must reserve capacity for the earlier grant's live fragment without cross-subsidizing spans.
+    const capLiveFrag = new LockTable({ maxRangeLocks: 4 });
+    expect(
+      capLiveFrag.setRangeLock(1, undefined, 1, 1, { type: F_RDLCK, start: 2, len: 1 }, false)
+        .errno,
+    ).toBe(0);
+    expect(
+      capLiveFrag.setRangeLock(1, undefined, 1, 1, { type: F_WRLCK, start: 3, len: 1 }, false)
+        .errno,
+    ).toBe(0);
+    const lfA = capLiveFrag.setRangeLock(
+      1,
+      undefined,
+      1,
+      1,
+      { type: F_WRLCK, start: 0, len: 4 },
+      false,
+      true,
+    );
+    const lfB = capLiveFrag.setRangeLock(
+      1,
+      undefined,
+      1,
+      1,
+      { type: F_RDLCK, start: 0, len: 2 },
+      false,
+      true,
+    );
+    expect([lfA.errno, lfB.errno]).toEqual([0, 0]);
+    // 2 live segments + 1 reserved slot for lfA's live [2,4) fragment -> 1 extra lock fits, 2nd returns ENOLCK.
+    expect(
+      capLiveFrag.setRangeLock(2, undefined, 2, 2, { type: F_WRLCK, start: 0, len: 5 }, false)
+        .errno,
+    ).toBe(0);
+    expect(
+      capLiveFrag.setRangeLock(3, undefined, 3, 3, { type: F_WRLCK, start: 0, len: 5 }, false)
+        .errno,
+    ).toBe(ENOLCK);
+    lfA.rollback?.();
+    expect(capLiveFrag.diagnostics().ranges).toBe(4);
+    lfB.rollback?.();
+    expect(capLiveFrag.diagnostics().ranges).toBe(3);
+    capLiveFrag.dispose();
+
     // Deterministic stress sweep: arbitrary overlapping grants, partial unlocks, competing-inode
     // allocations, and arbitrary-order rollbacks/settles never exceed maxRangeLocks.
     let seed = 0x12345678;

@@ -288,35 +288,38 @@ function addInterval(
 function intersectDeltaWithIntervals(
   delta: readonly RangeDeltaSegment[],
   intervals: readonly ByteInterval[],
-): RangeDeltaSegment[] {
-  // Keep incoming spans unmerged so each fragment that rollback applies independently is
-  // counted separately against its backing span count.
+): { readonly trimmed: RangeDeltaSegment[]; readonly reserve: number } {
+  // Keep incoming spans unmerged and reserve max(0, nonUnlock - 1) per span independently so
+  // an unlock-shrinking span under a newer pending op cannot subsidize growth on a live span.
   const spans = intervals.toSorted((left, right) => left.start - right.start);
-  const out: RangeDeltaSegment[] = [];
+  const trimmed: RangeDeltaSegment[] = [];
+  let reserve = 0;
   for (let i = 0; i < spans.length; i++) {
     const span = spans[i]!;
+    let nonUnlockInSpan = 0;
     for (let j = 0; j < delta.length; j++) {
       const piece = delta[j]!;
       if (piece.end <= span.start) continue;
       if (piece.start >= span.end) break;
-      out.push({
+      if (piece.prevType !== F_UNLCK) nonUnlockInSpan += 1;
+      trimmed.push({
         start: Math.max(span.start, piece.start),
         end: Math.min(span.end, piece.end),
         prevType: piece.prevType,
         prevOpId: piece.prevOpId,
       });
     }
+    if (nonUnlockInSpan > 1) reserve += nonUnlockInSpan - 1;
   }
-  return out;
+  return { trimmed, reserve };
 }
 
-function rollbackReserveForDelta(delta: readonly RangeDeltaSegment[], spanCount = 1): number {
+function rollbackReserveForDelta(delta: readonly RangeDeltaSegment[]): number {
   let nonUnlock = 0;
   for (let i = 0; i < delta.length; i++) {
     if (delta[i]!.prevType !== F_UNLCK) nonUnlock += 1;
   }
-  const backing = spanCount > 1 ? spanCount : 1;
-  return nonUnlock > backing ? nonUnlock - backing : 0;
+  return nonUnlock > 1 ? nonUnlock - 1 : 0;
 }
 
 function spliceRangeDelta(
@@ -941,22 +944,21 @@ export class LockTable {
       const opId = ownerOps[i]!;
       const record = this.rangeOpDeltas.get(opId)!;
       const spans = liveIntervals.get(opId);
-      const trimmed = spans ? intersectDeltaWithIntervals(record.delta, spans) : [];
-      if (trimmed.length === 0) {
+      const intersected = spans ? intersectDeltaWithIntervals(record.delta, spans) : undefined;
+      if (!intersected || intersected.trimmed.length === 0) {
         this.reservedRangeRollbackSlots -= record.reservedSlots;
         this.rangeOpDeltas.delete(opId);
         this.pendingOps.delete(opId);
         continue;
       }
-      record.delta = trimmed;
-      for (let j = 0; j < trimmed.length; j++) {
-        const piece = trimmed[j]!;
+      record.delta = intersected.trimmed;
+      for (let j = 0; j < intersected.trimmed.length; j++) {
+        const piece = intersected.trimmed[j]!;
         if (piece.prevOpId !== 0)
           addInterval(liveIntervals, piece.prevOpId, piece.start, piece.end);
       }
-      const nextReserve = rollbackReserveForDelta(trimmed, spans!.length);
-      this.reservedRangeRollbackSlots += nextReserve - record.reservedSlots;
-      record.reservedSlots = nextReserve;
+      this.reservedRangeRollbackSlots += intersected.reserve - record.reservedSlots;
+      record.reservedSlots = intersected.reserve;
     }
   }
 
