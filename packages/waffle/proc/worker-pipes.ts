@@ -12,6 +12,12 @@ import {
   type PipePublicationRegistryHandle,
 } from "./pipes.js";
 import {
+  PtyEndpoint,
+  allocatePtyGeometry,
+  attachPtyEndpoint,
+  type PtyEndpointHandle,
+} from "./pty.js";
+import {
   workerProcessState,
   type WorkerDescriptorCodec,
   type WorkerProcessMessage,
@@ -22,8 +28,14 @@ export interface WorkerPipeDescriptorToken {
   kind: "pipe";
   endpoint: PipeEndpointHandle;
 }
+export interface WorkerPtyDescriptorToken extends PtyEndpointHandle {
+  kind: "pty";
+}
 export function isWorkerPipeDescriptorToken(token: unknown): token is WorkerPipeDescriptorToken {
   return typeof token === "object" && token !== null && "kind" in token && token.kind === "pipe";
+}
+export function isWorkerPtyDescriptorToken(token: unknown): token is WorkerPtyDescriptorToken {
+  return typeof token === "object" && token !== null && "kind" in token && token.kind === "pty";
 }
 export interface WorkerPipeCodecOptions extends Pick<PipeOptions, "allocateShared"> {
   /** Exec retains an independent lifetime while keeping the existing process lane. */
@@ -40,6 +52,12 @@ export interface WorkerPipeCodecOptions extends Pick<PipeOptions, "allocateShare
 export function createWorkerPipeCodec(options: WorkerPipeCodecOptions = {}): WorkerDescriptorCodec {
   return {
     export(descriptor, pid): unknown {
+      if (isInstance(descriptor.resource, PtyEndpoint)) {
+        const endpoint = options.successor
+          ? descriptor.resource.retainSuccessor()
+          : descriptor.resource.forProcess(pid);
+        return { kind: "pty", ...endpoint.handle() } satisfies WorkerPtyDescriptorToken;
+      }
       if (!isInstance(descriptor.resource, PipeEndpoint)) {
         if (options.fallback) return options.fallback.export(descriptor, pid);
         throw new TypeError(`unsupported worker descriptor: ${descriptor.resource.kind}`);
@@ -50,6 +68,14 @@ export function createWorkerPipeCodec(options: WorkerPipeCodecOptions = {}): Wor
       return { kind: "pipe", endpoint: endpoint.handle() } satisfies WorkerPipeDescriptorToken;
     },
     import(token, pid): OpenDescription {
+      if (isWorkerPtyDescriptorToken(token)) {
+        if (token.read.pid !== pid || token.write.pid !== pid)
+          throw new TypeError("pty descriptor belongs to another process");
+        options.onPipe?.(token.read);
+        options.onPipe?.(token.write);
+        const endpoint = attachPtyEndpoint(token, options);
+        return new OpenDescription(endpoint, () => endpoint.close());
+      }
       if (!isWorkerPipeDescriptorToken(token)) {
         if (options.fallback) return options.fallback.import(token, pid);
         throw new TypeError("unsupported worker descriptor token");
@@ -61,6 +87,14 @@ export function createWorkerPipeCodec(options: WorkerPipeCodecOptions = {}): Wor
       return new OpenDescription(endpoint, () => endpoint.close());
     },
     discard(token): void {
+      if (isWorkerPtyDescriptorToken(token)) {
+        try {
+          attachPipeEndpoint(token.read, options).close();
+        } finally {
+          attachPipeEndpoint(token.write, options).close();
+        }
+        return;
+      }
       if (isWorkerPipeDescriptorToken(token)) attachPipeEndpoint(token.endpoint, options).close();
       else if (options.fallback) options.fallback.discard(token);
       else throw new TypeError("unsupported worker descriptor token");
@@ -136,6 +170,29 @@ export class WorkerPipeHost {
       reader?.close();
       writer?.close();
       controller.dispose();
+      throw error;
+    }
+  }
+  createPty(cols: number, rows: number): readonly [PtyEndpoint, PtyEndpoint] {
+    const geometry = allocatePtyGeometry(cols, rows, this.options.allocateShared);
+    const input = this.createPipe();
+    const slaveIn = input[0];
+    const masterOut = input[1];
+    let masterIn: PipeEndpoint | undefined;
+    let slaveOut: PipeEndpoint | undefined;
+    try {
+      const output = this.createPipe();
+      masterIn = output[0];
+      slaveOut = output[1];
+      return [
+        new PtyEndpoint("master", masterIn, masterOut, geometry),
+        new PtyEndpoint("slave", slaveIn, slaveOut, geometry),
+      ];
+    } catch (error) {
+      slaveIn.close();
+      masterOut.close();
+      masterIn?.close();
+      slaveOut?.close();
       throw error;
     }
   }

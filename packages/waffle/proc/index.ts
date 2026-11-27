@@ -100,13 +100,24 @@ export {
   WorkerPipeBroker,
   createWorkerPipeCodec,
   isWorkerPipeDescriptorToken,
+  isWorkerPtyDescriptorToken,
 } from "./worker-pipes.js";
 export type {
   WorkerPipeDescriptorToken,
+  WorkerPtyDescriptorToken,
   WorkerPipeCodecOptions,
   WorkerPipeHostOptions,
   WorkerPipeBrokerOptions,
 } from "./worker-pipes.js";
+export {
+  PtyEndpoint,
+  PTY_GEOMETRY_BYTES,
+  MAX_PTY_DIMENSION,
+  isValidPtyDimension,
+  allocatePtyGeometry,
+  attachPtyEndpoint,
+} from "./pty.js";
+export type { PtyRole, PtySize, PtyEndpointHandle } from "./pty.js";
 export { ProcessABI, ProcessSignalExit } from "./abi.js";
 export type {
   PollSubscription,

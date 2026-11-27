@@ -1287,6 +1287,10 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
           checkActive();
           return pipes.createPipe();
         },
+        createPty: (cols, rows) => {
+          checkActive();
+          return pipes.createPty(cols, rows);
+        },
         revokeProcess: (pid) => pipes.revokeProcess(pid),
         registerRevocation: (hook) => {
           listenAbort(cancellation.signal, hook);
@@ -1388,6 +1392,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         wake: runtimeProcess.wake,
         futexReady: groupMember.watchReady,
         createPipe: () => runtimeProcess!.createPipe(),
+        createPty: (cols, rows) => runtimeProcess!.createPty(cols, rows),
         wait,
       });
       installProcessImports(processImports, process.imports, checkActive, observedPoll);

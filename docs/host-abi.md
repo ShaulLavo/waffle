@@ -135,6 +135,36 @@ the browser's signal-only worker namespace also exposes it without activating th
 process service. The descriptor number itself (including stdio 0, 1 and 2) never
 determines its kind.
 
+## Guest pseudoterminals (PTY)
+
+Guests can allocate bidirectional pseudoterminal pairs via `runtime_proc` without host-page
+terminal intervention, enabling runtimes such as `bun-wasm` (`Bun.Terminal`) to attach real
+interactive PTYs to spawned child processes.
+
+- `runtime_proc.pty_open(cols: i32, rows: i32, out_ptr: i32) -> i32`:
+  Allocates a paired `[master_fd, slave_fd]` backed by two shared pipe rings (`master -> slave`
+  and `slave -> master`) and one 16-byte shared geometry control block, writing `master_fd` at
+  `out_ptr + 0` (`u32 LE`) and `slave_fd` at `out_ptr + 4` (`u32 LE`).
+  `cols` and `rows` must be integers in `1..65535` (otherwise `-EINVAL`, `-28`). An out-of-bounds
+  `out_ptr` returns `-EFAULT` (`-21`) without leaking descriptors.
+  - `slave_fd` reports `fd_kind === 2` (`terminal`), WASI `fd_fdstat_get` filetype `FT_CHAR` (2),
+    and omits `RIGHT_FD_SEEK`/`RIGHT_FD_TELL`, so `wasi-libc` `isatty(slave_fd)` returns `1`.
+  - `master_fd` reports `fd_kind === 1` (`pipe`), non-character filetype, so `isatty(master_fd)`
+    returns `0`.
+  - Both endpoints support full-duplex blocking WASI `fd_read`/`fd_write`, nonblocking
+    `runtime_proc.read`/`write` and `FDFLAG_NONBLOCK`, `runtime_proc.poll` / `poll_oneoff`,
+    and inheritance across `spawn` and `exec`. EOF on `master_fd` occurs only when the last open
+    `slave_fd` across child and descendants closes (and vice versa).
+- `runtime_proc.pty_resize(fd: i32, cols: i32, rows: i32) -> i32`:
+  Updates the shared geometry on either `master_fd` or `slave_fd`, atomically increments the
+  resize sequence counter, and notifies the PTY's shared wake word. Returns `0`, `-EINVAL` (`-28`)
+  for out-of-range dimensions, `-EBADF` (`-8`) for a closed descriptor, or `-ENOTTY` (`-59`) for a
+  non-PTY descriptor.
+- `runtime_proc.pty_size(fd: i32, out_ptr: i32) -> i32`:
+  Writes a consistent 12-byte snapshot `[cols: u32 LE, rows: u32 LE, seq: u32 LE]` at `out_ptr`
+  from either `master_fd` or `slave_fd`. Returns `0`, `-EFAULT` (`-21`), `-EBADF` (`-8`), or
+  `-ENOTTY` (`-59`).
+
 ## Inherited descriptor list
 
 `runtime_proc.inherited_fd(index: u32) -> i32` returns the `index`th descriptor the process

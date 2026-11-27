@@ -4,6 +4,7 @@ import {
   arrayAppend,
   atomicsAdd,
   atomicsNotify,
+  isInstance,
   isSharedArrayBuffer,
   DataViewConstructor,
   Uint8ArrayConstructor,
@@ -40,7 +41,8 @@ import {
   type AsyncFileOffsetLease,
 } from "../core/open-file.js";
 import type { DirectDisabledIOControl, FilesystemCompletion } from "../fs/client.js";
-import { PipeController } from "./pipes.js";
+import { PipeController, type PipeEndpoint } from "./pipes.js";
+import { PtyEndpoint, allocatePtyGeometry, validatePtyDimensions } from "./pty.js";
 import { readOutcome } from "./outcome.js";
 import { WasiExit } from "../core/wasi.js";
 import { waitStatus } from "./wait-status.js";
@@ -147,6 +149,8 @@ export interface ProcessABIOptions {
   pipeCapacity?: number;
   /** Workers inject broker-owned endpoints; the default is an in-process controller. */
   createPipe?(): readonly [Stream, Stream];
+  /** Workers inject broker-owned PTY endpoints; the default uses in-process pipe controllers. */
+  createPty?(cols: number, rows: number): readonly [Stream, Stream];
   /** One shared readiness sequence. Publishers increment and notify after publishing state. */
   wake?: Int32Array;
   /** Synchronous wait hook, primarily for embedders and deterministic tests. poll and blocking wait_job call it. */
@@ -167,9 +171,11 @@ export class ProcessSignalExit extends ExecutionUnwind {
 }
 
 const READ = 1n << 1n,
+  FDSTAT_SET_FLAGS = 1n << 3n,
   WRITE = 1n << 6n,
   FILESTAT_GET = 1n << 21n,
   POLL = 1n << 27n;
+const PTY_RIGHTS = READ | WRITE | FILESTAT_GET | POLL | FDSTAT_SET_FLAGS;
 const FAULT = 21,
   ISDIR = 31,
   NOSYS = 52,
@@ -274,6 +280,9 @@ export class ProcessABI {
       exec: (ptr, length) => this.result(() => this.exec(ptr!, length!)),
       job_of: (pid) => this.result(() => options.service.jobOf(pid === 0 ? options.pid : pid!)),
       pipe: (ptr) => this.result(() => this.pipe(ptr!)),
+      pty_open: (cols, rows, ptr) => this.result(() => this.ptyOpen(cols!, rows!, ptr!)),
+      pty_resize: (fd, cols, rows) => this.result(() => this.ptyResize(fd!, cols!, rows!)),
+      pty_size: (fd, ptr) => this.result(() => this.ptySize(fd!, ptr!)),
       dup: (fd) => options.descriptors.dup(fd! >>> 0),
       fd_kind: (fd) => options.descriptors.kind(fd! >>> 0),
       fd_reopen: (
@@ -552,7 +561,7 @@ export class ProcessABI {
   private pipe(ptr: number): number {
     // Validate before retaining endpoints or mutating the descriptor namespace.
     this.span(ptr, 8);
-    const endpoints = this.options.createPipe?.() ?? this.localPipe();
+    const endpoints = this.options.createPipe?.() ?? this.localPipeEndpoints();
     let read: number | undefined, write: number | undefined;
     try {
       read = this.options.descriptors.open(endpoints[0], READ | FILESTAT_GET | POLL, 0n);
@@ -569,17 +578,81 @@ export class ProcessABI {
       throw error;
     }
   }
-  private localPipe(): readonly [Stream, Stream] {
+  private ptyOpen(cols: number, rows: number, ptr: number): number {
+    validatePtyDimensions(cols, rows);
+    this.span(ptr, 8);
+    const endpoints = this.options.createPty?.(cols, rows) ?? this.localPty(cols, rows);
+    let master: number | undefined, slave: number | undefined;
+    try {
+      master = this.options.descriptors.open(endpoints[0], PTY_RIGHTS, 0n);
+      slave = this.options.descriptors.open(endpoints[1], PTY_RIGHTS, 0n);
+      const output = this.view(ptr, 8);
+      dataViewSetUint32(output, 0, master, true);
+      dataViewSetUint32(output, 4, slave, true);
+      return 0;
+    } catch (error) {
+      if (master !== undefined) this.options.descriptors.close(master);
+      else endpoints[0].close?.();
+      if (slave !== undefined) this.options.descriptors.close(slave);
+      else endpoints[1].close?.();
+      throw error;
+    }
+  }
+  private ptyEndpoint(fd: number): PtyEndpoint {
+    const entry = this.options.descriptors.get(fd >>> 0);
+    if (!entry) throw new ProcessError(ProcessErrno.BADF, `missing descriptor ${fd}`);
+    if (!isInstance(entry.resource, PtyEndpoint))
+      throw new ProcessError(ProcessErrno.NOTTY, `descriptor ${fd} is not a pty`);
+    return entry.resource;
+  }
+  private ptyResize(fd: number, cols: number, rows: number): number {
+    validatePtyDimensions(cols, rows);
+    this.ptyEndpoint(fd).resize(cols, rows);
+    return 0;
+  }
+  private ptySize(fd: number, ptr: number): number {
+    this.span(ptr, 12);
+    const size = this.ptyEndpoint(fd).size();
+    const output = this.view(ptr, 12);
+    dataViewSetUint32(output, 0, size.cols, true);
+    dataViewSetUint32(output, 4, size.rows, true);
+    dataViewSetUint32(output, 8, size.seq, true);
+    return 0;
+  }
+  private localPty(cols: number, rows: number): readonly [PtyEndpoint, PtyEndpoint] {
+    const geometry = allocatePtyGeometry(cols, rows);
+    const input = this.localPipeEndpoints();
+    const slaveIn = input[0];
+    const masterOut = input[1];
+    let masterIn: PipeEndpoint | undefined;
+    let slaveOut: PipeEndpoint | undefined;
+    try {
+      const output = this.localPipeEndpoints();
+      masterIn = output[0];
+      slaveOut = output[1];
+      return [
+        new PtyEndpoint("master", masterIn, masterOut, geometry),
+        new PtyEndpoint("slave", slaveIn, slaveOut, geometry),
+      ];
+    } catch (error) {
+      slaveIn.close();
+      masterOut.close();
+      masterIn?.close();
+      slaveOut?.close();
+      throw error;
+    }
+  }
+  private localPipeEndpoints(): readonly [PipeEndpoint, PipeEndpoint] {
     const controller = new PipeController({
       capacity: this.options.pipeCapacity,
       wake: this.options.wake,
     });
     const read = controller.retain(this.options.pid, "read");
-    let write: Stream;
+    let write: PipeEndpoint;
     try {
       write = controller.retain(this.options.pid, "write");
     } catch (error) {
-      read.close?.();
+      read.close();
       throw error;
     }
     const unregister = this.options.service.registerRevocation?.(this.options.pid, () =>
@@ -596,7 +669,7 @@ export class ProcessABI {
           if (closed) return;
           closed = true;
           try {
-            if (close) reflectApply(close, endpoint, []);
+            reflectApply(close, endpoint, []);
           } finally {
             if (--remaining === 0) unregister();
           }

@@ -308,6 +308,7 @@ export interface WorkerProcessClientOptions {
    */
   revokeProcess?(pid: number, transport: WorkerProcessTransport): void;
   createPipe?(): readonly [Stream, Stream];
+  createPty?(cols: number, rows: number): readonly [Stream, Stream];
   onError?(error: unknown): void;
 }
 function snapshotSpawnRequest(
@@ -1085,6 +1086,10 @@ export class WorkerProcessClient {
   createPipe(): readonly [Stream, Stream] {
     if (!this.options.createPipe) throw new ProcessError(58, "worker pipe factory is unavailable");
     return this.options.createPipe();
+  }
+  createPty(cols: number, rows: number): readonly [Stream, Stream] {
+    if (!this.options.createPty) throw new ProcessError(58, "worker pty factory is unavailable");
+    return this.options.createPty(cols, rows);
   }
   private report(error: unknown): void {
     try {

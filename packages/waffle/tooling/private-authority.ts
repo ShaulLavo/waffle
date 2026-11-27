@@ -151,6 +151,7 @@ export const enforcedModules = [
   "proc/intrinsics/core.ts",
   "proc/intrinsics/host.ts",
   "proc/errors.ts",
+  "proc/pty.ts",
   "thread/guest-bootstrap.ts",
   "thread/guest-worker.ts",
   "thread/guest-imports.ts",
