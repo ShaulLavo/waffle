@@ -12,6 +12,7 @@ const O_CREAT = 1;
 const O_DIRECTORY = 2;
 const O_EXCL = 4;
 const O_TRUNC = 8;
+const FDFLAG_NONBLOCK = 4;
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -269,4 +270,44 @@ test("path_permissions_get reuses its decoder across invalid UTF-8, BOM and vali
   } finally {
     globalThis.TextDecoder = Original;
   }
+});
+
+test("path_open accepts O_DIRECTORY with FDFLAG_NONBLOCK and enumerates entries via fd_readdir", () => {
+  const mem = new MemFS();
+  mem.writeFile("/home/user/src/App.tsx", "export default function App() { return null; }\n");
+  mem.writeFile("/home/user/index.html", "<!doctype html>\n");
+  const host = makeHost(mem);
+
+  // wasi-libc opendir() and Rust std::fs::read_dir open directories with O_DIRECTORY | FDFLAG_NONBLOCK.
+  const dir = host.openRaw(3, "home/user", {
+    oflags: O_DIRECTORY,
+    fdflags: FDFLAG_NONBLOCK,
+  });
+  expect(dir.errno).toBe(0);
+  expect(host.readDirNames(dir.fd).toSorted()).toEqual([".", "..", "index.html", "src"]);
+  expect(host.close(dir.fd)).toBe(0);
+
+  // Regular files opened with FDFLAG_NONBLOCK retain the flag in fd_fdstat_get and remain readable.
+  const file = host.openRaw(3, "home/user/index.html", {
+    fdflags: FDFLAG_NONBLOCK,
+    base: RIGHT_FD_READ,
+  });
+  expect(file.errno).toBe(0);
+  expect(host.fdFlags(file.fd) & FDFLAG_NONBLOCK).toBe(FDFLAG_NONBLOCK);
+  expect(host.readAll(file.fd)).toBe("<!doctype html>\n");
+  expect(host.close(file.fd)).toBe(0);
+
+  // Opening without FDFLAG_NONBLOCK clears the bit in fd_fdstat_get.
+  const blockingFile = host.openRaw(3, "home/user/index.html", { base: RIGHT_FD_READ });
+  expect(blockingFile.errno).toBe(0);
+  expect(host.fdFlags(blockingFile.fd) & FDFLAG_NONBLOCK).toBe(0);
+  expect(host.close(blockingFile.fd)).toBe(0);
+
+  // O_DIRECTORY | FDFLAG_NONBLOCK still rejects a regular file with ENOTDIR (54).
+  expect(
+    host.openRaw(3, "home/user/index.html", {
+      oflags: O_DIRECTORY,
+      fdflags: FDFLAG_NONBLOCK,
+    }).errno,
+  ).toBe(54);
 });

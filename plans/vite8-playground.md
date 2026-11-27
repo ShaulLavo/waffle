@@ -1,8 +1,6 @@
 # Vite 8 in the playground
 
-Status: **Approved (owner, 2026-11-04). In progress (2026-11-06).** Waffle transport
-verification and a root binding lifetime fix are implemented. bun-wasm React acceptance remains
-with the consumer lane; no public deployment is part of this change.
+Status: **Completed for stock Vite 8 React (2026-11-27); `@tailwindcss/vite` v4 gap isolated to `bun-wasm` (`O_NONBLOCK`).** Stock Vite 8 React passes the full local finish line across Linux Playwright Chromium, Firefox, and WebKit on both `browser` (native) and `quickjs` (`shared-group`) engines. The observed `@tailwindcss/vite` v4 utility-generation failure comes from `bun-wasm`'s `O_NONBLOCK` rejection; with `O_NONBLOCK` masked in a diagnostic wrapper, Vite 8 + Tailwind v4 passed on the `browser` engine across those three Linux Playwright browsers.
 
 Prepared 2026-11-04 from Waffle `745959ed` (package 0.0.110) and bun-wasm `5312b1fb`, which
 consumes the `waffle-v0.0.110` release tarball. Owner request: Waffle track, 2026-10-29 (local
@@ -245,9 +243,82 @@ or a fleet host per `.internal/owner-machine.md`. Keep only small results under 
 ## Open questions
 
 1. Why does `node:http` fail where `Bun.serve` succeeds on the standalone preview URL, and which
-   repository owns that point? (Stage 2.)
-2. Did the embedded frame render in run B? It was not recorded.
+   repository owns that point? **Historical public cause unconfirmed; current local build passes.**
+   The November 6 trace established stdin-induced shutdown in a local noninteractive Vite 7
+   diagnostic, not the exact cause of the historical November 2 public 502. On November 27, the
+   current local `waffle` + `bun-wasm` build passed both standalone `__preview/<port>/` and
+   embedded preview routes with HTTP 200 across Chromium, Firefox, and WebKit.
+2. Did the embedded frame render in run B? **Unrecorded for run B; superseded by November 27
+   acceptance**, where both the embedded preview frame (playground + `sandbox/dist`) and standalone
+   preview pass across Chromium, Firefox, and WebKit.
 3. Does the current local playground reproduce run B, or did the public build differ from current
-   bun-wasm `main`?
-4. Does the Vite HMR WebSocket upgrade work through the preview at all?
+   bun-wasm `main`? **Does not reproduce on current `main`** — current `waffle` (`e0250d6f5`) +
+   `bun-wasm` (`2d6c0e5d8`) passes the complete stock Vite 8 React finish line with zero 502s.
+4. Does the Vite HMR WebSocket upgrade work through the preview at all? **Yes on current `main`** —
+   live `src/App.tsx` edits reach open pages via Vite HMR in 90–237 ms (`browser`) with 0
+   navigations and counter state preserved across Chromium, Firefox, and WebKit.
 5. Why did the vinext pins in run C miss the Rolldown WASM binding when run B's install got it?
+   Remains a Bun-track follow-on outside this finish line.
+
+## November 27 local finish-line acceptance and Tailwind v4 check
+
+Verified locally against `waffle` `origin/main` (`e0250d6f5`, packed as `@waffle-os/runtime` /
+`@waffle-os/relay`) wired into a local build of `bun-wasm` `origin/main` (`2d6c0e5d8`, CI run
+`45931610802` guest binaries: `bun-browser.wasm`, `bun.wasm`, `quickjs.wasm`, `bun-tools.wasm`,
+`shared-quickjs`, and `bash-web` shell guests).
+
+### Stock Vite 8 React (`vite@8.3.5`, `@vitejs/plugin-react@6.1.2`, `react@19.3.1`, `rolldown@1.2.16`, `@rolldown/binding-wasm32-wasi@1.2.16`)
+
+Unmodified `bun-wasm/sandbox/template` passed all finish-line stages (`bun install`, `vite` dev
+ready, injected embedded preview `<iframe>` + click, standalone `__preview/<port>/` load + click,
+live `src/App.tsx` Vite HMR with 0 navigations and preserved counter state, manual reload, keyboard
+`Control+c` stopping dev + unregistering port 5173 + usable prompt, and `vite build` emitting
+nonempty `dist/index.html`, JS, and CSS):
+
+| Browser | Engine (`profile`) | Total | HMR | Build CSS + JS |
+| --- | --- | --- | --- | --- |
+| Chromium 156.0.8078.4 | `browser` (`split`) | 9.6 s | 90 ms (0 navs, count preserved) | 555 B CSS, 219,992 B JS |
+| Firefox 157.0 | `browser` (`split`) | 17.3 s | 237 ms (0 navs, count preserved) | 555 B CSS, 219,992 B JS |
+| WebKit 27.2 | `browser` (`split`) | 14.1 s | 188 ms (0 navs, count preserved) | 555 B CSS, 219,992 B JS |
+| Chromium 156.0.8078.4 | `quickjs` (`shared-group`) | 18.6 s | 797 ms (0 navs, count preserved) | 555 B CSS, 219,992 B JS |
+| Firefox 157.0 | `quickjs` (`shared-group`) | 22.3 s | 989 ms (0 navs, count preserved) | 555 B CSS, 219,992 B JS |
+| WebKit 27.2 | `quickjs` (`shared-group`) | 19.2 s | 937 ms (0 navs, count preserved) | 555 B CSS, 219,992 B JS |
+
+The `sandbox/dist` embedded preview UI also rendered and handled counter clicks across Chromium
+(6.1 s), Firefox (9.6 s), and WebKit (8.7 s).
+
+### Vite 8 + `@tailwindcss/vite` v4 (`4.3.5`)
+
+Adding `tailwindcss@^4.1.0` and `@tailwindcss/vite@^4.1.0` installs cleanly (`tailwindcss@4.3.5`,
+`@tailwindcss/vite@4.3.5`, `@tailwindcss/oxide@4.3.5`, `@tailwindcss/oxide-wasm32-wasi@4.3.5`),
+and Tailwind's preflight CSS loads, **but zero utility classes are generated** across Chromium,
+Firefox, and WebKit.
+
+Root cause is strictly in `ShaulLavo/bun-wasm`, not Waffle:
+
+- `@tailwindcss/oxide-wasm32-wasi` (Rust `std::fs::read_dir` / `wasi-libc` `opendir()`) calls
+  WASI `path_open(dirfd=3, dirflags=1, path="home/user", oflags=O_DIRECTORY (2), ...,
+  fsFlags=FDFLAG_NONBLOCK (4))`.
+- `bun-wasm`'s `node:wasi` (`crates/bunwasm-runtime/generated/builtins/192.js:737-738`) translates
+  `WASI_FDFLAG_NONBLOCK` to `O_NONBLOCK` (`2048`) and calls `fs.openSync(full, noflags)`.
+- `bun-wasm`'s `crates/bunwasm-runtime/src/natives.rs:660-684` (`open_file`) validates flags
+  against `supported = 3 | 64 | 128 | 512 | 1024 | 65536 | 131072 | 1052672`, which omits `2048`
+  (`O_NONBLOCK`). It returns `ErrorKind::Unsupported` -> `ENOSYS (-38)` -> WASI errno `52`
+  (`WASI_ENOSYS`). `@tailwindcss/oxide`'s `ignore::WalkBuilder` swallows the error and scans 0
+  files.
+- Waffle's own `path_open` (`packages/waffle/core/wasi.ts`, `packages/waffle/core/fd-reopen.ts`)
+  already accepts `O_DIRECTORY | FDFLAG_NONBLOCK` and enumerates entries via `fd_readdir`
+  (locked in by `packages/waffle/tests/wasi-path-open-metadata.test.ts`).
+- Masking `O_NONBLOCK` in a diagnostic test-only `fs.openSync` wrapper shows no secondary
+  Waffle or `bun-wasm` failure on the tested Linux desktop Playwright runs: full Vite 8 + React 19
+  + `@tailwindcss/vite@4.3.5` dev styles, live HMR adding a new `text-rose-500` utility class
+  (0 navigations, counter preserved), manual reload, Ctrl-C + prompt, and `vite build` (`5,643 B`
+  CSS with `.flex`, `.bg-slate-900`, `.text-rose-500`) pass on Chromium (12.7 s), Firefox (18.5 s),
+  and WebKit (17.2 s) with 0 console/page errors. Native macOS Safari and iOS Safari were not run
+  for Tailwind v4.
+- Separate iOS Safari note: `@tailwindcss/oxide-wasm32-wasi@4.3.5/tailwindcss-oxide.wasi.cjs`
+  requests `new WebAssembly.Memory({ initial: 16384, maximum: 65536, shared: true })` (1 GiB
+  initial / 4 GiB max shared memory), which passes desktop browsers and Linux WebKit 27.2 but
+  falls in the same 4 GiB shared-Wasm reservation class as Rolldown on iOS Safari.
+
+Evidence archive: `/work/reports/a5-vite8-rolldown-20261127/RESULT.md`.

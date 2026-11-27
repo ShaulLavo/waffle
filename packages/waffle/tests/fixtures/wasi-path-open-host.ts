@@ -60,7 +60,9 @@ export function countingFs(inner: FileSystem): {
 
 const pathOpenModule = guestModule("wasi_snapshot_preview1", [
   { name: "fd_close", parameters: ["i32"] },
+  { name: "fd_fdstat_get", parameters: ["i32", "i32"] },
   { name: "fd_read", parameters: ["i32", "i32", "i32", "i32"] },
+  { name: "fd_readdir", parameters: ["i32", "i32", "i32", "i64", "i32"] },
   {
     name: "path_open",
     parameters: ["i32", "i32", "i32", "i32", "i32", "i64", "i64", "i32", "i32"],
@@ -86,7 +88,9 @@ export function createPathOpenHost(
   wasi.start(instance);
   const pathOpen = guestFunction(instance, "path_open");
   const fdClose = guestFunction(instance, "fd_close");
+  const fdFdstatGet = guestFunction(instance, "fd_fdstat_get");
   const fdRead = guestFunction(instance, "fd_read");
+  const fdReaddir = guestFunction(instance, "fd_readdir");
   const view = () => new DataView(memory.buffer);
   const openRaw = (
     dirfd: number,
@@ -94,6 +98,7 @@ export function createPathOpenHost(
     options: {
       dirflags?: number;
       oflags?: number;
+      fdflags?: number;
       base?: bigint;
       inheriting?: bigint;
       fdOut?: number;
@@ -110,7 +115,7 @@ export function createPathOpenHost(
       options.oflags ?? 0,
       options.base ?? RIGHTS_ALL,
       options.inheriting ?? RIGHTS_ALL,
-      0,
+      options.fdflags ?? 0,
       out,
     );
     return { errno, fd: errno === 0 ? view().getUint32(out >>> 0, true) : -1 };
@@ -123,6 +128,27 @@ export function createPathOpenHost(
     const n = view().getUint32(264, true);
     return decoder.decode(new Uint8Array(memory.buffer, 4096, n).slice());
   };
+  const readDirNames = (fd: number) => {
+    const errno = fdReaddir(fd, 8192, 4096, 0n, 268);
+    if (errno !== 0) throw new Error(`fd_readdir failed: ${errno}`);
+    const used = view().getUint32(268, true);
+    const names: string[] = [];
+    let offset = 0;
+    while (offset + 24 <= used) {
+      const nameLen = view().getUint32(8192 + offset + 16, true);
+      if (offset + 24 + nameLen > used) break;
+      names.push(
+        decoder.decode(new Uint8Array(memory.buffer, 8192 + offset + 24, nameLen).slice()),
+      );
+      offset += 24 + nameLen;
+    }
+    return names;
+  };
+  const fdFlags = (fd: number) => {
+    const errno = fdFdstatGet(fd, 512);
+    if (errno !== 0) throw new Error(`fd_fdstat_get failed: ${errno}`);
+    return view().getUint16(514, true);
+  };
   const close = (fd: number) => fdClose(fd);
-  return { wasi, memory, pathOpen, openRaw, readAll, close };
+  return { wasi, memory, pathOpen, openRaw, readAll, readDirNames, fdFlags, close };
 }
