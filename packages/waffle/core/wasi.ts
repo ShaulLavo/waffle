@@ -907,7 +907,11 @@ export class Wasi {
     if (wanted === "file" && this.machineId() !== undefined) {
       const limit = index < 0 ? paths.length : index;
       for (let i = 0; i < limit; i++) {
-        if (this.resolveVirtualMachineId(entry, paths[i]!, true) === "machine-id") {
+        const candidate = paths[i]!;
+        if (
+          candidate.includes("machine-id") &&
+          this.resolveVirtualMachineId(entry, candidate, true) === "machine-id"
+        ) {
           index = i;
           break;
         }

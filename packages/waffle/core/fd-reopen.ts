@@ -382,10 +382,12 @@ export function resolveDescriptorPath(
 ): DescriptorPath | number | undefined {
   if (directory.resource.kind !== "directory") return undefined;
   const handle = directory.resource.handle;
-  const isRootDir =
-    directory.preopen === "/" || fs.stat(handle).ino === fs.stat(fs.preopen("/")).ino;
-  if (!rooted && !isRootDir) {
-    if (!hasMachineId || !path) return undefined;
+  if (
+    !rooted &&
+    directory.preopen !== "/" &&
+    fs.stat(handle).ino !== fs.stat(fs.preopen("/")).ino
+  ) {
+    if (!hasMachineId || !path.includes("machine-id")) return undefined;
     const resolved = fs.resolve(handle, path, finalLink === "follow", false);
     if (typeof resolved === "number") return undefined;
     return virtualMachineIdMatch(fs, fs.preopen("/"), resolved, true);
