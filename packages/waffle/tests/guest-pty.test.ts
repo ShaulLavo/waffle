@@ -80,6 +80,24 @@ function pollOnce(
   return { count, flags };
 }
 
+async function sampleConsistentResizes(
+  master: { size(): { cols: number; rows: number; seq: number } },
+  iterations: number,
+  isSettled: () => boolean,
+): Promise<void> {
+  let lastSeq = 0;
+  let samples = 0;
+  const deadline = Date.now() + 10_000;
+  while (lastSeq < iterations && !isSettled() && Date.now() < deadline) {
+    const snap = master.size();
+    expect(snap.seq).toBeGreaterThanOrEqual(lastSeq);
+    expect(snap.cols).toBe(80 + (snap.seq % 500));
+    expect(snap.rows).toBe(24 + (snap.seq % 200));
+    lastSeq = snap.seq;
+    if (++samples % 64 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 describe("guest PTY host primitive (runtime_proc.pty_*)", () => {
   test("pty_open creates full-duplex pair with slave TTY identity and master non-TTY", () => {
     const f = createPtyFixture();
@@ -377,21 +395,27 @@ describe("guest PTY host primitive (runtime_proc.pty_*)", () => {
       const worker = new Worker(new URL("./fixtures/pty-resize-worker.ts", import.meta.url).href, {
         type: "module",
       });
+      let workerSettled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const finished = new Promise<void>((resolve, reject) => {
-        worker.onmessage = () => resolve();
-        worker.onerror = (event) => reject(new Error(event.message || "pty resize worker failed"));
+        timer = setTimeout(() => {
+          workerSettled = true;
+          reject(new Error("pty resize worker timed out"));
+        }, 10_000);
+        worker.onmessage = () => {
+          clearTimeout(timer);
+          workerSettled = true;
+          resolve();
+        };
+        worker.onerror = (event) => {
+          clearTimeout(timer);
+          workerSettled = true;
+          reject(new Error(event.message || "pty resize worker failed"));
+        };
       });
       worker.postMessage({ handle: childSlave.handle(), iterations });
       try {
-        let lastSeq = 0;
-        while (lastSeq < iterations) {
-          const snap = master.size();
-          expect(snap.seq).toBeGreaterThanOrEqual(lastSeq);
-          expect(snap.cols).toBe(80 + (snap.seq % 500));
-          expect(snap.rows).toBe(24 + (snap.seq % 200));
-          lastSeq = snap.seq;
-          await Promise.resolve();
-        }
+        await sampleConsistentResizes(master, iterations, () => workerSettled);
         await finished;
         expect(master.size()).toEqual({
           cols: 80 + (iterations % 500),
@@ -399,6 +423,7 @@ describe("guest PTY host primitive (runtime_proc.pty_*)", () => {
           seq: iterations,
         });
       } finally {
+        clearTimeout(timer);
         worker.terminate();
         childSlave.close();
         slave.close();
