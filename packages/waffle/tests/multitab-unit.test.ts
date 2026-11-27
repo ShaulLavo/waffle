@@ -3643,6 +3643,12 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     const failureFired = Promise.withResolvers<void>();
     const hostRef: { current?: Awaited<ReturnType<typeof openTab>> } = {};
     const observedFrames: Array<{ kind: string; ok?: unknown }> = [];
+    const recordFrame = (msg: unknown) => {
+      if (!msg || typeof msg !== "object") return;
+      const kind = Reflect.get(msg, "kind");
+      if (kind !== "host-failed" && kind !== "res") return;
+      observedFrames.push({ kind, ok: Reflect.get(msg, "ok") });
+    };
     const fireTerminalFailure = () => {
       const backend = hostRef.current!.backend as unknown as {
         enterTerminalStorageFailure(reason: unknown): void;
@@ -3678,12 +3684,7 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     try {
       const origInterceptor = hub.interceptor;
       hub.interceptor = (ch, sender, msg) => {
-        if (msg && typeof msg === "object") {
-          const kind = Reflect.get(msg, "kind");
-          if (kind === "host-failed" || kind === "res") {
-            observedFrames.push({ kind, ok: Reflect.get(msg, "ok") });
-          }
-        }
+        recordFrame(msg);
         return origInterceptor?.(ch, sender, msg);
       };
       injectRace = true;
