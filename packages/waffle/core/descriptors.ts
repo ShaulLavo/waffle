@@ -106,6 +106,9 @@ export class DescriptorTable {
   get(fd: number): Descriptor | undefined {
     return mapGet(this.entries, fd);
   }
+  forEach(callback: (entry: Descriptor, fd: number) => void): void {
+    mapForEach(this.entries, callback);
+  }
   hasResource(resource: Resource): boolean {
     let found = false;
     mapForEach(this.entries, (entry) => {

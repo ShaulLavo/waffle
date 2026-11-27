@@ -37,9 +37,7 @@ function releaseTokenOfd(client: FilesystemClient, token: FilesystemDescriptorTo
   if (!buffer) return;
   const ofd = readSharedOfdBuffer(buffer);
   if (!ofd?.locked) return;
-  try {
-    client.locks.releaseOfd(token.reservation.handle, ofd.id);
-  } catch {}
+  client.locks.releaseOfd(token.reservation.handle, ofd.id, ofd.pendingTransfers > 0);
 }
 
 /** Controller imports need only the identity and a live controller sweep notifier; guests pass

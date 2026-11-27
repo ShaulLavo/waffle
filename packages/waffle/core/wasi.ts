@@ -414,6 +414,9 @@ export class Wasi {
       this.openFileAt(fd, { kind: "directory", handle }, RIGHTS_ALL, RIGHTS_ALL, name);
       fd++;
     }
+    if (opts.fs.locks) {
+      this.descriptors.setOnClose((closed) => this.releasePosixHandle(closed.resource));
+    }
   }
 
   private openDevice(
@@ -456,11 +459,16 @@ export class Wasi {
     if (!this.posixLockedHandles || this.posixLockedHandles.size === 0) return;
     const handles = Array.from(this.posixLockedHandles);
     this.posixLockedHandles.clear();
+    const pid = this.opts.pid ?? 1;
     for (let i = 0; i < handles.length; i++) {
-      try {
-        this.opts.fs.locks?.releasePosix(handles[i]!);
-      } catch {}
+      this.opts.fs.locks?.releasePosix(handles[i]!, pid);
     }
+  }
+
+  /** Suppress per-descriptor POSIX lock release during thread-member teardown. */
+  suppressPosixClose(): void {
+    this.descriptors.setOnClose(undefined);
+    this.posixLockedHandles?.clear();
   }
 
   /** runtime_proc uses positive errno and checks output memory before changing the inode. */
@@ -859,10 +867,24 @@ export class Wasi {
 
   private releasePosixHandle(resource: Resource): void {
     if (resource.kind !== "file" && resource.kind !== "directory") return;
-    if (!this.posixLockedHandles?.delete(resource.handle)) return;
-    try {
-      this.opts.fs.locks?.releasePosix(resource.handle);
-    } catch {}
+    const tracked = this.posixLockedHandles?.delete(resource.handle) === true;
+    const locks = this.opts.fs.locks;
+    if (!locks) return;
+    if (!tracked && !locks.hasActivePosixLocks?.()) return;
+    locks.releasePosix(resource.handle, this.opts.pid ?? 1);
+  }
+
+  /** Release POSIX locks only for descriptors not inherited across a successful execve. */
+  releaseUninheritedPosixLocks(keptFds: ReadonlySet<number>): void {
+    this.descriptors.setOnClose(undefined);
+    const closedResources: Resource[] = [];
+    this.descriptors.forEach((entry, fd) => {
+      if (!keptFds.has(fd)) closedResources.push(entry.resource);
+    });
+    for (let i = 0; i < closedResources.length; i++) {
+      this.releasePosixHandle(closedResources[i]!);
+    }
+    this.posixLockedHandles?.clear();
   }
 
   /** runtime_fs.fd_flock: advisory whole-file lock (flock(2)), OFD-scoped. */
@@ -917,8 +939,9 @@ export class Wasi {
     const isOfd = cmd === F_OFD_GETLK || cmd === F_OFD_SETLK || cmd === F_OFD_SETLKW;
     const ofdId = isOfd ? resourceOfdId(entry.resource, owner) : undefined;
     const range = { type, start: resolved.start, len: resolved.len } as const;
+    const pid = this.opts.pid ?? 1;
     if (isGet) {
-      const conflict = locks.getRangeLock(entry.resource.handle, ofdId, range);
+      const conflict = locks.getRangeLock(entry.resource.handle, ofdId, range, pid);
       if (typeof conflict === "number") return conflict;
       const view = this.view();
       if (out + 24 > view.byteLength) return EFAULT;
@@ -932,21 +955,17 @@ export class Wasi {
     const err = locks.setRangeLock(
       entry.resource.handle,
       ofdId,
-      this.opts.pid ?? 1,
+      pid,
       range,
       blocking,
       blocking ? this.lockWaitControl() : undefined,
     );
-    if (err === SUCCESS && type !== F_UNLCK) {
-      if (isOfd) markResourceOfdLocked(entry.resource, owner);
-      else {
-        if (!this.posixLockedHandles) {
-          this.posixLockedHandles = new Set();
-          this.descriptors.setOnClose((closed) => this.releasePosixHandle(closed.resource));
-        }
-        this.posixLockedHandles.add(entry.resource.handle);
-      }
+    if (err !== SUCCESS || type === F_UNLCK) return err;
+    if (isOfd) {
+      markResourceOfdLocked(entry.resource, owner);
+      return err;
     }
+    (this.posixLockedHandles ??= new Set()).add(entry.resource.handle);
     return err;
   }
 

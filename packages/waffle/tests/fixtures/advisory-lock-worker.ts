@@ -3,7 +3,7 @@ import { ExecutionUnwind } from "../../core/unwind.js";
 import { RIGHTS_ALL } from "../../core/rights.js";
 import { releaseOriginOfd } from "../../core/open-file.js";
 import { FilesystemClient } from "../../fs/client.js";
-import type { FilesystemConnection } from "../../fs/protocol.js";
+import { FilesystemError, type FilesystemConnection } from "../../fs/protocol.js";
 import {
   createFilesystemDescriptorCodec,
   type FilesystemDescriptorToken,
@@ -24,6 +24,20 @@ type Command =
       readonly operation: number;
     }
   | { readonly id: number; readonly op: "setFatal"; readonly fatal: boolean }
+  | {
+      readonly id: number;
+      readonly op: "failNextRelease";
+      readonly operation: "lockReleaseOfd" | "lockReleasePosix";
+      readonly errno: number;
+    }
+  | { readonly id: number; readonly op: "handoffPosix"; readonly successorOwner: number }
+  | {
+      readonly id: number;
+      readonly op: "execTeardown";
+      readonly successorOwner: number;
+      readonly keptFds: readonly number[];
+    }
+  | { readonly id: number; readonly op: "threadExit" }
   | {
       readonly id: number;
       readonly op: "lock";
@@ -80,6 +94,45 @@ function openPath(path: string, rights: bigint): number {
   return wasi!.descriptors.open(resource, rights, 0n, () => releaseOriginOfd(client!, resource));
 }
 
+function armReleaseFault(operation: "lockReleaseOfd" | "lockReleasePosix", code: number): true {
+  const activeClient = client!;
+  const originalSubmit = activeClient.submit.bind(activeClient);
+  let armed = true;
+  activeClient.submit = ((op: string, args?: unknown[], data?: Uint8Array) => {
+    if (armed && op === operation) {
+      armed = false;
+      activeClient.submit = originalSubmit;
+      throw new FilesystemError(code);
+    }
+    return originalSubmit(op, args, data);
+  }) as typeof activeClient.submit;
+  return true;
+}
+
+function runLockCommand(cmd: Extract<Command, { op: "lock" }>): unknown {
+  const outPtr = 64;
+  const errno = fdLock!(
+    cmd.fd,
+    cmd.cmd,
+    cmd.type,
+    cmd.whence,
+    BigInt(cmd.start),
+    BigInt(cmd.len),
+    outPtr,
+  );
+  if (cmd.cmd !== 0 && cmd.cmd !== 3) return { errno };
+  const view = new DataView(memory!.buffer);
+  return {
+    errno,
+    conflict: {
+      type: view.getUint32(outPtr, true),
+      pid: view.getInt32(outPtr + 4, true),
+      start: view.getBigInt64(outPtr + 8, true).toString(),
+      len: view.getBigInt64(outPtr + 16, true).toString(),
+    },
+  };
+}
+
 function handleCommand(cmd: Command): unknown {
   if (cmd.op === "open") return openPath(cmd.path, cmd.rights ? BigInt(cmd.rights) : RIGHTS_ALL);
   if (cmd.op === "dup") return wasi!.descriptors.dup(cmd.fd);
@@ -103,29 +156,27 @@ function handleCommand(cmd: Command): unknown {
     fatalActive = cmd.fatal;
     return true;
   }
-  if (cmd.op === "lock") {
-    const outPtr = 64;
-    const errno = fdLock!(
-      cmd.fd,
-      cmd.cmd,
-      cmd.type,
-      cmd.whence,
-      BigInt(cmd.start),
-      BigInt(cmd.len),
-      outPtr,
-    );
-    if (cmd.cmd !== 0 && cmd.cmd !== 3) return { errno };
-    const view = new DataView(memory!.buffer);
-    return {
-      errno,
-      conflict: {
-        type: view.getUint32(outPtr, true),
-        pid: view.getInt32(outPtr + 4, true),
-        start: view.getBigInt64(outPtr + 8, true).toString(),
-        len: view.getBigInt64(outPtr + 16, true).toString(),
-      },
-    };
+  if (cmd.op === "failNextRelease") return armReleaseFault(cmd.operation, cmd.errno);
+  if (cmd.op === "handoffPosix") {
+    client!.locks.handoffPosix?.(cmd.successorOwner);
+    return true;
   }
+  if (cmd.op === "execTeardown") {
+    if (client!.locks.hasActivePosixLocks?.()) {
+      client!.locks.handoffPosix?.(cmd.successorOwner);
+    }
+    wasi!.releaseUninheritedPosixLocks(new Set(cmd.keptFds));
+    wasi!.descriptors.dispose();
+    client!.dispose();
+    return true;
+  }
+  if (cmd.op === "threadExit") {
+    wasi!.suppressPosixClose();
+    wasi!.descriptors.dispose();
+    client!.dispose();
+    return true;
+  }
+  if (cmd.op === "lock") return runLockCommand(cmd);
   if (cmd.op === "export") {
     const codec = createFilesystemDescriptorCodec(client!, cmd.target);
     return codec.export(wasi!.descriptors.get(cmd.fd)!, 2);

@@ -134,6 +134,8 @@ export interface FilesystemConnection {
   sections: SharedArrayBuffer;
   /** Nonzero lock owner token; service clears it when this identity is reaped. */
   owner: number;
+  /** Optional logical-process POSIX lock owner token (shared by exec successors and thread members). */
+  posixOwner?: number;
   maxBytes: number;
   /** Service revocation in word 0, then per-owner liveness for independent process identities. */
   ownerStates: SharedArrayBuffer;
@@ -280,9 +282,13 @@ function identityPublication(
   return domain;
 }
 /** Processes share storage, not the lifetime of the process that spawned them. */
-export function createProcessFilesystemIdentity(parent: FilesystemIdentity): FilesystemIdentity {
+export function createProcessFilesystemIdentity(
+  parent: FilesystemIdentity,
+  posixOwner?: number,
+): FilesystemIdentity {
   const identity = createFilesystemIdentity(parent);
   identity.revocations = identity.revocations.slice(0, 1);
+  if (posixOwner !== undefined) identity.posixOwner = posixOwner;
   return identity;
 }
 /** Idempotent across the controller and guest copies of a transferred description.

@@ -21,8 +21,11 @@ import { FilesystemClient } from "../fs/client.js";
 import { LockContentionError, LockTable } from "../fs/locks.js";
 import { MemFS } from "../fs/memory.js";
 import {
+  connectFilesystemIdentity,
   createFilesystemConnection,
   createFilesystemIdentity,
+  createProcessFilesystemIdentity,
+  reapFilesystem,
   revokeFilesystem,
   type FilesystemConnection,
 } from "../fs/protocol.js";
@@ -32,6 +35,7 @@ import {
   type FilesystemDescriptorToken,
 } from "../proc/filesystem-codec.js";
 import { guestFunction, guestModule } from "./fixtures/publication-wasm.js";
+import { openVfsBackend } from "./fixtures/vfs-backends.js";
 
 const EAGAIN = 6;
 const EBADF = 8;
@@ -39,6 +43,8 @@ const EDEADLK = 16;
 const EFAULT = 21;
 const EINTR = 27;
 const EINVAL = 28;
+const ENOLCK = 46;
+const ENOTSUP = 58;
 const EOVERFLOW = 61;
 
 function lockGuestModule() {
@@ -102,6 +108,47 @@ interface GuestWorkerHandle {
   terminate(): void;
 }
 
+async function launchLockWorker(
+  connection: FilesystemConnection,
+  pid: number,
+): Promise<GuestWorkerHandle> {
+  const interruptBuf = new SharedArrayBuffer(4);
+  const interrupt = new Int32Array(interruptBuf);
+  const worker = new Worker(new URL("./fixtures/advisory-lock-worker.ts", import.meta.url).href, {
+    type: "module",
+  });
+  const ready = Promise.withResolvers<void>();
+  const pending = new Map<number, ReturnType<typeof Promise.withResolvers<unknown>>>();
+  let nextId = 1;
+  worker.onmessage = ({ data }) => {
+    if (data.ready) {
+      ready.resolve();
+      return;
+    }
+    const entry = pending.get(data.id);
+    if (!entry) return;
+    pending.delete(data.id);
+    if ("error" in data) entry.reject(new Error(data.error));
+    else entry.resolve(data.value);
+  };
+  worker.postMessage({ init: true, connection, pid, interrupt: interruptBuf }, [connection.port]);
+  await ready.promise;
+  return {
+    connection,
+    interrupt,
+    call<T = unknown>(payload: Record<string, unknown>): Promise<T> {
+      const id = nextId++;
+      const deferred = Promise.withResolvers<unknown>();
+      pending.set(id, deferred);
+      worker.postMessage({ ...payload, id });
+      return deferred.promise as Promise<T>;
+    },
+    terminate() {
+      worker.terminate();
+    },
+  };
+}
+
 function createServiceFixture() {
   const mem = new MemFS();
   mem.writeFile("/lock.dat", new Uint8Array(100));
@@ -127,43 +174,7 @@ function createServiceFixture() {
   ): Promise<GuestWorkerHandle> => {
     const pair = existingPair ?? createFilesystemConnection(rootPair.client);
     if (!existingPair) service.connect(pair.server);
-    const interruptBuf = new SharedArrayBuffer(4);
-    const interrupt = new Int32Array(interruptBuf);
-    const worker = new Worker(new URL("./fixtures/advisory-lock-worker.ts", import.meta.url).href, {
-      type: "module",
-    });
-    const ready = Promise.withResolvers<void>();
-    const pending = new Map<number, ReturnType<typeof Promise.withResolvers<unknown>>>();
-    let nextId = 1;
-    worker.onmessage = ({ data }) => {
-      if (data.ready) {
-        ready.resolve();
-        return;
-      }
-      const entry = pending.get(data.id);
-      if (!entry) return;
-      pending.delete(data.id);
-      if ("error" in data) entry.reject(new Error(data.error));
-      else entry.resolve(data.value);
-    };
-    worker.postMessage({ init: true, connection: pair.client, pid, interrupt: interruptBuf }, [
-      pair.client.port,
-    ]);
-    await ready.promise;
-    const handle: GuestWorkerHandle = {
-      connection: pair.client,
-      interrupt,
-      call<T = unknown>(payload: Record<string, unknown>): Promise<T> {
-        const id = nextId++;
-        const deferred = Promise.withResolvers<unknown>();
-        pending.set(id, deferred);
-        worker.postMessage({ ...payload, id });
-        return deferred.promise as Promise<T>;
-      },
-      terminate() {
-        worker.terminate();
-      },
-    };
+    const handle = await launchLockWorker(pair.client, pid);
     workers.push(handle);
     return handle;
   };
@@ -190,14 +201,21 @@ function createServiceFixture() {
 }
 
 describe("LockTable unit semantics", () => {
-  test("flock shared/exclusive compatibility, downgrade, upgrade, and unlock", () => {
+  test("flock shared/exclusive compatibility, Linux conversion drop, downgrade, and unlock", () => {
     const table = new LockTable();
     expect(table.flock(1, "1:1", 1, LOCK_SH | LOCK_NB).errno).toBe(0);
     expect(table.flock(1, "2:1", 2, LOCK_SH | LOCK_NB).errno).toBe(0);
+    // Non-conversion failed acquisition leaves existing locks untouched.
     expect(table.flock(1, "3:1", 3, LOCK_EX | LOCK_NB).errno).toBe(EAGAIN);
+    // Same-mode re-lock keeps the existing shared lock.
+    expect(table.flock(1, "1:1", 1, LOCK_SH | LOCK_NB).errno).toBe(0);
+    // Linux flock(2) conversion: failed nonblocking SH -> EX drops caller's prior LOCK_SH.
     expect(table.flock(1, "1:1", 1, LOCK_EX | LOCK_NB).errno).toBe(EAGAIN);
     expect(table.flock(1, "3:1", 3, LOCK_EX | LOCK_NB).errno).toBe(EAGAIN);
     expect(table.flock(1, "2:1", 2, LOCK_UN).errno).toBe(0);
+    // Because 1:1 dropped LOCK_SH on failed conversion, 3:1 now acquires LOCK_EX immediately.
+    expect(table.flock(1, "3:1", 3, LOCK_EX | LOCK_NB).errno).toBe(0);
+    expect(table.flock(1, "3:1", 3, LOCK_UN).errno).toBe(0);
     expect(table.flock(1, "1:1", 1, LOCK_EX | LOCK_NB).errno).toBe(0);
     expect(table.flock(1, "2:1", 2, LOCK_SH | LOCK_NB).errno).toBe(EAGAIN);
     expect(table.flock(1, "1:1", 1, LOCK_SH | LOCK_NB).errno).toBe(0);
@@ -1149,6 +1167,708 @@ describe("runtime_fs advisory locks over WASI", () => {
       ).toEqual({ errno: 0 });
     } finally {
       await f.cleanup();
+    }
+  });
+
+  test("mixed downgrade/extension rollback releases newly acquired bytes even if a peer enters the downgraded range", () => {
+    const table = new LockTable();
+    // Case A: no peer enters [0,10) before rollback -> [0,10) restores F_WRLCK, [10,20) unlocks.
+    const initA = table.setRangeLock(
+      1,
+      undefined,
+      1,
+      10,
+      { type: F_WRLCK, start: 0, len: 10 },
+      false,
+      true,
+    );
+    expect(initA.errno).toBe(0);
+    initA.settle?.();
+    const mixedA = table.setRangeLock(
+      1,
+      undefined,
+      1,
+      10,
+      { type: F_RDLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    expect(mixedA.errno).toBe(0);
+    mixedA.rollback?.();
+    expect(
+      table.setRangeLock(1, undefined, 2, 20, { type: F_RDLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(EAGAIN);
+    expect(
+      table.setRangeLock(1, undefined, 2, 20, { type: F_WRLCK, start: 10, len: 10 }, false).errno,
+    ).toBe(0);
+
+    // Case B: peer enters F_RDLCK on [0,10) before rollback -> [0,10) stays F_RDLCK, [10,20) unlocks.
+    const initB = table.setRangeLock(
+      2,
+      undefined,
+      1,
+      10,
+      { type: F_WRLCK, start: 0, len: 10 },
+      false,
+      true,
+    );
+    expect(initB.errno).toBe(0);
+    initB.settle?.();
+    const mixedB = table.setRangeLock(
+      2,
+      undefined,
+      1,
+      10,
+      { type: F_RDLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    expect(mixedB.errno).toBe(0);
+    expect(
+      table.setRangeLock(2, undefined, 2, 20, { type: F_RDLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(0);
+    mixedB.rollback?.();
+    // [0,10) preserves mutual exclusion (stays shared so owner 3 can also read).
+    expect(
+      table.setRangeLock(2, undefined, 3, 30, { type: F_RDLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(0);
+    // [10,20) was newly acquired by the cancelled op and MUST be unlocked.
+    expect(
+      table.setRangeLock(2, undefined, 2, 20, { type: F_WRLCK, start: 10, len: 10 }, false).errno,
+    ).toBe(0);
+
+    // Case C: upgrade + extension (F_RDLCK [0,10) -> cancelled F_WRLCK [0,20)) restores F_RDLCK on [0,10) and unlocks [10,20).
+    const initC = table.setRangeLock(
+      3,
+      undefined,
+      1,
+      10,
+      { type: F_RDLCK, start: 0, len: 10 },
+      false,
+      true,
+    );
+    expect(initC.errno).toBe(0);
+    initC.settle?.();
+    const upgradeC = table.setRangeLock(
+      3,
+      undefined,
+      1,
+      10,
+      { type: F_WRLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    expect(upgradeC.errno).toBe(0);
+    upgradeC.rollback?.();
+    // [0,10) is back to F_RDLCK: peer gets EAGAIN for WRLCK, 0 for RDLCK.
+    expect(
+      table.setRangeLock(3, undefined, 2, 20, { type: F_WRLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(EAGAIN);
+    expect(
+      table.setRangeLock(3, undefined, 2, 20, { type: F_RDLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(0);
+    // [10,20) is unlocked.
+    expect(
+      table.setRangeLock(3, undefined, 2, 20, { type: F_WRLCK, start: 10, len: 10 }, false).errno,
+    ).toBe(0);
+    table.dispose();
+  });
+
+  test("disjoint and overlapping edits on the same OFD do not block cancelling an earlier grant", () => {
+    const table = new LockTable();
+    // Disjoint edit: opA acquires [0,10), opB acquires [20,30) on same OFD "1:1", opA cancels.
+    const opA = table.setRangeLock(
+      3,
+      "1:1",
+      1,
+      10,
+      { type: F_WRLCK, start: 0, len: 10 },
+      false,
+      true,
+    );
+    expect(opA.errno).toBe(0);
+    const opB = table.setRangeLock(
+      3,
+      "1:1",
+      1,
+      10,
+      { type: F_WRLCK, start: 20, len: 10 },
+      false,
+      true,
+    );
+    expect(opB.errno).toBe(0);
+    opB.settle?.();
+    opA.rollback?.();
+    expect(
+      table.setRangeLock(3, "2:1", 2, 20, { type: F_WRLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(0);
+    expect(
+      table.setRangeLock(3, "2:1", 2, 20, { type: F_WRLCK, start: 20, len: 10 }, false).errno,
+    ).toBe(EAGAIN);
+
+    // Overlapping edit: opC acquires [0,20), opD overwrites [10,20) and settles, opC cancels.
+    const opC = table.setRangeLock(
+      4,
+      "1:2",
+      1,
+      10,
+      { type: F_WRLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    expect(opC.errno).toBe(0);
+    const opD = table.setRangeLock(
+      4,
+      "1:2",
+      1,
+      10,
+      { type: F_WRLCK, start: 10, len: 10 },
+      false,
+      true,
+    );
+    expect(opD.errno).toBe(0);
+    opD.settle?.();
+    opC.rollback?.();
+    expect(
+      table.setRangeLock(4, "2:2", 2, 20, { type: F_WRLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(0);
+    expect(
+      table.setRangeLock(4, "2:2", 2, 20, { type: F_WRLCK, start: 10, len: 10 }, false).errno,
+    ).toBe(EAGAIN);
+    table.dispose();
+  });
+
+  test("OFD churn leaves bounded metadata and byte-range/flock/waiter caps return ENOLCK while unlock succeeds", () => {
+    const churn = new LockTable();
+    expect(
+      churn.setRangeLock(10, "1:1", 1, 1, { type: F_RDLCK, start: 0, len: 10 }, false).errno,
+    ).toBe(0);
+    for (let i = 2; i <= 400; i++) {
+      const ofdId = `${i}:1`;
+      expect(churn.flock(10, ofdId, i, LOCK_SH | LOCK_NB).errno).toBe(0);
+      expect(
+        churn.setRangeLock(10, ofdId, i, i, { type: F_RDLCK, start: 0, len: 10 }, false).errno,
+      ).toBe(0);
+      churn.releaseOfd(10, ofdId, i);
+    }
+    expect(churn.diagnostics()).toEqual({
+      inodes: 1,
+      flocks: 0,
+      ranges: 1,
+      posixRanges: 0,
+      waiters: 0,
+      ofdRecords: 1,
+      pendingTransactions: 0,
+    });
+    churn.dispose();
+
+    const bounded = new LockTable({
+      maxRangeLocks: 4,
+      maxFlocks: 2,
+      maxWaiters: 1,
+      maxPendingTransactions: 2,
+    });
+    for (let i = 0; i < 4; i++) {
+      expect(
+        bounded.setRangeLock(1, undefined, 1, 1, { type: F_WRLCK, start: i * 10, len: 5 }, false)
+          .errno,
+      ).toBe(0);
+    }
+    expect(
+      bounded.setRangeLock(1, undefined, 1, 1, { type: F_WRLCK, start: 100, len: 5 }, false).errno,
+    ).toBe(ENOLCK);
+    // Unlocking at the limit MUST succeed and free capacity.
+    expect(
+      bounded.setRangeLock(1, undefined, 1, 1, { type: F_UNLCK, start: 0, len: 5 }, false).errno,
+    ).toBe(0);
+    expect(
+      bounded.setRangeLock(1, undefined, 1, 1, { type: F_WRLCK, start: 100, len: 5 }, false).errno,
+    ).toBe(0);
+
+    // Flock limit + waiter limit return ENOLCK while LOCK_UN always succeeds.
+    expect(bounded.flock(2, "1:1", 1, LOCK_SH | LOCK_NB).errno).toBe(0);
+    expect(bounded.flock(2, "2:1", 2, LOCK_SH | LOCK_NB).errno).toBe(0);
+    expect(bounded.flock(2, "3:1", 3, LOCK_SH | LOCK_NB).errno).toBe(ENOLCK);
+    expect(() => bounded.flock(2, "3:1", 3, LOCK_EX, true)).toThrow(LockContentionError);
+    expect(bounded.flock(2, "4:1", 4, LOCK_EX, true).errno).toBe(ENOLCK);
+    expect(bounded.flock(2, "1:1", 1, LOCK_UN).errno).toBe(0);
+    expect(bounded.flock(2, "3:1", 3, LOCK_SH | LOCK_NB).errno).toBe(0);
+    bounded.dispose();
+  });
+
+  test("independent Wasi instances sharing one MemFS have separate POSIX lock ownership by pid", () => {
+    const fs = new MemFS();
+    fs.writeFile("/shared.txt", new Uint8Array(64));
+    const a = makeMemWasi(fs, 42);
+    const b = makeMemWasi(fs, 43);
+    try {
+      const aFd = openMemFile(a.wasi, fs, "shared.txt", RIGHTS_ALL);
+      const bFd1 = openMemFile(b.wasi, fs, "shared.txt", RIGHTS_ALL);
+      const bFd2 = openMemFile(b.wasi, fs, "shared.txt", RIGHTS_ALL);
+
+      expect(a.fdLock(aFd, F_SETLK, F_WRLCK, 0, 0n, 32n, 0)).toBe(0);
+      expect(b.fdLock(bFd1, F_SETLK, F_WRLCK, 0, 0n, 32n, 0)).toBe(EAGAIN);
+      expect(b.fdLock(bFd1, F_GETLK, F_WRLCK, 0, 0n, 32n, 128)).toBe(0);
+      expect(readConflict(b.memory, 128)).toEqual({
+        type: F_WRLCK,
+        pid: 42,
+        start: 0n,
+        len: 32n,
+      });
+
+      // Closing bFd2 in process 43 must NOT release process 42's POSIX lock.
+      expect(b.fdClose(bFd2)).toBe(0);
+      expect(b.fdLock(bFd1, F_SETLK, F_WRLCK, 0, 0n, 32n, 0)).toBe(EAGAIN);
+
+      // Closing aFd in process 42 releases process 42's POSIX lock -> process 43 acquires.
+      expect(a.fdClose(aFd)).toBe(0);
+      expect(b.fdLock(bFd1, F_SETLK, F_WRLCK, 0, 0n, 32n, 0)).toBe(0);
+    } finally {
+      a.wasi.releasePosixLocks();
+      a.wasi.descriptors.dispose();
+      b.wasi.releasePosixLocks();
+      b.wasi.descriptors.dispose();
+    }
+  });
+
+  test("POSIX record locks survive exec for inherited descriptors, release for CLOEXEC descriptors, and release on failed exec successor", async () => {
+    const f = createServiceFixture();
+    try {
+      f.backend.fs.writeFile("/cloexec.dat", new Uint8Array(64));
+      const oldImage = await f.spawnWorker(110);
+      const rival = await f.spawnWorker(220);
+
+      const keepFd = await oldImage.call<number>({ op: "open", path: "lock.dat" });
+      const cloexecFd = await oldImage.call<number>({ op: "open", path: "cloexec.dat" });
+      const rivalKeepFd = await rival.call<number>({ op: "open", path: "lock.dat" });
+      const rivalCloexecFd = await rival.call<number>({ op: "open", path: "cloexec.dat" });
+
+      expect(
+        await oldImage.call<{ errno: number }>({
+          op: "lock",
+          fd: keepFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "40",
+        }),
+      ).toEqual({ errno: 0 });
+      expect(
+        await oldImage.call<{ errno: number }>({
+          op: "lock",
+          fd: cloexecFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "40",
+        }),
+      ).toEqual({ errno: 0 });
+
+      // Stage exec successor identity sharing posixOwner, export only keepFd (cloexecFd not inherited).
+      const successorIdentity = createProcessFilesystemIdentity(
+        f.rootConnection,
+        oldImage.connection.posixOwner ?? oldImage.connection.owner,
+      );
+      const keepToken = await oldImage.call<FilesystemDescriptorToken>({
+        op: "export",
+        fd: keepFd,
+        target: successorIdentity,
+      });
+      successorIdentity.reservations.push(keepToken.reservation);
+
+      // Old image exits on ProcessReplaced BEFORE successor connects to FilesystemService!
+      await oldImage.call({
+        op: "execTeardown",
+        successorOwner: successorIdentity.owner,
+        keptFds: [keepFd],
+      });
+      f.service.sweep();
+
+      // Non-inherited CLOEXEC fd's POSIX lock was released; inherited fd's POSIX lock SURVIVED!
+      expect(
+        await rival.call<{ errno: number }>({
+          op: "lock",
+          fd: rivalCloexecFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "40",
+        }),
+      ).toEqual({ errno: 0 });
+      expect(
+        await rival.call<{ errno: number }>({
+          op: "lock",
+          fd: rivalKeepFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "40",
+        }),
+      ).toEqual({ errno: EAGAIN });
+
+      // Connect successor image, import inherited fd, verify same-process ownership & post-exec close!
+      const successorPair = connectFilesystemIdentity(successorIdentity);
+      f.service.connect(successorPair.server);
+      const newImage = await f.spawnWorker(110, successorPair);
+      const newKeepFd = await newImage.call<number>({ op: "import", token: keepToken });
+
+      // Successor owns the lock (F_GETLK reports unlocked for self; can extend range).
+      expect(
+        await newImage.call<{ errno: number; conflict: { type: number } }>({
+          op: "lock",
+          fd: newKeepFd,
+          cmd: F_GETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "40",
+        }),
+      ).toMatchObject({ errno: 0, conflict: { type: F_UNLCK } });
+
+      // Closing inherited fd in post-exec image releases the POSIX lock immediately!
+      expect(await newImage.call<number>({ op: "close", fd: newKeepFd })).toBe(0);
+      expect(
+        await rival.call<{ errno: number }>({
+          op: "lock",
+          fd: rivalKeepFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "40",
+        }),
+      ).toEqual({ errno: 0 });
+
+      // Also verify that if a staged exec successor is revoked/reaped before connecting, locks drop.
+      expect(
+        await rival.call<{ errno: number }>({
+          op: "lock",
+          fd: rivalKeepFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "20",
+        }),
+      ).toEqual({ errno: 0 });
+      const doomedSuccessor = createProcessFilesystemIdentity(
+        f.rootConnection,
+        rival.connection.posixOwner ?? rival.connection.owner,
+      );
+      await rival.call({
+        op: "execTeardown",
+        successorOwner: doomedSuccessor.owner,
+        keptFds: [rivalKeepFd],
+      });
+      f.service.sweep();
+      expect(
+        await newImage.call<{ errno: number }>({
+          op: "lock",
+          fd: await newImage.call<number>({ op: "open", path: "lock.dat" }),
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "20",
+        }),
+      ).toEqual({ errno: EAGAIN });
+      revokeFilesystem(doomedSuccessor);
+      reapFilesystem(doomedSuccessor);
+      f.service.sweep();
+      const probeFd = await newImage.call<number>({ op: "open", path: "lock.dat" });
+      expect(
+        await newImage.call<{ errno: number }>({
+          op: "lock",
+          fd: probeFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "20",
+        }),
+      ).toEqual({ errno: 0 });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("thread members sharing posixOwner share POSIX locks, survive sibling thread exit, and release on explicit fd close", async () => {
+    const f = createServiceFixture();
+    try {
+      const leader = await f.spawnWorker(300);
+      const rival = await f.spawnWorker(400);
+      const posixOwner = leader.connection.posixOwner ?? leader.connection.owner;
+
+      const thread1Pair = connectFilesystemIdentity(
+        createProcessFilesystemIdentity(f.rootConnection, posixOwner),
+      );
+      f.service.connect(thread1Pair.server);
+      const thread1 = await f.spawnWorker(300, thread1Pair);
+
+      const thread2Pair = connectFilesystemIdentity(
+        createProcessFilesystemIdentity(f.rootConnection, posixOwner),
+      );
+      f.service.connect(thread2Pair.server);
+      const thread2 = await f.spawnWorker(300, thread2Pair);
+
+      const leaderFd = await leader.call<number>({ op: "open", path: "lock.dat" });
+      const t1Fd = await thread1.call<number>({ op: "open", path: "lock.dat" });
+      const t2Fd = await thread2.call<number>({ op: "open", path: "lock.dat" });
+      const rivalFd = await rival.call<number>({ op: "open", path: "lock.dat" });
+
+      // Leader locks [0,30); thread1 does NOT conflict and extends [30,60).
+      expect(
+        await leader.call<{ errno: number }>({
+          op: "lock",
+          fd: leaderFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "30",
+        }),
+      ).toEqual({ errno: 0 });
+      expect(
+        await thread1.call<{ errno: number }>({
+          op: "lock",
+          fd: t1Fd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "60",
+        }),
+      ).toEqual({ errno: 0 });
+      expect(
+        await rival.call<{ errno: number }>({
+          op: "lock",
+          fd: rivalFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "60",
+        }),
+      ).toEqual({ errno: EAGAIN });
+
+      // Thread1 exits normally while leader + thread2 live -> POSIX lock MUST stay held!
+      await thread1.call({ op: "threadExit" });
+      f.service.sweep();
+      expect(
+        await rival.call<{ errno: number }>({
+          op: "lock",
+          fd: rivalFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "60",
+        }),
+      ).toEqual({ errno: EAGAIN });
+
+      // Explicit close of an fd for lock.dat by sibling thread2 releases process POSIX locks!
+      expect(await thread2.call<number>({ op: "close", fd: t2Fd })).toBe(0);
+      expect(
+        await rival.call<{ errno: number }>({
+          op: "lock",
+          fd: rivalFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "60",
+        }),
+      ).toEqual({ errno: 0 });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("transient lock-release RPC failure on fd_close retries automatically while owner stays live", async () => {
+    const f = createServiceFixture();
+    try {
+      const owner = await f.spawnWorker(501);
+      const peer = await f.spawnWorker(502);
+
+      const oFd = await owner.call<number>({ op: "open", path: "lock.dat" });
+      const pFd = await peer.call<number>({ op: "open", path: "lock.dat" });
+
+      expect(await owner.call<number>({ op: "flock", fd: oFd, operation: LOCK_EX | LOCK_NB })).toBe(
+        0,
+      );
+      expect(
+        await owner.call<{ errno: number }>({
+          op: "lock",
+          fd: oFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "50",
+        }),
+      ).toEqual({ errno: 0 });
+
+      // Fault-inject transient EAGAIN on both lockReleasePosix and lockReleaseOfd during fd_close.
+      await owner.call({ op: "failNextRelease", operation: "lockReleasePosix", errno: EAGAIN });
+      expect(await owner.call<number>({ op: "close", fd: oFd })).toBe(0);
+
+      // Owner stays live (never exits); retry timer delivers the release and peer acquires both!
+      let posixAcquired = false;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const res = await peer.call<{ errno: number }>({
+          op: "lock",
+          fd: pFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "50",
+        });
+        if (res.errno === 0) {
+          posixAcquired = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(posixAcquired).toBe(true);
+      expect(await peer.call<number>({ op: "flock", fd: pFd, operation: LOCK_EX | LOCK_NB })).toBe(
+        0,
+      );
+
+      // Repeat fault injection specifically on lockReleaseOfd while owner stays live.
+      expect(await peer.call<number>({ op: "flock", fd: pFd, operation: LOCK_UN })).toBe(0);
+      const oFd2 = await owner.call<number>({ op: "open", path: "lock.dat" });
+      expect(
+        await owner.call<number>({ op: "flock", fd: oFd2, operation: LOCK_EX | LOCK_NB }),
+      ).toBe(0);
+      await owner.call({ op: "failNextRelease", operation: "lockReleaseOfd", errno: EAGAIN });
+      expect(await owner.call<number>({ op: "close", fd: oFd2 })).toBe(0);
+
+      let flockAcquired = false;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const err = await peer.call<number>({ op: "flock", fd: pFd, operation: LOCK_EX | LOCK_NB });
+        if (err === 0) {
+          flockAcquired = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(flockAcquired).toBe(true);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("unrelated descriptor transfer on same inode does not pin a closed unexported OFD lock", async () => {
+    const f = createServiceFixture();
+    try {
+      const workerA = await f.spawnWorker(601);
+      const workerB = await f.spawnWorker(602);
+
+      // Two separate OFDs on the SAME inode (lock.dat): aLocked (unexported) and aExported.
+      const aLocked = await workerA.call<number>({ op: "open", path: "lock.dat" });
+      const aExported = await workerA.call<number>({ op: "open", path: "lock.dat" });
+      const bFd = await workerB.call<number>({ op: "open", path: "lock.dat" });
+
+      expect(
+        await workerA.call<number>({ op: "flock", fd: aLocked, operation: LOCK_EX | LOCK_NB }),
+      ).toBe(0);
+
+      // Export unrelated aExported to an unadopted child identity so the handle has pending transfer > 0.
+      const childIdentity = createFilesystemIdentity(f.rootConnection);
+      const unrelatedToken = await workerA.call<FilesystemDescriptorToken>({
+        op: "export",
+        fd: aExported,
+        target: childIdentity,
+      });
+
+      // Closing unexported aLocked MUST drop its lock immediately despite aExported's pending transfer!
+      expect(await workerA.call<number>({ op: "close", fd: aLocked })).toBe(0);
+      expect(
+        await workerB.call<number>({ op: "flock", fd: bFd, operation: LOCK_EX | LOCK_NB }),
+      ).toBe(0);
+
+      // Clean up the unadopted transfer.
+      const controllerCodec = createFilesystemDescriptorCodec(childIdentity, undefined, () =>
+        f.service.sweep(),
+      );
+      controllerCodec.discard(unrelatedToken);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("MultiTabBackend (whenBusy: attach) returns ENOTSUP instead of granting conflicting tab-local locks", async () => {
+    const vfs = await openVfsBackend("multitab-host");
+    try {
+      const hostRoot = await vfs.client.asyncCall("preopen", ["/"]);
+      await vfs.client.asyncCall("create", [
+        {
+          parent: hostRoot,
+          name: "mt-lock.dat",
+          node: undefined,
+          trailingSlash: false,
+          terminalDot: false,
+        },
+        "file",
+        false,
+      ]);
+      const hostWorker = await launchLockWorker(vfs.forkConnection("primary"), 701);
+      const peerWorker = await launchLockWorker(vfs.forkConnection("counterpart"), 702);
+      try {
+        const hostFd = await hostWorker.call<number>({ op: "open", path: "mt-lock.dat" });
+        const peerFd = await peerWorker.call<number>({ op: "open", path: "mt-lock.dat" });
+        expect(
+          await hostWorker.call<number>({ op: "flock", fd: hostFd, operation: LOCK_EX | LOCK_NB }),
+        ).toBe(ENOTSUP);
+        expect(
+          await peerWorker.call<number>({ op: "flock", fd: peerFd, operation: LOCK_EX | LOCK_NB }),
+        ).toBe(ENOTSUP);
+        expect(
+          await hostWorker.call<{ errno: number }>({
+            op: "lock",
+            fd: hostFd,
+            cmd: F_SETLK,
+            type: F_WRLCK,
+            whence: 0,
+            start: "0",
+            len: "10",
+          }),
+        ).toEqual({ errno: ENOTSUP });
+        expect(
+          await peerWorker.call<{ errno: number }>({
+            op: "lock",
+            fd: peerFd,
+            cmd: F_OFD_SETLK,
+            type: F_WRLCK,
+            whence: 0,
+            start: "0",
+            len: "10",
+          }),
+        ).toEqual({ errno: ENOTSUP });
+        expect(
+          await hostWorker.call<{ errno: number }>({
+            op: "lock",
+            fd: hostFd,
+            cmd: F_GETLK,
+            type: F_WRLCK,
+            whence: 0,
+            start: "0",
+            len: "10",
+          }),
+        ).toMatchObject({ errno: ENOTSUP });
+      } finally {
+        revokeFilesystem(hostWorker.connection);
+        revokeFilesystem(peerWorker.connection);
+        hostWorker.terminate();
+        peerWorker.terminate();
+      }
+    } finally {
+      await vfs.close();
     }
   });
 });

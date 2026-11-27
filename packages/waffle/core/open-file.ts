@@ -157,27 +157,28 @@ export function markOriginOfdClosed(resource: LockableResource): void {
 
 export function resourceOfdLockState(
   resource: LockableResource,
-): { readonly id: string; readonly shared: boolean } | undefined {
+): { readonly id: string; readonly shared: boolean; readonly inFlight: boolean } | undefined {
   const shared = getSharedOfd(resource);
   if (shared) {
     if ((atomicsLoad(shared.cells, 7) & OFD_FLAG_LOCKED) === 0) return undefined;
     const pair = unpackOfdPair(atomicsLoad(shared.idPair, 0));
-    return pair ? { id: formatOfdId(pair.owner, pair.seq), shared: true } : undefined;
+    if (!pair) return undefined;
+    return {
+      id: formatOfdId(pair.owner, pair.seq),
+      shared: true,
+      inFlight: atomicsLoad(shared.cells, 6) > 0,
+    };
   }
   const local = getLocalOfd(resource);
   if (!local || !local.locked) return undefined;
-  return { id: local.id, shared: false };
+  return { id: local.id, shared: false, inFlight: false };
 }
 
 /** Teardown helper shared by Wasi and fd-reopen for originating file/directory descriptions. */
 export function releaseOriginOfd(fs: FileSystem, resource: LockableResource): void {
   markOriginOfdClosed(resource);
   const lock = resourceOfdLockState(resource);
-  if (lock) {
-    try {
-      fs.locks?.releaseOfd(resource.handle, lock.id);
-    } catch {}
-  }
+  if (lock) fs.locks?.releaseOfd(resource.handle, lock.id, lock.inFlight);
   fs.release(resource.handle);
 }
 

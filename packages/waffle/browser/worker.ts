@@ -533,12 +533,23 @@ function closeDiscardedStdio(discarded: readonly Stream[], tableOwned: ReadonlyS
   if (errors.length) throw new AggregateError(errors, "stdio release failed");
 }
 
-function disposeProcessDescriptors(wasi: Wasi, discarded: readonly Stream[]): void {
+type PosixTeardownMode =
+  | { readonly kind: "process-exit" }
+  | { readonly kind: "thread-member" }
+  | { readonly kind: "exec"; readonly keptFds: ReadonlySet<number> };
+
+function disposeProcessDescriptors(
+  wasi: Wasi,
+  discarded: readonly Stream[],
+  posixMode: PosixTeardownMode = { kind: "process-exit" },
+): void {
   const tableOwned = tableOwnedStdio(wasi.descriptors, discarded);
   const errors: unknown[] = [];
   wasi.dropWatches();
   try {
-    wasi.releasePosixLocks();
+    if (posixMode.kind === "exec") wasi.releaseUninheritedPosixLocks(posixMode.keptFds);
+    else if (posixMode.kind === "thread-member") wasi.suppressPosixClose();
+    else wasi.releasePosixLocks();
   } catch (error) {
     errors.push(error);
   }
@@ -658,6 +669,11 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     fs,
   );
   let runtimeProcess: WorkerProcessClient | null = null;
+  let isThreadMember = false;
+  let hasSpawnedThread = false;
+  let execHandoff:
+    | { readonly successorOwner: number; readonly keptFds: ReadonlySet<number> }
+    | undefined;
   let process: ProcessABI | undefined;
   let processSignalExit: typeof import("../proc/abi.js").ProcessSignalExit | undefined;
   let discardedStdio: Stream[] = [];
@@ -887,7 +903,19 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     }
     const descriptorsReleased = attempt(() => {
       if (wasi) {
-        disposeProcessDescriptors(wasi, discardedStdio);
+        if (replacing && execHandoff) {
+          if (fs.locks.hasActivePosixLocks?.()) {
+            fs.locks.handoffPosix?.(execHandoff.successorOwner);
+          }
+          disposeProcessDescriptors(wasi, discardedStdio, {
+            kind: "exec",
+            keptFds: execHandoff.keptFds,
+          });
+          return;
+        }
+        const posixMode: PosixTeardownMode =
+          isThreadMember || hasSpawnedThread ? { kind: "thread-member" } : { kind: "process-exit" };
+        disposeProcessDescriptors(wasi, discardedStdio, posixMode);
         return;
       }
       const streams = ownedStreams(ownedStdio);
@@ -1051,6 +1079,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       runtimeState?.signals.interrupt ??
       (executor.interrupt ? new Int32ArrayConstructor(executor.interrupt) : undefined);
     if (runtimeState) {
+      isThreadMember = runtimeState.processKind === "thread";
       outcome = runtimeState.signals.outcome;
       requestedSignal = runtimeState.signals.requestedSignal;
     }
@@ -1305,7 +1334,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
           listenAbort(cancellation.signal, hook);
           return () => unlistenAbort(cancellation.signal, hook);
         },
-        prepareExec: (_pid, cleanupFailed) => {
+        prepareExec: (_pid, cleanupFailed, keptFds) => {
           checkActive();
           const end = fs.beginTransfer();
           let filesystem: ReturnType<typeof createProcessFilesystemIdentity> | undefined;
@@ -1317,9 +1346,18 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
           try {
             const data = executor.spawnData?.();
             checkActive();
-            filesystem = createProcessFilesystemIdentity(fs.connection);
+            const posixOwner = fs.connection.posixOwner ?? fs.connection.owner;
+            filesystem = createProcessFilesystemIdentity(fs.connection, posixOwner);
+            const keptSet = new SetConstructor<number>();
+            if (keptFds) {
+              for (let i = 0; i < keptFds.length; i++) setAdd(keptSet, keptFds[i]!);
+            }
+            const successorOwner = filesystem.owner;
             return {
               cancel,
+              commit: () => {
+                execHandoff = { successorOwner, keptFds: keptSet };
+              },
               release: end,
               data: { ...data, filesystem, pipeRegistry: pipes.registry.handle() },
               codec: createRuntimeTerminalCodec({
@@ -1338,7 +1376,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
           }
         },
         beginSpawnTransfer: () => fs.beginTransfer(),
-        prepareSpawn: (pid, cleanupFailed) => {
+        prepareSpawn: (pid, cleanupFailed, processKind) => {
           checkActive();
           let filesystem: ReturnType<typeof createProcessFilesystemIdentity> | undefined;
           let enrolled = false;
@@ -1354,9 +1392,20 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
             checkActive();
             pipes.registry.registerProcess(pid);
             enrolled = true;
-            filesystem = createProcessFilesystemIdentity(fs.connection);
+            const threadSpawn = processKind === "thread";
+            const posixOwner = threadSpawn
+              ? (fs.connection.posixOwner ?? fs.connection.owner)
+              : undefined;
+            filesystem = createProcessFilesystemIdentity(fs.connection, posixOwner);
+            const childOwner = filesystem.owner;
             return {
               cancel,
+              commit: threadSpawn
+                ? () => {
+                    hasSpawnedThread = true;
+                    if (fs.locks.hasActivePosixLocks?.()) fs.locks.handoffPosix?.(childOwner);
+                  }
+                : undefined,
               data: { ...data, filesystem, pipeRegistry: pipes.registry.handle() },
               codec: createRuntimeTerminalCodec({
                 fallback: pipes.codec(createFilesystemDescriptorCodec(fs, filesystem)),

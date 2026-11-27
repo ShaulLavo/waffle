@@ -223,9 +223,12 @@ export interface FileLockSystem {
     handle: FileHandle,
     ofdId: string | undefined,
     range: FileLockRange,
+    pid?: number,
   ): FileLockConflict | number;
-  releaseOfd(handle: FileHandle, ofdId: string): void;
-  releasePosix(handle: FileHandle): void;
+  releaseOfd(handle: FileHandle, ofdId: string, inFlight?: boolean): void;
+  releasePosix(handle: FileHandle, pid?: number): void;
+  handoffPosix?(successorOwner: number): void;
+  hasActivePosixLocks?(): boolean;
 }
 
 /** One ready subscription returned by a batched owner drain. */

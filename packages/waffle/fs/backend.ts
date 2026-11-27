@@ -78,6 +78,8 @@ export interface FilesystemBackend {
   beginShutdown?(): void;
   /** Whether this backend supports Unix domain socket scope attachment (defaults to true for MemoryBackend). */
   readonly supportsSockets?: boolean;
+  /** Whether this backend supports advisory file locks (defaults to true for single-owner backends). */
+  readonly supportsLocks?: boolean;
   /** Whether async execute/flush/watch rejections are handled client results rather than fatal service shutdown failures. */
   readonly asyncErrorsAreClientResults?: boolean;
   /** Re-verify lease / terminal state before publishing a prepared cold descriptor read. */

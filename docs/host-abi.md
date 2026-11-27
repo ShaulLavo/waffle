@@ -1493,15 +1493,20 @@ Locks are scoped to the **open file description (OFD)**:
 
 - `dup` and descriptors inherited across `spawn`/`exec` share one OFD identity and therefore share
   the lock.
-- Re-locking through the same OFD updates the mode: `LOCK_EX -> LOCK_SH` downgrades atomically and
-  wakes waiting shared lock requests; nonblocking `LOCK_SH -> LOCK_EX` with another shared holder
-  returns `EAGAIN` (`6`) while keeping `LOCK_SH`; blocking `LOCK_SH -> LOCK_EX` releases the
-  caller's prior lock before sleeping (matching Linux and gVisor so two simultaneous upgraders do
-  not deadlock).
+- Re-locking through the same OFD updates the mode: `LOCK_EX -> LOCK_SH` downgrades and wakes
+  waiting shared lock requests; converting between `LOCK_SH` and `LOCK_EX` drops the prior lock
+  before checking contention (matching Linux `flock(2)` even when `LOCK_NB` is set, so a failed
+  nonblocking `LOCK_SH -> LOCK_EX` conversion returns `EAGAIN` without leaving `LOCK_SH` held and
+  two blocking upgraders do not deadlock).
 - No read or write right is required on `fd`; regular files and directories are lockable. Pipes,
   sockets, terminals and `/dev/null` return `EINVAL`.
 - Closing the last descriptor referencing an OFD, or exit/revocation of all sessions holding that
   OFD, releases the lock automatically and wakes queued waiters.
+- Multi-tab `whenBusy: "attach"` storage (`MultiTabBackend`) returns `ENOTSUP` (`58`) rather than
+  granting tab-local locks across tabs.
+- Lock metadata (active flocks, byte-range segments, queued waiters, and unsettled replies) is
+  bounded; requests exceeding the limit return `ENOLCK` (`46`) without mutating state while
+  unlocks and descriptor closes always succeed.
 
 ### Byte-range locks (`fd_lock`)
 
@@ -1515,6 +1520,10 @@ return `EINVAL` (`28`); offsets above `Number.MAX_SAFE_INTEGER` return `EOVERFLO
 - `F_SETLK` / `F_SETLKW` (and their `F_OFD_*` variants) require `RIGHT_FD_READ` for `F_RDLCK` and
   `RIGHT_FD_WRITE` for `F_WRLCK` (`EBADF`, `8`, otherwise).
 - A lock owner never conflicts with itself: overlapping edits split, replace and coalesce ranges.
+- POSIX record locks are owned by the logical process: thread members (`processKind: "thread"`)
+  share ownership with their process leader, and locks survive a successful `exec` for descriptors
+  inherited into the replacement image (while descriptors closed on `exec` release the process's
+  POSIX locks on their inodes).
 - `F_GETLK` / `F_OFD_GETLK` require `type` to be `F_RDLCK` or `F_WRLCK` (`F_UNLCK` returns
   `EINVAL`, `28`), validate the 24-byte little-endian output span at `out_ptr` (`EFAULT`, `21`, if
   invalid), and write `{ u32 type, i32 pid, i64 start, i64 len }` (`type = F_UNLCK` when no
@@ -1524,11 +1533,13 @@ return `EINVAL` (`28`); offsets above `Number.MAX_SAFE_INTEGER` return `EOVERFLO
   stalling. POSIX `F_SETLKW` checks the wait-for graph and returns `EDEADLK` (`16`) on cycles.
 - Handled signals interrupt blocking waits with `EINTR` (`27`); fatal signals unwind through the
   process signal guard; filesystem revocation returns `ECANCELED` (`11`). Cancelled requests that
-  race a lock grant roll back the lock and wake the next waiter.
+  race a lock grant roll back only their own operation's acquired/modified byte sub-intervals and
+  wake the next waiter without undoing disjoint edits by another holder of the same OFD.
 - Per POSIX, closing **any** file descriptor referring to an inode releases all process-scoped
   POSIX record locks held by that process on that inode while leaving `flock` and `F_OFD_*` locks
   on other open file descriptions intact. Session revocation or process exit releases every lock
-  whose sole remaining live holder was that session. Locks follow the inode across `rename` and
+  whose sole remaining live holder was that session (and releases POSIX locks only once the last
+  live thread/session of that logical process exits). Locks follow the inode across `rename` and
   `unlink`.
 
 ## Internal network module
