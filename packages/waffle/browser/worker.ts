@@ -239,6 +239,12 @@ export type RuntimeWorkerState = ReturnType<typeof workerProcessState>;
 function logicalProcessIdentity(state: RuntimeWorkerState | null) {
   return state?.processIdentity ?? null;
 }
+function wasiProcessPid(
+  state: RuntimeWorkerState | null,
+  identity: RuntimeProcessIdentity | null,
+): number | undefined {
+  return logicalProcessIdentity(state)?.pid ?? identity?.pid;
+}
 
 export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   request: R;
@@ -531,6 +537,11 @@ function disposeProcessDescriptors(wasi: Wasi, discarded: readonly Stream[]): vo
   const tableOwned = tableOwnedStdio(wasi.descriptors, discarded);
   const errors: unknown[] = [];
   wasi.dropWatches();
+  try {
+    wasi.releasePosixLocks();
+  } catch (error) {
+    errors.push(error);
+  }
   try {
     wasi.descriptors.dispose();
   } catch (error) {
@@ -1190,6 +1201,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     const hostCallFd = executor.hostCallFd;
     const reservedFds = bindingTargets(req.runtimeProcess, req.network, hostCallFd);
     wasi = new Wasi({
+      pid: wasiProcessPid(runtimeState, identity),
       hostCallFd,
       args: req.args,
       env,

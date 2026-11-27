@@ -7,6 +7,8 @@ import type { FilesystemIdentity } from "../fs/protocol.js";
 const atomicsLoad = Atomics.load;
 const atomicsStore = Atomics.store;
 const atomicsCompareExchange = Atomics.compareExchange;
+const atomicsAdd = Atomics.add;
+const atomicsSub = Atomics.sub;
 const atomicsOr = Atomics.or;
 const atomicsAnd = Atomics.and;
 const atomicsNotify = Atomics.notify;
@@ -23,6 +25,13 @@ const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototy
 const reflectApply = Reflect.apply;
 
 type FileResource = Extract<Resource, { kind: "file" }>;
+type LockableResource = Extract<Resource, { kind: "file" | "directory" }>;
+interface LocalOfd {
+  readonly id: string;
+  readonly originOwner: number;
+  readonly originSeq: number;
+  locked: boolean;
+}
 interface SharedOffset {
   buffer: SharedArrayBuffer;
   cells: Int32Array<SharedArrayBuffer>;
@@ -34,9 +43,121 @@ interface SharedOffset {
   readAppend(): boolean;
 }
 const offsets = new WeakMapConstructor<FileResource, SharedOffset>();
+const localOfds = new WeakMapConstructor<LockableResource, LocalOfd>();
+let nextLocalOfdSeq = 1;
 
 function getSharedOffset(resource: FileResource): SharedOffset | undefined {
   return reflectApply(weakMapGet, offsets, [resource]) as SharedOffset | undefined;
+}
+
+function getLocalOfd(resource: LockableResource): LocalOfd | undefined {
+  return reflectApply(weakMapGet, localOfds, [resource]) as LocalOfd | undefined;
+}
+
+function formatOfdId(owner: number, seq: number): string {
+  return `${owner}:${seq}`;
+}
+
+function sharedOfdId(shared: SharedOffset, sessionOwner: number): string {
+  let originSeq = atomicsLoad(shared.cells, 5);
+  if (originSeq !== 0) return formatOfdId(atomicsLoad(shared.cells, 4), originSeq);
+  const seq = nextLocalOfdSeq++;
+  const owner = sessionOwner || shared.identity.owner;
+  if (atomicsCompareExchange(shared.cells, 5, 0, seq) === 0) {
+    atomicsStore(shared.cells, 4, owner);
+    return formatOfdId(owner, seq);
+  }
+  originSeq = atomicsLoad(shared.cells, 5);
+  let originOwner = atomicsLoad(shared.cells, 4);
+  while (originOwner === 0) originOwner = atomicsLoad(shared.cells, 4);
+  return formatOfdId(originOwner, originSeq);
+}
+
+/** Return (and lazily assign) the open-file-description lock ID for a file or directory resource. */
+export function resourceOfdId(resource: LockableResource, sessionOwner = 0): string {
+  if (resource.kind === "file") {
+    const shared = getSharedOffset(resource);
+    if (shared) return sharedOfdId(shared, sessionOwner);
+  }
+  let local = getLocalOfd(resource);
+  if (!local) {
+    const seq = nextLocalOfdSeq++;
+    local = {
+      id: formatOfdId(sessionOwner, seq),
+      originOwner: sessionOwner,
+      originSeq: seq,
+      locked: false,
+    };
+    reflectApply(weakMapSet, localOfds, [resource, local]);
+  }
+  return local.id;
+}
+
+export function markResourceOfdLocked(resource: LockableResource, sessionOwner = 0): string {
+  const id = resourceOfdId(resource, sessionOwner);
+  if (resource.kind === "file") {
+    const shared = getSharedOffset(resource);
+    if (shared) {
+      atomicsOr(shared.cells, 7, 1);
+      return id;
+    }
+  }
+  const local = getLocalOfd(resource);
+  if (local) local.locked = true;
+  return id;
+}
+
+export function resourceOfdLockState(
+  resource: LockableResource,
+): { readonly id: string; readonly shared: boolean } | undefined {
+  if (resource.kind === "file") {
+    const shared = getSharedOffset(resource);
+    if (shared) {
+      if ((atomicsLoad(shared.cells, 7) & 1) === 0) return undefined;
+      const originSeq = atomicsLoad(shared.cells, 5);
+      if (originSeq === 0) return undefined;
+      return { id: formatOfdId(atomicsLoad(shared.cells, 4), originSeq), shared: true };
+    }
+  }
+  const local = getLocalOfd(resource);
+  if (!local || !local.locked) return undefined;
+  return { id: local.id, shared: false };
+}
+
+export function retainSharedOfd(resource: FileResource): void {
+  const shared = getSharedOffset(resource);
+  if (shared) atomicsAdd(shared.cells, 6, 1);
+}
+
+/** Decrement a shared OFD refcount. Returns the OFD id to release if this was the last reference
+ * AND an OFD advisory lock was acquired on it; otherwise undefined. */
+export function releaseSharedOfd(resource: FileResource): string | undefined {
+  const shared = getSharedOffset(resource);
+  if (!shared) return undefined;
+  const prev = atomicsSub(shared.cells, 6, 1);
+  if (prev > 1) return undefined;
+  if ((atomicsLoad(shared.cells, 7) & 1) === 0) return undefined;
+  const seq = atomicsLoad(shared.cells, 5);
+  if (seq === 0) return undefined;
+  return formatOfdId(atomicsLoad(shared.cells, 4), seq);
+}
+
+export function releaseSharedOfdBuffer(buffer: SharedArrayBuffer): string | undefined {
+  const cells = new Int32ArrayConstructor(buffer);
+  const prev = atomicsSub(cells, 6, 1);
+  if (prev > 1) return undefined;
+  if ((atomicsLoad(cells, 7) & 1) === 0) return undefined;
+  const seq = atomicsLoad(cells, 5);
+  if (seq === 0) return undefined;
+  return formatOfdId(atomicsLoad(cells, 4), seq);
+}
+
+export function lockedSharedOfdFromBuffer(buffer: SharedArrayBuffer): string | undefined {
+  const cells = new Int32ArrayConstructor(buffer);
+  if ((atomicsLoad(cells, 7) & 1) === 0) return undefined;
+  const seq = atomicsLoad(cells, 5);
+  if (seq === 0) return undefined;
+  return formatOfdId(atomicsLoad(cells, 4), seq);
 }
 
 /** Promote the existing description in place, so every local dup keeps the same offset. */
@@ -47,7 +168,7 @@ export function shareFileResource(
 ): SharedArrayBuffer {
   const existing = getSharedOffset(resource);
   if (existing) return existing.buffer;
-  const shared = buffer ?? allocateSharedControl(16);
+  const shared = buffer ?? allocateSharedControl(32);
   const cells = new Int32ArrayConstructor(shared);
   const ownerStates = new Int32ArrayConstructor(identity.ownerStates);
   // Atomics has no Float64 operation. Share the number's bits, not a signed integer
@@ -68,6 +189,13 @@ export function shareFileResource(
   if (!buffer) {
     atomicsStore(cells, 1, ((resource.fdflags ?? 0) & ~1) | (resource.append ? 1 : 0));
     writeOffset(resource.offset);
+    const local = getLocalOfd(resource);
+    if (local) {
+      atomicsStore(cells, 4, local.originOwner || identity.owner);
+      atomicsStore(cells, 5, local.originSeq);
+      if (local.locked) atomicsStore(cells, 7, 1);
+    }
+    atomicsStore(cells, 6, 1);
   }
   const state: SharedOffset = {
     buffer: shared,

@@ -1463,6 +1463,73 @@ releases the service subscriptions, including after forced termination. Ids are 
 spawned processes. The service, bounds and overflow rules are in
 [committed filesystem watches](filesystem-watch.md).
 
+## Advisory file locks
+
+`runtime_fs` exposes inode-keyed advisory file locks matching Linux (`fs/locks.c`) and gVisor
+(`pkg/sentry/fs/lock`), separating BSD open-file-description locks (`flock`) from POSIX byte-range
+locks (`fcntl`), and additionally supporting Linux OFD byte-range locks (`F_OFD_*`). Both imports
+return **positive WASI errno** (`0` on success).
+
+```text
+runtime_fs.fd_flock(fd: u32, operation: u32) -> errno
+runtime_fs.fd_lock(
+  fd: u32,
+  cmd: u32,
+  type: u32,
+  whence: u32,
+  start: i64,
+  len: i64,
+  out_ptr: u32,
+) -> errno
+```
+
+### Whole-file locks (`fd_flock`)
+
+`operation` uses the standard `sys/file.h` bits: `LOCK_SH` (`1`), `LOCK_EX` (`2`), `LOCK_UN` (`8`),
+optionally OR'd with `LOCK_NB` (`4`). Exactly one base operation must be selected; unknown bits or
+multiple base operations return `EINVAL` (`28`).
+
+Locks are scoped to the **open file description (OFD)**:
+
+- `dup` and descriptors inherited across `spawn`/`exec` share one OFD identity and therefore share
+  the lock.
+- Re-locking through the same OFD updates the mode: `LOCK_EX -> LOCK_SH` downgrades atomically and
+  wakes waiting shared lock requests; nonblocking `LOCK_SH -> LOCK_EX` with another shared holder
+  returns `EAGAIN` (`6`) while keeping `LOCK_SH`; blocking `LOCK_SH -> LOCK_EX` releases the
+  caller's prior lock before sleeping (matching Linux and gVisor so two simultaneous upgraders do
+  not deadlock).
+- No read or write right is required on `fd`; regular files and directories are lockable. Pipes,
+  sockets, terminals and `/dev/null` return `EINVAL`.
+- Closing the last descriptor referencing an OFD, or exit/revocation of all sessions holding that
+  OFD, releases the lock automatically and wakes queued waiters.
+
+### Byte-range locks (`fd_lock`)
+
+`cmd` selects the operation: `0` = `F_GETLK`, `1` = `F_SETLK`, `2` = `F_SETLKW` (process-scoped
+POSIX record locks), and `3` = `F_OFD_GETLK`, `4` = `F_OFD_SETLK`, `5` = `F_OFD_SETLKW`
+(open-file-description-scoped byte-range locks). `type` is `0` = `F_RDLCK`, `1` = `F_WRLCK`, or
+`2` = `F_UNLCK`. `whence` is `0` = `SEEK_SET`, `1` = `SEEK_CUR`, or `2` = `SEEK_END`. `len == 0`
+locks through EOF (infinity); negative `len` locks `[pos + len, pos)`. Resulting negative offsets
+return `EINVAL` (`28`); offsets above `Number.MAX_SAFE_INTEGER` return `EOVERFLOW` (`61`).
+
+- `F_SETLK` / `F_SETLKW` (and their `F_OFD_*` variants) require `RIGHT_FD_READ` for `F_RDLCK` and
+  `RIGHT_FD_WRITE` for `F_WRLCK` (`EBADF`, `8`, otherwise).
+- A lock owner never conflicts with itself: overlapping edits split, replace and coalesce ranges.
+- `F_GETLK` / `F_OFD_GETLK` validate the 24-byte little-endian output span at `out_ptr` (`EFAULT`,
+  `21`, if invalid) and write `{ u32 type, i32 pid, i64 start, i64 len }` (`type = F_UNLCK` when no
+  conflict exists; `pid = -1` for conflicting OFD locks).
+- Blocking waits (`F_SETLKW`, `F_OFD_SETLKW`, and `fd_flock` without `LOCK_NB`) wait outside the
+  filesystem service's serial mutation queue so lock holders can unlock, close or exit without
+  stalling. POSIX `F_SETLKW` checks the wait-for graph and returns `EDEADLK` (`16`) on cycles.
+- Handled signals interrupt blocking waits with `EINTR` (`27`); fatal signals unwind through the
+  process signal guard; filesystem revocation returns `ECANCELED` (`11`). Cancelled requests that
+  race a lock grant roll back the lock and wake the next waiter.
+- Per POSIX, closing **any** file descriptor referring to an inode releases all process-scoped
+  POSIX record locks held by that process on that inode while leaving `flock` and `F_OFD_*` locks
+  on other open file descriptions intact. Session revocation or process exit releases every lock
+  whose sole remaining live holder was that session. Locks follow the inode across `rename` and
+  `unlink`.
+
 ## Internal network module
 
 The Rust socket module is not a guest import namespace. Its virtual loopback commands and address rules are unchanged by the outbound connector. Trusted embedders use the separate [Network module ABI](network-module.md). Browser instances do not provide OS socket authority.

@@ -1,4 +1,5 @@
 import { DirectoryPages, checkDirectoryPage } from "./directory-pages.js";
+import { LockTable } from "./locks.js";
 import { utf8ByteLength } from "./utf8-size.js";
 import type { FileIdentity } from "./file-identity.js";
 import type { NodeMetadata } from "./workspace-types.js";
@@ -7,6 +8,7 @@ import {
   FilesystemError,
   fileTimeNow,
   PROBE_PATH_LIMIT,
+  type FileLockSystem,
   type FileTime,
   type ProbeKind,
   type SocketBinding,
@@ -375,6 +377,32 @@ export class MemFS implements FileSystem {
   private nodeHandles = new WeakMap<Node, FileHandle>();
   private nextHandle = 0;
   private references = new Map<FileHandle, number>();
+  private lockTable?: LockTable;
+  private lockAdapter?: FileLockSystem;
+  get locks(): FileLockSystem {
+    if (this.lockAdapter) return this.lockAdapter;
+    const table = (this.lockTable ??= new LockTable());
+    const inoOf = (handle: FileHandle): number => this.nodeForHandle(handle).ino;
+    this.lockAdapter = {
+      flock: (handle, ofdId, operation) => table.flock(inoOf(handle), ofdId, 0, operation).errno,
+      setRangeLock: (handle, ofdId, pid, range, blocking) =>
+        table.setRangeLock(inoOf(handle), ofdId, 0, pid, range, blocking).errno,
+      getRangeLock: (handle, ofdId, range) => table.getRangeLock(inoOf(handle), ofdId, 0, range),
+      retainOfd: (handle, ofdId) => {
+        const node = this.handles.get(handle);
+        if (node) table.retainOfd(node.ino, ofdId, 0);
+      },
+      releaseOfd: (handle, ofdId) => {
+        const node = this.handles.get(handle);
+        if (node) table.releaseOfd(node.ino, ofdId, 0);
+      },
+      releasePosix: (handle) => {
+        const node = this.handles.get(handle);
+        if (node) table.releasePosix(node.ino, 0);
+      },
+    };
+    return this.lockAdapter;
+  }
   private directoryParents = new WeakMap<DirNode, DirNode>();
   private removedDirectories = new WeakSet<DirNode>();
   private rootedCache?: RootedWalk;

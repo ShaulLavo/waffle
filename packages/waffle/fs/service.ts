@@ -1,4 +1,5 @@
 import { WalkTable, type WalkTransaction } from "./walk.js";
+import { LockContentionError, LockTable } from "./locks.js";
 import type { OperationBinding } from "../browser/operations/protocol.js";
 import {
   requestMemorySections,
@@ -129,6 +130,9 @@ interface WatchResponseSettlement {
 interface Session {
   watchTransactions: Map<number, WatchTransaction>;
   watchResponses: Map<number, WatchResponseSettlement>;
+  lockTransactions: Map<number, () => void>;
+  lockResponses: Map<number, () => void>;
+  lockWaiters: Map<number, () => void>;
   walks?: WalkTable;
   walkTransactions: Map<number, WalkTransaction>;
   walkResponses: Map<number, () => void>;
@@ -225,6 +229,7 @@ export class FilesystemService {
   private refusedConnections = new Set<FilesystemConnection>();
   residentPublication: ResidentGrantAuthority | undefined;
   private watchService?: WatchService;
+  private lockTable?: LockTable;
   private disposingWatches = false;
   constructor(private backend: FilesystemBackend) {}
   attachSocketScope(
@@ -292,6 +297,9 @@ export class FilesystemService {
       walkResponses: new Map(),
       watchTransactions: new Map(),
       watchResponses: new Map(),
+      lockTransactions: new Map(),
+      lockResponses: new Map(),
+      lockWaiters: new Map(),
       requests: captureRequestMemory(connection.requests),
       handles: new Map(),
       capabilities: new Int32Array(connection.capabilities, 0, CAPABILITY_LENGTH),
@@ -435,6 +443,7 @@ export class FilesystemService {
     }
     if ("discard" in data) {
       session.reader?.cancel(data.discard);
+      this.cancelLockWaiter(session, data.discard);
       this.enqueueMaintenance(session, () => this.discardResponse(session, data.discard));
       return;
     }
@@ -716,6 +725,10 @@ export class FilesystemService {
     const cancelWalk = session.walkResponses.get(id);
     session.walkResponses.delete(id);
     if (cancelledWalk) cancelWalk?.();
+    const cancelLock = session.lockResponses.get(id);
+    session.lockResponses.delete(id);
+    if (cancelLock && (sessionRevoked(session) || !this.sessions.has(session) || cancelledWalk))
+      cancelLock();
     if (retained) releaseRequestBuffer(retained, REQUEST_SERVICE);
     session.retainedRequests.delete(id);
     const response = session.responses.get(id);
@@ -968,6 +981,12 @@ export class FilesystemService {
         "resolve",
         "realpath",
         "probe",
+        "lockFlock",
+        "lockRange",
+        "lockGetRange",
+        "lockRetainOfd",
+        "lockReleaseOfd",
+        "lockReleasePosix",
       ].includes(operation)
     )
       this.check(session, a, held);
@@ -1148,6 +1167,157 @@ export class FilesystemService {
       ? execute()
       : backend.shared.mutate(undefined, () => sessionRevoked(session), execute);
   }
+  private cancelLockWaiter(session: Session, id: number): void {
+    const cancel = session.lockWaiters.get(id);
+    if (!cancel) return;
+    session.lockWaiters.delete(id);
+    cancel();
+  }
+  private resolveLockIno(handle: number): number | Promise<number> {
+    if (this.backend instanceof MemoryBackend) return this.backend.fs.stat(handle).ino;
+    const result = this.backend.execute("stat", [handle], new Uint8Array());
+    if (result instanceof Promise)
+      return result.then((stat) => (stat as { readonly ino: number }).ino);
+    return (result as { readonly ino: number }).ino;
+  }
+  private applyLockOperation(
+    session: Session,
+    id: number,
+    operation: string,
+    args: any[],
+    ino: number,
+  ): unknown {
+    const table = (this.lockTable ??= new LockTable());
+    const owner = session.connection.owner;
+    if (operation === "lockFlock") {
+      const [, ofdId, op] = args;
+      if (typeof ofdId !== "string" || typeof op !== "number") throw new FilesystemError(28);
+      const commit = table.flock(ino, ofdId, owner, op, true);
+      if (commit.rollback) session.lockTransactions.set(id, commit.rollback);
+      return commit.errno;
+    }
+    if (operation === "lockRange") {
+      const [, ofdRaw, pid, type, start, len, blocking] = args;
+      const ofdId = ofdRaw === null ? undefined : ofdRaw;
+      if (
+        (ofdId !== undefined && typeof ofdId !== "string") ||
+        typeof pid !== "number" ||
+        typeof type !== "number" ||
+        typeof start !== "number" ||
+        typeof len !== "number" ||
+        typeof blocking !== "boolean"
+      )
+        throw new FilesystemError(28);
+      const commit = table.setRangeLock(
+        ino,
+        ofdId,
+        owner,
+        pid,
+        { type: type as 0 | 1 | 2, start, len },
+        blocking,
+        true,
+      );
+      if (commit.rollback) session.lockTransactions.set(id, commit.rollback);
+      return commit.errno;
+    }
+    if (operation === "lockGetRange") {
+      const [, ofdRaw, type, start, len] = args;
+      const ofdId = ofdRaw === null ? undefined : ofdRaw;
+      if (
+        (ofdId !== undefined && typeof ofdId !== "string") ||
+        typeof type !== "number" ||
+        typeof start !== "number" ||
+        typeof len !== "number"
+      )
+        throw new FilesystemError(28);
+      return table.getRangeLock(ino, ofdId, owner, { type: type as 0 | 1 | 2, start, len });
+    }
+    if (operation === "lockRetainOfd") {
+      if (typeof args[1] !== "string") throw new FilesystemError(28);
+      table.retainOfd(ino, args[1], owner);
+      return 0;
+    }
+    if (operation === "lockReleaseOfd") {
+      if (typeof args[1] !== "string") throw new FilesystemError(28);
+      table.releaseOfd(ino, args[1], owner);
+      return 0;
+    }
+    if (operation === "lockReleasePosix") {
+      table.releasePosix(ino, owner);
+      return 0;
+    }
+    throw new FilesystemError(58);
+  }
+  private lockRequest(
+    session: Session,
+    id: number,
+    operation: string,
+    args: any[],
+  ): unknown | Promise<unknown> {
+    const handle = args[0];
+    if (typeof handle !== "number") throw new FilesystemError(28);
+    const resolved = this.resolveLockIno(handle);
+    if (resolved instanceof Promise)
+      return this.trackRequestWork(session, resolved).then((ino) => {
+        if (sessionRevoked(session) || !this.sessions.has(session)) throw new FilesystemError(11);
+        return this.applyLockOperation(session, id, operation, args, ino);
+      });
+    return this.applyLockOperation(session, id, operation, args, resolved);
+  }
+  private requestInactive(session: Session, buffer: FilesystemRequestBuffer): boolean {
+    return (
+      this.ownerStopping ||
+      sessionRevoked(session) ||
+      !this.sessions.has(session) ||
+      requestCancelled(buffer)
+    );
+  }
+  private holdRetryHandles(
+    session: Session,
+    bytes: Uint8Array,
+    inputLength: number,
+    prepared: PreparedRequest | undefined,
+  ): PreparedRequest {
+    const next = prepared ?? { handles: [] };
+    const input = unpack(bytes.subarray(0, inputLength));
+    this.checkRequest(session, input.operation, input.args, next.handles);
+    return next;
+  }
+  private scheduleRetry(
+    session: Session,
+    id: number,
+    buffer: FilesystemRequestBuffer,
+    prepared: PreparedRequest,
+    lockRetry: LockContentionError | undefined,
+    dirtyRetry: number | undefined,
+  ): void {
+    if (lockRetry !== undefined) {
+      if (this.requestInactive(session, buffer)) lockRetry.cancel();
+      session.lockWaiters.set(id, lockRetry.cancel);
+      const wait = lockRetry.wait.then(() => {
+        session.lockWaiters.delete(id);
+      });
+      this.joinPreparation(session, id, buffer, prepared, wait);
+      return;
+    }
+    if (dirtyRetry !== undefined) {
+      const wait = this.backend.waitForDirtyCapacity!(
+        dirtyRetry,
+        () => sessionRevoked(session) || requestCancelled(buffer),
+      );
+      this.joinPreparation(session, id, buffer, prepared, wait);
+    }
+  }
+  private settleLock(session: Session, id: number, success: boolean): void {
+    const rollback = session.lockTransactions.get(id);
+    if (!rollback) return;
+    session.lockTransactions.delete(id);
+    if (!success) {
+      rollback();
+      return;
+    }
+    session.lockResponses.set(id, rollback);
+  }
   private settleWalk(session: Session, id: number, success: boolean): void {
     const transaction = session.walkTransactions.get(id);
     if (!transaction) return;
@@ -1185,6 +1355,7 @@ export class FilesystemService {
     this.checkSocketTree(session, operation, args);
     if (operation.startsWith("walk")) return this.walkRequest(session, id, operation, args);
     if (operation.startsWith("watch")) return this.watchRequest(session, id, operation, args);
+    if (operation.startsWith("lock")) return this.lockRequest(session, id, operation, args);
     if (operation === "stageWrite") return this.stageWrite(session, id, a, b, c, data);
     if (operation === "take") return this.takeResponseChunk(session, a, b, c);
     if (operation === "retain") {
@@ -1384,10 +1555,10 @@ export class FilesystemService {
     let committedWrite = false;
     let admission: PublicationAdmission | undefined;
     let dirtyRetry: number | undefined;
+    let lockRetry: LockContentionError | undefined;
     const epoch = session.epoch;
     try {
-      if (sessionRevoked(session) || !this.sessions.has(session) || requestCancelled(buffer))
-        throw new FilesystemError(11);
+      if (this.requestInactive(session, buffer)) throw new FilesystemError(11);
       const { inputLength, dataLength } = requestLengths(buffer, bytes);
       const input = decoded ?? unpack(bytes.subarray(0, inputLength));
       const { operation, args } = input;
@@ -1440,11 +1611,10 @@ export class FilesystemService {
     } catch (error) {
       this.discardResponse(session, id);
       const dirtyChange = this.dirtyRetryChange(error);
-      if (dirtyChange !== undefined) {
-        dirtyRetry = dirtyChange;
-        prepared ??= { handles: [] };
-        const input = unpack(bytes.subarray(0, cells[1]!));
-        this.checkRequest(session, input.operation, input.args, prepared.handles);
+      if (error instanceof LockContentionError || dirtyChange !== undefined) {
+        if (error instanceof LockContentionError) lockRetry = error;
+        else dirtyRetry = dirtyChange;
+        prepared = this.holdRetryHandles(session, bytes, cells[1]!, prepared);
         preparing = true;
       } else {
         cells[3] = errno(error);
@@ -1465,6 +1635,7 @@ export class FilesystemService {
         state = this.settleCancelledState(session, id, buffer, state, staging, committedWrite);
         this.settleWalk(session, id, state === State.Complete);
         this.settleWatch(session, id, state === State.Complete || state === State.Overflow);
+        this.settleLock(session, id, state === State.Complete);
         Atomics.store(cells, 0, state);
         Atomics.notify(cells, 0);
         wake(session.connection);
@@ -1478,13 +1649,7 @@ export class FilesystemService {
         session.inFlightWrites.delete(id);
       }
     }
-    if (dirtyRetry !== undefined && prepared) {
-      const wait = this.backend.waitForDirtyCapacity!(
-        dirtyRetry,
-        () => sessionRevoked(session) || requestCancelled(buffer),
-      );
-      this.joinPreparation(session, id, buffer, prepared, wait);
-    }
+    if (prepared) this.scheduleRetry(session, id, buffer, prepared, lockRetry, dirtyRetry);
   }
   private settleCancelledState(
     session: Session,
@@ -1533,6 +1698,7 @@ export class FilesystemService {
       session.responses.has(id) ||
       session.walkResponses.has(id) ||
       session.watchResponses.has(id) ||
+      session.lockResponses.has(id) ||
       session.stages.has(id)
     ) {
       session.retainedRequests.set(id, buffer);
@@ -2023,6 +2189,12 @@ export class FilesystemService {
     this.cancelSessionWatchResponses(session);
     this.watchService?.closeOwner(session.connection.owner);
     this.backend.closeWatchOwner?.(session.connection.owner);
+    for (const cancel of Array.from(session.lockWaiters.values())) cancel();
+    session.lockWaiters.clear();
+    for (const id of Array.from(session.lockTransactions.keys()))
+      this.settleLock(session, id, false);
+    session.lockResponses.clear();
+    this.lockTable?.releaseSession(session.connection.owner);
     session.namespace?.close();
     this.stopSessionReader(session);
     if (!session.transportFailed) revokeFilesystem(session.connection);
@@ -2198,6 +2370,7 @@ export class FilesystemService {
   dispose(): void {
     if (this.shutdownOwner) return;
     this.disposingWatches = true;
+    this.lockTable?.dispose();
     this.residentPublication?.dispose();
     for (const session of this.sessions) this.close(session);
     this.closeDisposedWatchAccount();
@@ -2221,6 +2394,7 @@ export class FilesystemService {
     const owner = { done, sessions };
     this.shutdownOwner = owner;
     this.ownerStopping = true;
+    this.lockTable?.dispose();
     this.backend.beginShutdown?.();
     for (const session of sessions) this.stopSessionReader(session);
     const fences = sessions.map((session) => this.shutdownFence(session));

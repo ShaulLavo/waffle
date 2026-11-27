@@ -34,18 +34,34 @@ import {
 import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.js";
 import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
-import { withFileOffset } from "./open-file.js";
+import {
+  markResourceOfdLocked,
+  releaseSharedOfd,
+  resourceOfdId,
+  resourceOfdLockState,
+  withFileOffset,
+} from "./open-file.js";
 // WASI preview1 adapter over filesystem handles and shared open descriptions.
 // Runs synchronously in a guest worker; services supply blocking I/O and readiness.
 
 import {
+  F_GETLK,
+  F_OFD_GETLK,
+  F_OFD_SETLK,
+  F_OFD_SETLKW,
+  F_RDLCK,
+  F_SETLKW,
+  F_UNLCK,
+  F_WRLCK,
   FilesystemError,
   fileTimeNow,
+  LOCK_UN,
   PROBE_PATH_LIMIT,
   type FileHandle,
   type FileSystem,
   type FileStat,
   type FileTime,
+  type LockWaitControl,
   type ProbeKind,
   type ResolvedPath,
 } from "./filesystem.js";
@@ -79,6 +95,7 @@ const ENOSYS = 52;
 const ENOTDIR = 54;
 const ENOTSUP = 58;
 const ENOTSOCK = 57;
+const EOVERFLOW = 61;
 const ESPIPE = 70;
 const ENOTCAPABLE = 76;
 
@@ -128,6 +145,8 @@ export class WasiExit extends ExecutionUnwind {
 }
 
 export interface WasiOptions {
+  /** Logical process PID reported in advisory lock queries (F_GETLK). Defaults to 1. */
+  pid?: number;
   args: readonly string[];
   env: Record<string, string>;
   fs: FileSystem;
@@ -292,6 +311,7 @@ export class Wasi {
   hostCall: ((slot: number, args: number[]) => number) | null = null;
   readonly descriptors = new DescriptorTable();
   private watches?: GuestWatchTable;
+  private posixLockedHandles?: Set<FileHandle>;
   private importedMemory?: WebAssembly.Memory;
   private boundMemory?: WebAssembly.Memory;
   private hostWrite?: FdWrite;
@@ -422,9 +442,35 @@ export class Wasi {
       resource,
       base,
       inheriting,
-      () => this.opts.fs.release(resource.handle),
+      () => {
+        const lock = resourceOfdLockState(resource);
+        if (lock) {
+          const ofdToRelease =
+            lock.shared && resource.kind === "file" ? releaseSharedOfd(resource) : lock.id;
+          if (ofdToRelease) {
+            try {
+              this.opts.fs.locks?.releaseOfd(resource.handle, ofdToRelease);
+            } catch {}
+          }
+        } else if (resource.kind === "file") {
+          releaseSharedOfd(resource);
+        }
+        this.opts.fs.release(resource.handle);
+      },
       preopen,
     );
+  }
+
+  /** Release all POSIX process-scoped byte-range locks held by this guest. */
+  releasePosixLocks(): void {
+    if (!this.posixLockedHandles || this.posixLockedHandles.size === 0) return;
+    const handles = Array.from(this.posixLockedHandles);
+    this.posixLockedHandles.clear();
+    for (let i = 0; i < handles.length; i++) {
+      try {
+        this.opts.fs.locks?.releasePosix(handles[i]!);
+      } catch {}
+    }
   }
 
   /** runtime_proc uses positive errno and checks output memory before changing the inode. */
@@ -527,6 +573,8 @@ export class Wasi {
       watch_read: this.watchRead.bind(this),
       watch_next: this.watchNext.bind(this),
       watch_close: (id: number) => this.watches?.close(id >>> 0) ?? EBADF,
+      fd_flock: this.fdFlock.bind(this),
+      fd_lock: this.fdLock.bind(this),
     };
     const out: WebAssembly.Imports = Object.create(null);
     this.importedMemory = undefined;
@@ -761,6 +809,117 @@ export class Wasi {
     }
     this.view().setUint32(out, result.length, true);
     return SUCCESS;
+  }
+
+  private lockWaitControl(): LockWaitControl | undefined {
+    if (!this.opts.interruptPending && !this.opts.interrupt && !this.opts.wait) return undefined;
+    return {
+      interruptPending: () =>
+        this.opts.interruptPending?.() ??
+        (this.opts.interrupt !== undefined && controlLoad(this.opts.interrupt, 0) !== 0),
+      wait: this.opts.wait
+        ? (word, expected, ms) => this.opts.wait!(word, expected, ms)
+        : undefined,
+    };
+  }
+
+  private resolveRange(
+    resource: Extract<Resource, { kind: "file" | "directory" }>,
+    whence: number,
+    start: bigint,
+    len: bigint,
+  ): { readonly start: number; readonly len: number } | number {
+    const base =
+      whence === 0
+        ? 0n
+        : whence === 1
+          ? BigInt(resource.kind === "file" ? resource.offset : 0)
+          : whence === 2
+            ? BigInt(this.opts.fs.stat(resource.handle).size)
+            : null;
+    if (base === null) return EINVAL;
+    const pos = base + start;
+    if (len === 0n) {
+      if (pos < 0n) return EINVAL;
+      if (pos > MAX_FILE_SIZE) return EOVERFLOW;
+      return { start: Number(pos), len: 0 };
+    }
+    const rangeStart = len > 0n ? pos : pos + len;
+    const rangeEnd = len > 0n ? pos + len : pos;
+    if (rangeStart < 0n || rangeEnd < 0n) return EINVAL;
+    if (rangeStart > MAX_FILE_SIZE || rangeEnd > MAX_FILE_SIZE) return EOVERFLOW;
+    return { start: Number(rangeStart), len: Number(rangeEnd - rangeStart) };
+  }
+
+  /** runtime_fs.fd_flock: advisory whole-file lock (flock(2)), OFD-scoped. */
+  private fdFlock(fd: number, operation: number): number {
+    const entry = this.descriptors.get(fd >>> 0);
+    if (!entry) return EBADF;
+    if (entry.resource.kind !== "file" && entry.resource.kind !== "directory") return EINVAL;
+    const locks = this.opts.fs.locks;
+    if (!locks) return ENOTSUP;
+    const owner = locks.owner ?? 0;
+    const ofdId = resourceOfdId(entry.resource, owner);
+    const err = locks.flock(entry.resource.handle, ofdId, operation, this.lockWaitControl());
+    if (err === SUCCESS && (operation & ~4) !== LOCK_UN)
+      markResourceOfdLocked(entry.resource, owner);
+    return err;
+  }
+
+  /** runtime_fs.fd_lock: POSIX (F_GETLK/F_SETLK/F_SETLKW) and OFD byte-range advisory locks. */
+  private fdLock(
+    fd: number,
+    cmd: number,
+    type: number,
+    whence: number,
+    start: bigint,
+    len: bigint,
+    outPtr: number,
+  ): number {
+    if (cmd < F_GETLK || cmd > F_OFD_SETLKW) return EINVAL;
+    if (type !== F_RDLCK && type !== F_WRLCK && type !== F_UNLCK) return EINVAL;
+    if (whence < 0 || whence > 2) return EINVAL;
+    const isGet = cmd === F_GETLK || cmd === F_OFD_GETLK;
+    const out = outPtr >>> 0;
+    if (isGet && out + 24 > this.bytes().length) return EFAULT;
+    const entry = this.descriptors.get(fd >>> 0);
+    if (!entry) return EBADF;
+    if (entry.resource.kind !== "file" && entry.resource.kind !== "directory") return EINVAL;
+    if (!isGet && type === F_RDLCK && !(entry.rightsBase & RIGHT_FD_READ)) return EBADF;
+    if (!isGet && type === F_WRLCK && !(entry.rightsBase & RIGHT_FD_WRITE)) return EBADF;
+    const locks = this.opts.fs.locks;
+    if (!locks) return ENOTSUP;
+    const resolved = this.resolveRange(entry.resource, whence, start, len);
+    if (typeof resolved === "number") return resolved;
+    const owner = locks.owner ?? 0;
+    const isOfd = cmd === F_OFD_GETLK || cmd === F_OFD_SETLK || cmd === F_OFD_SETLKW;
+    const ofdId = isOfd ? resourceOfdId(entry.resource, owner) : undefined;
+    const range = { type, start: resolved.start, len: resolved.len } as const;
+    if (isGet) {
+      const conflict = locks.getRangeLock(entry.resource.handle, ofdId, range);
+      if (typeof conflict === "number") return conflict;
+      const view = this.view();
+      if (out + 24 > view.byteLength) return EFAULT;
+      view.setUint32(out, conflict.type, true);
+      view.setInt32(out + 4, conflict.pid, true);
+      view.setBigInt64(out + 8, BigInt(conflict.start), true);
+      view.setBigInt64(out + 16, BigInt(conflict.len), true);
+      return SUCCESS;
+    }
+    const blocking = cmd === F_SETLKW || cmd === F_OFD_SETLKW;
+    const err = locks.setRangeLock(
+      entry.resource.handle,
+      ofdId,
+      this.opts.pid ?? 1,
+      range,
+      blocking,
+      blocking ? this.lockWaitControl() : undefined,
+    );
+    if (err === SUCCESS && type !== F_UNLCK) {
+      if (isOfd) markResourceOfdLocked(entry.resource, owner);
+      else (this.posixLockedHandles ??= new Set()).add(entry.resource.handle);
+    }
+    return err;
   }
 
   /** runtime_fs.path_realpath: realpath(3) of `path` from `fd` in one filesystem request. Writes
@@ -1000,7 +1159,19 @@ export class Wasi {
           return this.opts.fs.resize(resource.handle, Number(end), false);
         },
       ),
-      fd_close: (fd: number) => (this.descriptors.close(fd) ? SUCCESS : EBADF),
+      fd_close: (fd: number) => {
+        const entry = this.descriptors.get(fd);
+        if (!entry) return EBADF;
+        // Per POSIX fcntl(2), closing ANY descriptor for an inode releases all process-scoped
+        // POSIX record locks held by this process on that inode (leaving OFD/flock locks intact).
+        if (
+          (entry.resource.kind === "file" || entry.resource.kind === "directory") &&
+          this.posixLockedHandles?.delete(entry.resource.handle)
+        ) {
+          this.opts.fs.locks?.releasePosix(entry.resource.handle);
+        }
+        return this.descriptors.close(fd) ? SUCCESS : EBADF;
+      },
       fd_datasync: this.descriptorCall(RIGHT_FD_DATASYNC, sync),
       fd_sync: this.descriptorCall(RIGHT_FD_SYNC, sync),
       fd_fdstat_get: (fd: number, ptr: number) => {
@@ -1575,6 +1746,7 @@ export class Wasi {
 
       proc_exit: (code: number) => {
         this.dropWatches();
+        this.releasePosixLocks();
         this.descriptors.dispose();
         // Match native process exits; negative i32 values must not alias child-control errors.
         throw new WasiExit(code & 0xff);

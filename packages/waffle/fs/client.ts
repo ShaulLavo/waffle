@@ -40,7 +40,11 @@ import {
   fileTimeNow,
   isFileTime,
   permissionsFor,
+  type FileLockConflict,
+  type FileLockRange,
+  type FileLockSystem,
   type FileTime,
+  type LockWaitControl,
   type ProbeKind,
   type WatchFileSystem,
 } from "../core/filesystem.js";
@@ -377,12 +381,22 @@ export class FilesystemCompletion {
   wait(): any {
     return this.#wait();
   }
-  #wait(cancellation?: WaitCancellation): any {
+  waitInterruptible(control?: LockWaitControl): any {
+    return this.#wait(undefined, control);
+  }
+  #wait(cancellation?: WaitCancellation, control?: LockWaitControl): any {
     const signal = this.client.signal;
     while (!this.ready) {
       const observed = atomicsLoad(signal, 0);
       this.check(cancellation);
-      if (!this.ready) atomicsWait(signal, 0, observed);
+      if (control?.interruptPending?.()) {
+        this.cancel();
+        throw new FilesystemError(27);
+      }
+      if (!this.ready) {
+        if (control?.wait) control.wait(signal, observed, 10);
+        else atomicsWait(signal, 0, observed, control?.interruptPending ? 10 : undefined);
+      }
     }
     this.check(cancellation);
     if (this.consumed) return this.decoded;
@@ -528,6 +542,49 @@ function clientWatches(
   };
 }
 
+function clientLocks(
+  owner: number,
+  call: (operation: string, args: unknown[], control?: LockWaitControl) => any,
+): FileLockSystem {
+  return {
+    owner,
+    flock: (handle, ofdId, operation, control) => {
+      try {
+        return call("lockFlock", [handle, ofdId, operation], control);
+      } catch (error) {
+        return errno(error);
+      }
+    },
+    setRangeLock: (handle, ofdId, pid, range: FileLockRange, blocking, control) => {
+      try {
+        return call(
+          "lockRange",
+          [handle, ofdId ?? null, pid, range.type, range.start, range.len, blocking],
+          blocking ? control : undefined,
+        );
+      } catch (error) {
+        return errno(error);
+      }
+    },
+    getRangeLock: (handle, ofdId, range: FileLockRange): FileLockConflict | number => {
+      try {
+        return call("lockGetRange", [handle, ofdId ?? null, range.type, range.start, range.len]);
+      } catch (error) {
+        return errno(error);
+      }
+    },
+    retainOfd: (handle, ofdId) => {
+      call("lockRetainOfd", [handle, ofdId]);
+    },
+    releaseOfd: (handle, ofdId) => {
+      call("lockReleaseOfd", [handle, ofdId]);
+    },
+    releasePosix: (handle) => {
+      call("lockReleasePosix", [handle]);
+    },
+  };
+}
+
 /** Blocking preview1 adapter and non-blocking request/completion API for the async host.
  * Read/stat caches are validated by the service's global seqlock. A concurrent mutation invalidates
  * before changing data; a cached read that overlaps it is discarded, never returned as fresh.
@@ -621,6 +678,7 @@ export class FilesystemClient implements FileSystem {
   private readonly section: FilesystemSection;
   readonly shared: SharedFilesystemState;
   readonly watches: WatchFileSystem;
+  readonly locks: FileLockSystem;
   private watchingRevocation = false;
   private resident: ResidentAttachment | undefined;
   private workspaceStop: Promise<void> | undefined;
@@ -658,6 +716,14 @@ export class FilesystemClient implements FileSystem {
       () => !this.shared.isWatchDrainDisabled(),
       (operation, args) => this.call(operation, args),
     );
+    this.locks = clientLocks(connection.owner, (operation, args, control) => {
+      const completion = this.submit(operation, args);
+      try {
+        return control ? completion.waitInterruptible(control) : completion.wait();
+      } finally {
+        completion.release();
+      }
+    });
     connection.port.onmessage = ({ data }) => {
       if (data.segment) this.attachSegment(data.segment, data.buffer);
       else mapGet(this.completions, data.completed)?.notify();
