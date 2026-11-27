@@ -37,6 +37,11 @@ impl Rig {
 
     fn write(&self, path: &str, bytes: &[u8]) {
         let absolute = format!("/home/guest/{path}");
+        if let Some((parent, _)) = absolute.rsplit_once('/')
+            && !parent.is_empty()
+        {
+            self.filesystem.mkdir(parent, true).unwrap();
+        }
         self.filesystem.write_file(&absolute, bytes).unwrap();
     }
 
@@ -469,4 +474,230 @@ fn grep_propagates_broken_pipe() {
     assert_eq!(output.status, 141);
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn grep_directory_without_recursive_reports_is_a_directory() {
+    let rig = Rig::new();
+    rig.write("src/app.ts", b"ERROR: boom\n");
+
+    let dot = rig.run(&["-i", "error", "."], b"");
+    assert_eq!(dot.status, 2);
+    assert!(dot.stdout.is_empty());
+    assert_eq!(dot.stderr, b"grep: .: Is a directory\n");
+
+    let dir = rig.run(&["-i", "error", "src"], b"");
+    assert_eq!(dir.status, 2);
+    assert!(dir.stdout.is_empty());
+    assert_eq!(dir.stderr, b"grep: src: Is a directory\n");
+
+    // Non-directory operand after directory still scans and reports directory error
+    rig.write("top.txt", b"error here\n");
+    let mixed = rig.run(&["-i", "error", "src", "top.txt"], b"");
+    assert_eq!(mixed.status, 2);
+    assert_eq!(mixed.stdout, b"top.txt:error here\n");
+    assert_eq!(mixed.stderr, b"grep: src: Is a directory\n");
+}
+
+#[test]
+fn grep_recursive_options_traversal_and_exclude_dir() {
+    let rig = Rig::new();
+    rig.write("src/a.ts", b"first Error\nok\n");
+    rig.write("src/nested/b.ts", b"second ERROR\n");
+    rig.write("node_modules/pkg/index.js", b"ignored error\n");
+    rig.write("dist-web/bundle.js", b"built error\n");
+
+    // -ri with trailing slash keeps clean paths (no double slash)
+    assert_run(
+        &rig,
+        &["-ri", "error", "src/"],
+        b"",
+        0,
+        b"src/a.ts:first Error\nsrc/nested/b.ts:second ERROR\n",
+    );
+
+    // --recursive with no file operands defaults to '.' and respects --exclude-dir globs
+    assert_run(
+        &rig,
+        &[
+            "--recursive",
+            "-in",
+            "--exclude-dir=node_modules",
+            "--exclude-dir",
+            "dist-*",
+            "error",
+        ],
+        b"",
+        0,
+        b"./src/a.ts:1:first Error\n./src/nested/b.ts:1:second ERROR\n",
+    );
+
+    // -h suppresses filename prefix during recursive traversal
+    assert_run(
+        &rig,
+        &["-Rih", "error", "src"],
+        b"",
+        0,
+        b"first Error\nsecond ERROR\n",
+    );
+
+    // Single regular file operand under -r keeps GNU no-prefix default
+    assert_run(
+        &rig,
+        &["-ri", "error", "src/a.ts"],
+        b"",
+        0,
+        b"first Error\n",
+    );
+
+    // Excluding the root operand directory itself skips it cleanly (status 1, no error)
+    let skipped = rig.run(&["-r", "--exclude-dir=src", "Error", "src/"], b"");
+    assert_eq!(skipped.status, 1);
+    assert!(skipped.stdout.is_empty());
+    assert!(skipped.stderr.is_empty());
+
+    // -q stops early with status 0 across recursive traversal
+    let quiet = rig.run(&["-riq", "error", "src"], b"");
+    assert_eq!(quiet.status, 0);
+    assert!(quiet.stdout.is_empty());
+    assert!(quiet.stderr.is_empty());
+
+    // Unsupported long option and missing --exclude-dir argument fail with status 2
+    let bad_long = rig.run(&["--unknown-flag", "error"], b"");
+    assert_eq!(bad_long.status, 2);
+    assert_eq!(
+        bad_long.stderr,
+        b"grep: unsupported option: --unknown-flag\n"
+    );
+
+    let missing_exclude = rig.run(&["-r", "--exclude-dir"], b"");
+    assert_eq!(missing_exclude.status, 2);
+    assert!(missing_exclude.stderr.starts_with(b"grep: "));
+}
+
+#[test]
+fn grep_handles_eisdir_fallback_and_recursive_symlinks_and_cycles() {
+    use futures::future::LocalBoxFuture;
+    use waffle_program_support::io::{Directory, FileKind, FileMetadata, FileSystem};
+
+    struct EisdirFallbackFs;
+    impl FileSystem for EisdirFallbackFs {
+        fn mkdir<'a>(
+            &'a self,
+            _path: &'a str,
+            _parents: bool,
+        ) -> LocalBoxFuture<'a, Result<(), IoError>> {
+            Box::pin(async { Err(IoError::Unsupported) })
+        }
+        fn open<'a>(
+            &'a self,
+            _path: &'a str,
+            _options: &'a OpenOptions,
+        ) -> LocalBoxFuture<'a, Result<Endpoint, IoError>> {
+            Box::pin(async { Err(IoError::Runtime(31)) })
+        }
+    }
+
+    let rig = Rig::new();
+    let (mut invocation, output, errors) = rig.invocation(&["error", "some_dir"], None);
+    invocation.context.filesystem = Rc::new(EisdirFallbackFs);
+    let eisdir_out = rig.run_fds(invocation, output, errors);
+    assert_eq!(eisdir_out.status, 2);
+    assert!(eisdir_out.stdout.is_empty());
+    assert_eq!(eisdir_out.stderr, b"grep: some_dir: Is a directory\n");
+
+    struct SymlinkFs {
+        inner: MemoryFs,
+    }
+    impl FileSystem for SymlinkFs {
+        fn mkdir<'a>(
+            &'a self,
+            path: &'a str,
+            parents: bool,
+        ) -> LocalBoxFuture<'a, Result<(), IoError>> {
+            let result = self.inner.mkdir(path, parents);
+            Box::pin(async move { result })
+        }
+        fn stat<'a>(
+            &'a self,
+            path: &'a str,
+            follow_symlinks: bool,
+        ) -> LocalBoxFuture<'a, Result<FileMetadata, IoError>> {
+            let target = match path {
+                "/home/guest/dir/link_file" if !follow_symlinks => {
+                    return Box::pin(async move {
+                        let mut meta = self.inner.stat("/home/guest/target.txt", true)?;
+                        meta.kind = FileKind::Symlink;
+                        Ok(meta)
+                    });
+                }
+                "/home/guest/dir/link_file" => "/home/guest/target.txt",
+                "/home/guest/dir/loop_link" if !follow_symlinks => {
+                    return Box::pin(async move {
+                        let mut meta = self.inner.stat("/home/guest/dir", true)?;
+                        meta.kind = FileKind::Symlink;
+                        Ok(meta)
+                    });
+                }
+                "/home/guest/dir/loop_link" => "/home/guest/dir",
+                _ => path,
+            };
+            let result = self.inner.stat(target, follow_symlinks);
+            Box::pin(async move { result })
+        }
+        fn open_dir<'a>(
+            &'a self,
+            path: &'a str,
+        ) -> LocalBoxFuture<'a, Result<Rc<dyn Directory>, IoError>> {
+            let mapped = if path == "/home/guest/dir/loop_link" {
+                "/home/guest/dir"
+            } else {
+                path
+            };
+            self.inner.open_dir(mapped)
+        }
+        fn open<'a>(
+            &'a self,
+            path: &'a str,
+            options: &'a OpenOptions,
+        ) -> LocalBoxFuture<'a, Result<Endpoint, IoError>> {
+            let mapped = if path == "/home/guest/dir/link_file" {
+                "/home/guest/target.txt"
+            } else {
+                path
+            };
+            let result = self.inner.open(mapped, options);
+            Box::pin(async move { result })
+        }
+    }
+
+    let sym_rig = Rig::new();
+    sym_rig.write("target.txt", b"linked error\n");
+    sym_rig.write("dir/real.txt", b"real error\n");
+    // Place placeholder entries so MemoryFs::open_dir lists link_file and loop_link inside dir
+    sym_rig.write("dir/link_file", b"");
+    sym_rig.write("dir/loop_link", b"");
+
+    // -r skips symlinks encountered during directory traversal (no loop error, no symlink match)
+    let (mut inv_r, out_r, err_r) = sym_rig.invocation(&["-r", "error", "dir"], None);
+    inv_r.context.filesystem = Rc::new(SymlinkFs {
+        inner: sym_rig.filesystem.clone(),
+    });
+    let res_r = sym_rig.run_fds(inv_r, out_r, err_r);
+    assert_eq!(res_r.status, 0);
+    assert_eq!(res_r.stdout, b"dir/real.txt:real error\n");
+    assert!(res_r.stderr.is_empty());
+
+    // -R follows symlinks and detects directory cycles cleanly without looping
+    let (mut inv_big_r, out_big_r, err_big_r) = sym_rig.invocation(&["-R", "error", "dir"], None);
+    inv_big_r.context.filesystem = Rc::new(SymlinkFs {
+        inner: sym_rig.filesystem.clone(),
+    });
+    let res_big_r = sym_rig.run_fds(inv_big_r, out_big_r, err_big_r);
+    assert_eq!(res_big_r.status, 2);
+    assert_eq!(
+        res_big_r.stdout,
+        b"dir/link_file:linked error\ndir/real.txt:real error\n"
+    );
+    assert!(String::from_utf8_lossy(&res_big_r.stderr).contains("recursive directory loop"));
 }
