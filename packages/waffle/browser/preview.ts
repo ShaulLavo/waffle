@@ -105,11 +105,18 @@ export class PreviewRouter {
 
   /** Close every active host relay and open socket tunnel owned by this router. */
   close(): void {
+    const errors: unknown[] = [];
     for (const port of Array.from(this.sockets.keys())) this.closePortSockets(port);
     for (const [port, host] of Array.from(this.hosts)) {
       this.hosts.delete(port);
-      host.close();
+      try {
+        host.close();
+      } catch (error) {
+        errors.push(error);
+      }
     }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "PreviewRouter close failed");
   }
 
   serves(port: number): boolean {
@@ -199,23 +206,30 @@ export class PreviewRouter {
         connection.write(message.chunk);
       }
     };
-    connection =
+    const opened =
       this.servers.get(port)?.connect(port, {
         data: (chunk) => send({ type: "data", chunk }, [chunk.buffer]),
         end: () => closeTunnel({ type: "end" }),
         error: (message) => closeTunnel({ type: "error", message }),
       }) ?? null;
-    if (!connection) {
+    if (!opened) {
       ready = true;
       closeTunnel({ type: "error", message: "no server" });
       return;
     }
-    let portSockets = this.sockets.get(port);
-    if (!portSockets) {
-      portSockets = new Set();
-      this.sockets.set(port, portSockets);
+    if (finished) {
+      try {
+        opened.close();
+      } catch {}
+    } else {
+      connection = opened;
+      let portSockets = this.sockets.get(port);
+      if (!portSockets) {
+        portSockets = new Set();
+        this.sockets.set(port, portSockets);
+      }
+      portSockets.add(closeTunnel);
     }
-    portSockets.add(closeTunnel);
     ready = true;
     try {
       reply.postMessage({ type: "accepted" });

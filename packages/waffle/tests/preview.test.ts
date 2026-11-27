@@ -187,11 +187,17 @@ function nextMessage(port: MessagePort): Promise<any> {
 
 test("socket transport delivers acceptance before synchronous connection finish", async () => {
   const f = fixture();
+  let closes = 0;
   f.router.register(8123, {
     request: f.server.request,
     connect(_port, sink) {
       sink.end();
-      return { write() {}, close() {} };
+      return {
+        write() {},
+        close() {
+          closes++;
+        },
+      };
     },
   });
   const socket = new MessageChannel();
@@ -205,6 +211,9 @@ test("socket transport delivers acceptance before synchronous connection finish"
   try {
     await f.worker.socket(8123, `${scope}8123/page`, socket.port2);
     expect(await messagesPromise).toEqual([{ type: "accepted" }, { type: "end" }]);
+    expect(closes).toBe(1);
+    f.router.close();
+    expect(closes).toBe(1);
   } finally {
     socket.port1.close();
     socket.port2.close();
@@ -598,4 +607,52 @@ test("unregister and server replacement close open preview socket tunnels", () =
     second.port1.close();
     second.port2.close();
   }
+});
+
+test("PreviewRouter.close attempts every bound relay even when an earlier relay close throws", async () => {
+  const router = new PreviewRouter({
+    mode: "root",
+    originForPort: (port) => `https://p${port}.preview.test`,
+  });
+  const closed: number[] = [];
+  const server = (port: number): PreviewServer => ({
+    request: () => false,
+    connect() {
+      return {
+        write() {},
+        close() {
+          closed.push(port);
+          if (port === 8123) throw new Error("first relay close boom");
+        },
+      };
+    },
+  });
+  router.register(8123, server(8123));
+  router.register(8124, server(8124));
+  const relay1 = await router.bindHost({ port: 8123 });
+  const relay2 = await router.bindHost({ port: 8124 });
+  const sink = { data() {}, end() {}, error() {} };
+  const req = (port: number) => ({
+    url: `https://p${port}.preview.test/`,
+    method: "GET",
+    headers: [
+      ["upgrade", "websocket"],
+      ["connection", "Upgrade"],
+    ] as [string, string][],
+  });
+  expect(relay1.connect(relay1.authorization, req(8123), sink)).not.toBeNull();
+  expect(relay2.connect(relay2.authorization, req(8124), sink)).not.toBeNull();
+  let caught: unknown;
+  try {
+    router.close();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(AggregateError);
+  const inner = (caught as AggregateError).errors[0];
+  expect(inner).toBeInstanceOf(AggregateError);
+  expect((inner as AggregateError).errors[0]).toMatchObject({ message: "first relay close boom" });
+  expect(closed).toEqual([8123, 8124]);
+  expect(() => router.url(8123)).toThrow();
+  expect(() => router.url(8124)).toThrow();
 });

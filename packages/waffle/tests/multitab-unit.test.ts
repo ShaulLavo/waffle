@@ -3618,6 +3618,9 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
         ["/from-peer.txt", false, false],
         new TextEncoder().encode("peer-wrote"),
       );
+      // Let Host's lease lapse again so flush() itself exercises lapsed-lease renewal.
+      await new Promise((r) => setTimeout(r, 110));
+      expect(host.backend.isLeaseValid()).toBe(false);
       await peer.client.asyncCall("flush", []);
 
       const verify: Uint8Array = await host.client.asyncCall("readFile", ["/from-peer.txt"]);
@@ -3627,6 +3630,71 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     } finally {
       await peer.close();
       await host.close();
+    }
+  });
+
+  test("terminal Host failure racing Peer reply publication never publishes ok: true and cancels checkpoint timer", async () => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = `ws-peer-reply-race-${crypto.randomUUID()}`;
+    let failNow = false;
+    const hostRef: { current?: Awaited<ReturnType<typeof openTab>> } = {};
+    const okReplies: unknown[] = [];
+
+    const host = await openTab(broker, hub, store, {
+      clientId: "tab-host",
+      name,
+      hooks: {
+        beforeHostReplyPublish(op) {
+          if (failNow && op === "writeFile") {
+            failNow = false;
+            // Inject terminal storage failure synchronously when reply publication begins.
+            (
+              hostRef.current!.backend as unknown as {
+                enterTerminalStorageFailure(reason: unknown): void;
+              }
+            ).enterTerminalStorageFailure(new Error("injected fence race"));
+          }
+        },
+      },
+    });
+    hostRef.current = host;
+    const peer = await openTab(broker, hub, store, { clientId: "tab-peer", name });
+    try {
+      const origInterceptor = hub.interceptor;
+      hub.interceptor = (ch, sender, msg) => {
+        if (
+          msg &&
+          typeof msg === "object" &&
+          Reflect.get(msg, "kind") === "res" &&
+          Reflect.get(msg, "ok") === true
+        ) {
+          okReplies.push(msg);
+        }
+        return origInterceptor?.(ch, sender, msg);
+      };
+      failNow = true;
+      await expect(
+        peer.client.asyncCall(
+          "writeFile",
+          ["/raced.txt", false, false],
+          new TextEncoder().encode("must-not-ack"),
+        ),
+      ).rejects.toThrow();
+      expect(okReplies).toEqual([]);
+      // Terminal storage failure must have cancelled any pending PersistentBackend checkpoint timer.
+      const persistent = (
+        host.backend as unknown as {
+          persistent?: { timer?: unknown; stopped?: boolean };
+        }
+      ).persistent;
+      expect(persistent?.timer).toBeUndefined();
+      expect(persistent?.stopped).toBe(true);
+    } finally {
+      hub.interceptor = undefined;
+      await peer.close().catch(() => {});
+      await host.close().catch(() => {});
     }
   });
 

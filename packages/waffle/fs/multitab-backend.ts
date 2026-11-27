@@ -4396,9 +4396,10 @@ export class MultiTabBackend implements FilesystemBackend {
     admittedTerm: bigint,
     budget: LeaseRenewalBudget,
     replyErr: (errno: number, message?: string) => void,
+    publish?: () => void,
   ): Promise<boolean> {
     try {
-      await this.ensurePeerLease(session, admittedTerm, budget);
+      await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, publish ?? (() => {}));
       return true;
     } catch (error) {
       if (!session.revoked) replyErr(errorToErrno(error), describeReason(error));
@@ -4461,21 +4462,22 @@ export class MultiTabBackend implements FilesystemBackend {
         );
         const slice = unsharedBytes(dl.bytes.subarray(msg.offset, end));
         await this.hooks.beforeHostReplyPublish?.("chunk-get", msg.reqId);
-        // Revalidate lease, term, and terminal state immediately before settling & publishing!
-        if (!(await this.ensureChunkGetLease(session, admittedTerm, budget, replyErr))) return;
-        if (end >= dl.bytes.byteLength) {
-          reclaimDownload();
-        }
-        this.sendPeerFrame(session.peerId, session.channel, {
-          kind: "res",
-          hostTerm: formatTerm(admittedTerm),
-          sessionId: session.sessionId,
-          reqId: msg.reqId,
-          ok: true,
-          data: slice,
-          binary: true,
-          creditFrames: 1,
-          creditBytes: 0,
+        // Revalidate lease, term, and terminal state synchronously in the same turn as publication!
+        await this.ensureChunkGetLease(session, admittedTerm, budget, replyErr, () => {
+          if (end >= dl.bytes.byteLength) {
+            reclaimDownload();
+          }
+          this.sendPeerFrame(session.peerId, session.channel, {
+            kind: "res",
+            hostTerm: formatTerm(admittedTerm),
+            sessionId: session.sessionId,
+            reqId: msg.reqId,
+            ok: true,
+            data: slice,
+            binary: true,
+            creditFrames: 1,
+            creditBytes: 0,
+          });
         });
       } finally {
         this.leaveHostAdmitted();
@@ -4606,10 +4608,21 @@ export class MultiTabBackend implements FilesystemBackend {
     admittedTerm: bigint,
     budget: LeaseRenewalBudget,
   ): Promise<void> {
+    await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {});
+  }
+
+  /** Verify lease/term authority and invoke `publish` synchronously in the same turn. */
+  private async ensurePeerLeaseAndPublish(
+    session: HostPeerSession,
+    admittedTerm: bigint,
+    budget: LeaseRenewalBudget,
+    publish: () => void,
+  ): Promise<void> {
     const cancelled = () => session.revoked;
     while (!this.hostReadyForPeer(session, admittedTerm)) {
       await this.renewLapsedLease(admittedTerm, cancelled, budget);
     }
+    publish();
   }
 
   private async retryPeerAfterLeaseRenewal<T>(
@@ -4694,8 +4707,9 @@ export class MultiTabBackend implements FilesystemBackend {
           await this.persistent!.flush(target);
         });
         await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
-        await this.ensurePeerLease(session, admittedTerm, budget);
-        reply({ ok: true, value: msg.op === "sync" ? 0 : undefined });
+        await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+          reply({ ok: true, value: msg.op === "sync" ? 0 : undefined });
+        });
         return;
       }
       if (msg.op === "read") {
@@ -4725,6 +4739,23 @@ export class MultiTabBackend implements FilesystemBackend {
     return { data: upload.buffer, reservedUploadBytes: upload.totalBytes };
   }
 
+  private rebindPeerFiles(
+    session: HostPeerSession,
+    persistent: PersistentBackend,
+    fileIds: readonly bigint[],
+    bound: (WirePinnedHandle | null)[],
+  ): void {
+    for (const fileId of fileIds) {
+      const node = persistent.nodeByFileId(fileId);
+      if (!node) {
+        bound.push(null);
+        continue;
+      }
+      const remoteHandle = persistent.fs.handleForNode(node);
+      bound.push(this.mintHostPeerPin(session, remoteHandle, fileId));
+    }
+  }
+
   private async handleHostPeerRebind(
     session: HostPeerSession,
     admittedTerm: bigint,
@@ -4743,26 +4774,19 @@ export class MultiTabBackend implements FilesystemBackend {
     await this.retryPeerAfterLeaseRenewal(session, admittedTerm, budget, () =>
       this.enqueueHostSerial(() => {
         this.assertPeerAttempt(session, admittedTerm);
-        for (const fileId of fileIds) {
-          const node = persistent.nodeByFileId(fileId);
-          if (!node) {
-            bound.push(null);
-            continue;
-          }
-          const remoteHandle = persistent.fs.handleForNode(node);
-          bound.push(this.mintHostPeerPin(session, remoteHandle, fileId));
-        }
+        this.rebindPeerFiles(session, persistent, fileIds, bound);
       }),
     );
     await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
     try {
-      await this.ensurePeerLease(session, admittedTerm, budget);
+      await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+        reply({ ok: true, value: bound });
+      });
     } catch (error) {
       const mintedTokens = bound.flatMap((item) => (item ? [item.pinToken] : []));
       this.rollbackMintedPeerTokens(session, persistent, mintedTokens);
       throw error;
     }
-    reply({ ok: true, value: bound });
   }
 
   private async handleHostPeerWatchOpen(
@@ -4792,14 +4816,15 @@ export class MultiTabBackend implements FilesystemBackend {
     );
     await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
     try {
-      await this.ensurePeerLease(session, admittedTerm, budget);
+      await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+        reply({ ok: true, value: hostWatchId });
+      });
     } catch (error) {
       if (session.watchIds.delete(hostWatchId)) {
         this.watchService?.close(session.ownerId, hostWatchId);
       }
       throw error;
     }
-    reply({ ok: true, value: hostWatchId });
   }
 
   private rollbackHeldWatchAck(session: HostPeerSession, ackId: number | undefined): void {
@@ -4834,12 +4859,27 @@ export class MultiTabBackend implements FilesystemBackend {
     );
     await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
     try {
-      await this.ensurePeerLease(session, admittedTerm, budget);
+      await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+        if (!held) return;
+        this.publishHeldWatchBatch(session, held, hostWatchId, reply);
+      });
     } catch (error) {
       held?.rollback();
       throw error;
     }
-    if (!held) return;
+  }
+
+  private publishHeldWatchBatch(
+    session: HostPeerSession,
+    held: HeldWatchBatch,
+    hostWatchId: number,
+    reply: (
+      partial: Omit<
+        Extract<PeerMessage, { kind: "res" }>,
+        "kind" | "hostTerm" | "sessionId" | "reqId" | "creditFrames" | "creditBytes"
+      >,
+    ) => void,
+  ): void {
     const batch = held.batch;
     const encoded = pack(batch);
     let ackId: number | undefined;
@@ -4866,6 +4906,18 @@ export class MultiTabBackend implements FilesystemBackend {
       totalBytes: encoded.byteLength,
       firstChunk: staged.firstChunk,
     });
+  }
+
+  private reserveStagedDownload(session: HostPeerSession, byteLength: number): number {
+    if (byteLength <= MAX_FRAME_BYTES) return 0;
+    if (
+      session.downloads.size >= MAX_CONCURRENT_DOWNLOADS_PER_PEER ||
+      this.hostUsedDownloadBytes + byteLength > MAX_STAGED_DOWNLOAD_BYTES
+    ) {
+      throw new FilesystemError(6, "staged download pool exhausted");
+    }
+    this.hostUsedDownloadBytes += byteLength;
+    return byteLength;
   }
 
   private async handleHostPeerReaddirPage(
@@ -4897,24 +4949,16 @@ export class MultiTabBackend implements FilesystemBackend {
           remaining,
           MAX_STAGED_DOWNLOAD_BYTES,
         );
-        if (bytes.byteLength > MAX_FRAME_BYTES) {
-          if (
-            session.downloads.size >= MAX_CONCURRENT_DOWNLOADS_PER_PEER ||
-            this.hostUsedDownloadBytes + bytes.byteLength > MAX_STAGED_DOWNLOAD_BYTES
-          ) {
-            throw new FilesystemError(6, "staged download pool exhausted");
-          }
-          reserved = bytes.byteLength;
-          this.hostUsedDownloadBytes += reserved;
-        }
+        reserved = this.reserveStagedDownload(session, bytes.byteLength);
       }),
     );
     try {
       await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
-      await this.ensurePeerLease(session, admittedTerm, budget);
-      const transferReserved = reserved;
-      reserved = 0;
-      this.replyWithBytes(session, bytes, transferReserved, true, false, reply);
+      await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+        const transferReserved = reserved;
+        reserved = 0;
+        this.replyWithBytes(session, bytes, transferReserved, true, false, reply);
+      });
     } catch (error) {
       if (reserved > 0) {
         this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - reserved);
@@ -4953,8 +4997,9 @@ export class MultiTabBackend implements FilesystemBackend {
         });
         if (accepted === undefined) continue;
         await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
-        await this.ensurePeerLease(session, admittedTerm, budget);
-        reply({ ok: true, data: unsharedBytes(accepted), binary: true });
+        await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+          reply({ ok: true, data: unsharedBytes(accepted), binary: true });
+        });
         return;
       }
       let readBytes!: Uint8Array;
@@ -4969,8 +5014,9 @@ export class MultiTabBackend implements FilesystemBackend {
         }),
       );
       await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
-      await this.ensurePeerLease(session, admittedTerm, budget);
-      reply({ ok: true, data: unsharedBytes(readBytes), binary: true });
+      await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+        reply({ ok: true, data: unsharedBytes(readBytes), binary: true });
+      });
       return;
     }
   }
@@ -5116,16 +5162,16 @@ export class MultiTabBackend implements FilesystemBackend {
 
     await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
     try {
-      await this.ensurePeerLease(session, admittedTerm, budget);
+      await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+        if (wireValue instanceof Uint8Array) {
+          reply({ ok: true, data: unsharedBytes(wireValue), binary: true });
+        } else {
+          reply({ ok: true, value: wireValue });
+        }
+      });
     } catch (error) {
       this.rollbackMintedPeerTokens(session, persistent, mintedTokens);
       throw error;
-    }
-
-    if (wireValue instanceof Uint8Array) {
-      reply({ ok: true, data: unsharedBytes(wireValue), binary: true });
-    } else {
-      reply({ ok: true, value: wireValue });
     }
   }
 
@@ -5235,8 +5281,9 @@ export class MultiTabBackend implements FilesystemBackend {
         );
         if (!admitted) {
           await this.hooks.beforeHostReplyPublish?.("readFile", reqId);
-          await this.ensurePeerLease(session, admittedTerm, budget);
-          reply({ ok: true, value: undefined });
+          await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+            reply({ ok: true, value: undefined });
+          });
           return;
         }
 
@@ -5272,19 +5319,20 @@ export class MultiTabBackend implements FilesystemBackend {
         if (outcome.kind === "missing") {
           releaseAttempt();
           await this.hooks.beforeHostReplyPublish?.("readFile", reqId);
-          await this.ensurePeerLease(session, admittedTerm, budget);
-          reply({ ok: true, value: undefined });
+          await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+            reply({ ok: true, value: undefined });
+          });
           return;
         }
 
         persistent.release(attempt.handle!);
         attempt.handle = undefined;
         await this.hooks.beforeHostReplyPublish?.("readFile", reqId);
-        await this.ensurePeerLease(session, admittedTerm, budget);
-
-        const transferReserved = attempt.reservedBytes;
-        attempt.reservedBytes = 0;
-        this.replyWithBytes(session, outcome.bytes, transferReserved, true, false, reply);
+        await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+          const transferReserved = attempt.reservedBytes;
+          attempt.reservedBytes = 0;
+          this.replyWithBytes(session, outcome.bytes, transferReserved, true, false, reply);
+        });
         return;
       } catch (error) {
         releaseAttempt();
@@ -5432,30 +5480,44 @@ export class MultiTabBackend implements FilesystemBackend {
     let remainingReserved = built.reservedBytes;
     try {
       await this.hooks.beforeHostReplyPublish?.(op, reqId);
-      await this.ensurePeerLease(session, admittedTerm, budget);
-
-      if (built.bytes.byteLength <= MAX_FRAME_BYTES) {
-        if (remainingReserved > 0) {
-          this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - remainingReserved);
-          remainingReserved = 0;
-        }
-        reply({ ok: true, data: unsharedBytes(built.bytes), packed: true });
-        return;
-      }
-
-      if (session.downloads.size >= MAX_CONCURRENT_DOWNLOADS_PER_PEER) {
-        throw new FilesystemError(6, "staged download pool exhausted");
-      }
-
-      const transferReserved = remainingReserved;
-      remainingReserved = 0;
-      this.replyWithBytes(session, built.bytes, transferReserved, false, true, reply);
+      await this.ensurePeerLeaseAndPublish(session, admittedTerm, budget, () => {
+        const reserved = remainingReserved;
+        remainingReserved = 0;
+        this.publishBoundedWireRead(session, built.bytes, reserved, reply);
+      });
     } catch (error) {
       if (remainingReserved > 0) {
         this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - remainingReserved);
       }
       throw error;
     }
+  }
+
+  private publishBoundedWireRead(
+    session: HostPeerSession,
+    bytes: Uint8Array<ArrayBuffer>,
+    reserved: number,
+    reply: (
+      partial: Omit<
+        Extract<PeerMessage, { kind: "res" }>,
+        "kind" | "hostTerm" | "sessionId" | "reqId" | "creditFrames" | "creditBytes"
+      >,
+    ) => void,
+  ): void {
+    if (bytes.byteLength <= MAX_FRAME_BYTES) {
+      if (reserved > 0) {
+        this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - reserved);
+      }
+      reply({ ok: true, data: unsharedBytes(bytes), packed: true });
+      return;
+    }
+    if (session.downloads.size >= MAX_CONCURRENT_DOWNLOADS_PER_PEER) {
+      if (reserved > 0) {
+        this.hostUsedDownloadBytes = Math.max(0, this.hostUsedDownloadBytes - reserved);
+      }
+      throw new FilesystemError(6, "staged download pool exhausted");
+    }
+    this.replyWithBytes(session, bytes, reserved, false, true, reply);
   }
 
   private encodeBoundedWireOp(
