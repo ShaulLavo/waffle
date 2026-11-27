@@ -3633,29 +3633,43 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     }
   });
 
-  test("terminal Host failure racing Peer reply publication never publishes ok: true and cancels checkpoint timer", async () => {
+  test("terminal Host failure racing Peer reply publication never publishes ok: true after host-failed and cancels armed checkpoint timer", async () => {
     const broker = new MockLockBroker();
     const hub = new MockBroadcastHub();
     const store = new MockSharedStore();
     const name = `ws-peer-reply-race-${crypto.randomUUID()}`;
-    let failNow = false;
+    let injectRace = false;
+    let timerWasArmedBeforeFailure = false;
+    const failureFired = Promise.withResolvers<void>();
     const hostRef: { current?: Awaited<ReturnType<typeof openTab>> } = {};
-    const okReplies: unknown[] = [];
+    const observedFrames: Array<{ kind: string; ok?: unknown }> = [];
+    const fireTerminalFailure = () => {
+      const backend = hostRef.current!.backend as unknown as {
+        enterTerminalStorageFailure(reason: unknown): void;
+      };
+      backend.enterTerminalStorageFailure(new Error("injected fence race"));
+      failureFired.resolve();
+    };
+    const queueFailureAfterCheck = () => {
+      queueMicrotask(fireTerminalFailure);
+    };
 
     const host = await openTab(broker, hub, store, {
       clientId: "tab-host",
       name,
       hooks: {
         beforeHostReplyPublish(op) {
-          if (failNow && op === "writeFile") {
-            failNow = false;
-            // Inject terminal storage failure synchronously when reply publication begins.
-            (
-              hostRef.current!.backend as unknown as {
-                enterTerminalStorageFailure(reason: unknown): void;
-              }
-            ).enterTerminalStorageFailure(new Error("injected fence race"));
-          }
+          if (!injectRace || op !== "writeFile") return;
+          injectRace = false;
+          const backend = hostRef.current!.backend as unknown as {
+            persistent?: { timer?: unknown; stopped?: boolean };
+          };
+          timerWasArmedBeforeFailure = backend.persistent?.timer !== undefined;
+          // Queue two microtasks so failure runs right AFTER the synchronous authority check:
+          // microtask 1 runs before `await beforeHostReplyPublish` resumes, microtask 2 lands
+          // right after `ensurePeerLeaseAndPublish` (or in the old async-gap bug, between
+          // `await ensurePeerLease()` and `reply({ ok: true })`).
+          queueMicrotask(queueFailureAfterCheck);
         },
       },
     });
@@ -3664,26 +3678,27 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
     try {
       const origInterceptor = hub.interceptor;
       hub.interceptor = (ch, sender, msg) => {
-        if (
-          msg &&
-          typeof msg === "object" &&
-          Reflect.get(msg, "kind") === "res" &&
-          Reflect.get(msg, "ok") === true
-        ) {
-          okReplies.push(msg);
+        if (msg && typeof msg === "object") {
+          const kind = Reflect.get(msg, "kind");
+          if (kind === "host-failed" || kind === "res") {
+            observedFrames.push({ kind, ok: Reflect.get(msg, "ok") });
+          }
         }
         return origInterceptor?.(ch, sender, msg);
       };
-      failNow = true;
-      await expect(
-        peer.client.asyncCall(
-          "writeFile",
-          ["/raced.txt", false, false],
-          new TextEncoder().encode("must-not-ack"),
-        ),
-      ).rejects.toThrow();
-      expect(okReplies).toEqual([]);
-      // Terminal storage failure must have cancelled any pending PersistentBackend checkpoint timer.
+      injectRace = true;
+      await peer.client.asyncCall(
+        "writeFile",
+        ["/raced.txt", false, false],
+        new TextEncoder().encode("must-not-ack-after-fence"),
+      );
+      await failureFired.promise;
+      // Drain any trailing microtasks that an async-gap reply would have used.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Prove the checkpoint timer was armed by writeFile and cancelled by terminal failure.
+      expect(timerWasArmedBeforeFailure).toBe(true);
       const persistent = (
         host.backend as unknown as {
           persistent?: { timer?: unknown; stopped?: boolean };
@@ -3691,6 +3706,17 @@ describe("multitab Rev 24 pause-point & protocol invariants", () => {
       ).persistent;
       expect(persistent?.timer).toBeUndefined();
       expect(persistent?.stopped).toBe(true);
+
+      // Prove failure landed after the synchronous authority check and no ok: true followed host-failed.
+      const failedIndex = observedFrames.findIndex((f) => f.kind === "host-failed");
+      const okIndex = observedFrames.findIndex((f) => f.kind === "res" && f.ok === true);
+      expect(failedIndex).toBeGreaterThan(0);
+      expect(okIndex).toBeGreaterThanOrEqual(0);
+      expect(okIndex).toBeLessThan(failedIndex);
+      const okAfterFailed = observedFrames
+        .slice(failedIndex + 1)
+        .filter((f) => f.kind === "res" && f.ok === true);
+      expect(okAfterFailed).toEqual([]);
     } finally {
       hub.interceptor = undefined;
       await peer.close().catch(() => {});
