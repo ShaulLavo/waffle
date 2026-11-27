@@ -1478,6 +1478,46 @@ describe("runtime_fs advisory locks over WASI", () => {
     ).toBe(0);
     expect(capped.diagnostics().ranges).toBe(0);
     capped.dispose();
+
+    // Unsettled covering grants reserve rollback capacity so another inode cannot steal slots
+    // and cause rollback in grant order to exceed maxRangeLocks.
+    const cap2 = new LockTable({ maxRangeLocks: 2 });
+    const s1 = cap2.setRangeLock(1, undefined, 1, 1, { type: F_WRLCK, start: 0, len: 5 }, false);
+    const s2 = cap2.setRangeLock(1, undefined, 1, 1, { type: F_WRLCK, start: 10, len: 5 }, false);
+    expect(s1.errno).toBe(0);
+    expect(s2.errno).toBe(0);
+    const coverA = cap2.setRangeLock(
+      1,
+      undefined,
+      1,
+      1,
+      { type: F_WRLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    const coverB = cap2.setRangeLock(
+      1,
+      undefined,
+      1,
+      1,
+      { type: F_RDLCK, start: 0, len: 20 },
+      false,
+      true,
+    );
+    expect(coverA.errno).toBe(0);
+    expect(coverB.errno).toBe(0);
+    // Freed slot is reserved for rollback until the provisional edits settle.
+    expect(
+      cap2.setRangeLock(2, undefined, 2, 2, { type: F_WRLCK, start: 0, len: 5 }, false).errno,
+    ).toBe(ENOLCK);
+    coverA.rollback?.();
+    // Still reserved via coverB's spliced delta until coverB settles or rolls back.
+    expect(
+      cap2.setRangeLock(2, undefined, 2, 2, { type: F_WRLCK, start: 0, len: 5 }, false).errno,
+    ).toBe(ENOLCK);
+    coverB.rollback?.();
+    expect(cap2.diagnostics().ranges).toBe(2);
+    cap2.dispose();
   });
 
   test("OFD churn leaves bounded metadata and byte-range/flock/waiter caps return ENOLCK while unlock succeeds", () => {
@@ -1901,31 +1941,68 @@ describe("runtime_fs advisory locks over WASI", () => {
       }
       expect(flockAcquired).toBe(true);
 
-      // Unlinked file + transient EAGAIN on fd_close + service.sweep() must retain handle until retry succeeds.
+      // Unlinked file POSIX lock + held EAGAIN across service.sweep() must retain handle until retry succeeds.
       f.backend.fs.writeFile("/unlinked-lock.dat", new Uint8Array(64));
       const uOwnerFd = await owner.call<number>({ op: "open", path: "unlinked-lock.dat" });
       const uPeerFd = await peer.call<number>({ op: "open", path: "unlinked-lock.dat" });
       expect(
-        await owner.call<number>({ op: "flock", fd: uOwnerFd, operation: LOCK_EX | LOCK_NB }),
-      ).toBe(0);
+        await owner.call<{ errno: number }>({
+          op: "lock",
+          fd: uOwnerFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "50",
+        }),
+      ).toEqual({ errno: 0 });
       const rootHandle = f.backend.fs.preopen("/");
       const unlinkedResolved = f.backend.fs.resolve(rootHandle, "unlinked-lock.dat", false);
       expect(typeof unlinkedResolved).toBe("object");
       if (typeof unlinkedResolved === "object") {
         expect(f.backend.fs.removePath(unlinkedResolved, false)).toBe(0);
       }
-      await owner.call({ op: "failNextRelease", operation: "lockReleaseOfd", errno: EAGAIN });
+      // Hold EAGAIN across close + sweep so retry CANNOT run before sweep tries to evict the unlinked handle.
+      await owner.call({
+        op: "setReleaseFault",
+        operation: "lockReleasePosix",
+        errno: EAGAIN,
+        active: true,
+      });
       expect(await owner.call<number>({ op: "close", fd: uOwnerFd })).toBe(0);
       f.service.sweep();
+      // Lock is still held while fault is active (proving sweep did not drop it).
+      expect(
+        await peer.call<{ errno: number }>({
+          op: "lock",
+          fd: uPeerFd,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "50",
+        }),
+      ).toEqual({ errno: EAGAIN });
+      // Release the fault: retained handle lets queued lockReleasePosix succeed after sweep!
+      await owner.call({
+        op: "setReleaseFault",
+        operation: "lockReleasePosix",
+        errno: EAGAIN,
+        active: false,
+      });
 
       let unlinkedAcquired = false;
       for (let attempt = 0; attempt < 40; attempt++) {
-        const err = await peer.call<number>({
-          op: "flock",
+        const res = await peer.call<{ errno: number }>({
+          op: "lock",
           fd: uPeerFd,
-          operation: LOCK_EX | LOCK_NB,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "50",
         });
-        if (err === 0) {
+        if (res.errno === 0) {
           unlinkedAcquired = true;
           break;
         }

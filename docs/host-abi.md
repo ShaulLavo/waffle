@@ -1505,8 +1505,10 @@ Locks are scoped to the **open file description (OFD)**:
 - Multi-tab `whenBusy: "attach"` storage (`MultiTabBackend`) returns `ENOTSUP` (`58`) rather than
   granting tab-local locks across tabs.
 - Lock metadata (active flocks, byte-range segments, queued waiters, and unsettled replies) is
-  bounded; requests exceeding the limit return `ENOLCK` (`46`) without mutating state while
-  unlocks and descriptor closes always succeed.
+  bounded; requests exceeding the limit return `ENOLCK` (`46`) without mutating state. `LOCK_UN`,
+  non-splitting `F_UNLCK` (including whole-range unlocks), and descriptor closes always succeed; a
+  middle-range `F_UNLCK` that splits one locked range into two when at the byte-range cap returns
+  `ENOLCK` (`46`) without mutating state, matching Linux `fcntl(2)`.
 
 ### Byte-range locks (`fd_lock`)
 

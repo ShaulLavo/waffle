@@ -30,6 +30,13 @@ type Command =
       readonly operation: "lockReleaseOfd" | "lockReleasePosix";
       readonly errno: number;
     }
+  | {
+      readonly id: number;
+      readonly op: "setReleaseFault";
+      readonly operation: "lockReleaseOfd" | "lockReleasePosix";
+      readonly errno: number;
+      readonly active: boolean;
+    }
   | { readonly id: number; readonly op: "handoffPosix"; readonly successorOwner: number }
   | {
       readonly id: number;
@@ -92,6 +99,35 @@ function openPath(path: string, rights: bigint): number {
   client!.retain(handle);
   const resource = { kind: "file" as const, handle, offset: 0, append: false, fdflags: 0 };
   return wasi!.descriptors.open(resource, rights, 0n, () => releaseOriginOfd(client!, resource));
+}
+
+let heldReleaseFault: {
+  operation: "lockReleaseOfd" | "lockReleasePosix";
+  errno: number;
+  originalSubmit: FilesystemClient["submit"];
+} | null = null;
+
+function setReleaseFault(
+  operation: "lockReleaseOfd" | "lockReleasePosix",
+  code: number,
+  active: boolean,
+): true {
+  const activeClient = client!;
+  if (!active) {
+    if (heldReleaseFault) {
+      activeClient.submit = heldReleaseFault.originalSubmit;
+      heldReleaseFault = null;
+    }
+    return true;
+  }
+  const originalSubmit = heldReleaseFault?.originalSubmit ?? activeClient.submit.bind(activeClient);
+  heldReleaseFault = { operation, errno: code, originalSubmit };
+  activeClient.submit = ((op: string, args?: unknown[], data?: Uint8Array) => {
+    if (heldReleaseFault && op === heldReleaseFault.operation)
+      throw new FilesystemError(heldReleaseFault.errno);
+    return originalSubmit(op, args, data);
+  }) as typeof activeClient.submit;
+  return true;
 }
 
 function armReleaseFault(operation: "lockReleaseOfd" | "lockReleasePosix", code: number): true {
@@ -157,6 +193,7 @@ function handleCommand(cmd: Command): unknown {
     return true;
   }
   if (cmd.op === "failNextRelease") return armReleaseFault(cmd.operation, cmd.errno);
+  if (cmd.op === "setReleaseFault") return setReleaseFault(cmd.operation, cmd.errno, cmd.active);
   if (cmd.op === "handoffPosix") {
     client!.locks.handoffPosix?.(cmd.successorOwner);
     return true;

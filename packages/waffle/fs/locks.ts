@@ -61,6 +61,7 @@ interface RangeOpRecord {
   readonly ino: number;
   readonly owner: string;
   delta: RangeDeltaSegment[];
+  reservedSlots: number;
 }
 
 interface Waiter {
@@ -266,6 +267,14 @@ function spliceDeltaSegment(
   if (cursor < seg.end) out.push({ start: cursor, end: seg.end, prevType: F_UNLCK, prevOpId: 0 });
 }
 
+function rollbackReserveForDelta(delta: readonly RangeDeltaSegment[]): number {
+  let nonUnlock = 0;
+  for (let i = 0; i < delta.length; i++) {
+    if (delta[i]!.prevType !== F_UNLCK) nonUnlock += 1;
+  }
+  return nonUnlock > 1 ? nonUnlock - 1 : 0;
+}
+
 function spliceRangeDelta(
   targetDelta: readonly RangeDeltaSegment[],
   cancelledOpId: number,
@@ -349,6 +358,7 @@ export class LockTable {
   private readonly maxPendingTransactions: number;
   private readonly onPosixLockCountChange?: (count: number) => void;
   private totalRangeLocks = 0;
+  private reservedRangeRollbackSlots = 0;
   private totalPosixRangeLocks = 0;
   private totalFlocks = 0;
   private totalWaiters = 0;
@@ -632,6 +642,7 @@ export class LockTable {
     this.flockOpPrev.clear();
     this.rangeOpDeltas.clear();
     this.totalRangeLocks = 0;
+    this.reservedRangeRollbackSlots = 0;
     this.totalFlocks = 0;
     this.totalWaiters = 0;
     this.setPosixRangeCount(0);
@@ -681,7 +692,10 @@ export class LockTable {
       0,
     );
     const deltaCount = edited.nextCount - edited.previousCount;
-    if (deltaCount > 0 && this.totalRangeLocks + deltaCount > this.maxRangeLocks)
+    if (
+      deltaCount > 0 &&
+      this.totalRangeLocks + this.reservedRangeRollbackSlots + deltaCount > this.maxRangeLocks
+    )
       return { errno: ENOLCK };
     inode.ranges = edited.next;
     this.adjustRangeCounts(deltaCount, posixOwner !== undefined ? deltaCount : 0);
@@ -863,6 +877,7 @@ export class LockTable {
   private discardOwnerRangeOps(ino: number, owner: string): void {
     for (const [opId, record] of this.rangeOpDeltas) {
       if (record.ino !== ino || record.owner !== owner) continue;
+      this.reservedRangeRollbackSlots -= record.reservedSlots;
       this.rangeOpDeltas.delete(opId);
       this.pendingOps.delete(opId);
     }
@@ -984,7 +999,12 @@ export class LockTable {
       opId,
     );
     const deltaCount = edited.nextCount - edited.previousCount;
-    if (this.totalRangeLocks + deltaCount > this.maxRangeLocks) return { errno: ENOLCK };
+    const reservedSlots = trackTransaction ? rollbackReserveForDelta(edited.delta) : 0;
+    if (
+      this.totalRangeLocks + this.reservedRangeRollbackSlots + deltaCount + reservedSlots >
+      this.maxRangeLocks
+    )
+      return { errno: ENOLCK };
     if (trackTransaction && this.pendingOps.size >= this.maxPendingTransactions)
       return { errno: ENOLCK };
     if (ofdId !== undefined) {
@@ -999,7 +1019,8 @@ export class LockTable {
     if (edited.relaxed) this.wakeInode(ino, inode);
     if (!trackTransaction) return { errno: 0 };
     this.pendingOps.add(opId);
-    this.rangeOpDeltas.set(opId, { ino, owner, delta: edited.delta });
+    this.reservedRangeRollbackSlots += reservedSlots;
+    this.rangeOpDeltas.set(opId, { ino, owner, delta: edited.delta, reservedSlots });
     return {
       errno: 0,
       rollback: () => this.rollbackRange(ino, owner, posixOwner, ofdId, pid, opId),
@@ -1023,7 +1044,11 @@ export class LockTable {
     opId: number,
   ): void {
     if (!this.pendingOps.delete(opId)) return;
-    this.rangeOpDeltas.delete(opId);
+    const record = this.rangeOpDeltas.get(opId);
+    if (record) {
+      this.reservedRangeRollbackSlots -= record.reservedSlots;
+      this.rangeOpDeltas.delete(opId);
+    }
     this.clearSettledRangePrevOp(ino, owner, opId);
     const inode = this.byIno.get(ino);
     if (!inode) return;
@@ -1062,9 +1087,13 @@ export class LockTable {
     const myRecord = this.rangeOpDeltas.get(opId);
     this.rangeOpDeltas.delete(opId);
     if (!myRecord) return;
+    this.reservedRangeRollbackSlots -= myRecord.reservedSlots;
     for (const record of this.rangeOpDeltas.values()) {
       if (record.ino !== ino || record.owner !== owner) continue;
       record.delta = spliceRangeDelta(record.delta, opId, myRecord.delta);
+      const nextReserve = rollbackReserveForDelta(record.delta);
+      this.reservedRangeRollbackSlots += nextReserve - record.reservedSlots;
+      record.reservedSlots = nextReserve;
     }
     const inode = this.byIno.get(ino);
     if (!inode) return;
