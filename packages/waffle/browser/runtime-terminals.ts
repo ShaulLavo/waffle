@@ -3,8 +3,15 @@ import { OpenDescription, type DescriptorTable, type Stream } from "../core/desc
 import { createNullDevice } from "../core/devices.js";
 import { guardedStream } from "./guarded-stream.js";
 import { ProcessError } from "../proc/types.js";
+import { PtyEndpoint } from "../proc/pty.js";
 import type { WorkerDescriptorCodec } from "../proc/worker-client.js";
-import { WeakMapConstructor, weakMapGet, weakMapHas, weakMapSet } from "../proc/intrinsics.ts";
+import {
+  isInstance,
+  WeakMapConstructor,
+  weakMapGet,
+  weakMapHas,
+  weakMapSet,
+} from "../proc/intrinsics.ts";
 import { hostTerminalStream, type RuntimeTerminalOutput } from "./terminal-output.js";
 
 type TerminalTarget = 0 | 1 | 2;
@@ -103,7 +110,7 @@ export function createRuntimeTerminalCodec(
       if (resource.kind !== "terminal" && resource.kind !== "pipe")
         return options.fallback.export(descriptor, pid);
       const target = weakMapGet(targets, resource);
-      if (target === undefined && resource.kind === "pipe")
+      if (target === undefined && (resource.kind === "pipe" || isInstance(resource, PtyEndpoint)))
         return options.fallback.export(descriptor, pid);
       // Arbitrary callback terminals cannot be cloned: only known destination provenance
       // transfers. A receiving executor may resolve that destination to an interactive stream.

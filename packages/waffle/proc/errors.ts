@@ -16,6 +16,7 @@ export const ProcessErrno = objectFreeze({
   INVAL: 28,
   NOMEM: 48,
   NOTSUP: 58,
+  NOTTY: 59,
   PERM: 63,
   SRCH: 71,
 });

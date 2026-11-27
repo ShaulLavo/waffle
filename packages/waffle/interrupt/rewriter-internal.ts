@@ -1,5 +1,5 @@
 // Bump on every edit. interrupt-transform-pin.test.ts binds this revision to the implementation.
-export const INTERRUPT_REWRITER_REVISION = 8;
+export const INTERRUPT_REWRITER_REVISION = 9;
 
 /**
  * Fail-closed core-Wasm interrupt instrumentation. Supported features are MVP,
@@ -51,6 +51,9 @@ const runtimeProcSignatures = new Map<string, FunctionSignature>([
   ["spawn_error", { params: [0x7f, 0x7f, 0x7f], results: [0x7f] }],
   ["job_of", { params: [0x7f], results: [0x7f] }],
   ["pipe", { params: [0x7f], results: [0x7f] }],
+  ["pty_open", { params: [0x7f, 0x7f, 0x7f], results: [0x7f] }],
+  ["pty_resize", { params: [0x7f, 0x7f, 0x7f], results: [0x7f] }],
+  ["pty_size", { params: [0x7f, 0x7f], results: [0x7f] }],
   ["dup", { params: [0x7f], results: [0x7f] }],
   ["fd_kind", { params: [0x7f], results: [0x7f] }],
   ["inherited_fd", { params: [0x7f], results: [0x7f] }],
