@@ -14,6 +14,7 @@ const EAGAIN = 6;
 const ECANCELED = 11;
 const EDEADLK = 16;
 const EINVAL = 28;
+const OFD_FLAG_ORIGIN_CLOSED = 2;
 
 type FlockMode = "sh" | "ex";
 type RangeType = typeof F_RDLCK | typeof F_WRLCK;
@@ -21,7 +22,6 @@ type RangeType = typeof F_RDLCK | typeof F_WRLCK;
 interface FlockEntry {
   mode: FlockMode;
   readonly ofdId: string;
-  readonly holders: Map<number, number>;
 }
 
 interface RangeLock {
@@ -51,6 +51,27 @@ interface InodeLocks {
   waiters: Waiter[];
 }
 
+interface OfdReservation {
+  readonly targetOwner: number;
+  readonly state: Int32Array;
+}
+
+interface OfdRecord {
+  readonly ino: number;
+  readonly handle: number;
+  readonly ofdId: string;
+  readonly originOwner: number;
+  originClosed: boolean;
+  cells?: Int32Array;
+  readonly reservations: OfdReservation[];
+}
+
+/** Authoritative liveness callbacks supplied by FilesystemService when reaping shared OFDs. */
+export interface OfdLiveness {
+  isSessionLive(sessionOwner: number): boolean;
+  hasPendingTransfer(sessionOwner: number, handle: number): boolean;
+}
+
 export interface LockCommit {
   readonly errno: number;
   /** Undo this lock acquisition if the service reply is cancelled before the client consumes it. */
@@ -76,6 +97,13 @@ function normalizeFlockOp(operation: number): {
   const base = operation & ~LOCK_NB;
   if (base !== LOCK_SH && base !== LOCK_EX && base !== LOCK_UN) return null;
   return { base, nonblocking };
+}
+
+function parseOfdOriginOwner(ofdId: string, fallback: number): number {
+  const colon = ofdId.indexOf(":");
+  if (colon <= 0) return fallback;
+  const parsed = Number(ofdId.slice(0, colon));
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function rangeEndOf(start: number, len: number): number {
@@ -169,10 +197,30 @@ function coalesceOwned(owned: readonly RangeLock[]): RangeLock[] {
 /** Inode-keyed advisory lock table implementing Linux/gVisor flock(2) and POSIX/OFD fcntl(2). */
 export class LockTable {
   private readonly byIno = new Map<number, InodeLocks>();
-  private readonly ownerInos = new Map<number, Set<number>>();
+  private readonly posixInos = new Map<number, Set<number>>();
+  private readonly ofdRecords = new Map<string, OfdRecord>();
+  private readonly ownerOfds = new Map<number, Set<string>>();
   private readonly waitingOn = new Map<string, Set<string>>();
   private readonly waitersBySession = new Map<number, Set<Waiter>>();
   private nextWaiterId = 1;
+
+  /** Register an adopted inherited file description reservation so OFD lock lifetimes track it. */
+  adoptReservation(
+    ino: number,
+    handle: number,
+    ofdId: string,
+    originOwner: number,
+    ofdBuffer: SharedArrayBuffer,
+    targetOwner: number,
+    reservationState: SharedArrayBuffer,
+  ): void {
+    const record = this.ensureOfdRecord(ino, handle, ofdId, originOwner);
+    record.cells ??= new Int32Array(ofdBuffer);
+    const state = new Int32Array(reservationState);
+    if (Atomics.load(state, 0) === 0) record.reservations.push({ targetOwner, state });
+    this.indexOwnerOfd(originOwner, ofdId);
+    this.indexOwnerOfd(targetOwner, ofdId);
+  }
 
   flock(
     ino: number,
@@ -180,6 +228,7 @@ export class LockTable {
     sessionOwner: number,
     operation: number,
     allowWait = false,
+    handle = 0,
   ): LockCommit {
     const parsed = normalizeFlockOp(operation);
     if (!parsed) return { errno: EINVAL };
@@ -198,39 +247,36 @@ export class LockTable {
       if (existing) this.removeFlock(ino, ofdId);
       throw this.enqueueWaiter(ino, ofdOwnerKey(ofdId), sessionOwner, blockers, false);
     }
-    return this.installFlock(ino, ofdId, sessionOwner, mode, existing);
+    this.ensureOfdRecord(ino, handle, ofdId, parseOfdOriginOwner(ofdId, sessionOwner));
+    this.indexOwnerOfd(sessionOwner, ofdId);
+    return this.installFlock(ino, ofdId, mode, existing);
   }
 
-  retainOfd(ino: number, ofdId: string, sessionOwner: number): void {
-    const inode = this.byIno.get(ino);
-    if (!inode) return;
-    let touched = false;
-    const flock = inode.flocks.get(ofdId);
-    if (flock) {
-      flock.holders.set(sessionOwner, (flock.holders.get(sessionOwner) ?? 0) + 1);
-      touched = true;
+  releaseOfd(ino: number, ofdId: string, sessionOwner?: number, liveness?: OfdLiveness): void {
+    const record = this.ofdRecords.get(ofdId);
+    if (!record || !liveness) {
+      this.dropOfdLocks(ino, ofdId);
+      if (record) this.deleteOfdRecord(record);
+      return;
     }
-    if (touched) this.indexOwnerIno(sessionOwner, ino);
+    if (sessionOwner !== undefined && sessionOwner === record.originOwner && !record.cells)
+      record.originClosed = true;
+    if (!this.isOfdAlive(record, liveness)) {
+      this.dropOfdLocks(record.ino, ofdId);
+      this.deleteOfdRecord(record);
+    }
   }
 
-  releaseOfd(ino: number, ofdId: string, sessionOwner?: number): void {
-    const inode = this.byIno.get(ino);
-    if (!inode) return;
-    let changed = false;
-    const flock = inode.flocks.get(ofdId);
-    if (flock) {
-      if (sessionOwner !== undefined) flock.holders.delete(sessionOwner);
-      if (sessionOwner === undefined || flock.holders.size === 0) {
-        inode.flocks.delete(ofdId);
-        changed = true;
-      }
+  /** Reap any tracked OFDs whose origin, adopted reservations, and pending transfers are gone. */
+  reapOfds(liveness: OfdLiveness, ofdIds?: Iterable<string>): void {
+    const candidates = ofdIds ? Array.from(ofdIds) : Array.from(this.ofdRecords.keys());
+    for (let i = 0; i < candidates.length; i++) {
+      const ofdId = candidates[i]!;
+      const record = this.ofdRecords.get(ofdId);
+      if (!record || this.isOfdAlive(record, liveness)) continue;
+      this.dropOfdLocks(record.ino, ofdId);
+      this.deleteOfdRecord(record);
     }
-    const key = ofdOwnerKey(ofdId);
-    const before = inode.ranges.length;
-    inode.ranges = inode.ranges.filter((entry) => entry.owner !== key);
-    if (inode.ranges.length !== before) changed = true;
-    if (changed) this.wakeInode(ino, inode);
-    this.pruneInode(ino, inode);
   }
 
   setRangeLock(
@@ -241,6 +287,7 @@ export class LockTable {
     range: FileLockRange,
     blocking: boolean,
     allowWait = false,
+    handle = 0,
   ): LockCommit {
     if (range.type !== F_RDLCK && range.type !== F_WRLCK && range.type !== F_UNLCK)
       return { errno: EINVAL };
@@ -271,6 +318,10 @@ export class LockTable {
       const trackDeadlock = ofdId === undefined;
       if (trackDeadlock && this.wouldDeadlock(owner, blockers)) return { errno: EDEADLK };
       throw this.enqueueWaiter(ino, owner, sessionOwner, blockers, trackDeadlock);
+    }
+    if (ofdId !== undefined) {
+      this.ensureOfdRecord(ino, handle, ofdId, parseOfdOriginOwner(ofdId, sessionOwner));
+      this.indexOwnerOfd(sessionOwner, ofdId);
     }
     return this.installRangeLock(
       ino,
@@ -323,19 +374,24 @@ export class LockTable {
     this.pruneInode(ino, inode);
   }
 
-  releaseSession(sessionOwner: number): void {
+  releaseSession(sessionOwner: number, liveness?: OfdLiveness): void {
     const waiters = this.waitersBySession.get(sessionOwner);
     if (waiters) {
       for (const waiter of Array.from(waiters)) waiter.cancel(ECANCELED);
       this.waitersBySession.delete(sessionOwner);
     }
-    const inos = this.ownerInos.get(sessionOwner);
-    if (!inos) return;
-    this.ownerInos.delete(sessionOwner);
-    const posixOwner = posixOwnerKey(sessionOwner);
-    for (const ino of Array.from(inos)) {
-      this.releaseSessionInode(ino, sessionOwner, posixOwner);
+    const inos = this.posixInos.get(sessionOwner);
+    if (inos) {
+      this.posixInos.delete(sessionOwner);
+      for (const ino of Array.from(inos)) this.releasePosix(ino, sessionOwner);
     }
+    const ofds = this.ownerOfds.get(sessionOwner);
+    if (!ofds) return;
+    const effectiveLiveness: OfdLiveness = liveness ?? {
+      isSessionLive: (owner) => owner !== sessionOwner,
+      hasPendingTransfer: () => false,
+    };
+    this.reapOfds(effectiveLiveness, ofds);
   }
 
   dispose(): void {
@@ -343,29 +399,80 @@ export class LockTable {
       for (const waiter of inode.waiters.slice()) waiter.cancel(ECANCELED);
     }
     this.byIno.clear();
-    this.ownerInos.clear();
+    this.posixInos.clear();
+    this.ofdRecords.clear();
+    this.ownerOfds.clear();
     this.waitingOn.clear();
     this.waitersBySession.clear();
   }
 
-  private releaseSessionInode(ino: number, sessionOwner: number, posixOwner: string): void {
+  private isOfdAlive(record: OfdRecord, liveness: OfdLiveness): boolean {
+    let writeIndex = 0;
+    for (let i = 0; i < record.reservations.length; i++) {
+      const entry = record.reservations[i]!;
+      if (Atomics.load(entry.state, 0) !== 0 || !liveness.isSessionLive(entry.targetOwner))
+        continue;
+      record.reservations[writeIndex++] = entry;
+    }
+    record.reservations.length = writeIndex;
+    if (writeIndex > 0) return true;
+    const originClosed =
+      record.originClosed ||
+      (record.cells !== undefined &&
+        (Atomics.load(record.cells, 7) & OFD_FLAG_ORIGIN_CLOSED) !== 0);
+    if (!originClosed && liveness.isSessionLive(record.originOwner)) return true;
+    if (record.cells !== undefined) return Atomics.load(record.cells, 6) > 0;
+    return liveness.hasPendingTransfer(record.originOwner, record.handle);
+  }
+
+  private dropOfdLocks(ino: number, ofdId: string): void {
     const inode = this.byIno.get(ino);
     if (!inode) return;
-    let changed = false;
-    for (const [ofdId, entry] of Array.from(inode.flocks)) {
-      if (!entry.holders.delete(sessionOwner)) continue;
-      if (entry.holders.size === 0) {
-        inode.flocks.delete(ofdId);
-        changed = true;
-      }
-    }
+    let changed = inode.flocks.delete(ofdId);
+    const key = ofdOwnerKey(ofdId);
     const before = inode.ranges.length;
-    inode.ranges = inode.ranges.filter(
-      (entry) => entry.owner !== posixOwner && entry.sessionOwner !== sessionOwner,
-    );
+    inode.ranges = inode.ranges.filter((entry) => entry.owner !== key);
     if (inode.ranges.length !== before) changed = true;
     if (changed) this.wakeInode(ino, inode);
     this.pruneInode(ino, inode);
+  }
+
+  private ensureOfdRecord(
+    ino: number,
+    handle: number,
+    ofdId: string,
+    originOwner: number,
+  ): OfdRecord {
+    let record = this.ofdRecords.get(ofdId);
+    if (!record) {
+      record = { ino, handle, ofdId, originOwner, originClosed: false, reservations: [] };
+      this.ofdRecords.set(ofdId, record);
+      this.indexOwnerOfd(originOwner, ofdId);
+    }
+    return record;
+  }
+
+  private deleteOfdRecord(record: OfdRecord): void {
+    this.ofdRecords.delete(record.ofdId);
+    this.unindexOwnerOfd(record.originOwner, record.ofdId);
+    for (let i = 0; i < record.reservations.length; i++)
+      this.unindexOwnerOfd(record.reservations[i]!.targetOwner, record.ofdId);
+  }
+
+  private indexOwnerOfd(sessionOwner: number, ofdId: string): void {
+    let set = this.ownerOfds.get(sessionOwner);
+    if (!set) {
+      set = new Set();
+      this.ownerOfds.set(sessionOwner, set);
+    }
+    set.add(ofdId);
+  }
+
+  private unindexOwnerOfd(sessionOwner: number, ofdId: string): void {
+    const set = this.ownerOfds.get(sessionOwner);
+    if (!set) return;
+    set.delete(ofdId);
+    if (set.size === 0) this.ownerOfds.delete(sessionOwner);
   }
 
   private ensureInode(ino: number): InodeLocks {
@@ -377,11 +484,11 @@ export class LockTable {
     return inode;
   }
 
-  private indexOwnerIno(sessionOwner: number, ino: number): void {
-    let set = this.ownerInos.get(sessionOwner);
+  private indexPosixIno(sessionOwner: number, ino: number): void {
+    let set = this.posixInos.get(sessionOwner);
     if (!set) {
       set = new Set();
-      this.ownerInos.set(sessionOwner, set);
+      this.posixInos.set(sessionOwner, set);
     }
     set.add(ino);
   }
@@ -415,49 +522,34 @@ export class LockTable {
   private installFlock(
     ino: number,
     ofdId: string,
-    sessionOwner: number,
     mode: FlockMode,
     existing: FlockEntry | undefined,
   ): LockCommit {
     const inode = this.ensureInode(ino);
     const previousMode = existing?.mode;
-    const previousHolderCount = existing?.holders.get(sessionOwner);
     if (existing) {
       existing.mode = mode;
-      if (!existing.holders.has(sessionOwner)) existing.holders.set(sessionOwner, 1);
       if (previousMode === "ex" && mode === "sh") this.wakeInode(ino, inode);
     } else {
-      const holders = new Map<number, number>([[sessionOwner, 1]]);
-      inode.flocks.set(ofdId, { mode, ofdId, holders });
+      inode.flocks.set(ofdId, { mode, ofdId });
     }
-    this.indexOwnerIno(sessionOwner, ino);
     return {
       errno: 0,
-      rollback: () =>
-        this.rollbackFlock(ino, ofdId, sessionOwner, previousMode, previousHolderCount),
+      rollback: () => this.rollbackFlock(ino, ofdId, previousMode),
     };
   }
 
-  private rollbackFlock(
-    ino: number,
-    ofdId: string,
-    sessionOwner: number,
-    previousMode: FlockMode | undefined,
-    previousHolderCount: number | undefined,
-  ): void {
+  private rollbackFlock(ino: number, ofdId: string, previousMode: FlockMode | undefined): void {
     const inode = this.byIno.get(ino);
     const current = inode?.flocks.get(ofdId);
     if (!inode || !current) return;
     if (previousMode === undefined) {
-      current.holders.delete(sessionOwner);
-      if (current.holders.size === 0) inode.flocks.delete(ofdId);
+      inode.flocks.delete(ofdId);
       this.wakeInode(ino, inode);
       this.pruneInode(ino, inode);
       return;
     }
     current.mode = previousMode;
-    if (previousHolderCount === undefined) current.holders.delete(sessionOwner);
-    else current.holders.set(sessionOwner, previousHolderCount);
     this.wakeInode(ino, inode);
   }
 
@@ -481,7 +573,7 @@ export class LockTable {
     const inode = this.ensureInode(ino);
     const edited = editOwnerRanges(inode.ranges, owner, sessionOwner, ofdId, pid, type, start, end);
     inode.ranges = edited.next;
-    this.indexOwnerIno(sessionOwner, ino);
+    if (ofdId === undefined) this.indexPosixIno(sessionOwner, ino);
     if (edited.relaxed) this.wakeInode(ino, inode);
     const snapshot = edited.previousOwner;
     return {

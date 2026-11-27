@@ -14,7 +14,7 @@ import {
   LOCK_SH,
   LOCK_UN,
 } from "../core/filesystem.js";
-import { releaseSharedOfd, resourceOfdLockState } from "../core/open-file.js";
+import { markOriginOfdClosed, resourceOfdLockState } from "../core/open-file.js";
 import { RIGHTS_ALL, RIGHT_FD_READ, RIGHT_FD_WRITE } from "../core/rights.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemClient } from "../fs/client.js";
@@ -22,11 +22,15 @@ import { LockContentionError, LockTable } from "../fs/locks.js";
 import { MemFS } from "../fs/memory.js";
 import {
   createFilesystemConnection,
+  createFilesystemIdentity,
   revokeFilesystem,
   type FilesystemConnection,
 } from "../fs/protocol.js";
 import { FilesystemService } from "../fs/service.js";
-import type { FilesystemDescriptorToken } from "../proc/filesystem-codec.js";
+import {
+  createFilesystemDescriptorCodec,
+  type FilesystemDescriptorToken,
+} from "../proc/filesystem-codec.js";
 import { guestFunction, guestModule } from "./fixtures/publication-wasm.js";
 
 const EAGAIN = 6;
@@ -79,13 +83,9 @@ function openMemFile(wasi: Wasi, fs: MemFS, path: string, rights: bigint = RIGHT
   fs.retain(handle);
   const resource = { kind: "file" as const, handle, offset: 0, append: false, fdflags: 0 };
   return wasi.descriptors.open(resource, rights, 0n, () => {
+    markOriginOfdClosed(resource);
     const lock = resourceOfdLockState(resource);
-    if (lock) {
-      const ofd = lock.shared ? releaseSharedOfd(resource) : lock.id;
-      if (ofd) fs.locks.releaseOfd(handle, ofd);
-    } else {
-      releaseSharedOfd(resource);
-    }
+    if (lock) fs.locks.releaseOfd(handle, lock.id);
     fs.release(handle);
   });
 }
@@ -715,6 +715,259 @@ describe("runtime_fs advisory locks over WASI", () => {
         }),
       ).toEqual({ errno: 0 });
       expect(await waitA).toEqual({ errno: 0 });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("inherited flock survives child close and releases immediately when last live fd closes", async () => {
+    const f = createServiceFixture();
+    try {
+      const parent = await f.spawnWorker(31);
+      const other = await f.spawnWorker(32);
+
+      const pFd = await parent.call<number>({ op: "open", path: "lock.dat" });
+      const oFd = await other.call<number>({ op: "open", path: "lock.dat" });
+      expect(
+        await parent.call<number>({ op: "flock", fd: pFd, operation: LOCK_EX | LOCK_NB }),
+      ).toBe(0);
+
+      const childPair = createFilesystemConnection(f.rootConnection);
+      const token = await parent.call<FilesystemDescriptorToken>({
+        op: "export",
+        fd: pFd,
+        target: {
+          ...childPair.client,
+          port: undefined as unknown as MessagePort,
+        },
+      });
+      childPair.client.reservations.push(token.reservation);
+      childPair.server.reservations.push(token.reservation);
+      f.service.connect(childPair.server);
+      const child = await f.spawnWorker(33, childPair);
+      const cFd = await child.call<number>({ op: "import", token });
+
+      // Simulate broker/controller holding a proxy copy of the same reservation token.
+      const controllerCodec = createFilesystemDescriptorCodec(childPair.client, undefined, () =>
+        f.service.sweep(),
+      );
+
+      // Child closes first: parent still holds the OFD, so lock stays held.
+      expect(await child.call<number>({ op: "close", fd: cFd })).toBe(0);
+      // Redundant controller discard on the same token must be idempotent and never drop parent's lock.
+      controllerCodec.discard(token);
+      expect(await other.call<number>({ op: "flock", fd: oFd, operation: LOCK_EX | LOCK_NB })).toBe(
+        EAGAIN,
+      );
+
+      // Parent closes last live descriptor: lock must release immediately even while child stays alive.
+      expect(await parent.call<number>({ op: "close", fd: pFd })).toBe(0);
+      expect(await other.call<number>({ op: "flock", fd: oFd, operation: LOCK_EX | LOCK_NB })).toBe(
+        0,
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("lock acquired after inheriting an unlocked fd survives locker revocation while peer stays open", async () => {
+    const f = createServiceFixture();
+    try {
+      const parent = await f.spawnWorker(41);
+      const other = await f.spawnWorker(42);
+
+      const pFd = await parent.call<number>({ op: "open", path: "lock.dat" });
+      const oFd = await other.call<number>({ op: "open", path: "lock.dat" });
+
+      // Export BEFORE acquiring any lock.
+      const childPair = createFilesystemConnection(f.rootConnection);
+      const token = await parent.call<FilesystemDescriptorToken>({
+        op: "export",
+        fd: pFd,
+        target: {
+          ...childPair.client,
+          port: undefined as unknown as MessagePort,
+        },
+      });
+      childPair.client.reservations.push(token.reservation);
+      childPair.server.reservations.push(token.reservation);
+      f.service.connect(childPair.server);
+      const child = await f.spawnWorker(43, childPair);
+      const cFd = await child.call<number>({ op: "import", token });
+
+      // Parent locks after sharing, then crashes/revokes without closing pFd.
+      expect(
+        await parent.call<number>({ op: "flock", fd: pFd, operation: LOCK_EX | LOCK_NB }),
+      ).toBe(0);
+      revokeFilesystem(parent.connection);
+      f.service.sweep();
+
+      // Child still holds the inherited OFD -> lock MUST remain held.
+      expect(await other.call<number>({ op: "flock", fd: oFd, operation: LOCK_EX | LOCK_NB })).toBe(
+        EAGAIN,
+      );
+
+      // Child closes the last live descriptor -> lock MUST release immediately.
+      expect(await child.call<number>({ op: "close", fd: cFd })).toBe(0);
+      expect(await other.call<number>({ op: "flock", fd: oFd, operation: LOCK_EX | LOCK_NB })).toBe(
+        0,
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("inherited F_OFD_SETLK byte-range lock survives originator revocation until child closes", async () => {
+    const f = createServiceFixture();
+    try {
+      const parent = await f.spawnWorker(51);
+      const other = await f.spawnWorker(52);
+
+      const pFd = await parent.call<number>({ op: "open", path: "lock.dat" });
+      const oFd = await other.call<number>({ op: "open", path: "lock.dat" });
+      expect(
+        await parent.call<{ errno: number }>({
+          op: "lock",
+          fd: pFd,
+          cmd: F_OFD_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "64",
+        }),
+      ).toEqual({ errno: 0 });
+
+      const childPair = createFilesystemConnection(f.rootConnection);
+      const token = await parent.call<FilesystemDescriptorToken>({
+        op: "export",
+        fd: pFd,
+        target: {
+          ...childPair.client,
+          port: undefined as unknown as MessagePort,
+        },
+      });
+      childPair.client.reservations.push(token.reservation);
+      childPair.server.reservations.push(token.reservation);
+      f.service.connect(childPair.server);
+      const child = await f.spawnWorker(53, childPair);
+      const cFd = await child.call<number>({ op: "import", token });
+
+      revokeFilesystem(parent.connection);
+      f.service.sweep();
+
+      // Child still holds the OFD -> F_OFD_SETLK range lock MUST stay held.
+      expect(
+        await other.call<{ errno: number }>({
+          op: "lock",
+          fd: oFd,
+          cmd: F_OFD_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "64",
+        }),
+      ).toEqual({ errno: EAGAIN });
+
+      // Child closes -> OFD range lock releases immediately.
+      expect(await child.call<number>({ op: "close", fd: cFd })).toBe(0);
+      expect(
+        await other.call<{ errno: number }>({
+          op: "lock",
+          fd: oFd,
+          cmd: F_OFD_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "64",
+        }),
+      ).toEqual({ errno: 0 });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("unadopted exported OFD lock releases when controller discards token without a client", async () => {
+    const f = createServiceFixture();
+    try {
+      const parent = await f.spawnWorker(61);
+      const other = await f.spawnWorker(62);
+
+      const pFd = await parent.call<number>({ op: "open", path: "lock.dat" });
+      const oFd = await other.call<number>({ op: "open", path: "lock.dat" });
+      expect(
+        await parent.call<number>({ op: "flock", fd: pFd, operation: LOCK_EX | LOCK_NB }),
+      ).toBe(0);
+
+      // Export to a child identity that never connects (simulates failed spawn).
+      const childIdentity = createFilesystemIdentity(f.rootConnection);
+      const token = await parent.call<FilesystemDescriptorToken>({
+        op: "export",
+        fd: pFd,
+        target: childIdentity,
+      });
+
+      // Parent closes its own fd while the reservation is still in flight -> lock stays held.
+      expect(await parent.call<number>({ op: "close", fd: pFd })).toBe(0);
+      expect(await other.call<number>({ op: "flock", fd: oFd, operation: LOCK_EX | LOCK_NB })).toBe(
+        EAGAIN,
+      );
+
+      // Controller (identity-only, no FilesystemClient) discards the token -> lock releases.
+      const controllerCodec = createFilesystemDescriptorCodec(childIdentity, undefined, () =>
+        f.service.sweep(),
+      );
+      controllerCodec.discard(token);
+      expect(await other.call<number>({ op: "flock", fd: oFd, operation: LOCK_EX | LOCK_NB })).toBe(
+        0,
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test("fd_renumber replacing an open fd releases POSIX locks on that inode while keeping flock", async () => {
+    const f = createServiceFixture();
+    try {
+      f.backend.fs.writeFile("/other.dat", new Uint8Array(16));
+      const workerA = await f.spawnWorker(71);
+      const workerB = await f.spawnWorker(72);
+
+      const a1 = await workerA.call<number>({ op: "open", path: "lock.dat" });
+      const a2 = await workerA.call<number>({ op: "open", path: "lock.dat" });
+      const aOther = await workerA.call<number>({ op: "open", path: "other.dat" });
+      const b1 = await workerB.call<number>({ op: "open", path: "lock.dat" });
+
+      expect(
+        await workerA.call<{ errno: number }>({
+          op: "lock",
+          fd: a1,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "32",
+        }),
+      ).toEqual({ errno: 0 });
+      expect(
+        await workerA.call<number>({ op: "flock", fd: a1, operation: LOCK_EX | LOCK_NB }),
+      ).toBe(0);
+
+      // Replacing a2 via fd_renumber closes a2 -> POSIX locks release, flock on a1 stays held.
+      expect(await workerA.call<number>({ op: "renumber", from: aOther, to: a2 })).toBe(0);
+      expect(
+        await workerB.call<{ errno: number }>({
+          op: "lock",
+          fd: b1,
+          cmd: F_SETLK,
+          type: F_WRLCK,
+          whence: 0,
+          start: "0",
+          len: "32",
+        }),
+      ).toEqual({ errno: 0 });
+      expect(
+        await workerB.call<number>({ op: "flock", fd: b1, operation: LOCK_EX | LOCK_NB }),
+      ).toBe(EAGAIN);
     } finally {
       await f.cleanup();
     }

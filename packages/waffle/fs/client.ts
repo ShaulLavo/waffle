@@ -573,9 +573,6 @@ function clientLocks(
         return errno(error);
       }
     },
-    retainOfd: (handle, ofdId) => {
-      call("lockRetainOfd", [handle, ofdId]);
-    },
     releaseOfd: (handle, ofdId) => {
       call("lockReleaseOfd", [handle, ofdId]);
     },
@@ -1001,10 +998,11 @@ export class FilesystemClient implements FileSystem {
     mapSet(this.capabilityEntries, reservation.handle, reservation.targetKey);
   }
   releaseReservation(reservation: FilesystemReservation): void {
-    const state = new Int32ArrayConstructor(reservation.state);
-    const wasClosed = atomicsLoad(state, 0);
-    releaseFilesystemReservation(reservation);
-    if (!wasClosed) {
+    this.finishReleasedReservation(reservation, releaseFilesystemReservation(reservation));
+  }
+  /** Drop local handle accounting after `releaseFilesystemReservation` has already run. */
+  finishReleasedReservation(reservation: FilesystemReservation, released: boolean): void {
+    if (released) {
       const count = mapGet(this.openHandles, reservation.handle) ?? 0;
       if (count > 1) mapSet(this.openHandles, reservation.handle, count - 1);
       else {

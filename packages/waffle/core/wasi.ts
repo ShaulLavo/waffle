@@ -35,8 +35,8 @@ import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.
 import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import {
+  markOriginOfdClosed,
   markResourceOfdLocked,
-  releaseSharedOfd,
   resourceOfdId,
   resourceOfdLockState,
   withFileOffset,
@@ -443,17 +443,12 @@ export class Wasi {
       base,
       inheriting,
       () => {
+        markOriginOfdClosed(resource);
         const lock = resourceOfdLockState(resource);
         if (lock) {
-          const ofdToRelease =
-            lock.shared && resource.kind === "file" ? releaseSharedOfd(resource) : lock.id;
-          if (ofdToRelease) {
-            try {
-              this.opts.fs.locks?.releaseOfd(resource.handle, ofdToRelease);
-            } catch {}
-          }
-        } else if (resource.kind === "file") {
-          releaseSharedOfd(resource);
+          try {
+            this.opts.fs.locks?.releaseOfd(resource.handle, lock.id);
+          } catch {}
         }
         this.opts.fs.release(resource.handle);
       },
@@ -1338,6 +1333,16 @@ export class Wasi {
         },
       ),
       fd_renumber: (from: number, to: number) => {
+        if (from !== to && this.descriptors.get(from)) {
+          const replaced = this.descriptors.get(to);
+          if (
+            replaced &&
+            (replaced.resource.kind === "file" || replaced.resource.kind === "directory") &&
+            this.posixLockedHandles?.delete(replaced.resource.handle)
+          ) {
+            this.opts.fs.locks?.releasePosix(replaced.resource.handle);
+          }
+        }
         return this.descriptors.renumber(from, to) ? SUCCESS : EBADF;
       },
       fd_seek: (fd: number, offset: bigint, whence: number, newOffsetPtr: number) => {

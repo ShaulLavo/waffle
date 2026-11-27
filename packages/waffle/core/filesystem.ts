@@ -222,7 +222,6 @@ export interface FileLockSystem {
     ofdId: string | undefined,
     range: FileLockRange,
   ): FileLockConflict | number;
-  retainOfd?(handle: FileHandle, ofdId: string): void;
   releaseOfd(handle: FileHandle, ofdId: string): void;
   releasePosix(handle: FileHandle): void;
 }

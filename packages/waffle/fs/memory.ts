@@ -388,10 +388,6 @@ export class MemFS implements FileSystem {
       setRangeLock: (handle, ofdId, pid, range, blocking) =>
         table.setRangeLock(inoOf(handle), ofdId, 0, pid, range, blocking).errno,
       getRangeLock: (handle, ofdId, range) => table.getRangeLock(inoOf(handle), ofdId, 0, range),
-      retainOfd: (handle, ofdId) => {
-        const node = this.handles.get(handle);
-        if (node) table.retainOfd(node.ino, ofdId, 0);
-      },
       releaseOfd: (handle, ofdId) => {
         const node = this.handles.get(handle);
         if (node) table.releaseOfd(node.ino, ofdId, 0);

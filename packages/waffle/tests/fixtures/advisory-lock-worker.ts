@@ -1,6 +1,6 @@
 import { Wasi } from "../../core/wasi.js";
 import { RIGHTS_ALL } from "../../core/rights.js";
-import { releaseSharedOfd, resourceOfdLockState } from "../../core/open-file.js";
+import { markOriginOfdClosed, resourceOfdLockState } from "../../core/open-file.js";
 import { FilesystemClient } from "../../fs/client.js";
 import type { FilesystemConnection } from "../../fs/protocol.js";
 import {
@@ -12,6 +12,7 @@ import { guestFunction, guestModule } from "./publication-wasm.js";
 type Command =
   | { readonly id: number; readonly op: "open"; readonly path: string; readonly rights?: string }
   | { readonly id: number; readonly op: "dup"; readonly fd: number }
+  | { readonly id: number; readonly op: "renumber"; readonly from: number; readonly to: number }
   | { readonly id: number; readonly op: "close"; readonly fd: number }
   | { readonly id: number; readonly op: "flock"; readonly fd: number; readonly operation: number }
   | {
@@ -49,6 +50,7 @@ let fdLock:
     ) => number)
   | undefined;
 let fdClose: ((fd: number) => number) | undefined;
+let fdRenumber: ((from: number, to: number) => number) | undefined;
 let interruptCell: Int32Array | undefined;
 
 function openPath(path: string, rights: bigint): number {
@@ -60,13 +62,9 @@ function openPath(path: string, rights: bigint): number {
   client!.retain(handle);
   const resource = { kind: "file" as const, handle, offset: 0, append: false, fdflags: 0 };
   return wasi!.descriptors.open(resource, rights, 0n, () => {
+    markOriginOfdClosed(resource);
     const lock = resourceOfdLockState(resource);
-    if (lock) {
-      const ofd = lock.shared ? releaseSharedOfd(resource) : lock.id;
-      if (ofd) client!.locks.releaseOfd(handle, ofd);
-    } else {
-      releaseSharedOfd(resource);
-    }
+    if (lock) client!.locks.releaseOfd(handle, lock.id);
     client!.release(handle);
   });
 }
@@ -74,6 +72,7 @@ function openPath(path: string, rights: bigint): number {
 function handleCommand(cmd: Command): unknown {
   if (cmd.op === "open") return openPath(cmd.path, cmd.rights ? BigInt(cmd.rights) : RIGHTS_ALL);
   if (cmd.op === "dup") return wasi!.descriptors.dup(cmd.fd);
+  if (cmd.op === "renumber") return fdRenumber!(cmd.from, cmd.to);
   if (cmd.op === "close") return fdClose!(cmd.fd);
   if (cmd.op === "flock") return fdFlock!(cmd.fd, cmd.operation);
   if (cmd.op === "lock") {
@@ -144,9 +143,11 @@ self.onmessage = ({ data }: MessageEvent) => {
     fdLock = guestFunction(lockInst, "fd_lock");
     const closeMod = guestModule("wasi_snapshot_preview1", [
       { name: "fd_close", parameters: ["i32"] },
+      { name: "fd_renumber", parameters: ["i32", "i32"] },
     ]);
     const closeInst = new WebAssembly.Instance(closeMod, wasi.imports(closeMod));
     fdClose = guestFunction(closeInst, "fd_close");
+    fdRenumber = guestFunction(closeInst, "fd_renumber");
     self.postMessage({ ready: true });
     return;
   }

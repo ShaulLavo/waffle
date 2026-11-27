@@ -1,9 +1,8 @@
 import { isInstance, isSharedArrayBuffer } from "./intrinsics.ts";
 import { OpenDescription, type Descriptor, type Resource } from "../core/descriptors.js";
 import {
-  lockedSharedOfdFromBuffer,
-  releaseSharedOfdBuffer,
-  retainSharedOfd,
+  readSharedOfdBuffer,
+  retainSharedOfdTransfer,
   shareFileResource,
 } from "../core/open-file.js";
 import { FilesystemClient } from "../fs/client.js";
@@ -39,21 +38,18 @@ export function createFilesystemDescriptorCodec(
   const discard = (token: unknown) => {
     if (!isFilesystemDescriptorToken(token))
       throw new TypeError("not a filesystem descriptor token");
-    const releaseOfd =
-      token.resource === "file" && isSharedArrayBuffer(token.offset)
-        ? releaseSharedOfdBuffer(token.offset)
-        : undefined;
-    if (releaseOfd && client) {
-      try {
-        client.locks.releaseOfd(token.reservation.handle, releaseOfd);
-      } catch {}
+    const won = releaseFilesystemReservation(token.reservation);
+    const localOwner = client && token.reservation.targetOwner === client.connection.owner;
+    if (won && localOwner && token.resource === "file" && isSharedArrayBuffer(token.offset)) {
+      const ofd = readSharedOfdBuffer(token.offset);
+      if (ofd?.locked) {
+        try {
+          client.locks.releaseOfd(token.reservation.handle, ofd.id);
+        } catch {}
+      }
     }
-    if (client && token.reservation.targetOwner === client.connection.owner)
-      client.releaseReservation(token.reservation);
-    else {
-      releaseFilesystemReservation(token.reservation);
-      (sweep ?? (() => client?.sweep()))();
-    }
+    if (localOwner) client.finishReleasedReservation(token.reservation, won);
+    else if (won) (sweep ?? (() => client?.sweep()))();
   };
   return {
     export(descriptor: Descriptor): FilesystemDescriptorToken {
@@ -66,7 +62,10 @@ export function createFilesystemDescriptorCodec(
       const offset =
         resource.kind === "file" ? shareFileResource(resource, client.connection) : undefined;
       const reservation = client.reserve(resource.handle, target);
-      if (resource.kind === "file") retainSharedOfd(resource);
+      if (offset) {
+        reservation.ofd = offset;
+        retainSharedOfdTransfer(offset);
+      }
       return {
         kind: "filesystem",
         resource: resource.kind,
@@ -88,10 +87,6 @@ export function createFilesystemDescriptorCodec(
         shareFileResource(resource, identity, token.offset);
       } else resource = { kind: "directory", handle };
       client?.adopt(token.reservation);
-      if (token.resource === "file" && isSharedArrayBuffer(token.offset) && client) {
-        const lockedOfd = lockedSharedOfdFromBuffer(token.offset);
-        if (lockedOfd) client.locks.retainOfd?.(handle, lockedOfd);
-      }
       return new OpenDescription(resource, () => discard(token));
     },
     discard,

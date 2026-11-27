@@ -149,6 +149,8 @@ export interface FilesystemReservation {
   targetOwner: number;
   /** Closed once; transfer state: 0 pending, 1 adopted, 2 cancelled. */
   state: SharedArrayBuffer;
+  /** Shared open-file control block when transferring a regular file description. */
+  ofd?: SharedArrayBuffer;
 }
 export type FilesystemIdentity = Omit<FilesystemConnection, "port" | "requests">;
 export interface FilesystemOwnerConstruction {
@@ -283,10 +285,11 @@ export function createProcessFilesystemIdentity(parent: FilesystemIdentity): Fil
   identity.revocations = identity.revocations.slice(0, 1);
   return identity;
 }
-/** Idempotent across the controller and guest copies of a transferred description. */
-export function releaseFilesystemReservation(reservation: FilesystemReservation): void {
+/** Idempotent across the controller and guest copies of a transferred description.
+ * Returns true for the single call that transitioned the reservation to closed. */
+export function releaseFilesystemReservation(reservation: FilesystemReservation): boolean {
   const state = new Int32Array(reservation.state);
-  if (Atomics.exchange(state, 0, 1)) return;
+  if (Atomics.exchange(state, 0, 1)) return false;
   const target = new Int32ArrayConstructor(reservation.target, 0, CAPABILITY_LENGTH);
   for (;;) {
     const count = Atomics.load(target, reservation.targetKey + 1);
@@ -296,12 +299,15 @@ export function releaseFilesystemReservation(reservation: FilesystemReservation)
     )
       break;
   }
-  if (Atomics.compareExchange(state, 1, 0, 2) === 0)
+  if (Atomics.compareExchange(state, 1, 0, 2) === 0) {
+    if (reservation.ofd) Atomics.sub(new Int32ArrayConstructor(reservation.ofd), 6, 1);
     Atomics.sub(
       new Int32ArrayConstructor(reservation.source, 0, CAPABILITY_LENGTH),
       reservation.sourceKey + 2,
       1,
     );
+  }
+  return true;
 }
 export function reserveIdentityCapability(
   source: FilesystemIdentity,
