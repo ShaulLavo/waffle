@@ -481,6 +481,16 @@ describe("virtual /etc/machine-id", () => {
         2,
       ),
     ).toThrow(TypeError);
+    for (const badBytes of [9, 16]) {
+      const badToken = {
+        kind: "machine-id-file",
+        machineId: explicit,
+        offset: new SharedArrayBuffer(badBytes),
+        fdflags: 0,
+      };
+      expect(() => codec.import(badToken, 2)).toThrow(TypeError);
+      expect(() => codec.discard(badToken)).toThrow(TypeError);
+    }
     expect(() =>
       codec.import({ kind: "machine-id-file", machineId: explicit, offset: 0, fdflags: 0 }, 2),
     ).toThrow(TypeError);

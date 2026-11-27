@@ -86,7 +86,7 @@ function machineIdFileToken(value: unknown): MachineIdFileToken | undefined {
   if (typeof machineId !== "string" || !isValidMachineId(machineId))
     throw new TypeError("invalid machine-id file token");
   const offset = value.offset;
-  if (!isSharedArrayBuffer(offset) || sharedArrayBufferByteLength(offset) < 8)
+  if (!isSharedArrayBuffer(offset) || sharedArrayBufferByteLength(offset) !== 8)
     throw new TypeError("invalid machine-id file offset");
   validateFdflags(value, "machine-id file");
   return value as unknown as MachineIdFileToken;
