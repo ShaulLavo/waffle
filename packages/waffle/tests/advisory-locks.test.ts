@@ -1592,6 +1592,110 @@ describe("runtime_fs advisory locks over WASI", () => {
     pB.rollback?.();
     expect(capPartial.diagnostics()).toMatchObject({ ranges: 1, pendingTransactions: 0 });
     capPartial.dispose();
+
+    // Overlapping tracked grants with out-of-order rollback across fragments must never exceed maxRangeLocks.
+    const capFrag = new LockTable({ maxRangeLocks: 4 });
+    const fA = capFrag.setRangeLock(
+      1,
+      undefined,
+      1,
+      1,
+      { type: F_WRLCK, start: 0, len: 9 },
+      false,
+      true,
+    );
+    const fB = capFrag.setRangeLock(
+      1,
+      undefined,
+      1,
+      1,
+      { type: F_RDLCK, start: 0, len: 6 },
+      false,
+      true,
+    );
+    const fC = capFrag.setRangeLock(
+      1,
+      undefined,
+      1,
+      1,
+      { type: F_WRLCK, start: 2, len: 12 },
+      false,
+      true,
+    );
+    const fD = capFrag.setRangeLock(
+      1,
+      undefined,
+      1,
+      1,
+      { type: F_WRLCK, start: 0, len: 8 },
+      false,
+      true,
+    );
+    expect([fA.errno, fB.errno, fC.errno, fD.errno]).toEqual([0, 0, 0, 0]);
+    fD.rollback?.();
+    const otherRes = capFrag.setRangeLock(
+      2,
+      undefined,
+      2,
+      2,
+      { type: F_WRLCK, start: 0, len: 5 },
+      false,
+    );
+    expect([0, ENOLCK]).toContain(otherRes.errno);
+    fC.rollback?.();
+    expect(capFrag.diagnostics().ranges).toBeLessThanOrEqual(4);
+    fB.rollback?.();
+    expect(capFrag.diagnostics().ranges).toBeLessThanOrEqual(4);
+    fA.rollback?.();
+    expect(capFrag.diagnostics().ranges).toBeLessThanOrEqual(4);
+    capFrag.dispose();
+
+    // Deterministic stress sweep: arbitrary overlapping grants, partial unlocks, competing-inode
+    // allocations, and arbitrary-order rollbacks/settles never exceed maxRangeLocks.
+    let seed = 0x12345678;
+    const nextRand = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed;
+    };
+    const capStress = new LockTable({ maxRangeLocks: 4 });
+    const pending: { rollback?: () => void; settle?: () => void }[] = [];
+    for (let step = 0; step < 400; step++) {
+      const action = nextRand() % 10;
+      if (action < 4) {
+        const start = nextRand() % 16;
+        const len = 1 + (nextRand() % 12);
+        const type = nextRand() % 2 === 0 ? F_WRLCK : F_RDLCK;
+        const commit = capStress.setRangeLock(
+          1,
+          undefined,
+          1,
+          1,
+          { type, start, len },
+          false,
+          true,
+        );
+        if (commit.errno === 0) pending.push(commit);
+      } else if (action < 6) {
+        const start = nextRand() % 16;
+        const len = 1 + (nextRand() % 12);
+        capStress.setRangeLock(1, undefined, 1, 1, { type: F_UNLCK, start, len }, false);
+      } else if (action < 8 && pending.length > 0) {
+        const idx = nextRand() % pending.length;
+        const item = pending.splice(idx, 1)[0]!;
+        if (nextRand() % 3 === 0) item.settle?.();
+        else item.rollback?.();
+      } else {
+        const otherIno = 2 + (nextRand() % 4);
+        const type = nextRand() % 2 === 0 ? F_WRLCK : F_UNLCK;
+        capStress.setRangeLock(otherIno, undefined, 2, 2, { type, start: 0, len: 5 }, false);
+      }
+      expect(capStress.diagnostics().ranges).toBeLessThanOrEqual(4);
+    }
+    while (pending.length > 0) {
+      pending.pop()!.rollback?.();
+      expect(capStress.diagnostics().ranges).toBeLessThanOrEqual(4);
+    }
+    capStress.dispose();
   });
 
   test("OFD churn leaves bounded metadata and byte-range/flock/waiter caps return ENOLCK while unlock succeeds", () => {

@@ -213,8 +213,7 @@ function coalesceOwned(owned: readonly RangeLock[]): RangeLock[] {
     if (
       prev &&
       prev.type === current.type &&
-      prev.opId === 0 &&
-      current.opId === 0 &&
+      prev.opId === current.opId &&
       prev.end >= current.start
     ) {
       prev.end = Math.max(prev.end, current.end);
@@ -286,26 +285,13 @@ function addInterval(
   list.push({ start, end });
 }
 
-function mergeIntervals(intervals: readonly ByteInterval[]): ByteInterval[] {
-  const sorted = intervals.toSorted((left, right) => left.start - right.start);
-  const merged: ByteInterval[] = [];
-  for (let i = 0; i < sorted.length; i++) {
-    const cur = sorted[i]!;
-    const prev = merged[merged.length - 1];
-    if (prev && prev.end >= cur.start) {
-      merged[merged.length - 1] = { start: prev.start, end: Math.max(prev.end, cur.end) };
-      continue;
-    }
-    merged.push(cur);
-  }
-  return merged;
-}
-
 function intersectDeltaWithIntervals(
   delta: readonly RangeDeltaSegment[],
   intervals: readonly ByteInterval[],
 ): RangeDeltaSegment[] {
-  const spans = mergeIntervals(intervals);
+  // Keep incoming spans unmerged so each fragment that rollback applies independently is
+  // counted separately against its backing span count.
+  const spans = intervals.toSorted((left, right) => left.start - right.start);
   const out: RangeDeltaSegment[] = [];
   for (let i = 0; i < spans.length; i++) {
     const span = spans[i]!;
@@ -324,12 +310,12 @@ function intersectDeltaWithIntervals(
   return out;
 }
 
-function rollbackReserveForDelta(delta: readonly RangeDeltaSegment[], liveCount = 0): number {
+function rollbackReserveForDelta(delta: readonly RangeDeltaSegment[], spanCount = 1): number {
   let nonUnlock = 0;
   for (let i = 0; i < delta.length; i++) {
     if (delta[i]!.prevType !== F_UNLCK) nonUnlock += 1;
   }
-  const backing = liveCount > 1 ? liveCount : 1;
+  const backing = spanCount > 1 ? spanCount : 1;
   return nonUnlock > backing ? nonUnlock - backing : 0;
 }
 
@@ -939,13 +925,11 @@ export class LockTable {
     inode: InodeLocks | undefined,
   ): void {
     const liveIntervals = new Map<number, ByteInterval[]>();
-    const liveCounts = new Map<number, number>();
     if (inode) {
       for (let i = 0; i < inode.ranges.length; i++) {
         const entry = inode.ranges[i]!;
         if (entry.owner !== owner || entry.opId === 0) continue;
         addInterval(liveIntervals, entry.opId, entry.start, entry.end);
-        liveCounts.set(entry.opId, (liveCounts.get(entry.opId) ?? 0) + 1);
       }
     }
     const ownerOps: number[] = [];
@@ -970,7 +954,7 @@ export class LockTable {
         if (piece.prevOpId !== 0)
           addInterval(liveIntervals, piece.prevOpId, piece.start, piece.end);
       }
-      const nextReserve = rollbackReserveForDelta(trimmed, liveCounts.get(opId) ?? 0);
+      const nextReserve = rollbackReserveForDelta(trimmed, spans!.length);
       this.reservedRangeRollbackSlots += nextReserve - record.reservedSlots;
       record.reservedSlots = nextReserve;
     }
