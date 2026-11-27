@@ -1,13 +1,16 @@
 # Waffle grep
 
-WASI grep for Waffle. Import `grep` and pass it to Waffle's generic program installer.
+Real FreeBSD `grep` (`2.6.0-FreeBSD`, BSD-2-Clause) compiled to `wasm32-wasip1` for Waffle runtimes, with optional `fastGrep` search-worker acceleration.
 
-The cooperative guest uses the shared sibling `waffle-program-support` crate. No Bash engine, parser, shell state, adapter, worker or runtime is included.
+```ts
+import { grep, fastGrep } from "@waffle-os/grep";
+```
 
-`programs.provisional.json` preserves the source transfer record. `cooperative-wasi` stays disabled until Waffle's generic inherited-descriptor contract lands.
-
-See [the behavior contract](docs/grep.md) and [source provenance](provenance/grep.source.json). Frozen usage fixtures remain unchanged under `tests/fixtures/`.
+Build and test:
 
 ```sh
-cargo test --offline --locked -p waffle-grep
+bun run --cwd packages/grep prepare:package
+bun run --cwd packages/grep test
 ```
+
+See [docs/grep.md](docs/grep.md), [sources.lock.json](sources.lock.json), and [build-recipe.json](build-recipe.json).

@@ -226,6 +226,20 @@ test("pipe endpoints stay shared and cannot gain source rights", (f) => {
   equal(f.read(reopened, 2), "pi");
   equal(f.read(reader, 2), "pe");
   equal(f.tryReopen(reader, 0, WRITE), 2);
+  // POSIX open("/dev/fd/N", O_RDONLY) via wasi-libc passes the root directory's full
+  // non-write rights; path_open intersects those capabilities to the pipe's actual rights.
+  const root = f.wasi.descriptors.get(f.root)!;
+  const posixRead = root.rightsInheriting & ~WRITE;
+  equal(f.tryPath(`/dev/fd/${reader}`, 0, posixRead, 0, root.rightsInheriting), 0);
+  const viaPath = f.view().getUint32(128, true);
+  equal(
+    f.wasi.descriptors.get(viaPath)!.rightsBase,
+    f.wasi.descriptors.get(reader)!.rightsBase & posixRead,
+  );
+  equal(f.wasi.descriptors.get(viaPath)!.rightsInheriting, 0n);
+  f.write(writer, "ok");
+  equal(f.read(viaPath, 2), "ok");
+  equal(f.tryPath(`/dev/fd/${reader}`, 0, root.rightsInheriting, 0, root.rightsInheriting), 2);
 });
 test("terminal and directory duplicates keep their original kind and lifetime", (f) => {
   const tty = f.reopen(1, 0, WRITE);

@@ -184,6 +184,16 @@ jobs:
               - ".github/actions/save-release-downloads/**"
               - ".github/actions/setup-tools/**"
               - "tools/ci-*.ts"
+              - ".github/actions/program-optimizer/action.yml"
+              - "package.json"
+              - "bun.lock"
+              - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
+              - "tools/program-symbols.ts"
+              - "tools/program-package.ts"
+              - "tools/family-acceptance.ts"
+              - "tools/tsconfig.programs.json"
               - "packages/waffle/**"
               - "packages/grep/**"
             ripgrep:
@@ -434,6 +444,7 @@ jobs:
           P_COREUTILS: ${{ steps.paths.outputs.coreutils }}
           P_CHECKSUMS: ${{ steps.paths.outputs.checksums }}
           P_FINDUTILS: ${{ steps.paths.outputs.findutils }}
+          P_GREP: ${{ steps.paths.outputs.grep }}
           P_DIFFUTILS: ${{ steps.paths.outputs.diffutils }}
           P_GH: ${{ steps.paths.outputs.gh }}
           P_JQ: ${{ steps.paths.outputs.jq }}
@@ -455,6 +466,7 @@ jobs:
           coreutils=$(pick "$P_COREUTILS")
           checksums=$(pick "$P_CHECKSUMS")
           findutils=$(pick "$P_FINDUTILS")
+          grep=$(pick "$P_GREP")
           diffutils=$(pick "$P_DIFFUTILS")
           gh=$(pick "$P_GH")
           jq=$(pick "$P_JQ")
@@ -465,11 +477,11 @@ jobs:
           any() { for v in "$@"; do [[ "$v" == true ]] && { echo true; return; }; done; echo false; }
           libc_or_browser=$(any "$libc" "$browser")
           xargs_or_echo=$(any "$findutils" "$coreutils")
-          need_wasi_sdk=$(any "$awk" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          need_wasi_sdk=$(any "$awk" "$grep" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
           need_wasmtime=$(any "$awk" "$diffutils" "$jq" "$tar")
-          need_optimizer=$(any "$programs" "$awk" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          need_optimizer=$(any "$programs" "$awk" "$grep" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
           need_rust_wasip1=$(any "$programs" "$jq" "$tar" "$xargs_or_echo" "$checksums")
-          need_wasi_libc=$(any "$awk" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          need_wasi_libc=$(any "$awk" "$grep" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
           {
             echo "network=$network"
             echo "browser=$browser"
@@ -479,6 +491,7 @@ jobs:
             echo "coreutils=$coreutils"
             echo "checksums=$checksums"
             echo "findutils=$findutils"
+            echo "grep=$grep"
             echo "xargs_or_echo=$xargs_or_echo"
             echo "diffutils=$diffutils"
             echo "gh=$gh"
@@ -744,7 +757,7 @@ jobs:
           cargo fmt --all -- --check
       - name: Run native Rust program tests
         if: steps.select.outputs.programs == 'true'
-        run: bash scripts/with-build-cache.sh cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date
+        run: bash scripts/with-build-cache.sh cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date
       - name: Verify the cached WASI root preopen
         if: steps.select.outputs.programs == 'true'
         env:
@@ -809,6 +822,15 @@ jobs:
           CURL_NATIVE_SCRATCH_ROOT: ${{ runner.temp }}/curl-native-scratch
         run: |
           bun -e 'import { rmSync } from "node:fs"; const p=process.env.CURL_NATIVE_SCRATCH_ROOT; if (!p || p !== `${process.env.RUNNER_TEMP}/curl-native-scratch`) throw Error("Unexpected scratch path"); rmSync(p, { recursive: true, force: true });'
+
+      # grep
+      - name: Build and qualify only grep
+        if: steps.select.outputs.grep == 'true'
+        run: bun run programs:grep
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+          GREP_SCRATCH_ROOT: ${{ runner.temp }}
 
       # awk
       - uses: ./.github/actions/ubuntu-main-archive

@@ -9,7 +9,6 @@ members = [
   "packages/coreutils/crates/cut",
   "packages/coreutils/crates/tr",
   "packages/coreutils/crates/wc",
-  "packages/grep",
   "packages/findutils",
 ]
 exclude = [
@@ -27,7 +26,6 @@ default-members = [
   "packages/coreutils/crates/cut",
   "packages/coreutils/crates/tr",
   "packages/coreutils/crates/wc",
-  "packages/grep",
   "packages/findutils",
 ]
 resolver = "3"

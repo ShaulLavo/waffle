@@ -110,6 +110,7 @@ test("selection step resolves path filters, workflow dispatch and filter-failure
           P_COREUTILS: "false",
           P_CHECKSUMS: "false",
           P_FINDUTILS: "false",
+          P_GREP: "false",
           P_DIFFUTILS: "false",
           P_GH: "false",
           P_JQ: "false",

@@ -1,0 +1,588 @@
+--- a/file.c
++++ b/file.c
+@@ -31,9 +31,10 @@
+  * SUCH DAMAGE.
+  */
+ 
+-#include <sys/cdefs.h>
+ #include <sys/param.h>
++#ifdef __FreeBSD__
+ #include <sys/mman.h>
++#endif
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ 
+@@ -72,8 +73,6 @@
+ 	bufrem = 0;
+ 
+ 	nr = read(f->fd, buffer, MAXBUFSIZ);
+-	if (nr < 0 && errno == EISDIR)
+-		nr = 0;
+ 	if (nr < 0)
+ 		return (-1);
+ 
+@@ -182,6 +181,7 @@
+ 	} else if ((f->fd = open(path, O_RDONLY)) == -1)
+ 		goto error1;
+ 
++#ifdef __FreeBSD__
+ 	if (filebehave == FILE_MMAP) {
+ 		struct stat st;
+ 
+@@ -205,7 +205,10 @@
+ 		}
+ 	}
+ 
+-	if ((buffer == NULL) || (buffer == MAP_FAILED))
++#else
++	filebehave = FILE_STDIO;
++#endif
++	if (buffer == NULL)
+ 		buffer = grep_malloc(MAXBUFSIZ);
+ 
+ 	/* Fill read buffer, also catches errors early */
+@@ -220,9 +223,17 @@
+ 	return (f);
+ 
+ error2:
+-	close(f->fd);
++	{
++		int saved_errno = errno;
++		close(f->fd);
++		errno = saved_errno;
++	}
+ error1:
+-	free(f);
++	{
++		int saved_errno = errno;
++		free(f);
++		errno = saved_errno;
++	}
+ 	return (NULL);
+ }
+ 
+@@ -236,10 +247,12 @@
+ 	close(f->fd);
+ 
+ 	/* Reset read buffer and line buffer */
++#ifdef __FreeBSD__
+ 	if (filebehave == FILE_MMAP) {
+ 		munmap(buffer, fsiz);
+ 		buffer = NULL;
+ 	}
++#endif
+ 	bufpos = buffer;
+ 	bufrem = 0;
+ 
+--- a/grep.c
++++ b/grep.c
+@@ -30,7 +30,6 @@
+  * SUCH DAMAGE.
+  */
+ 
+-#include <sys/cdefs.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ 
+@@ -42,6 +41,9 @@
+ #include <limits.h>
+ #include <libgen.h>
+ #include <locale.h>
++#ifdef __wasi__
++#include <stdarg.h>
++#endif
+ #include <stdbool.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -64,7 +66,11 @@
+ 
+ /* Flags passed to regcomp() and regexec() */
+ int		 cflags = REG_NOSUB | REG_NEWLINE;
++#ifdef REG_STARTEND
+ int		 eflags = REG_STARTEND;
++#else
++int		 eflags = 0;
++#endif
+ 
+ bool		 matchall;
+ 
+@@ -135,6 +141,106 @@
+ 
+ /* Housekeeping */
+ bool	 file_err;	/* file reading error */
++static bool linkflag;
++
++#ifndef __FreeBSD__
++static const char *progname_val = "grep";
++
++const char *
++grep_getprogname(void)
++{
++	return (progname_val);
++}
++
++static void
++grep_setprogname(const char *argv0)
++{
++	const char *slash;
++
++	if (argv0 == NULL || argv0[0] == '\0') {
++		progname_val = "grep";
++		return;
++	}
++	slash = strrchr(argv0, '/');
++	progname_val = (slash != NULL && slash[1] != '\0') ? slash + 1 : argv0;
++}
++#endif
++
++#ifdef __wasi__
++void
++vwarn(const char *fmt, va_list ap)
++{
++	int saved = errno;
++
++	fprintf(stderr, "%s: ", getprogname());
++	if (fmt != NULL) {
++		vfprintf(stderr, fmt, ap);
++		fprintf(stderr, ": ");
++	}
++	fprintf(stderr, "%s\n", strerror(saved));
++}
++
++void
++warn(const char *fmt, ...)
++{
++	va_list ap;
++
++	va_start(ap, fmt);
++	vwarn(fmt, ap);
++	va_end(ap);
++}
++
++void
++vwarnx(const char *fmt, va_list ap)
++{
++	fprintf(stderr, "%s: ", getprogname());
++	if (fmt != NULL)
++		vfprintf(stderr, fmt, ap);
++	fputc('\n', stderr);
++}
++
++void
++warnx(const char *fmt, ...)
++{
++	va_list ap;
++
++	va_start(ap, fmt);
++	vwarnx(fmt, ap);
++	va_end(ap);
++}
++
++_Noreturn void
++verr(int eval, const char *fmt, va_list ap)
++{
++	vwarn(fmt, ap);
++	exit(eval);
++}
++
++_Noreturn void
++err(int eval, const char *fmt, ...)
++{
++	va_list ap;
++
++	va_start(ap, fmt);
++	verr(eval, fmt, ap);
++}
++
++_Noreturn void
++verrx(int eval, const char *fmt, va_list ap)
++{
++	vwarnx(fmt, ap);
++	exit(eval);
++}
++
++_Noreturn void
++errx(int eval, const char *fmt, ...)
++{
++	va_list ap;
++
++	va_start(ap, fmt);
++	verrx(eval, fmt, ap);
++}
++#endif
+ 
+ /*
+  * Prints usage information and returns 2.
+@@ -188,6 +294,7 @@
+ 	{"only-matching",	no_argument,		NULL, 'o'},
+ 	{"quiet",		no_argument,		NULL, 'q'},
+ 	{"silent",		no_argument,		NULL, 'q'},
++	{"dereference-recursive", no_argument,		NULL, 'R'},
+ 	{"recursive",		no_argument,		NULL, 'r'},
+ 	{"no-messages",		no_argument,		NULL, 's'},
+ 	{"binary",		no_argument,		NULL, 'U'},
+@@ -320,6 +427,16 @@
+ 	bool matched;
+ 
+ 	setlocale(LC_ALL, "");
++#ifndef __FreeBSD__
++	grep_setprogname(argc > 0 ? argv[0] : NULL);
++#endif
++#ifdef __wasi__
++	{
++		const char *pwd = getenv("PWD");
++		if (pwd != NULL && chdir(pwd) != 0)
++			err(2, "%s", pwd);
++	}
++#endif
+ 
+ 	/*
+ 	 * Check how we've bene invoked to determine the behavior we should
+@@ -476,6 +593,7 @@
+ 			break;
+ 		case 'H':
+ 			Hflag = true;
++			hflag = false;
+ 			break;
+ 		case 'h':
+ 			Hflag = false;
+@@ -514,6 +632,7 @@
+ 			break;
+ 		case 'O':
+ 			linkbehave = LINK_EXPLICIT;
++			linkflag = true;
+ 			break;
+ 		case 'o':
+ 			oflag = true;
+@@ -521,17 +640,26 @@
+ 			break;
+ 		case 'p':
+ 			linkbehave = LINK_SKIP;
++			linkflag = true;
+ 			break;
+ 		case 'q':
+ 			qflag = true;
+ 			break;
+ 		case 'S':
+ 			linkbehave = LINK_READ;
++			linkflag = true;
+ 			break;
+ 		case 'R':
++			dirbehave = DIR_RECURSE;
++			Hflag = true;
++			if (!linkflag)
++				linkbehave = LINK_READ;
++			break;
+ 		case 'r':
+ 			dirbehave = DIR_RECURSE;
+ 			Hflag = true;
++			if (!linkflag)
++				linkbehave = LINK_EXPLICIT;
+ 			break;
+ 		case 's':
+ 			sflag = true;
+@@ -693,7 +821,7 @@
+ 	}
+ 
+ 	if (lbflag)
+-		setlinebuf(stdout);
++		setvbuf(stdout, NULL, _IOLBF, 0);
+ 
+ 	if ((aargc == 0 || aargc == 1) && !Hflag)
+ 		hflag = true;
+@@ -701,9 +829,8 @@
+ 	initqueue();
+ 
+ 	if (aargc == 0 && dirbehave != DIR_RECURSE)
+-		exit(!procfile("-"));
+-
+-	if (dirbehave == DIR_RECURSE)
++		matched = procfile("-");
++	else if (dirbehave == DIR_RECURSE)
+ 		matched = grep_tree(aargv);
+ 	else
+ 		for (matched = false; aargc--; ++aargv) {
+@@ -713,12 +840,13 @@
+ 				matched = true;
+ 		}
+ 
+-	if (Lflag)
+-		matched = !matched;
+-
+ 	/*
+ 	 * Calculate the correct return value according to the
+ 	 * results and the command line option.
+ 	 */
++	if (fflush(stdout) == EOF || ferror(stdout)) {
++		if (errno != EPIPE)
++			err(2, "stdout");
++	}
+ 	exit(matched ? (file_err ? (qflag ? 0 : 2) : 0) : (file_err ? 2 : 1));
+ }
+--- a/grep.h
++++ b/grep.h
+@@ -30,17 +30,25 @@
+  * SUCH DAMAGE.
+  */
+ 
+-#include <bzlib.h>
+ #include <limits.h>
+ #include <regex.h>
+ #include <stdbool.h>
++#include <stdint.h>
+ #include <stdio.h>
+-#include <zlib.h>
+ 
+ extern const char		*errstr[];
+ 
+ #define	VERSION		"2.6.0-FreeBSD"
+ 
++#ifndef __DECONST
++#define	__DECONST(type, var)	((type)(uintptr_t)(const void *)(var))
++#endif
++
++#ifndef __FreeBSD__
++const char	*grep_getprogname(void);
++#define	getprogname()	grep_getprogname()
++#endif
++
+ #define	GREP_FIXED	0
+ #define	GREP_BASIC	1
+ #define	GREP_EXTENDED	2
+--- a/queue.c
++++ b/queue.c
+@@ -34,9 +34,7 @@
+  * Dodge.  It is used in place of <sys/queue.h> to get a better performance.
+  */
+ 
+-#include <sys/cdefs.h>
+ #include <sys/param.h>
+-#include <sys/queue.h>
+ 
+ #include <stdlib.h>
+ #include <string.h>
+--- a/util.c
++++ b/util.c
+@@ -31,7 +31,6 @@
+  * SUCH DAMAGE.
+  */
+ 
+-#include <sys/cdefs.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ 
+@@ -67,6 +66,50 @@
+ static void procmatch_match(struct mprintc *mc, struct parsec *pc);
+ static void procmatch_nomatch(struct mprintc *mc, struct parsec *pc);
+ static bool procmatches(struct mprintc *mc, struct parsec *pc, bool matched);
++#ifndef REG_STARTEND
++static int
++grep_regexec(const regex_t *preg, const char *str, size_t nmatch,
++    regmatch_t pmatch[], int leflags)
++{
++	size_t start, end, pos;
++
++	start = (size_t)pmatch[0].rm_so;
++	end = (size_t)pmatch[0].rm_eo;
++	if (start > end)
++		return (REG_NOMATCH);
++	pos = start;
++	while (pos <= end) {
++		const char *seg = str + pos;
++		size_t seglen = strlen(seg);
++		int seg_flags = leflags;
++		int rc;
++
++		if (pos + seglen > end)
++			seglen = end - pos;
++		if (pos > start)
++			seg_flags |= REG_NOTBOL;
++		if (pos + seglen < end)
++			seg_flags |= REG_NOTEOL;
++		rc = regexec(preg, seg, nmatch, pmatch, seg_flags);
++		if (rc == 0) {
++			for (size_t k = 0; k < nmatch; k++) {
++				if (pmatch[k].rm_so >= 0)
++					pmatch[k].rm_so += (regoff_t)pos;
++				if (pmatch[k].rm_eo >= 0)
++					pmatch[k].rm_eo += (regoff_t)pos;
++			}
++			return (0);
++		}
++		if (rc != REG_NOMATCH)
++			return (rc);
++		if (pos + seglen >= end)
++			break;
++		pos += seglen + 1;
++	}
++	return (REG_NOMATCH);
++}
++#endif
++
+ #ifdef WITH_INTERNAL_NOSPEC
+ static int litexec(const struct pat *pat, const char *string,
+     size_t nmatch, regmatch_t pmatch[]);
+@@ -136,16 +179,16 @@
+ 	/* This switch effectively initializes 'fts_flags' */
+ 	switch(linkbehave) {
+ 	case LINK_EXPLICIT:
+-		fts_flags = FTS_COMFOLLOW;
++		fts_flags = FTS_PHYSICAL | FTS_COMFOLLOW;
+ 		break;
+ 	case LINK_SKIP:
+ 		fts_flags = FTS_PHYSICAL;
+ 		break;
+ 	default:
+-		fts_flags = FTS_LOGICAL;
++		fts_flags = FTS_LOGICAL | FTS_NOSTAT;
+ 	}
+ 
+-	fts_flags |= FTS_NOSTAT | FTS_NOCHDIR;
++	fts_flags |= FTS_NOCHDIR;
+ 
+ 	fts = fts_open((argv[0] == NULL) ?
+ 	    __DECONST(char * const *, wd) : argv, fts_flags, NULL);
+@@ -173,6 +216,13 @@
+ 			warnx("warning: %s: recursive directory loop",
+ 			    p->fts_path);
+ 			break;
++		case FTS_SL:
++		case FTS_SLNONE:
++			if (linkbehave == LINK_SKIP ||
++			    (linkbehave == LINK_EXPLICIT &&
++			    p->fts_level > FTS_ROOTLEVEL))
++				break;
++			/* FALLTHROUGH */
+ 		default:
+ 			/* Check for file exclusion/inclusion */
+ 			ok = true;
+@@ -302,8 +352,16 @@
+ 		if (stat(fn, &sb) == 0) {
+ 			/* Check if we need to process the file */
+ 			s = sb.st_mode & S_IFMT;
+-			if (dirbehave == DIR_SKIP && s == S_IFDIR)
++			if (s == S_IFDIR) {
++				if (dirbehave == DIR_SKIP || dirbehave == DIR_RECURSE)
++					return (false);
++				file_err = true;
++				if (!sflag) {
++					errno = EISDIR;
++					warn("%s", fn);
++				}
+ 				return (false);
++			}
+ 			if (devbehave == DEV_SKIP && (s == S_IFIFO ||
+ 			    s == S_IFCHR || s == S_IFBLK || s == S_IFSOCK))
+ 				return (false);
+@@ -352,8 +410,10 @@
+ 		    pc.ln.len == 0)
+ 			break;
+ 
+-		if (pc.ln.len > 0 && pc.ln.dat[pc.ln.len - 1] == fileeol)
++		if (pc.ln.len > 0 && pc.ln.dat[pc.ln.len - 1] == fileeol) {
+ 			--pc.ln.len;
++			pc.ln.dat[pc.ln.len] = '\0';
++		}
+ 		pc.ln.line_no++;
+ 
+ 		/* Return if we need to skip a binary file */
+@@ -400,7 +460,7 @@
+ 
+ 	free(pc.ln.file);
+ 	free(f);
+-	return (lines != 0);
++	return (Lflag ? lines == 0 : lines != 0);
+ }
+ 
+ #ifdef WITH_INTERNAL_NOSPEC
+@@ -415,47 +475,46 @@
+ litexec(const struct pat *pat, const char *string, size_t nmatch,
+     regmatch_t pmatch[])
+ {
+-	char *(*strstr_fn)(const char *, const char *);
+-	char *sub, *subject;
+-	const char *search;
+-	size_t idx, n, ofs, stringlen;
+-
+-	if (cflags & REG_ICASE)
+-		strstr_fn = strcasestr;
+-	else
+-		strstr_fn = strstr;
++	size_t idx, n, ofs, stringlen, patlen;
++
+ 	idx = 0;
+-	ofs = pmatch[0].rm_so;
+-	stringlen = pmatch[0].rm_eo;
+-	if (ofs >= stringlen)
++	ofs = (size_t)pmatch[0].rm_so;
++	stringlen = (size_t)pmatch[0].rm_eo;
++	patlen = (size_t)pat->len;
++	if (ofs >= stringlen || patlen > stringlen - ofs)
+ 		return (REG_NOMATCH);
+-	subject = strndup(string, stringlen);
+-	if (subject == NULL)
+-		return (REG_ESPACE);
+-	for (n = 0; ofs < stringlen;) {
+-		search = (subject + ofs);
+-		if ((unsigned long)pat->len > strlen(search))
+-			break;
+-		sub = strstr_fn(search, pat->pat);
+-		/*
+-		 * Ignoring the empty string possibility due to context: grep optimizes
+-		 * for empty patterns and will never reach this point.
+-		 */
++	for (n = 0; ofs < stringlen && patlen <= stringlen - ofs;) {
++		const char *sub = NULL;
++
++		if (cflags & REG_ICASE) {
++			size_t pos = ofs;
++			while (pos < stringlen) {
++				const char *seg = string + pos;
++				size_t seglen = strlen(seg);
++				if (pos + seglen > stringlen)
++					seglen = stringlen - pos;
++				if (patlen <= seglen) {
++					sub = strcasestr(seg, pat->pat);
++					if (sub != NULL)
++						break;
++				}
++				pos += seglen + 1;
++			}
++		} else {
++			sub = memmem(string + ofs, stringlen - ofs, pat->pat, patlen);
++		}
+ 		if (sub == NULL)
+ 			break;
+ 		++n;
+-		/* Fill in pmatch if necessary */
+ 		if (nmatch > 0) {
+-			pmatch[idx].rm_so = ofs + (sub - search);
+-			pmatch[idx].rm_eo = pmatch[idx].rm_so + pat->len;
++			pmatch[idx].rm_so = (regoff_t)(sub - string);
++			pmatch[idx].rm_eo = pmatch[idx].rm_so + (regoff_t)patlen;
+ 			if (++idx == nmatch)
+ 				break;
+-			ofs = pmatch[idx].rm_so + 1;
++			ofs = (size_t)pmatch[idx - 1].rm_so + 1;
+ 		} else
+-			/* We only needed to know if we match or not */
+ 			break;
+ 	}
+-	free(subject);
+ 	if (n > 0 && nmatch > 0)
+ 		for (n = idx; n < nmatch; ++n)
+ 			pmatch[n].rm_so = pmatch[n].rm_eo = -1;
+@@ -533,8 +592,13 @@
+ 				r = litexec(&pattern[i], pc->ln.dat, 1, &pmatch);
+ 			else
+ #endif
++#ifdef REG_STARTEND
+ 			r = regexec(&r_pattern[i], pc->ln.dat, 1, &pmatch,
+ 			    leflags);
++#else
++			r = grep_regexec(&r_pattern[i], pc->ln.dat, 1, &pmatch,
++			    leflags);
++#endif
+ 			if (r != 0)
+ 				continue;
+ 			/* Check for full match */

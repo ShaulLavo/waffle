@@ -1,0 +1,40 @@
+{
+  "revision": "2e6fb9d8ee0cdf9e431fbcabe8af3115de000a13",
+  "archiveSha256": "f25ccd526235f7b351f9b49451b75fdd8e23250b9ad8fc9f8f2a19f517a4892f",
+  "files": {
+    "wasi-libc-LICENSE.txt": {
+      "sourcePath": "LICENSE",
+      "sha256": "2711a8b5a5cdfef0e639f96c1aca12ae23d7d64a02d0507f1bdf14d2b27bbc3a"
+    },
+    "wasi-libc-LICENSE-APACHE.txt": {
+      "sourcePath": "LICENSE-APACHE",
+      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+    },
+    "wasi-libc-LICENSE-APACHE-LLVM.txt": {
+      "sourcePath": "LICENSE-APACHE-LLVM",
+      "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5"
+    },
+    "wasi-libc-LICENSE-MIT.txt": {
+      "sourcePath": "LICENSE-MIT",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    },
+    "wasi-libc-libc-bottom-half-cloudlibc-LICENSE.txt": {
+      "sourcePath": "libc-bottom-half/cloudlibc/LICENSE",
+      "sha256": "c8b789cf5a746611e6300a0cc7750dbf92b61912a709d04e639245f7290656d0"
+    },
+    "wasi-libc-libc-top-half-musl-COPYRIGHT.txt": {
+      "sourcePath": "libc-top-half/musl/COPYRIGHT",
+      "sha256": "b870108ec5e7790e9f9919064f1b9421d62d5f9b0e6c230c6adf7ea2da62e97b"
+    },
+    "wasi-libc-dlmalloc-src-malloc.c.txt": {
+      "sourcePath": "dlmalloc/src/malloc.c",
+      "sourceSha256": "9e7ce51d813331ae87ef235f6ca2d5ce2167692e30bb51a173513e3754a67f8f",
+      "sha256": "1096a42cd80e41cd7b4fca4d51bb9d022244aed2e9d8f7d638a5b20da2d2c6e7"
+    },
+    "wasi-libc-fts-musl-fts-COPYING.txt": {
+      "sourcePath": "fts/musl-fts/COPYING",
+      "sourceSha256": "55af87e4017668f54467a3380e7ebbac5e672d8c763bfe95e6fc882a6fdc4046",
+      "sha256": "55af87e4017668f54467a3380e7ebbac5e672d8c763bfe95e6fc882a6fdc4046"
+    }
+  }
+}

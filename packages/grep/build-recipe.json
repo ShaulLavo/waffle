@@ -1,0 +1,37 @@
+{
+  "schema": "waffle-program-build-recipe/v1",
+  "status": "base family package implementation",
+  "sharedTools": "../../../tools/program-build-tools.ts",
+  "copiedHelpers": false,
+  "familyRecipe": {
+    "root": "monorepo root",
+    "waffle": "packages/waffle",
+    "targetDirectory": ".build/grep",
+    "releaseDirectory": ".build/grep/wasm32-wasip1/release"
+  },
+  "wasiSdk": "34.0",
+  "wasiLibc": "2e6fb9d8ee0c",
+  "maxMemoryBytes": 268435456,
+  "toolRecipe": "scripts/build-grep.ts",
+  "generatedOutputs": [
+    "grep.wasm",
+    "grep-program.json",
+    "grep.wasm.gz",
+    "grep.wasm.br",
+    "grep.sizes.json",
+    "THIRD_PARTY_NOTICES.txt"
+  ],
+  "upstream": {
+    "repository": "https://github.com/freebsd/freebsd-src",
+    "branch": "releng/14.2",
+    "revision": "16a79708d089423ec0c3d32f25e7ca97ae58e97b",
+    "license": "BSD-2-Clause",
+    "licenseSha256": "1692069a101281774c801c524faca5437328bc7a90cf58415345f65083a59f32"
+  },
+  "patch": {
+    "path": "patches/freebsd-grep-wasi.patch",
+    "sha256": "9ca8151d5c8413879b3513ba75c9c7ab2749c7f74b3b925e21b6dac8d58eeac2"
+  },
+  "finalization": "Shared stageProgram runs pinned Binaryen optimization, validates the named guest, strips names, and stages derivation and compression receipts.",
+  "optimizationPolicy": "waffle-program-size-v2"
+}
