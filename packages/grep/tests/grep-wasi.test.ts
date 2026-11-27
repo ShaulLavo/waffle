@@ -373,11 +373,27 @@ const realWorldCases: readonly GrepCase[] = [
     stderrPresent: false,
   },
   {
-    name: "-L selects files without matches",
+    name: "-L selects files without matches (mixed files -> exit 0)",
     args: ["-L", "needle", "a.txt", "b.txt", "c.txt"],
     files: { "a.txt": "needle\n", "b.txt": "nope\n", "c.txt": "needle\n" },
     expectedExit: 0,
     expectedStdout: "b.txt\n",
+    stderrPresent: false,
+  },
+  {
+    name: "-L single unmatched file prints filename and exits 1 (GNU semantics)",
+    args: ["-L", "needle", "b.txt"],
+    files: { "b.txt": "nope\n" },
+    expectedExit: 1,
+    expectedStdout: "b.txt\n",
+    stderrPresent: false,
+  },
+  {
+    name: "-L single matched file prints nothing and exits 0 (GNU semantics)",
+    args: ["-L", "needle", "a.txt"],
+    files: { "a.txt": "needle\n" },
+    expectedExit: 0,
+    expectedStdout: "",
     stderrPresent: false,
   },
   {
@@ -521,7 +537,114 @@ const realWorldCases: readonly GrepCase[] = [
     expectedStdout: "a\0needle\n",
     stderrPresent: false,
   },
+  {
+    name: "-aE spanning embedded NUL byte follows documented musl regex segment boundary",
+    args: ["-aE", "a.b", "bin.dat"],
+    files: { "bin.dat": Uint8Array.from([0x61, 0x00, 0x62, 0x0a]) },
+    expectedExit: 1,
+    expectedStdout: "",
+    stderrPresent: false,
+  },
 ];
+
+async function proveBrokenStdoutPipe(session: FamilyAcceptanceSession): Promise<void> {
+  await session.filesystem.writeFile("/broken-pipe-large.txt", "hit payload line\n".repeat(4000));
+  const scenarios = [
+    { label: "single-line broken pipe", args: ["-e", "hit"], stdin: "hit\n" },
+    {
+      label: "multi-line mid-stream broken pipe",
+      args: ["-e", "hit", "/broken-pipe-large.txt"],
+      stdin: "",
+    },
+  ] as const;
+  for (const scenario of scenarios) {
+    const [reader, writer] = session.pipe();
+    const stdinFd = session.filledPipe(scenario.stdin);
+    const stdoutFd = session.descriptors.open(writer, 0x40n | 0x0820_0000n, 0n);
+    reader.close?.();
+    const launched: LaunchRequest = {
+      executable: "/usr/bin/grep",
+      argv: ["grep"].concat(scenario.args),
+      cwd: "/",
+      env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+      fds: [
+        { child: 0, parent: stdinFd },
+        { child: 1, parent: stdoutFd },
+        { child: 2, parent: 2 },
+      ],
+    };
+    try {
+      const result = await bounded(scenario.label, session.exec(launched));
+      assert.equal(
+        result.exit.status,
+        141,
+        `${scenario.label}: expected status 141, got ${JSON.stringify(result.exit)} stderr=${JSON.stringify(decoder.decode(result.stderr))}`,
+      );
+      assert.equal(decoder.decode(result.stderr), "", `${scenario.label}: stderr must be empty`);
+    } finally {
+      session.descriptors.close(stdinFd);
+      session.descriptors.close(stdoutFd);
+    }
+  }
+}
+
+async function proveRuntimeProcCwd(session: FamilyAcceptanceSession): Promise<void> {
+  await session.filesystem.mkdirp("/review");
+  await session.filesystem.writeFile("/file", "root-hit\n");
+  await session.filesystem.writeFile("/review/file", "review-hit\n");
+  const cases: readonly {
+    readonly label: string;
+    readonly env: Record<string, string>;
+    readonly args: readonly string[];
+  }[] = [
+    {
+      label: "PWD unset uses runtime_proc.cwd",
+      env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+      args: ["hit", "file"],
+    },
+    {
+      label: "PWD=/ still uses runtime_proc.cwd /review",
+      env: { PATH: "/usr/bin:/bin", LC_ALL: "C", PWD: "/" },
+      args: ["hit", "file"],
+    },
+    {
+      label: "stale PWD=/absent does not break absolute operand",
+      env: { PATH: "/usr/bin:/bin", LC_ALL: "C", PWD: "/absent" },
+      args: ["hit", "/review/file"],
+    },
+    {
+      label: "stale PWD=/absent still resolves relative operand against /review",
+      env: { PATH: "/usr/bin:/bin", LC_ALL: "C", PWD: "/absent" },
+      args: ["hit", "file"],
+    },
+  ];
+  for (const entry of cases) {
+    const stdinFd = session.filledPipe("");
+    const launched: LaunchRequest = {
+      executable: "/usr/bin/grep",
+      argv: ["grep"].concat(entry.args),
+      cwd: "/review",
+      env: entry.env,
+      fds: [
+        { child: 0, parent: stdinFd },
+        { child: 1, parent: 1 },
+        { child: 2, parent: 2 },
+      ],
+    };
+    try {
+      const result = await bounded(entry.label, session.exec(launched));
+      assert.deepEqual(
+        result.exit,
+        { kind: "exited", code: 0, status: 0 },
+        `${entry.label}: stderr=${JSON.stringify(decoder.decode(result.stderr))}`,
+      );
+      assert.equal(decoder.decode(result.stdout), "review-hit\n", entry.label);
+      assert.equal(decoder.decode(result.stderr), "", entry.label);
+    } finally {
+      session.descriptors.close(stdinFd);
+    }
+  }
+}
 
 async function proveDevFd7(session: FamilyAcceptanceSession): Promise<void> {
   const seven = session.filledPipe("one\ntwo\n");
@@ -590,6 +713,16 @@ test("FreeBSD grep WASI binary passes core usage cases, real-world flags, EISDIR
           name: "forwarded /dev/fd/7 descriptor",
           family: "grep",
           run: proveDevFd7,
+        },
+        {
+          name: "broken stdout pipe exits 141 silently",
+          family: "grep",
+          run: proveBrokenStdoutPipe,
+        },
+        {
+          name: "runtime_proc.cwd overrides missing or stale PWD",
+          family: "grep",
+          run: proveRuntimeProcCwd,
         },
       ],
     });

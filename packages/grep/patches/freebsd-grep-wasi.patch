@@ -106,11 +106,21 @@
  
  bool		 matchall;
  
-@@ -135,6 +141,106 @@
+@@ -135,6 +141,144 @@
  
  /* Housekeeping */
  bool	 file_err;	/* file reading error */
 +static bool linkflag;
++
++void
++grep_check_stdout(void)
++{
++	if (ferror(stdout)) {
++		if (errno == EPIPE)
++			_exit(141);
++		err(2, "stdout");
++	}
++}
 +
 +#ifndef __FreeBSD__
 +static const char *progname_val = "grep";
@@ -136,6 +146,34 @@
 +#endif
 +
 +#ifdef __wasi__
++__attribute__((import_module("runtime_proc"), import_name("cwd")))
++extern int waffle_proc_cwd(char *buf, size_t len);
++
++static void
++waffle_init_cwd(void)
++{
++	int need = waffle_proc_cwd(NULL, 0);
++
++	if (need < 0) {
++		errno = -need;
++		err(2, "cwd");
++	}
++	if (need == 0)
++		return;
++	char *buf = grep_malloc((size_t)need + 1);
++	int got = waffle_proc_cwd(buf, (size_t)need);
++	if (got < 0) {
++		errno = -got;
++		err(2, "cwd");
++	}
++	if (got != need)
++		errx(2, "cwd changed length");
++	buf[got] = '\0';
++	if (chdir(buf) != 0)
++		err(2, "%s", buf);
++	free(buf);
++}
++
 +void
 +vwarn(const char *fmt, va_list ap)
 +{
@@ -213,7 +251,7 @@
  
  /*
   * Prints usage information and returns 2.
-@@ -188,6 +294,7 @@
+@@ -188,6 +332,7 @@
  	{"only-matching",	no_argument,		NULL, 'o'},
  	{"quiet",		no_argument,		NULL, 'q'},
  	{"silent",		no_argument,		NULL, 'q'},
@@ -221,7 +259,7 @@
  	{"recursive",		no_argument,		NULL, 'r'},
  	{"no-messages",		no_argument,		NULL, 's'},
  	{"binary",		no_argument,		NULL, 'U'},
-@@ -320,6 +427,16 @@
+@@ -320,6 +465,12 @@
  	bool matched;
  
  	setlocale(LC_ALL, "");
@@ -229,16 +267,12 @@
 +	grep_setprogname(argc > 0 ? argv[0] : NULL);
 +#endif
 +#ifdef __wasi__
-+	{
-+		const char *pwd = getenv("PWD");
-+		if (pwd != NULL && chdir(pwd) != 0)
-+			err(2, "%s", pwd);
-+	}
++	waffle_init_cwd();
 +#endif
  
  	/*
  	 * Check how we've bene invoked to determine the behavior we should
-@@ -476,6 +593,7 @@
+@@ -476,6 +627,7 @@
  			break;
  		case 'H':
  			Hflag = true;
@@ -246,7 +280,7 @@
  			break;
  		case 'h':
  			Hflag = false;
-@@ -514,6 +632,7 @@
+@@ -514,6 +666,7 @@
  			break;
  		case 'O':
  			linkbehave = LINK_EXPLICIT;
@@ -254,7 +288,7 @@
  			break;
  		case 'o':
  			oflag = true;
-@@ -521,17 +640,26 @@
+@@ -521,17 +674,26 @@
  			break;
  		case 'p':
  			linkbehave = LINK_SKIP;
@@ -281,7 +315,7 @@
  			break;
  		case 's':
  			sflag = true;
-@@ -693,7 +821,7 @@
+@@ -693,7 +855,7 @@
  	}
  
  	if (lbflag)
@@ -290,7 +324,7 @@
  
  	if ((aargc == 0 || aargc == 1) && !Hflag)
  		hflag = true;
-@@ -701,9 +829,8 @@
+@@ -701,9 +863,8 @@
  	initqueue();
  
  	if (aargc == 0 && dirbehave != DIR_RECURSE)
@@ -302,7 +336,7 @@
  		matched = grep_tree(aargv);
  	else
  		for (matched = false; aargc--; ++aargv) {
-@@ -713,12 +840,13 @@
+@@ -713,12 +874,14 @@
  				matched = true;
  		}
  
@@ -314,14 +348,15 @@
  	 * results and the command line option.
  	 */
 +	if (fflush(stdout) == EOF || ferror(stdout)) {
-+		if (errno != EPIPE)
-+			err(2, "stdout");
++		if (errno == EPIPE)
++			_exit(141);
++		err(2, "stdout");
 +	}
  	exit(matched ? (file_err ? (qflag ? 0 : 2) : 0) : (file_err ? 2 : 1));
  }
 --- a/grep.h
 +++ b/grep.h
-@@ -30,17 +30,25 @@
+@@ -30,17 +30,27 @@
   * SUCH DAMAGE.
   */
  
@@ -345,6 +380,8 @@
 +const char	*grep_getprogname(void);
 +#define	getprogname()	grep_getprogname()
 +#endif
++
++void		 grep_check_stdout(void);
 +
  #define	GREP_FIXED	0
  #define	GREP_BASIC	1
@@ -486,16 +523,15 @@
  		pc.ln.line_no++;
  
  		/* Return if we need to skip a binary file */
-@@ -400,7 +460,7 @@
+@@ -398,6 +458,7 @@
+ 	    binbehave == BINFILE_BIN && f->binary && !qflag)
+ 		printf(errstr[7], fn);
  
++	grep_check_stdout();
  	free(pc.ln.file);
  	free(f);
--	return (lines != 0);
-+	return (Lflag ? lines == 0 : lines != 0);
- }
- 
- #ifdef WITH_INTERNAL_NOSPEC
-@@ -415,47 +475,46 @@
+ 	return (lines != 0);
+@@ -415,47 +476,46 @@
  litexec(const struct pat *pat, const char *string, size_t nmatch,
      regmatch_t pmatch[])
  {
@@ -572,7 +608,7 @@
  	if (n > 0 && nmatch > 0)
  		for (n = idx; n < nmatch; ++n)
  			pmatch[n].rm_so = pmatch[n].rm_eo = -1;
-@@ -533,8 +592,13 @@
+@@ -533,8 +593,13 @@
  				r = litexec(&pattern[i], pc->ln.dat, 1, &pmatch);
  			else
  #endif
@@ -586,3 +622,18 @@
  			if (r != 0)
  				continue;
  			/* Check for full match */
+@@ -705,6 +770,7 @@
+ 	printline_metadata(line, sep);
+ 	fwrite(line->dat, line->len, 1, stdout);
+ 	putchar(fileeol);
++	grep_check_stdout();
+ }
+ 
+ static void
+@@ -792,5 +858,6 @@
+ 		}
+ 	} else
+ 		grep_printline(&pc->ln, sep);
++	grep_check_stdout();
+ 	pc->printed++;
+ }

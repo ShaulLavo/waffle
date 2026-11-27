@@ -23,7 +23,7 @@ grep -C 2 'error' app.log
 
 `patches/freebsd-grep-wasi.patch` keeps upstream matching and CLI parsing intact while adapting only host boundaries:
 
-- Initializes libc working directory from `PWD` on WASI (`chdir(getenv("PWD"))`)
+- Initializes libc working directory from Waffle's `runtime_proc.cwd` import (`PWD` is ordinary environment and does not override or break launch cwd)
 - Uses `read(2)` stdio buffering instead of FreeBSD-only `mmap`
-- Emulates `REG_STARTEND` and NUL-safe literal scanning on musl `regex(3)`
-- Reports `EISDIR` on directory operands when directory action is `read`, distinguishes `-r` from `-R` symlink following, lets a later `-H` clear `-h`, and checks `stdout` flush errors while preserving `SIGPIPE` (`141`)
+- Emulates `REG_STARTEND` via NUL-segmented calls on musl `regex(3)` and NUL-safe literal scanning (`memmem` / segmented `strcasestr`); under `-a`, regex matches wholly before or wholly after embedded NUL bytes match, while a single regex match spanning across an embedded NUL byte does not match under musl `regex(3)`
+- Reports `EISDIR` on directory operands when directory action is `read`, distinguishes `-r` from `-R` symlink following, lets a later `-H` clear `-h`, matches GNU `-L` exit status (`0` if any input line matched, `1` if none matched), exits `141` silently on stdout `EPIPE`, and exits `2` on non-`EPIPE` stdout errors

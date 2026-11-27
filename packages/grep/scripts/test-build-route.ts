@@ -116,5 +116,5 @@ test("build recipe, patch, BSD-2-Clause license, and frozen usage fixtures match
     readFileSync(resolve(packageRoot, "tests/fixtures/grep-usage-cases.json"), "utf8"),
   );
   assert.ok(Array.isArray(cases) && cases.length >= 27);
-  assert.match(readFileSync(patchPath, "utf8"), /getenv\("PWD"\)/);
+  assert.match(readFileSync(patchPath, "utf8"), /import_module\("runtime_proc"\)/);
 });
