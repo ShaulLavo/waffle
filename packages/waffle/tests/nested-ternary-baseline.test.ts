@@ -138,12 +138,18 @@ describe("nested-ternary shrinking baseline", () => {
     });
   });
 
-  test("preserves whitespace inside string and template literals when fingerprinting", () => {
+  test("preserves whitespace inside literals, regexes, and after comments with quotes", () => {
     expect(fingerprintExpression('a ? (b ? "x  y" : "z") : "w"')).not.toBe(
       fingerprintExpression('a ? (b ? "x y" : "z") : "w"'),
     );
     expect(fingerprintExpression("a ? (b ? `x  y` : `z`) : `w`")).not.toBe(
       fingerprintExpression("a ? (b ? `x y` : `z`) : `w`"),
+    );
+    expect(fingerprintExpression('a ? (b ? /* " */ "x  y" : "z") : "w"')).not.toBe(
+      fingerprintExpression('a ? (b ? /* " */ "x y" : "z") : "w"'),
+    );
+    expect(fingerprintExpression("a ? (b ? /x  y/ : /z/) : /w/")).not.toBe(
+      fingerprintExpression("a ? (b ? /x y/ : /z/) : /w/"),
     );
     expect(fingerprintExpression("a ?\n  (b ? 'x  y' : 'z')\n  : 'w'")).toBe(
       fingerprintExpression("a ? (b ? 'x  y' : 'z') : 'w'"),
