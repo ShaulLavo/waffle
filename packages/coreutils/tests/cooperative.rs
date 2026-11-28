@@ -62,6 +62,7 @@ fn seq_preserves_bytes_and_usage_status() {
 #[test]
 fn cat_and_tail_preserve_exact_file_bytes() {
     let filesystem = MemoryFs::new(4096);
+    filesystem.mkdir("/work", false).unwrap();
     filesystem
         .write_file("/work/input", b"one\ntwo\nthree\0")
         .unwrap();
