@@ -144,20 +144,24 @@ jobs:
             jq -c --arg tag "$RELEASE_TAG" \
               '[.[][] | select(.tag_name == $tag)] | if length > 1 then error("Multiple releases for the tag") else .[0] end')
           if [ "$release" = null ]; then exit 0; fi
-          asset_id=$(jq -r '[.assets[] | select(.name == "program-release.json")]
-            | if length > 1 then error("Multiple assets for the receipt") else .[0].id // empty end' \
+          asset=$(jq -c '[.assets[] | select(.name == "program-release.json")]
+            | if length > 1 then error("Multiple assets for the receipt") else .[0] end' \
             <<< "$release")
+          asset_id=$(jq -r 'select(.state == "uploaded") | .id' <<< "$asset")
           if [ -n "$asset_id" ]; then
             gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
               > .build/program-release/existing-receipt.json
           else
-            if ! digest=$(jq -er 'select(.draft and (.assets | length == 0))
+            if ! digest=$(jq -er 'select(.draft and (.assets == [] or (.assets | length == 1
+              and .[0].name == "program-release.json" and .[0].state == "starter" and .[0].size == 0)))
               | (.body // "") | split("\n")[0]
               | capture("^<!-- waffle-npm-receipt-sha256=(?<digest>[a-f0-9]{64}) -->$").digest' <<< "$release"); then
-              echo 'Expected one existing program release receipt or an empty draft with a receipt digest.' >&2
+              echo 'Expected an uploaded program release receipt or a draft with a receipt digest and no completed assets.' >&2
               exit 1
             fi
             printf 'receipt_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+            starter_id=$(jq -r 'select(.state == "starter") | .id' <<< "$asset")
+            printf 'starter_id=%s\n' "$starter_id" >> "$GITHUB_OUTPUT"
           fi
           draft_id=$(jq -r 'select(.draft) | .id' <<< "$release")
           printf 'draft_id=%s\n' "$draft_id" >> "$GITHUB_OUTPUT"
@@ -185,11 +189,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DRAFT_ID: ${{ steps.prior_release.outputs.draft_id }}
+          STARTER_ID: ${{ steps.prior_release.outputs.starter_id }}
+          EXISTING_RECEIPT_SHA256: ${{ steps.prior_release.outputs.receipt_sha256 }}
         run: |
           set -euo pipefail
           receipt=.build/program-release/program-release.json
           existing=.build/program-release/existing-receipt.json
           if [ -n "$DRAFT_ID" ]; then
+            if [ -n "$STARTER_ID" ]; then
+              marker="<!-- waffle-npm-receipt-sha256=$EXISTING_RECEIPT_SHA256 -->"
+              gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_ID" |
+                jq -e --arg tag "$RELEASE_TAG" --arg marker "$marker" --argjson id "$STARTER_ID" \
+                  '.draft and .tag_name == $tag and (.body | split("\n")[0]) == $marker
+                    and (.assets | length == 1 and .[0].id == $id and .[0].name == "program-release.json"
+                    and .[0].state == "starter" and .[0].size == 0)' >/dev/null
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$STARTER_ID" >/dev/null
+            fi
             if [ ! -f "$existing" ]; then gh release upload "$RELEASE_TAG" "$receipt"; fi
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$DRAFT_ID" -F draft=false >/dev/null
           elif [ ! -f "$existing" ]; then
