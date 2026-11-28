@@ -131,6 +131,53 @@ test("a guarded terminal endpoint cannot give a reserved parent a physical ident
   }
 });
 
+test("reserved parent discovery admits a route after its provisional blocker vanishes", () => {
+  const fs = new MemFS();
+  fs.mkdirp("/devices/null");
+  fs.mkdirp("/reports/2026");
+  fs.mkdirp("/proc/self");
+  fs.writeFile("/alias-files/config", "ordinary");
+  fs.writeFile("/reports/2026/status", "ordinary");
+  linkFixture(fs, "/dev", "/devices");
+  linkFixture(fs, "/proc/self/fd", "/devices/null/../../reports");
+  linkFixture(fs, "/devices/fd", "/reports/2026/../../alias-files");
+  const { wasi, open } = openGuest(fs);
+  try {
+    expect(open("reports/2026/status")).toBe(0);
+    expect(open("alias-files/config")).toBe(0);
+    expect(open("alias-files/4")).toBe(76);
+  } finally {
+    wasi.descriptors.dispose();
+  }
+});
+
+test("ambiguous reserved parents refuse numeric entries but allow ordinary siblings", () => {
+  const fs = new MemFS();
+  fs.mkdirp("/dev");
+  fs.mkdirp("/proc/self");
+  fs.mkdirp("/left/4");
+  fs.mkdirp("/right/5");
+  fs.writeFile("/left/config", "ordinary");
+  fs.writeFile("/right/config", "ordinary");
+  linkFixture(fs, "/dev/fd", "/left/4/../../right");
+  linkFixture(fs, "/proc/self/fd", "/right/5/../../left");
+  const { wasi, open } = openGuest(fs);
+  try {
+    expect(open("left/config")).toBe(0);
+    expect(open("right/config")).toBe(0);
+    expect(open("left/4")).toBe(76);
+    expect(open("right/5")).toBe(76);
+  } finally {
+    wasi.descriptors.dispose();
+  }
+});
+
+function linkFixture(fs: MemFS, path: string, target: string) {
+  const link = fs.resolveAbsolute(path);
+  if (typeof link === "number") throw new Error(`missing fixture parent of ${path}`);
+  expect(fs.symlink(link, target)).toBe(0);
+}
+
 test("the guarded WASI import confirms direct aliases without touching unrelated descriptor slots", () => {
   const fs = new MemFS();
   fs.writeFile("/ordinary", "hello");

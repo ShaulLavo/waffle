@@ -301,8 +301,13 @@ interface CooperativeParents {
   etc?: DirNode;
 }
 
+function sameCooperativeParents(a: CooperativeParents, b: CooperativeParents): boolean {
+  return a.dev === b.dev && a.devFd === b.devFd && a.procFd === b.procFd && a.etc === b.etc;
+}
+
 class CooperativeWalk {
   private readonly parents: CooperativeParents;
+  private readonly ambiguousParents: CooperativeParents | undefined;
   private readonly synthetic = new Set<DirNode>();
   result?: CooperativeEndpoint;
 
@@ -311,10 +316,26 @@ class CooperativeWalk {
     private readonly options: CooperativeResolveOptions,
     private readonly direct: number | undefined,
   ) {
-    const candidates = this.discoverParents(root, {});
-    // A candidate reached through another candidate's terminal endpoint
-    // cannot claim a physical directory in the guarded namespace.
-    this.parents = this.discoverParents(root, candidates);
+    const { confirmed, ambiguous } = this.classifyParents(root);
+    this.parents = confirmed;
+    this.ambiguousParents = ambiguous;
+  }
+
+  private classifyParents(root: DirNode): {
+    confirmed: CooperativeParents;
+    ambiguous?: CooperativeParents;
+  } {
+    // An endpoint can only remove routes. Using all possible parents finds
+    // the confirmed ones. Using only confirmed parents shrinks the possible
+    // set. Stop when no more of the four parent candidates can be eliminated.
+    let possible = this.discoverParents(root, {});
+    while (true) {
+      const confirmed = this.discoverParents(root, possible);
+      if (sameCooperativeParents(confirmed, possible)) return { confirmed };
+      const remaining = this.discoverParents(root, confirmed);
+      if (sameCooperativeParents(remaining, possible)) return { confirmed, ambiguous: possible };
+      possible = remaining;
+    }
   }
 
   private discoverParents(root: DirNode, candidates: CooperativeParents): CooperativeParents {
@@ -342,7 +363,12 @@ class CooperativeWalk {
         return physical ?? this.virtualChild(prefix, name, currentPath, next);
       },
     });
-    if (typeof result !== "number" && result.node?.kind === "dir") return result.node;
+    if (
+      typeof result !== "number" &&
+      result.node?.kind === "dir" &&
+      !this.hasSynthetic(result.node)
+    )
+      return result.node;
   }
 
   child(
@@ -356,8 +382,11 @@ class CooperativeWalk {
   ): Node | undefined {
     const prefix = ancestors.join("/");
     const endpoint = this.endpoint(this.parents, parent, prefix, name);
-    if (endpoint === undefined)
+    if (endpoint === undefined) {
+      if (this.ambiguousParents && this.endpoint(this.ambiguousParents, parent, prefix, name))
+        throw new FilesystemError(76);
       return parent.children.get(name) ?? this.virtualChild(prefix, name, path, next);
+    }
     if (/[^/]/.test(path.slice(next)) || path.endsWith("/")) throw new FilesystemError(54);
     if (endpoint.kind === "alias") this.confirmAlias(endpoint.logical, expandedLink);
     this.result = endpoint;
