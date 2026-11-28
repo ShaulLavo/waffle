@@ -120,6 +120,8 @@ jobs:
             .build/ripgrep
             packages/ripgrep/.sources
           key: ${{ runner.os }}-${{ runner.arch }}-program-release-${{ hashFiles('bun.lock', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-*.ts', 'tools/program-locales/**', 'packages/**/*.rs', 'packages/**/Cargo.toml', 'packages/**/Cargo.lock', 'packages/*/scripts/**', 'packages/*/patches/**') }}
+      - name: Fetch locked Cargo sources for offline notices
+        run: cargo fetch --locked
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun test scripts/program-release.test.ts scripts/publish-programs-npm.test.ts
       - name: Prepare every family in the closure with its own route
