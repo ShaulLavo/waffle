@@ -1,5 +1,12 @@
 # @waffle-os/relay
 
+## 0.0.157
+
+### Patch Changes
+
+- Updated dependencies [2f1bdf9]
+  - @waffle-os/runtime@0.0.157
+
 ## 0.0.156
 
 ### Patch Changes
