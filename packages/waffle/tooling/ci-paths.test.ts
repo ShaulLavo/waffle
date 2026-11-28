@@ -766,15 +766,14 @@ test("programs, program leaves and oracles preserve path selection and ordering"
   expect(curlProvision).toBeGreaterThan(0);
   expect(curlRun).toBeGreaterThan(curlProvision);
 
-  const findutilsSuite = coreSteps.find(
-    (step) => step.name === "Qualify find and run the xargs WASI suite",
-  );
-  expect(findutilsSuite?.if).toBe("steps.select.outputs.findutils == 'true'");
-  expect(String(findutilsSuite?.run)).toContain("bun run --cwd packages/findutils test:find:wasi");
-  expect(record(findutilsSuite?.env).WASI_SDK_PATH).toBe(
-    "${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux",
-  );
-  expect(record(findutilsSuite?.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+  const findSuite = coreSteps.find((step) => step.name === "Run find WASI suite");
+  const xargsSuite = coreSteps.find((step) => step.name === "Run findutils xargs WASI suite");
+  expect(String(findSuite?.run)).toContain("bun run --cwd packages/findutils test:find:wasi");
+  for (const suite of [findSuite, xargsSuite]) {
+    expect(suite?.if).toBe("steps.select.outputs.findutils == 'true'");
+    expect(record(suite?.env).WASI_SDK_PATH).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
+    expect(record(suite?.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+  }
 
   const libcCache = coreSteps.find((step) => step.id === "wasi-libc-cache");
   expect(String(record(libcCache?.with).key)).toContain("wasi-libc-34.0-runner-temp-v1-");
