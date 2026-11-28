@@ -1,4 +1,4 @@
-import { verifyPackedSearchHooks } from "./search-packed-hooks.ts";
+import { verifyPackedSearchPrograms } from "./search-packed-programs.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -96,7 +96,7 @@ try {
 }
 
 async function verifyFamilies(consumer: string, files: Record<string, string>) {
-  await verifyPackedSearchHooks(consumer);
+  await verifyPackedSearchPrograms(consumer);
   const entry = resolve(consumer, "acceptance.js");
   const bundle = await Bun.build({
     entrypoints: [resolve(root, "tools/family-packed-app.ts")],

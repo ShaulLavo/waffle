@@ -185,10 +185,11 @@ impl Abi for WasiAbi {
         let path = path.trim_start_matches('/');
         let path = if path.is_empty() { "." } else { path };
         let mut bytes = [0u8; 64];
+        let flags = u32::from(follow_symlinks);
         let errno = unsafe {
             path_filestat_get(
                 self.root,
-                u32::from(follow_symlinks),
+                flags,
                 path.as_ptr(),
                 path.len(),
                 bytes.as_mut_ptr(),
@@ -199,13 +200,12 @@ impl Abi for WasiAbi {
         }
         let mut metadata = decode_filestat(&bytes);
         let mut permissions = [0u8; 16];
-        // Waffle has no symbolic links. The query's flags must be zero.
         let errno = unsafe {
             fs_path_permissions_get(
                 self.root,
                 path.as_ptr(),
                 path.len(),
-                0,
+                flags,
                 permissions.as_mut_ptr(),
             )
         };

@@ -573,6 +573,38 @@ async function ripgrep(session: FamilyAcceptanceSession) {
   expectExecution(result, launched, fixture.status, fixture.stdout, fixture.error);
 }
 
+export async function checkSearchStreams(
+  session: FamilyAcceptanceSession,
+  tool: "grep" | "rg",
+  flags: readonly string[],
+) {
+  const cwd = `/${tool}-stream`;
+  const file = "x".repeat(180);
+  const outputPath = `${cwd}/output`;
+  const argv: string[] = [tool];
+  await session.filesystem.mkdirp(cwd);
+  const largeLines = 17 * 1024;
+  await session.filesystem.writeFile(
+    `${cwd}/large`,
+    `${"x".padEnd(1023, " ")}\n`.repeat(largeLines),
+  );
+  const count = request(argv.concat(flags, "-H", "-c", "x", "large"), cwd);
+  expectExecution(await session.exec(count), count, 0, `large:${largeLines}\n`);
+
+  const outputLines = 200_000;
+  await session.filesystem.writeFile(`${cwd}/${file}`, "x\n".repeat(outputLines));
+  await session.filesystem.writeFile(outputPath, "");
+  const parent = await session.outputFile(outputPath);
+  try {
+    const search = request(argv.concat(flags, "-H", "x", file), cwd, [{ child: 1, parent }]);
+    expectExecution(await session.exec(search), search, 0, "");
+    const output = await session.filesystem.stat(outputPath);
+    assert(output?.size === outputLines * `${file}:x\n`.length, `Incomplete ${tool} output`);
+  } finally {
+    session.descriptors.close(parent);
+  }
+}
+
 async function envDescriptors(session: FamilyAcceptanceSession) {
   const seven = session.filledPipe("one\ntwo\n");
   const forwarded = request(["env", "grep", "tw", "/dev/fd/7"], "/", [{ child: 7, parent: seven }]);

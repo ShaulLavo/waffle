@@ -379,7 +379,6 @@
         "tests/process-spawn-errno.test.ts",
         "tests/process-start-failed.test.ts",
         "tests/process-worker-ownership.test.ts",
-        "tests/search-program-browser-runner.ts",
         "tests/sender-admission.test.ts",
         "tests/start-failure-quiet-browser.ts",
         "tests/storage-crash-r2-opfs.ts",

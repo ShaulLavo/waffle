@@ -178,7 +178,7 @@ jobs:
               - "packages/coreutils/fixtures/cut-tr.json"
               - "packages/grep/tests/fixtures/grep-usage-cases.json"
               - "packages/ripgrep/tests/helpers/rg-fixtures.ts"
-            grep:
+            search:
               - ".github/workflows/ci.yml"
               - ".github/actions/release-downloads/**"
               - ".github/actions/save-release-downloads/**"
@@ -187,22 +187,18 @@ jobs:
               - ".github/actions/program-optimizer/action.yml"
               - "package.json"
               - "bun.lock"
+              - "rust-toolchain.toml"
               - "tools/program-build-tools.ts"
               - "tools/program-optimize.ts"
               - "tools/program-derivation.ts"
               - "tools/program-symbols.ts"
               - "tools/program-package.ts"
+              - "tools/waffle-family-metadata.ts"
               - "tools/family-acceptance.ts"
+              - "tools/search-wasi.test.ts"
               - "tools/tsconfig.programs.json"
               - "packages/waffle/**"
               - "packages/grep/**"
-            ripgrep:
-              - ".github/workflows/ci.yml"
-              - ".github/actions/release-downloads/**"
-              - ".github/actions/save-release-downloads/**"
-              - ".github/actions/setup-tools/**"
-              - "tools/ci-*.ts"
-              - "packages/waffle/**"
               - "packages/ripgrep/**"
             base:
               - ".github/workflows/ci.yml"
@@ -444,7 +440,7 @@ jobs:
           P_COREUTILS: ${{ steps.paths.outputs.coreutils }}
           P_CHECKSUMS: ${{ steps.paths.outputs.checksums }}
           P_FINDUTILS: ${{ steps.paths.outputs.findutils }}
-          P_GREP: ${{ steps.paths.outputs.grep }}
+          P_SEARCH: ${{ steps.paths.outputs.search }}
           P_DIFFUTILS: ${{ steps.paths.outputs.diffutils }}
           P_GH: ${{ steps.paths.outputs.gh }}
           P_JQ: ${{ steps.paths.outputs.jq }}
@@ -466,7 +462,7 @@ jobs:
           coreutils=$(pick "$P_COREUTILS")
           checksums=$(pick "$P_CHECKSUMS")
           findutils=$(pick "$P_FINDUTILS")
-          grep=$(pick "$P_GREP")
+          search=$(pick "$P_SEARCH")
           diffutils=$(pick "$P_DIFFUTILS")
           gh=$(pick "$P_GH")
           jq=$(pick "$P_JQ")
@@ -477,11 +473,11 @@ jobs:
           any() { for v in "$@"; do [[ "$v" == true ]] && { echo true; return; }; done; echo false; }
           libc_or_browser=$(any "$libc" "$browser")
           xargs_or_echo=$(any "$findutils" "$coreutils")
-          need_wasi_sdk=$(any "$awk" "$grep" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          need_wasi_sdk=$(any "$awk" "$search" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
           need_wasmtime=$(any "$awk" "$diffutils" "$jq" "$tar")
-          need_optimizer=$(any "$programs" "$awk" "$grep" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
-          need_rust_wasip1=$(any "$programs" "$jq" "$tar" "$xargs_or_echo" "$checksums")
-          need_wasi_libc=$(any "$awk" "$grep" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          need_optimizer=$(any "$programs" "$awk" "$search" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          need_rust_wasip1=$(any "$programs" "$search" "$jq" "$tar" "$xargs_or_echo" "$checksums")
+          need_wasi_libc=$(any "$awk" "$search" "$diffutils" "$jq" "$tar" "$xargs_or_echo" "$checksums")
           {
             echo "network=$network"
             echo "browser=$browser"
@@ -491,7 +487,7 @@ jobs:
             echo "coreutils=$coreutils"
             echo "checksums=$checksums"
             echo "findutils=$findutils"
-            echo "grep=$grep"
+            echo "search=$search"
             echo "xargs_or_echo=$xargs_or_echo"
             echo "diffutils=$diffutils"
             echo "gh=$gh"
@@ -823,10 +819,12 @@ jobs:
         run: |
           bun -e 'import { rmSync } from "node:fs"; const p=process.env.CURL_NATIVE_SCRATCH_ROOT; if (!p || p !== `${process.env.RUNNER_TEMP}/curl-native-scratch`) throw Error("Unexpected scratch path"); rmSync(p, { recursive: true, force: true });'
 
-      # grep
-      - name: Build and qualify only grep
-        if: steps.select.outputs.grep == 'true'
-        run: bun run programs:grep
+      - name: Build and qualify grep and ripgrep
+        if: steps.select.outputs.search == 'true'
+        run: |
+          bun run programs:grep
+          bun run --cwd packages/ripgrep build
+          bun test tools/search-wasi.test.ts
         env:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}

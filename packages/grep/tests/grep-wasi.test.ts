@@ -11,8 +11,7 @@ import {
   type FamilyAcceptanceSession,
   type LaunchRequest,
 } from "../../../tools/family-acceptance.ts";
-import { fastGrep, grep } from "../src/index.ts";
-import { planGrep } from "../src/plan.ts";
+import { grep } from "../src/index.ts";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -587,7 +586,7 @@ const realWorldCases: readonly GrepCase[] = [
     stderrPresent: false,
   },
   {
-    name: "-Fi rejects Kelvin sign for k under LC_ALL=C.UTF-8 matching GNU and fastGrep",
+    name: "-Fi rejects Kelvin sign for k under LC_ALL=C.UTF-8 matching GNU grep",
     args: ["-Fi", "k"],
     env: { PATH: "/usr/bin:/bin", LC_ALL: "C.UTF-8" },
     stdin: "K\n",
@@ -1148,7 +1147,6 @@ interface ParityVector {
   readonly label: string;
   readonly args: readonly string[];
   readonly env: Readonly<Record<string, string>>;
-  readonly expectFast: boolean;
   readonly expectedExit: number;
   readonly expectedStdout: string;
   readonly stderrIncludes?: string;
@@ -1172,7 +1170,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raH --include=dir* matches intermediate suffix of explicit operand",
     args: ["-raH", "--include=dir*", "fval", "outer/dir/file.txt"],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "outer/dir/file.txt:fval\n",
   },
@@ -1180,7 +1177,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raH --exclude=dir* excludes intermediate suffix of explicit operand",
     args: ["-raH", "--exclude=dir*", "fval", "outer/dir/file.txt"],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 1,
     expectedStdout: "",
   },
@@ -1188,7 +1184,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raH --exclude=missing* still reports missing explicit operand with status 2",
     args: ["-raH", "--exclude=missing*", "one", "missing.txt", "f"],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 2,
     expectedStdout: "f:one\nf:one\n",
     stderrIncludes: "missing.txt",
@@ -1197,7 +1192,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raH --exclude=dir* filters explicit file operand by full path",
     args: ["-raH", "--exclude=dir*", "fval", "dir/file"],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 1,
     expectedStdout: "",
   },
@@ -1205,7 +1199,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raH --include=dir* includes explicit file operand by full path",
     args: ["-raH", "--include=dir*", "fval", "dir/file"],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "dir/file:fval\n",
   },
@@ -1213,7 +1206,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raH --include=*.txt excludes non-matching explicit file operand",
     args: ["-raH", "--include=*.txt", "fval", "dir/file"],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 1,
     expectedStdout: "",
   },
@@ -1221,7 +1213,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raH --include=file includes explicit file operand by basename",
     args: ["-raH", "--include=file", "fval", "dir/file"],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "dir/file:fval\n",
   },
@@ -1229,7 +1220,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raH --exclude=.* excludes ./-prefixed explicit file operand",
     args: ["-raH", "--exclude=.*", "fval", "./dir/file"],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 1,
     expectedStdout: "",
   },
@@ -1237,7 +1227,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raH --exclude=.* matches basename only and keeps visible files",
     args: ["-raH", "--exclude=.*", "dotval", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "./visible.txt:dotval\n",
   },
@@ -1245,7 +1234,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raH --include=.* matches dotfiles only by basename",
     args: ["-raH", "--include=.*", "dotval", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "./.hidden:dotval\n",
   },
@@ -1253,7 +1241,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raclF suppresses counts and prints matching filename",
     args: ["-raclF", "one", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "./f\n",
   },
@@ -1261,7 +1248,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-ralcF matches regardless of flag order",
     args: ["-ralcF", "one", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "./f\n",
   },
@@ -1269,7 +1255,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raHFi folds long s under LC_ALL=C.UTF-8",
     args: ["-raHFi", "s", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "./u:ſ\n",
   },
@@ -1277,7 +1262,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raHi literal BRE folds long s under LC_ALL=C.UTF-8",
     args: ["-raHi", "s", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "./u:ſ\n",
   },
@@ -1285,7 +1269,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raHiE literal ERE folds long s under LC_ALL=C.UTF-8",
     args: ["-raHiE", "s", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "./u:ſ\n",
   },
@@ -1293,7 +1276,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raHiE literal ERE alternation folds long s under LC_ALL=C.UTF-8",
     args: ["-raHiE", "s|nomatch", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "./u:ſ\n",
   },
@@ -1301,7 +1283,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raHFi folds dotless i under LC_ALL=C.UTF-8 without matching U+0130",
     args: ["-raHFi", "i", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
-    expectFast: true,
     expectedExit: 0,
     expectedStdout: "./dotless:ı\n",
   },
@@ -1309,7 +1290,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raHFi does not match Kelvin sign for k under LC_ALL=C.UTF-8",
     args: ["-raHFi", "k", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
-    expectFast: true,
     expectedExit: 1,
     expectedStdout: "",
   },
@@ -1317,7 +1297,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raHFi stays ASCII-only under LC_ALL=C",
     args: ["-raHFi", "s", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
-    expectFast: true,
     expectedExit: 1,
     expectedStdout: "",
   },
@@ -1325,7 +1304,6 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raHFi defaults to C locale when locale variables are unset",
     args: ["-raHFi", "s", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity" },
-    expectFast: true,
     expectedExit: 1,
     expectedStdout: "",
   },
@@ -1333,15 +1311,12 @@ const parityVectors: readonly ParityVector[] = [
     label: "-raHFi non-ASCII pattern falls back cleanly and matches under C.UTF-8",
     args: ["-raHFi", "ä", "."],
     env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
-    expectFast: false,
     expectedExit: 0,
     expectedStdout: "./umlaut:Ä\n",
   },
 ];
 
-async function collectParityResults(
-  catalog: typeof grep,
-): Promise<
+async function collectParityResults(): Promise<
   readonly { readonly status: number; readonly stdout: string; readonly stderr: string }[]
 > {
   const results: { readonly status: number; readonly stdout: string; readonly stderr: string }[] =
@@ -1351,7 +1326,7 @@ async function collectParityResults(
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),
     },
-    programs: { onDemand: [catalog] },
+    programs: { onDemand: [grep] },
   });
   try {
     await bounded("parity catalog ready", runtime.programs.ready);
@@ -1408,56 +1383,16 @@ async function collectParityResults(
   return results;
 }
 
-test("FreeBSD grep WASI binary matches fastGrep output and exit status on admitted workloads", async () => {
-  for (const vector of parityVectors) {
-    const plan = planGrep(vector.args, vector.env);
-    assert.equal(
-      plan.kind,
-      vector.expectFast ? "fast" : "fallback",
-      `${vector.label}: unexpected planGrep admission`,
-    );
-  }
-  const fastCatalog = fastGrep({
-    search: new URL("../../waffle/search/search-worker.ts", import.meta.url).href,
-    shard: new URL("../../waffle/search/shard-worker.ts", import.meta.url).href,
-  });
-  const wasiResults = await collectParityResults(grep);
-  const fastResults = await collectParityResults(fastCatalog);
+test("FreeBSD grep WASI preserves recursive text-mode results", async () => {
+  const results = await collectParityResults();
   for (const [index, vector] of parityVectors.entries()) {
-    const wasi = wasiResults[index]!;
-    const fast = fastResults[index]!;
-    assert.equal(wasi.status, vector.expectedExit, `${vector.label}: FreeBSD grep.wasm status`);
-    assert.equal(fast.status, vector.expectedExit, `${vector.label}: fastGrep status`);
-    assert.equal(wasi.stdout, vector.expectedStdout, `${vector.label}: FreeBSD grep.wasm stdout`);
-    assert.equal(fast.stdout, vector.expectedStdout, `${vector.label}: fastGrep stdout`);
+    const result = results[index]!;
+    assert.equal(result.status, vector.expectedExit, vector.label);
+    assert.equal(result.stdout, vector.expectedStdout, vector.label);
     if (vector.stderrIncludes !== undefined) {
-      assert.ok(
-        wasi.stderr.includes(vector.stderrIncludes),
-        `${vector.label}: FreeBSD grep.wasm stderr=${JSON.stringify(wasi.stderr)}`,
-      );
-      assert.ok(
-        fast.stderr.includes(vector.stderrIncludes),
-        `${vector.label}: fastGrep stderr=${JSON.stringify(fast.stderr)}`,
-      );
+      assert.ok(result.stderr.includes(vector.stderrIncludes), result.stderr);
       continue;
     }
-    assert.equal(wasi.stderr, "", `${vector.label}: FreeBSD grep.wasm stderr`);
-    assert.equal(fast.stderr, "", `${vector.label}: fastGrep stderr`);
+    assert.equal(result.stderr, "", vector.label);
   }
 }, 90_000);
-
-test("fastGrep planner admits proven recursive text subset and falls back cleanly to FreeBSD grep", () => {
-  const admitted = planGrep(["-racF", "needle", "."], { LC_ALL: "C", PWD: "/work" });
-  assert.equal(admitted.kind, "fast");
-  const fallbackContext = planGrep(["-r", "-C", "2", "needle", "."], { LC_ALL: "C", PWD: "/work" });
-  assert.equal(fallbackContext.kind, "fallback");
-  const fallbackOnlyMatching = planGrep(["-ro", "needle", "."], { LC_ALL: "C", PWD: "/work" });
-  assert.equal(fallbackOnlyMatching.kind, "fallback");
-  const fallbackNoText = planGrep(["-r", "needle", "."], { LC_ALL: "C", PWD: "/work" });
-  assert.equal(fallbackNoText.kind, "fallback");
-  const catalog = fastGrep({ search: "/search-worker.js", shard: "/shard-worker.js" });
-  assert.equal(catalog.name, "grep");
-  assert.equal(catalog.programs.length, 1);
-  assert.equal(catalog.programs[0]?.path, "/usr/bin/grep");
-  assert.deepEqual(catalog.programs[0]?.aliases, ["/bin/grep"]);
-});

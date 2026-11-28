@@ -176,7 +176,7 @@ test("actual Wasm query distinguishes missing, denied, unsupported and capabilit
   const failures = [
     ["absent", 0, 3, 512, 44],
     ["absent/child", 0, 3, 512, 44],
-    ["dir/file", 1, 3, 512, 58],
+    ["dir/file", 2, 3, 512, 58],
     ["dir/file", 0, 999, 512, 8],
     ["dir/file", 0, 3, 65530, 21],
     ["dir/\0file", 0, 3, 512, 28],
@@ -202,6 +202,29 @@ test("actual Wasm query distinguishes missing, denied, unsupported and capabilit
   host.wasi.descriptors.get(3)!.rightsBase = 0n;
   expect(host.call("dir/file")).toBe(76);
   expect(Array.from(bytes.subarray(512, 592))).toEqual(unchanged);
+});
+
+test("WASI permission queries use the requested final symlink lookup", async () => {
+  const { permissionsHost } = await import("./fixtures/permissions-guest.js");
+  const fs = new MemFS();
+  const target = file(fs, "/target");
+  expect(fs.setMode(target, 0o400)).toBe(0);
+  for (const [path, destination] of [
+    ["/link", "target"],
+    ["/dangling", "absent"],
+  ] as const) {
+    const resolved = fs.resolveAbsolute(path);
+    if (typeof resolved === "number") throw new Error(`resolve errno ${resolved}`);
+    expect(fs.symlink(resolved, destination)).toBe(0);
+  }
+  const host = permissionsHost(fs);
+  cleanup.push(() => host.wasi.descriptors.dispose());
+  expect(host.call("link", 0)).toBe(0);
+  expect(host.words()[0]).toBe(0o600);
+  expect(host.call("link", 1)).toBe(0);
+  expect(host.words()).toEqual([0o400, 0o600, 4, 6]);
+  expect(host.call("dangling", 0)).toBe(0);
+  expect(host.call("dangling", 1)).toBe(44);
 });
 
 test("query reports an adapter without metadata as unsupported and leaves output intact", async () => {
