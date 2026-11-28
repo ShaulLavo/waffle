@@ -9,6 +9,7 @@ import { createMachineIdFile } from "./devices.js";
 import type { FileStat, FileSystem, ResolvedPath } from "./filesystem.js";
 import { releaseOriginOfd } from "./open-file.js";
 import { normalize } from "./path.js";
+import { descriptorFlagError, FDFLAG_APPEND } from "./fd-flags.js";
 
 export type DescriptorPath =
   | { source: number }
@@ -45,7 +46,9 @@ export function reopenDescriptor(
 ): number {
   const source = table.get(fd);
   if (!source) return -8;
-  if (oflags & ~15 || fdflags & ~31 || oflags & 5) return -28;
+  if (oflags & ~15 || oflags & 5) return -28;
+  const invalidFlags = descriptorFlagError(fdflags);
+  if (invalidFlags) return -invalidFlags;
   base = BigInt.asUintN(64, base);
   inheriting = BigInt.asUintN(64, inheriting);
   if (source.resource.kind === "device" && source.resource.virtualFile) {
@@ -111,7 +114,7 @@ export function openInode(
   const resource =
     kind === "directory"
       ? ({ kind, handle } as const)
-      : { kind, handle, offset: 0, append: (fdflags & 1) !== 0, fdflags };
+      : { kind, handle, offset: 0, append: (fdflags & FDFLAG_APPEND) !== 0, fdflags };
   return table.open(resource, base, inheriting, () => releaseOriginOfd(fs, resource));
 }
 
