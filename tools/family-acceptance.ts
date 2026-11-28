@@ -574,7 +574,11 @@ async function ripgrep(session: FamilyAcceptanceSession) {
   expectExecution(result, launched, fixture.status, fixture.stdout, fixture.error);
 }
 
-async function largeSearch(session: FamilyAcceptanceSession, tool: "grep" | "rg", flags: string[]) {
+async function largeSearch(
+  session: FamilyAcceptanceSession,
+  tool: "grep" | "rg",
+  flags: readonly string[],
+) {
   const cwd = `/${tool}-stream`;
   const file = "x".repeat(180);
   const outputPath = `${cwd}/output`;
@@ -584,7 +588,7 @@ async function largeSearch(session: FamilyAcceptanceSession, tool: "grep" | "rg"
     `${cwd}/large`,
     `${"x".padEnd(1023, " ")}\n`.repeat(largeLines),
   );
-  const count = request([tool].concat(flags, "-c", "x", "large"), cwd);
+  const count = request([tool].concat(flags, "--no-filename", "-c", "x", "large"), cwd);
   expectExecution(await session.exec(count), count, 0, `${largeLines}\n`);
 
   const outputLines = 200_000;
