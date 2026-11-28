@@ -876,29 +876,27 @@ async function pendingRuntimeOpenCase(
  * A multitab Host renews its lease with verifyEpoch. A readonly epoch read queues behind the
  * connection's own checkpoint commit, which on a loaded device can hold "metadata" for seconds,
  * so the lease lapsed and running calls were cancelled. The commit's own epoch read answers:
- * right after that read, once its last write is issued, and from a later task while a large
- * commit is still writing (WebKit then already reports the transaction as committing).
+ * right after that read, once its last write succeeds, and after explicit commit starts.
  */
 async function epochCheckDuringCommitCase(open: () => Promise<StorageBackend>): Promise<void> {
   const storage = (await open()) as IndexedDBStorage;
   await storage.persist(batch(1));
   await epochCheckDuring(storage, "get", "epoch", 2, "success");
   await epochCheckDuring(storage, "put", "active", 3, "success");
-  await epochCheckDuring(storage, "put", "active", 4, "later", "x".repeat(16 << 20));
+  await epochCheckDuring(storage, "put", "active", 4, "committing");
   await storage.close();
 }
 
 /**
- * Runs one commit and checks the epoch when the commit's `method` on metadata `key` succeeds, or
- * in a later task after the commit issues it.
+ * Checks the epoch when the metadata request succeeds, with an explicit commit for the
+ * committing-state case.
  */
 async function epochCheckDuring(
   storage: IndexedDBStorage,
   method: "get" | "put",
   key: string,
   generation: number,
-  when: "success" | "later",
-  text?: string,
+  when: "success" | "committing",
 ): Promise<void> {
   const order: string[] = [];
   let checked: Promise<boolean> | undefined;
@@ -914,13 +912,15 @@ async function epochCheckDuring(
       });
     const { promise, resolve } = Promise.withResolvers<boolean>();
     checked = promise;
-    if (when === "success") request.addEventListener("success", () => resolve(check()));
-    else request.addEventListener("success", () => setTimeout(() => resolve(check()), 0));
+    request.addEventListener("success", () => {
+      if (when === "committing") this.transaction.commit();
+      resolve(check());
+    });
     return request;
   };
   Object.assign(IDBObjectStore.prototype, { [method]: watched });
   try {
-    await storage.persist(batch(generation, text));
+    await storage.persist(batch(generation));
     order.push("committed");
   } finally {
     Object.assign(IDBObjectStore.prototype, { [method]: original });
