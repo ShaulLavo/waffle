@@ -687,6 +687,55 @@ async function ordinaryCooperative(session: FamilyAcceptanceSession) {
 async function which(session: FamilyAcceptanceSession) {
   const launched = request(["which", "grep", "env"]);
   expectExecution(await session.exec(launched), launched, 0, "/usr/bin/grep\n/usr/bin/env\n");
+  await whichThroughSymlink(session);
+}
+
+async function seedSymlinks(runtime: Runtime, links: readonly (readonly [string, string])[]) {
+  const files = new FilesystemClient(
+    runtime.filesystem.connect(runtime.filesystem.createIdentity()),
+  );
+  try {
+    const root: number = await files.asyncCall("preopen", ["/"]);
+    files.retain(root);
+    for (const [path, target] of links) {
+      const destination: unknown = await files.asyncCall("resolve", [root, path.slice(1)]);
+      assert(
+        destination && typeof destination === "object",
+        `Cannot resolve symlink path: ${path}`,
+      );
+      const status: unknown = await files.asyncCall("symlink", [destination, target]);
+      assert(status === 0, `Cannot create symlink: ${path}`);
+    }
+  } finally {
+    files.dispose();
+  }
+}
+
+async function whichThroughSymlink(session: FamilyAcceptanceSession) {
+  const fixture = "/family-which-symlink";
+  const cwd = `${fixture}/work`;
+  const real = `${fixture}/real`;
+  try {
+    await session.filesystem.mkdirp(cwd);
+    await session.filesystem.mkdirp(`${real}/bin`);
+    await seedSymlinks(session.runtime, [
+      [`${cwd}/bin-link`, `${real}/bin`],
+      [`${real}/seq`, "/usr/bin/seq"],
+      [`${cwd}/seq`, "/usr/bin/echo"],
+    ]);
+    const query = request(["which", "seq"], cwd);
+    query.env.PATH = "bin-link/..";
+    const found = await session.exec(query);
+    expectExit(found.exit, 0);
+    const replay = {
+      ...request(["seq", "3"], cwd),
+      executable: decoder.decode(found.stdout).trimEnd(),
+    };
+    expectExecution(await session.exec(replay), replay, 0, "1\n2\n3\n");
+    expectExecution(found, query, 0, `${cwd}/bin-link/../seq\n`);
+  } finally {
+    await session.filesystem.remove(fixture);
+  }
 }
 
 async function closedStdout(session: FamilyAcceptanceSession) {
