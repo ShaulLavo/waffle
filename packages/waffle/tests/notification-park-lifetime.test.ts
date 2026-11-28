@@ -137,18 +137,20 @@ test("disposal between a guest's first checks and its post-park recheck reports 
   );
   try {
     const state = bridge.connection.state;
-    const reported = new Promise<unknown>((resolve) => {
-      worker.onmessage = ({ data }) => resolve(data);
-    });
+    const parked = Promise.withResolvers<void>();
+    const reported = Promise.withResolvers<unknown>();
+    worker.onmessage = ({ data }) => {
+      if (data?.parked === true) parked.resolve();
+      else reported.resolve(data);
+    };
     worker.postMessage({ filesystem: pair.client, notifications: bridge.connection }, [
       pair.client.port,
       bridge.connection.port,
     ]);
-    // The guest notifies index 2 once its park is active; dispose while its send is held.
-    for (let attempt = 0; attempt < 500 && !Atomics.load(state, 2); attempt++) await pause(2);
+    await parked.promise;
     expect(Atomics.load(state, 2)).not.toBe(0);
     await bridge.dispose();
-    expect(await reported).toEqual({ result: "closed" });
+    expect(await reported.promise).toEqual({ result: "closed" });
   } finally {
     worker.terminate();
     await bridge.dispose();

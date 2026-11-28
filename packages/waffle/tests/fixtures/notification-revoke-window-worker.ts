@@ -16,8 +16,8 @@ MessagePort.prototype.postMessage = function (this: MessagePort, ...args: never[
   const message = args[0] as { type?: unknown } | undefined;
   if (!held || message?.type !== "park") return;
   const sequence = Atomics.load(held, 0);
-  // Tell the page the park is active, then hold until disposal moves the sequence.
-  Atomics.notify(held, 2);
+  // Acknowledge the observed sequence before the page can dispose the bridge.
+  globalThis.postMessage({ parked: true });
   Atomics.wait(held, 0, sequence, 5000);
 };
 
