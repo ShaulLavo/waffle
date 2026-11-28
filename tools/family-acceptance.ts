@@ -86,6 +86,7 @@ export interface FamilyAcceptanceOptions {
   readonly workerUrl: URL;
   readonly assets: FamilyAcceptanceAssets;
   readonly cases?: readonly FamilyAcceptanceCase[];
+  readonly redirectFiles?: boolean;
 }
 
 interface InstalledSession {
@@ -573,6 +574,33 @@ async function ripgrep(session: FamilyAcceptanceSession) {
   expectExecution(result, launched, fixture.status, fixture.stdout, fixture.error);
 }
 
+async function largeSearch(session: FamilyAcceptanceSession, tool: "grep" | "rg", flags: string[]) {
+  const cwd = `/${tool}-stream`;
+  const file = "x".repeat(180);
+  const outputPath = `${cwd}/output`;
+  await session.filesystem.mkdirp(cwd);
+  const largeLines = 17 * 1024;
+  await session.filesystem.writeFile(
+    `${cwd}/large`,
+    `${"x".padEnd(1023, " ")}\n`.repeat(largeLines),
+  );
+  const count = request([tool].concat(flags, "-c", "x", "large"), cwd);
+  expectExecution(await session.exec(count), count, 0, `${largeLines}\n`);
+
+  const outputLines = 200_000;
+  await session.filesystem.writeFile(`${cwd}/${file}`, "x\n".repeat(outputLines));
+  await session.filesystem.writeFile(outputPath, "");
+  const parent = await session.outputFile(outputPath);
+  try {
+    const search = request([tool].concat(flags, "-H", "x", file), cwd, [{ child: 1, parent }]);
+    expectExecution(await session.exec(search), search, 0, "");
+    const output = await session.filesystem.stat(outputPath);
+    assert(output?.size === outputLines * `${file}:x\n`.length, `Incomplete ${tool} output`);
+  } finally {
+    session.descriptors.close(parent);
+  }
+}
+
 async function envDescriptors(session: FamilyAcceptanceSession) {
   const seven = session.filledPipe("one\ntwo\n");
   const forwarded = request(["env", "grep", "tw", "/dev/fd/7"], "/", [{ child: 7, parent: seven }]);
@@ -626,6 +654,17 @@ export const familyAcceptanceCases: readonly FamilyAcceptanceCase[] = [
   { name: "grep numbered inverted bytes", family: "grep", run: grep },
   { name: "sed unterminated output", family: "sed", run: sed },
   { name: "ripgrep explicit stdin", family: "ripgrep", run: ripgrep },
+  {
+    name: "grep streams large inputs and outputs",
+    family: "grep",
+    run: (session) => largeSearch(session, "grep", ["-raF"]),
+  },
+  {
+    name: "ripgrep streams large inputs and outputs",
+    family: "ripgrep",
+    run: (session) =>
+      largeSearch(session, "rg", ["--color=never", "--no-ignore", "--hidden", "--text", "-F"]),
+  },
   {
     name: "env forwards descriptors and unbound fd fails",
     family: "coreutils",
