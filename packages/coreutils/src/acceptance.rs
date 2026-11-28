@@ -1,10 +1,10 @@
 //! Original cat, mkdir and seq implementations extracted from bash-web 81205d0.
 use super::{Context, diagnostic, endpoint, write};
-use std::fmt::Write as _;
+use std::{borrow::Cow, fmt::Write as _};
 use waffle_program_support::{
     executor::Budget,
     io::{Endpoint, FdTable, IoError, OpenOptions, open_path},
-    path::join_cwd,
+    path::absolute,
 };
 
 async fn copy(input: Endpoint, fds: &FdTable, context: &Context) -> Result<(), i32> {
@@ -38,7 +38,7 @@ pub(crate) async fn cat(
     Ok(())
 }
 async fn cat_path(path: &str, cwd: &str, fds: &FdTable, context: &Context) -> Result<(), i32> {
-    let path = join_cwd(cwd, path);
+    let path = absolute(cwd, path);
     let options = OpenOptions::default();
     let opening = open_path(&path, fds, &options).map_err(|error| error.status())?;
     let input = context
@@ -73,7 +73,11 @@ pub(crate) async fn mkdir(
     let mut budget = Budget::default();
     for operand in operands {
         budget.checkpoint(&context.cancel).await.map_err(|_| 130)?;
-        let path = join_cwd(cwd, &operand);
+        let path = if operand.is_empty() || operand.starts_with('/') {
+            Cow::Borrowed(operand.as_str())
+        } else {
+            Cow::Owned(format!("{}/{operand}", cwd.trim_end_matches('/')))
+        };
         let result = context
             .cancel
             .run(context.fs().mkdir(&path, parents))

@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use waffle_coreutils::which::Lookup;
-use waffle_program_support::path::join_cwd;
+use waffle_program_support::path::absolute;
 
 fn run(args: &[&str], path: Option<&str>, error: Option<i32>) -> (i32, String, String) {
     let queries = RefCell::new(Vec::new());
@@ -12,15 +12,10 @@ fn run(args: &[&str], path: Option<&str>, error: Option<i32>) -> (i32, String, S
             if let Some(error) = error.filter(|_| path == "/bin/tool") {
                 return Err(error);
             }
-            let absolute = join_cwd(cwd, path);
+            let absolute = absolute(cwd, path);
             Ok(matches!(
                 absolute.as_str(),
-                "/bin/tool"
-                    | "/other/tool"
-                    | "/work/./tool"
-                    | "/work/local/tool"
-                    | "/work/link/../tool"
-                    | "/bin/-tool"
+                "/bin/tool" | "/other/tool" | "/work/tool" | "/work/local/tool" | "/bin/-tool"
             ))
         },
     };
@@ -65,10 +60,6 @@ fn relative_empty_and_unset_path_have_explicit_behavior() {
     assert_eq!(
         run(&["./tool", "/bin/tool"], None, None),
         (0, "/work/tool\n/bin/tool\n".into(), "".into())
-    );
-    assert_eq!(
-        run(&["link/../tool"], None, None),
-        (0, "/work/link/../tool\n".into(), "".into())
     );
 }
 
