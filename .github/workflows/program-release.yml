@@ -31,8 +31,7 @@ on:
         type: boolean
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: program-release-${{ inputs.tag }}
@@ -40,14 +39,18 @@ concurrency:
 
 env:
   GITHUB_TOKEN: ${{ github.token }}
+  BUN_VERSION: "1.4.4"
+  NODE_VERSION: "26.12.1"
+  RELEASE_TAG: ${{ inputs.tag }}
 
 jobs:
   release:
+    name: Qualify and stage program families
     runs-on: ubuntu-26.04
+    outputs:
+      source_commit: ${{ steps.source.outputs.commit }}
+      staged_artifact: ${{ steps.staged.outputs.artifact-id }}
     env:
-      BUN_VERSION: "1.4.4"
-      NODE_VERSION: "26.12.1"
-      RELEASE_TAG: ${{ inputs.tag }}
       FAMILIES: ${{ inputs.families }}
       WASI_SDK_PATH: ${{ github.workspace }}/.build/wasi-sdk-34.0-x86_64-linux
     steps:
@@ -56,11 +59,14 @@ jobs:
           fetch-depth: 0
           ref: refs/tags/${{ inputs.tag }}
       - name: Verify the checkout is exactly the tag and on main
+        id: source
         run: |
           [[ "$RELEASE_TAG" =~ ^programs-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
           git fetch origin main
           git merge-base --is-ancestor HEAD origin/main
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
       - name: Verify the tag uses the workflow publisher
         if: inputs.publish
         run: |
@@ -117,6 +123,8 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun test scripts/program-release.test.ts scripts/publish-programs-npm.test.ts
       - name: Prepare every family in the closure with its own route
+        env:
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
         run: |
           set -euo pipefail
           named_programs="$RUNNER_TEMP/waffle-named-programs"
@@ -145,18 +153,52 @@ jobs:
             --runtime-url "$RUNTIME_URL" --runtime-sha256 "$RUNTIME_SHA256" \
             ${REGISTRY:+--registry "$REGISTRY"} --out .build/program-release
       - uses: actions/upload-artifact@v4
+        id: staged
         with:
-          name: program-release-${{ inputs.tag }}
+          name: program-release-${{ inputs.tag }}-${{ github.run_attempt }}
           path: .build/program-release/assets
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
-          name: program-named-${{ inputs.tag }}
+          name: program-named-${{ inputs.tag }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/waffle-named-programs
           if-no-files-found: ignore
+      - uses: ./.github/actions/save-release-downloads
+        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
+
+  publish:
+    name: Publish the staged program families
+    needs: release
+    if: inputs.publish
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    env:
+      SOURCE_COMMIT: ${{ needs.release.outputs.source_commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release.outputs.source_commit }}
+      - name: Verify the publication source still matches the tag
+        run: |
+          test "$SOURCE_COMMIT" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.release.outputs.staged_artifact }}
+          github-token: ${{ github.token }}
+          run-id: ${{ github.run_id }}
+          merge-multiple: true
+          path: .build/program-release/assets
+      - uses: ./.github/actions/release-downloads
+      - uses: ./.github/actions/setup-tools
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
       - name: Read the receipt for an existing release
         id: prior_release
-        if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -187,12 +229,14 @@ jobs:
           draft_id=$(jq -r 'select(.draft) | .id' <<< "$release")
           printf 'draft_id=%s\n' "$draft_id" >> "$GITHUB_OUTPUT"
       - name: Publish program packages to npm
-        if: inputs.publish
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           EXISTING_RECEIPT_SHA256: ${{ steps.prior_release.outputs.receipt_sha256 }}
         run: |
           set -euo pipefail
+          jq -e --arg commit "$SOURCE_COMMIT" --arg tag "$RELEASE_TAG" \
+            '.sourceCommit == $commit and .tag == $tag and .tagState == "tagged" and .dirty == false' \
+            .build/program-release/assets/program-release.json > /dev/null
           if [ -n "${NPM_TOKEN:-}" ]; then
             npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
           fi
@@ -206,7 +250,6 @@ jobs:
           bun scripts/publish-programs-npm.ts .build/program-release/assets \
             .build/program-release/program-release.json "${receipt_args[@]}"
       - name: Publish the npm closure receipt
-        if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
           DRAFT_ID: ${{ steps.prior_release.outputs.draft_id }}

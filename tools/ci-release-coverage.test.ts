@@ -47,13 +47,40 @@ const workflows = workflowFiles(join(root, ".github/workflows")).map((path) => (
   workflow: record(YAML.parse(readFileSync(path, "utf8"))),
 }));
 
-function programReleaseStep(name: string): string {
+function programReleaseJobs(): Record<string, unknown> {
   const workflow = workflows.find(({ path }) => path.endsWith("/program-release.yml"))?.workflow;
-  const release = record(record(workflow?.jobs).release);
-  const script = steps(release.steps).find((step) => step.name === name)?.run;
+  return record(workflow?.jobs);
+}
+
+function programReleaseStep(name: string): string {
+  const allSteps = Object.values(programReleaseJobs()).flatMap((job) => steps(record(job).steps));
+  const script = allSteps.find((step) => step.name === name)?.run;
   if (typeof script !== "string") throw new Error(`Missing program release step ${name}`);
   return script;
 }
+
+test("the program publish job retries from the qualified artifact without building", () => {
+  const jobs = programReleaseJobs();
+  const release = record(jobs.release);
+  const publish = record(jobs.publish);
+  expect(record(release.outputs).staged_artifact).toBe("${{ steps.staged.outputs.artifact-id }}");
+  const build = steps(release.steps).find(
+    (step) => step.name === "Prepare every family in the closure with its own route",
+  );
+  expect(record(build?.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+  expect(publish.needs).toBe("release");
+  const publishSteps = steps(publish.steps);
+  const download = publishSteps.findIndex((step) => step.uses === "actions/download-artifact@v4");
+  const npm = publishSteps.findIndex((step) => step.name === "Publish program packages to npm");
+  expect(download).toBeGreaterThanOrEqual(0);
+  expect(npm).toBeGreaterThan(download);
+  const inputs = record(publishSteps[download]?.with);
+  expect(inputs["artifact-ids"]).toBe("${{ needs.release.outputs.staged_artifact }}");
+  expect(inputs["run-id"]).toBe("${{ github.run_id }}");
+  expect(publishSteps.map((step) => step.run).join("\n")).not.toMatch(
+    /build-python|prepare:package/,
+  );
+});
 
 test("program release preflight downloads a matching draft receipt across release pages", () => {
   const cwd = mkdtempSync(join(tmpdir(), "waffle-draft-receipt-"));
