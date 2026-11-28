@@ -806,16 +806,17 @@ test.each(["host", "peer"])("guarded %s lookup retains the inode before mapping"
       const { node } = resolved as { node: number };
       expect((resolved as { kind: string }).kind).toBe("inode");
       expect(typeof node).toBe("number");
-      let retained = false;
       try {
         peer.backend.retain(node);
-        retained = true;
+      } finally {
+        peer.backend.settleResult("resolve", resolved);
+      }
+      try {
         expect(await peer.backend.execute("read", [node, 1, 0], new Uint8Array())).toEqual(
           new Uint8Array([19]),
         );
       } finally {
-        if (retained) peer.backend.release(node);
-        peer.backend.settleResult("resolve", resolved);
+        peer.backend.release(node);
       }
     } finally {
       spy.mockRestore();
