@@ -120,6 +120,8 @@ jobs:
             .build/ripgrep
             packages/ripgrep/.sources
           key: ${{ runner.os }}-${{ runner.arch }}-program-release-${{ hashFiles('bun.lock', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-*.ts', 'tools/program-locales/**', 'packages/**/*.rs', 'packages/**/Cargo.toml', 'packages/**/Cargo.lock', 'packages/*/scripts/**', 'packages/*/patches/**') }}
+      - name: Fetch locked Cargo sources for offline notices
+        run: cargo fetch --locked
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun test scripts/program-release.test.ts scripts/publish-programs-npm.test.ts
       - name: Prepare every family in the closure with its own route
@@ -139,6 +141,10 @@ jobs:
               checksum=$(sha256sum "$producer/python-build.json")
               bun run --cwd packages/python prepare:package --receipt-sha256 "${checksum%% *}" "$producer"
               continue
+            fi
+            if [ "$directory" = coreutils ]; then
+              node packages/coreutils/scripts/prepare-checksum-source.ts
+              cargo fetch --locked --manifest-path packages/coreutils/crates/checksums/Cargo.toml
             fi
             WAFFLE_NAMED_PROGRAMS_DIR="$named_programs" \
               bun run --cwd "packages/$directory" --if-present prepare:package

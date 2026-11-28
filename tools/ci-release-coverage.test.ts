@@ -82,6 +82,29 @@ test("the program publish job retries from the qualified artifact without buildi
   );
 });
 
+test("program qualification fetches the full locked Cargo graph before offline notices", () => {
+  const build = steps(record(programReleaseJobs().release).steps);
+  const fetch = build.findIndex(
+    (step) => step.name === "Fetch locked Cargo sources for offline notices",
+  );
+  const prepare = build.findIndex(
+    (step) => step.name === "Prepare every family in the closure with its own route",
+  );
+  expect(fetch).toBeGreaterThanOrEqual(0);
+  expect(prepare).toBeGreaterThan(fetch);
+  expect(build[fetch]?.run).toBe("cargo fetch --locked");
+  const script = String(build[prepare]?.run);
+  const prepareChecksums = script.indexOf(
+    "node packages/coreutils/scripts/prepare-checksum-source.ts",
+  );
+  const fetchChecksums = script.indexOf(
+    "cargo fetch --locked --manifest-path packages/coreutils/crates/checksums/Cargo.toml",
+  );
+  expect(prepareChecksums).toBeGreaterThanOrEqual(0);
+  expect(fetchChecksums).toBeGreaterThan(prepareChecksums);
+  expect(script.indexOf('bun run --cwd "packages/$directory"')).toBeGreaterThan(fetchChecksums);
+});
+
 test("program qualification requires and uploads the named Wasm evidence", () => {
   const build = steps(record(programReleaseJobs().release).steps);
   const qualifier = build.findIndex((step) => step.id === "closure");
