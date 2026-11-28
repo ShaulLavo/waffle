@@ -35,7 +35,12 @@ import {
   RIGHTS_SET_MODE,
 } from "./rights.js";
 import { descriptorFlagError, FDFLAG_APPEND, FDFLAG_NONBLOCK } from "./fd-flags.js";
-import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.js";
+import {
+  resolveDescriptorPath,
+  reopenDescriptor,
+  openInode,
+  type DescriptorPath,
+} from "./fd-reopen.js";
 import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import {
@@ -58,6 +63,7 @@ import {
   F_WRLCK,
   FilesystemError,
   fileTimeNow,
+  isCooperativePath,
   LOCK_EX,
   LOCK_NB,
   LOCK_SH,
@@ -647,6 +653,8 @@ export class Wasi {
   ): WebAssembly.Imports {
     const impl: Record<string, (...args: never[]) => number | void> = this.functions();
     const filesystem: Record<string, (...args: never[]) => number> = {
+      path_open_cooperative: this.pathOpenCooperative.bind(this),
+      fd_reopen_alias: this.reopenAlias.bind(this),
       path_permissions_get: this.pathPermissions.bind(this),
       path_filestat_set_mode: this.pathSetMode.bind(this),
       fd_filestat_set_mode: this.descriptorCall(
@@ -1275,6 +1283,248 @@ export class Wasi {
     };
   }
 
+  private pathOpenCooperative(
+    fd: number,
+    dirflags: number,
+    ptr: number,
+    len: number,
+    oflags: number,
+    rightsBase: bigint,
+    rightsInheriting: bigint,
+    fdflags: number,
+    expected: bigint,
+    out: number,
+  ): number {
+    if (expected < -1n || expected > 0xffff_ffffn || dirflags & ~1 || oflags & ~15) return EINVAL;
+    if (expected !== -1n && oflags & (O_CREAT | O_EXCL)) return EINVAL;
+    return this.pathOpen(
+      fd >>> 0,
+      dirflags,
+      ptr,
+      len,
+      oflags,
+      rightsBase,
+      rightsInheriting,
+      fdflags,
+      out,
+      expected === -1n ? null : Number(expected),
+    );
+  }
+
+  private cooperativePathname(ptr: number, len: number): string | number {
+    ptr >>>= 0;
+    len >>>= 0;
+    const bytes = this.bytes();
+    if (ptr + len > bytes.length) return EFAULT;
+    const path = guestPathname(bytes, ptr, len);
+    return path === undefined ? EINVAL : path;
+  }
+
+  private reopenAlias(
+    fd: number,
+    oflags: number,
+    fdflags: number,
+    base: bigint,
+    out: number,
+  ): number {
+    const root = this.descriptors.rootPreopen();
+    if (!root || !this.rootNamespace() || !(root.rightsBase & RIGHT_PATH_OPEN)) return ENOTCAPABLE;
+    if (oflags & (O_CREAT | O_EXCL)) return EINVAL;
+    base = BigInt.asUintN(64, base);
+    if ((base & root.rightsInheriting) !== base) return ENOTCAPABLE;
+    if (oflags & O_TRUNC && !(root.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE)) return ENOTCAPABLE;
+    return this.reopen(fd >>> 0, oflags, fdflags, base, 0n, out, true);
+  }
+
+  private pathOpen(
+    fd: number,
+    dirflags: number,
+    ptr: number,
+    len: number,
+    oflags: number,
+    rightsBase: bigint,
+    rightsInheriting: bigint,
+    fdflags: number,
+    fdOut: number,
+    expectedAlias?: number | null,
+  ): number {
+    const dir = this.descriptors.get(fd);
+    if (!dir) return EBADF;
+    if (dir.resource.kind !== "directory") return ENOTDIR;
+    if (!(dir.rightsBase & RIGHT_PATH_OPEN)) return ENOTCAPABLE;
+    rightsBase = BigInt.asUintN(64, rightsBase);
+    rightsInheriting = BigInt.asUintN(64, rightsInheriting);
+    if (
+      (rightsBase & dir.rightsInheriting) !== rightsBase ||
+      (rightsInheriting & dir.rightsInheriting) !== rightsInheriting
+    )
+      return ENOTCAPABLE;
+    if (oflags & O_CREAT && !(dir.rightsBase & RIGHT_PATH_CREATE_FILE)) return ENOTCAPABLE;
+    if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE)) return ENOTCAPABLE;
+    const invalidFlags = descriptorFlagError(fdflags);
+    if (invalidFlags) return invalidFlags;
+    fdOut >>>= 0;
+    if (expectedAlias !== undefined && fdOut + 8 > this.bytes().length) return EFAULT;
+    const name =
+      expectedAlias === undefined ? this.str(ptr, len) : this.cooperativePathname(ptr, len);
+    if (typeof name === "number") return name;
+    const exclusive = (oflags & O_CREAT && oflags & O_EXCL) !== 0;
+    const follow = !exclusive && followsFinal(lookupFlags(dirflags), name);
+    const handle = dir.resource.handle;
+    if (expectedAlias !== undefined) {
+      if (dir !== this.descriptors.rootPreopen()) return ENOTCAPABLE;
+      return this.openCooperativePath(
+        handle,
+        name,
+        follow,
+        oflags,
+        rightsBase,
+        rightsInheriting,
+        fdflags,
+        fdOut,
+        expectedAlias,
+      );
+    }
+    let finalLink: "exclusive-create" | "follow" | "nofollow" = "nofollow";
+    if (exclusive) finalLink = "exclusive-create";
+    else if (follow) finalLink = "follow";
+    const alias = resolveDescriptorPath(
+      this.descriptors,
+      this.opts.fs,
+      dir,
+      name,
+      finalLink,
+      this.rooted,
+      this.machineId() !== undefined,
+    );
+    return this.openResolvedPath(
+      handle,
+      name,
+      follow,
+      oflags,
+      rightsBase,
+      rightsInheriting,
+      fdflags,
+      fdOut,
+      alias,
+    );
+  }
+
+  private openCooperativePath(
+    handle: FileHandle,
+    name: string,
+    follow: boolean,
+    oflags: number,
+    rightsBase: bigint,
+    rightsInheriting: bigint,
+    fdflags: number,
+    out: number,
+    expectedAlias: number | null,
+  ): number {
+    const lease = this.opts.fs.resolveCooperative?.(handle, name, follow, {
+      expectedAlias,
+      machineId: this.machineId() !== undefined,
+    });
+    if (lease === undefined) return ENOTSUP;
+    if (typeof lease === "number") return lease;
+    try {
+      const result = lease.result;
+      if (!isCooperativePath(result)) return ENOTSUP;
+      if (expectedAlias !== null) {
+        if (result.kind !== "alias" || result.logical !== expectedAlias) return ENOTCAPABLE;
+        this.view().setUint32(out + 4, result.logical, true);
+        this.view().setUint32(out, 1, true);
+        return SUCCESS;
+      }
+      if (result.kind === "alias") return ENOTCAPABLE;
+      let resolved: DescriptorPath = { device: "null" };
+      if (result.kind === "inode") resolved = { resolved: result };
+      if (result.kind === "machine-id") resolved = { virtualFile: "machine-id" };
+      const error = this.openResolvedPath(
+        handle,
+        name,
+        follow,
+        oflags,
+        rightsBase,
+        rightsInheriting,
+        fdflags,
+        out + 4,
+        resolved,
+      );
+      if (error === SUCCESS) this.view().setUint32(out, 0, true);
+      return error;
+    } finally {
+      lease.release();
+    }
+  }
+
+  private openResolvedPath(
+    handle: FileHandle,
+    name: string,
+    follow: boolean,
+    oflags: number,
+    rightsBase: bigint,
+    rightsInheriting: bigint,
+    fdflags: number,
+    fdOut: number,
+    alias: DescriptorPath | number | undefined,
+  ): number {
+    if (typeof alias === "number") return alias;
+    if (alias !== undefined && !("resolved" in alias)) {
+      if ("virtualFile" in alias) {
+        if (fdOut + 4 > this.bytes().length) return EFAULT;
+        return this.openVirtualMachineId(fdflags, rightsBase, rightsInheriting, oflags, fdOut);
+      }
+      if ("device" in alias) {
+        if (fdOut + 4 > this.bytes().length) return EFAULT;
+        return this.openDevice(fdflags, rightsBase, rightsInheriting, oflags, fdOut);
+      }
+      if (!this.descriptors.get(alias.source)) return ENOENT;
+      if (fdOut + 4 > this.bytes().length) return EFAULT;
+      return this.reopen(alias.source, oflags, fdflags, rightsBase, rightsInheriting, fdOut, true);
+    }
+    const path = alias?.resolved ?? this.opts.fs.resolve(handle, name, follow, this.rooted);
+    if (typeof path === "number") return path;
+    let node = path.node;
+    let stat: FileStat | undefined;
+    if (node !== undefined) {
+      if (oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
+      stat = this.opts.fs.stat(node);
+      if (stat.kind === "symlink") return ELOOP;
+      if (stat.kind === "socket") return 60;
+    } else {
+      if (!(oflags & O_CREAT) || path.trailingSlash) return ENOENT;
+      if (oflags & O_DIRECTORY) return EINVAL;
+    }
+    fdOut >>>= 0;
+    if (fdOut + 4 > this.bytes().length) return EFAULT;
+    if (node === undefined) {
+      // Create exclusively first: success proves this open made the file, and POSIX
+      // truncates only a file that already existed. On any failure (a competing creator
+      // won, or a service refused the probe), create as before, truncate included.
+      let result = this.opts.fs.create(path, "file", true);
+      if (typeof result === "number") oflags &= ~O_TRUNC;
+      else if (!(oflags & O_EXCL)) result = this.opts.fs.create(path, "file", false);
+      if (typeof result !== "number") return result.error;
+      node = result;
+      stat = this.opts.fs.stat(node);
+    }
+    return this.writeResult(
+      openInode(
+        this.descriptors,
+        this.opts.fs,
+        node,
+        stat!.kind === "directory" ? "directory" : "file",
+        oflags,
+        fdflags,
+        rightsBase,
+        rightsInheriting,
+        stat,
+      ),
+      fdOut,
+    );
+  }
+
   private functions() {
     const sizes = (list: Uint8Array[], countPtr: number, sizePtr: number) => {
       const view = this.view();
@@ -1639,113 +1889,7 @@ export class Wasi {
         if (typeof to === "number") return to;
         return this.opts.fs.link(from, to);
       },
-      path_open: (
-        fd: number,
-        dirflags: number,
-        ptr: number,
-        len: number,
-        oflags: number,
-        rightsBase: bigint,
-        rightsInheriting: bigint,
-        fdflags: number,
-        fdOut: number,
-      ) => {
-        const dir = this.descriptors.get(fd);
-        if (!dir) return EBADF;
-        if (dir.resource.kind !== "directory") return ENOTDIR;
-        if (!(dir.rightsBase & RIGHT_PATH_OPEN)) return ENOTCAPABLE;
-        rightsBase = BigInt.asUintN(64, rightsBase);
-        rightsInheriting = BigInt.asUintN(64, rightsInheriting);
-        if (
-          (rightsBase & dir.rightsInheriting) !== rightsBase ||
-          (rightsInheriting & dir.rightsInheriting) !== rightsInheriting
-        )
-          return ENOTCAPABLE;
-        if (oflags & O_CREAT && !(dir.rightsBase & RIGHT_PATH_CREATE_FILE)) return ENOTCAPABLE;
-        if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE))
-          return ENOTCAPABLE;
-        const invalidFlags = descriptorFlagError(fdflags);
-        if (invalidFlags) return invalidFlags;
-        fdOut >>>= 0;
-        const name = this.str(ptr, len);
-        const exclusive = (oflags & O_CREAT && oflags & O_EXCL) !== 0;
-        const follow = !exclusive && followsFinal(lookupFlags(dirflags), name);
-        let finalLink: "exclusive-create" | "follow" | "nofollow" = "nofollow";
-        if (exclusive) finalLink = "exclusive-create";
-        else if (follow) finalLink = "follow";
-        const alias = resolveDescriptorPath(
-          this.descriptors,
-          this.opts.fs,
-          dir,
-          name,
-          finalLink,
-          this.rooted,
-          this.machineId() !== undefined,
-        );
-        if (typeof alias === "number") return alias;
-        if (alias !== undefined && !("resolved" in alias)) {
-          if ("virtualFile" in alias) {
-            if (fdOut + 4 > this.bytes().length) return EFAULT;
-            return this.openVirtualMachineId(fdflags, rightsBase, rightsInheriting, oflags, fdOut);
-          }
-          if ("device" in alias) {
-            if (fdOut + 4 > this.bytes().length) return EFAULT;
-            return this.openDevice(fdflags, rightsBase, rightsInheriting, oflags, fdOut);
-          }
-          if (!this.descriptors.get(alias.source)) return ENOENT;
-          if (fdOut + 4 > this.bytes().length) return EFAULT;
-          return this.reopen(
-            alias.source,
-            oflags,
-            fdflags,
-            rightsBase,
-            rightsInheriting,
-            fdOut,
-            true,
-          );
-        }
-        const path =
-          alias?.resolved ?? this.opts.fs.resolve(dir.resource.handle, name, follow, this.rooted);
-        if (typeof path === "number") return path;
-        let node = path.node;
-        let stat: FileStat | undefined;
-        if (node !== undefined) {
-          if (oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
-          stat = this.opts.fs.stat(node);
-          if (stat.kind === "symlink") return ELOOP;
-          if (stat.kind === "socket") return 60;
-        } else {
-          if (!(oflags & O_CREAT) || path.trailingSlash) return ENOENT;
-          if (oflags & O_DIRECTORY) return EINVAL;
-        }
-        fdOut >>>= 0;
-        if (fdOut + 4 > this.bytes().length) return EFAULT;
-        if (node === undefined) {
-          // Create exclusively first: success proves this open made the file, and POSIX
-          // truncates only a file that already existed. On any failure (a competing creator
-          // won, or a service refused the probe), create as before, truncate included.
-          let result = this.opts.fs.create(path, "file", true);
-          if (typeof result === "number") oflags &= ~O_TRUNC;
-          else if (!(oflags & O_EXCL)) result = this.opts.fs.create(path, "file", false);
-          if (typeof result !== "number") return result.error;
-          node = result;
-          stat = this.opts.fs.stat(node);
-        }
-        return this.writeResult(
-          openInode(
-            this.descriptors,
-            this.opts.fs,
-            node,
-            stat!.kind === "directory" ? "directory" : "file",
-            oflags,
-            fdflags,
-            rightsBase,
-            rightsInheriting,
-            stat,
-          ),
-          fdOut,
-        );
-      },
+      path_open: this.pathOpen.bind(this),
       path_readlink: (
         fd: number,
         ptr: number,

@@ -7,12 +7,16 @@ import type { NodeMetadata } from "./workspace-types.js";
 import {
   permissionsFor,
   FilesystemError,
+  retainCooperativePath,
   fileTimeNow,
   PROBE_PATH_LIMIT,
   type FileLockSystem,
   type FileTime,
   type ProbeKind,
   type SocketBinding,
+  type CooperativePath,
+  type CooperativePathLease,
+  type CooperativeResolveOptions,
 } from "../core/filesystem.js";
 import {
   dirname,
@@ -114,7 +118,15 @@ interface TreePath {
 interface TreeWalk {
   followFinal?: boolean;
   clampRoot: boolean;
-  child?: (parent: DirNode, name: string, origin: "input" | "target") => Node | undefined;
+  child?: (
+    parent: DirNode,
+    name: string,
+    origin: "input" | "target",
+    ancestors: readonly string[],
+    path: string,
+    next: number,
+    expandedLink: boolean,
+  ) => Node | undefined;
   search?: (node: DirNode) => void;
   depth?: number;
   pathUnits?: number;
@@ -218,7 +230,7 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
     parent = node;
     name = part;
     const child: Node | undefined = options.child
-      ? options.child(parent, part, origin)
+      ? options.child(parent, part, origin, names, path, start, expansions > 0)
       : parent.children.get(part);
     if (!child && /[^/]/.test(path.slice(start))) return 44;
     if (!child)
@@ -262,6 +274,141 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
     canonicalPath: "/" + names.join("/"),
     base,
   };
+}
+
+function stdioAlias(name: string): number | undefined {
+  if (name === "stdin") return 0;
+  if (name === "stdout") return 1;
+  if (name === "stderr") return 2;
+}
+
+function directLogicalAlias(path: string): number | undefined {
+  const parts = path.split("/");
+  const last = parts[parts.length - 1];
+  if (!last || last === "." || last === "..") return;
+  const normalized = parts.filter((part) => part && part !== ".").join("/");
+  if (normalized === "dev/" + last) return stdioAlias(last);
+  if (normalized === "dev/fd/" + last || normalized === "proc/self/fd/" + last)
+    return /^[0-9]+$/.test(last) ? Number(last) : undefined;
+}
+
+/** null means a confirmed absent directory. An unresolved link cannot certify absence. */
+function reservedDirectory(root: DirNode, path: string): DirNode | null | undefined {
+  let linked = false;
+  const result = walkTree(root, path, {
+    clampRoot: true,
+    followFinal: true,
+    search() {},
+    child(parent, name) {
+      const child = parent.children.get(name);
+      if (child?.kind === "symlink") linked = true;
+      return child;
+    },
+  });
+  if (typeof result !== "number" && result.node?.kind === "dir") return result.node;
+  if (linked) return undefined;
+  if (typeof result !== "number" || result === 44 || result === 54) return null;
+}
+
+class CooperativeWalk {
+  private readonly dev: DirNode | null | undefined;
+  private readonly devFd: DirNode | null | undefined;
+  private readonly procFd: DirNode | null | undefined;
+  private readonly etc: DirNode | null | undefined;
+  private readonly synthetic = new Set<DirNode>();
+  result?: Exclude<CooperativePath, { kind: "inode" }>;
+
+  constructor(
+    root: DirNode,
+    private readonly options: CooperativeResolveOptions,
+    private readonly direct: number | undefined,
+  ) {
+    this.dev = reservedDirectory(root, "dev");
+    this.devFd = reservedDirectory(root, "dev/fd");
+    this.procFd = reservedDirectory(root, "proc/self/fd");
+    this.etc = options.machineId ? reservedDirectory(root, "etc") : null;
+  }
+
+  child(
+    parent: DirNode,
+    name: string,
+    _origin: "input" | "target",
+    ancestors: readonly string[],
+    path: string,
+    next: number,
+    expandedLink: boolean,
+  ): Node | undefined {
+    const suffix = /[^/]/.test(path.slice(next));
+    const trailing = path.endsWith("/");
+    const prefix = ancestors.join("/");
+    const logical = this.alias(parent, prefix, name);
+    if (logical !== undefined) {
+      if (suffix || trailing) throw new FilesystemError(54);
+      if (logical > 0xffff_ffff) throw new FilesystemError(44);
+      if (expandedLink || logical !== this.direct || logical !== this.options.expectedAlias)
+        throw new FilesystemError(76);
+      this.result = { kind: "alias", logical };
+      return;
+    }
+    const physical = parent.children.get(name);
+    const device = this.device(parent, prefix, name, physical);
+    if (device) {
+      if (suffix || trailing) throw new FilesystemError(54);
+      this.result = { kind: device };
+      return;
+    }
+    if (physical || !suffix) return physical;
+    return this.virtualDirectory(prefix ? prefix + "/" + name : name);
+  }
+
+  private alias(parent: DirNode, prefix: string, name: string): number | undefined {
+    const stdio = stdioAlias(name);
+    if (stdio !== undefined) {
+      if (this.dev === undefined) throw new FilesystemError(76);
+      if (prefix === "dev" || parent === this.dev) return stdio;
+    }
+    if (!/^[0-9]+$/.test(name)) return undefined;
+    if (this.devFd === undefined || this.procFd === undefined) throw new FilesystemError(76);
+    if (
+      prefix === "dev/fd" ||
+      prefix === "proc/self/fd" ||
+      parent === this.devFd ||
+      parent === this.procFd
+    )
+      return Number(name);
+  }
+
+  private device(parent: DirNode, prefix: string, name: string, physical?: Node) {
+    if (name === "null" && (prefix === "dev" || parent === this.dev)) return "null";
+    if (!this.options.machineId || name !== "machine-id" || physical) return;
+    if (this.etc === undefined) throw new FilesystemError(76);
+    if (prefix === "etc" || parent === this.etc) return "machine-id";
+  }
+
+  private virtualDirectory(path: string): DirNode | undefined {
+    if (
+      path !== "dev" &&
+      path !== "dev/fd" &&
+      path !== "proc" &&
+      path !== "proc/self" &&
+      path !== "proc/self/fd" &&
+      !(this.options.machineId && path === "etc")
+    )
+      return;
+    const entry: DirNode = {
+      kind: "dir",
+      mode: 0o100,
+      children: new Map(),
+      ...nodeTimes(),
+      ino: 0,
+    };
+    this.synthetic.add(entry);
+    return entry;
+  }
+
+  hasSynthetic(entry: Node | undefined): boolean {
+    return entry?.kind === "dir" && this.synthetic.has(entry);
+  }
 }
 
 /** `below` ("/" or "/a/b") appended to the absolute directory path `prefix`, or its errno. */
@@ -578,6 +725,47 @@ export class MemFS implements FileSystem {
       parent: resolved.parent,
       node: resolved.node,
     };
+  }
+  lookupCooperative(
+    directory: FileHandle,
+    path: string,
+    followFinal: boolean,
+    options: CooperativeResolveOptions,
+  ): CooperativePath | number {
+    if (this.directory(directory) !== this.root || path.startsWith("/")) return 76;
+    const guard = new CooperativeWalk(this.root, options, directLogicalAlias(path));
+    try {
+      const pathResult = walkTree(this.root, path, {
+        clampRoot: true,
+        followFinal,
+        rooted: this.rootedWalk(),
+        child: guard.child.bind(guard),
+      });
+      if (typeof pathResult === "number") return pathResult;
+      if (guard.result) return guard.result;
+      if (options.expectedAlias !== null) return 76;
+      if (guard.hasSynthetic(pathResult.parent) || guard.hasSynthetic(pathResult.node)) return 44;
+      return {
+        kind: "inode",
+        parent: pathResult.parent ? this.handle(pathResult.parent) : undefined,
+        node: pathResult.node ? this.handle(pathResult.node) : undefined,
+        name: pathResult.name,
+        trailingSlash: pathResult.trailingSlash,
+        terminalDot: pathResult.terminalDot,
+      };
+    } catch (error) {
+      if (error instanceof FilesystemError) return error.errno;
+      throw error;
+    }
+  }
+  resolveCooperative(
+    directory: FileHandle,
+    path: string,
+    followFinal: boolean,
+    options: CooperativeResolveOptions,
+  ): CooperativePathLease | number {
+    const result = this.lookupCooperative(directory, path, followFinal, options);
+    return typeof result === "number" ? result : retainCooperativePath(this, result);
   }
   /** Page paths clamp parent-of-root, unlike WASI directory capabilities. */
   resolveAbsolute(path: string, followFinal = false): MemoryPath | number {

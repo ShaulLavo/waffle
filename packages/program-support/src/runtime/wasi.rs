@@ -25,6 +25,22 @@ unsafe extern "C" {
 
 #[link(wasm_import_module = "runtime_fs")]
 unsafe extern "C" {
+    #[link_name = "path_open_cooperative"]
+    fn fs_path_open_cooperative(
+        fd: u32,
+        lookup: u32,
+        path: *const u8,
+        length: usize,
+        oflags: u32,
+        rights: u64,
+        inheriting: u64,
+        fdflags: u32,
+        expected: i64,
+        output: *mut u32,
+    ) -> i32;
+    #[link_name = "fd_reopen_alias"]
+    fn fs_fd_reopen_alias(fd: u32, oflags: u32, fdflags: u32, rights: u64, output: *mut u32)
+    -> i32;
     #[link_name = "path_permissions_get"]
     fn fs_path_permissions_get(
         fd: u32,
@@ -49,17 +65,19 @@ unsafe extern "C" {
         length: usize,
         output: *mut u8,
     ) -> u16;
-    fn path_open(
-        fd: u32,
-        lookup: u32,
-        path: *const u8,
-        length: usize,
-        oflags: u16,
-        rights: u64,
-        inheriting: u64,
-        fdflags: u16,
-        output: *mut u32,
-    ) -> u16;
+
+}
+
+fn valid_open_options(options: &OpenOptions) -> bool {
+    (options.read || options.write) && (!(options.append || options.truncate) || options.write)
+}
+
+fn open_rights(options: &OpenOptions, seekable: bool) -> u64 {
+    (if seekable { (1u64 << 2) | (1 << 5) } else { 0 })
+        | (1 << 21)
+        | (1 << 27)
+        | if options.read { 1 << 1 } else { 0 }
+        | if options.write { 1 << 6 } else { 0 }
 }
 
 fn result(value: i32) -> Result<u32, i32> {
@@ -115,6 +133,44 @@ impl WasiAbi {
     /// The descriptor is not opened or duplicated; callers must not close it.
     pub fn root_preopen(&self) -> u32 {
         self.root
+    }
+
+    fn open_path(
+        &self,
+        path: &str,
+        oflags: u32,
+        rights: u64,
+        fdflags: u32,
+        expected_alias: Option<u32>,
+    ) -> Result<CooperativeOpen<u32>, i32> {
+        if !path.starts_with('/') || path.contains('\0') || path.len() > crate::io::MAX_PATH_BYTES {
+            return Err(28);
+        }
+        let path = path.trim_start_matches('/');
+        let path = if path.is_empty() { "." } else { path };
+        let mut out = [0; 2];
+        let errno = unsafe {
+            fs_path_open_cooperative(
+                self.root,
+                1,
+                path.as_ptr(),
+                path.len(),
+                oflags,
+                rights,
+                0,
+                fdflags,
+                expected_alias.map(i64::from).unwrap_or(-1),
+                out.as_mut_ptr(),
+            )
+        };
+        if errno != 0 {
+            return Err(errno);
+        }
+        match out {
+            [0, fd] => Ok(CooperativeOpen::Inode(fd)),
+            [1, logical] if expected_alias == Some(logical) => Ok(CooperativeOpen::Alias(logical)),
+            _ => Err(28),
+        }
     }
 
     pub fn handle_interrupts(&self) -> Result<(), i32> {
@@ -217,30 +273,10 @@ impl Abi for WasiAbi {
         Ok(metadata)
     }
     fn open_dir(&self, path: &str) -> Result<u32, i32> {
-        if !path.starts_with('/') || path.contains('\0') || path.len() > crate::io::MAX_PATH_BYTES {
-            return Err(28);
+        match self.open_path(path, 2, 1 << 14, 0, None)? {
+            CooperativeOpen::Inode(fd) => Ok(fd),
+            CooperativeOpen::Alias(_) => Err(76),
         }
-        let path = path.trim_start_matches('/');
-        let path = if path.is_empty() { "." } else { path };
-        let mut fd = 0;
-        // DIRECTORY and FD_READDIR only; enumeration cannot read file payloads.
-        let errno = unsafe {
-            path_open(
-                self.root,
-                1,
-                path.as_ptr(),
-                path.len(),
-                2,
-                1 << 14,
-                0,
-                0,
-                &mut fd,
-            )
-        };
-        if errno != 0 {
-            return Err(errno as i32);
-        }
-        Ok(fd)
     }
     fn read_dir(&self, fd: u32, cookie: u64, output: &mut [u8]) -> Result<usize, i32> {
         let mut used = 0;
@@ -253,47 +289,45 @@ impl Abi for WasiAbi {
         }
         Ok(used)
     }
-    fn open(&self, path: &str, options: &OpenOptions) -> Result<u32, i32> {
-        if !path.starts_with('/') || path.contains('\0') || path.len() > crate::io::MAX_PATH_BYTES {
-            return Err(28);
-        }
-        if (!options.read && !options.write)
-            || ((options.append || options.truncate) && !options.write)
-        {
+    fn open_cooperative(
+        &self,
+        path: &str,
+        options: &OpenOptions,
+        expected_alias: Option<u32>,
+    ) -> Result<CooperativeOpen<u32>, i32> {
+        if !valid_open_options(options) {
             return Err(8);
         }
-        let descriptor = crate::io::descriptor_number(path);
-        let seekable = match descriptor {
-            Some(fd) => self.fd_kind(fd)? == DescriptorKind::Regular,
-            None => true,
-        };
-        let path = path.trim_start_matches('/');
-        let rights = if seekable { (1u64 << 2) | (1 << 5) } else { 0 }
-            | (1 << 21)
-            | (1 << 27)
-            | if options.read { 1 << 1 } else { 0 }
-            | if options.write { 1 << 6 } else { 0 };
-        let flags = u16::from(options.create && descriptor.is_none())
-            | if options.truncate { 8 } else { 0 };
-        let mut fd = 0;
+        if expected_alias.is_some() {
+            return self.open_path(path, 0, 0, 0, expected_alias);
+        }
+        let flags = u32::from(options.create) | if options.truncate { 8 } else { 0 };
+        self.open_path(
+            path,
+            flags,
+            open_rights(options, true),
+            u32::from(options.append),
+            None,
+        )
+    }
+
+    fn reopen_alias(&self, fd: u32, options: &OpenOptions) -> Result<u32, i32> {
+        if !valid_open_options(options) || options.create {
+            return Err(8);
+        }
+        let seekable = self.fd_kind(fd)? == DescriptorKind::Regular;
+        let flags = if options.truncate { 8 } else { 0 };
+        let mut out = 0;
         let errno = unsafe {
-            path_open(
-                self.root,
-                1,
-                path.as_ptr(),
-                path.len(),
+            fs_fd_reopen_alias(
+                fd,
                 flags,
-                rights,
-                0,
-                u16::from(options.append),
-                &mut fd,
+                u32::from(options.append),
+                open_rights(options, seekable),
+                &mut out,
             )
         };
-        if errno == 0 {
-            Ok(fd)
-        } else {
-            Err(errno as i32)
-        }
+        if errno == 0 { Ok(out) } else { Err(errno) }
     }
 
     fn read(&self, fd: u32, output: &mut [u8]) -> Result<usize, i32> {

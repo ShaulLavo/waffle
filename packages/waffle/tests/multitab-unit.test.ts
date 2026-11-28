@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   MultiTabBackend,
   type MultiTabOpenStorageOptions,
@@ -681,6 +681,150 @@ async function waitUntil(
     await new Promise((r) => setTimeout(r, 15));
   }
 }
+
+test.each(["mint", "publish", "send", "receive"])(
+  "guarded peer lookup unwinds %s failure while its session remains open",
+  async (failure) => {
+    const broker = new MockLockBroker();
+    const hub = new MockBroadcastHub();
+    const store = new MockSharedStore();
+    const name = "guarded-lookup-" + crypto.randomUUID();
+    let failPublish = false;
+    const host = await openTab(broker, hub, store, {
+      name,
+      clientId: "host",
+      hooks: {
+        beforeHostReplyPublish(op) {
+          if (failPublish && op === "resolve") {
+            failPublish = false;
+            throw new Error("guarded publication failure");
+          }
+        },
+      },
+    });
+    const peer = await openTab(broker, hub, store, { name, clientId: "peer" });
+    let restore: (() => void) | undefined;
+    try {
+      await host.client.asyncCall("mkdirp", ["/dir"]);
+      await host.client.asyncCall("writeFile", ["/dir/input"], new Uint8Array([4]));
+      const root = await peer.client.asyncCall("preopen", ["/"]);
+      const owner = host.backend as unknown as {
+        hostPeers: Map<string, { pins: Map<number, number> }>;
+      };
+      const session = Array.from(owner.hostPeers.values())[0]!;
+      expect(session).toBeDefined();
+      const pins = session.pins.size;
+      const handles = peer.backend.resources().multitabLocalHandles;
+      if (failure === "mint" || failure === "receive") {
+        const target = (failure === "mint" ? host : peer).backend as unknown as Record<
+          string,
+          (...args: unknown[]) => unknown
+        >;
+        const method = failure === "mint" ? "mintHostPeerPin" : "ensureLocalHandle";
+        const original = target[method]!.bind(target);
+        let calls = 0;
+        const spy = spyOn(target, method).mockImplementation((...args) => {
+          if (++calls === 2) throw new FilesystemError(29, "guarded second mapping failure");
+          return original(...args);
+        });
+        restore = () => spy.mockRestore();
+      }
+      if (failure === "publish") failPublish = true;
+      if (failure === "send") {
+        hub.interceptor = (_name, sender, value) => {
+          const frame = value as { kind?: string; value?: { kind?: string } };
+          if (sender.ownerTag === "host" && frame.kind === "res" && frame.value?.kind === "inode")
+            throw new Error("guarded send failure");
+        };
+      }
+
+      const guarded = async () =>
+        peer.backend.execute(
+          "resolve",
+          [root, "dir/input", true, { expectedAlias: null, machineId: false }],
+          new Uint8Array(),
+        );
+      await expect(guarded()).rejects.toMatchObject({ errno: 29 });
+      await waitUntil(() => session.pins.size === pins, 3000, "guarded pins rollback");
+      expect(peer.backend.resources().multitabLocalHandles).toBe(handles);
+      expect(Array.from(owner.hostPeers.values())).toContain(session);
+      hub.interceptor = undefined;
+      expect(
+        await peer.client.asyncCall("resolve", [
+          root,
+          "dev/fd/7",
+          true,
+          { expectedAlias: 7, machineId: false },
+        ]),
+      ).toEqual({ kind: "alias", logical: 7 });
+      const opened = await peer.client.asyncCall("resolve", [
+        root,
+        "dir/input",
+        true,
+        { expectedAlias: null, machineId: false },
+      ]);
+      expect(opened).toMatchObject({ kind: "inode", name: "input", node: expect.any(Number) });
+    } finally {
+      restore?.();
+      hub.interceptor = undefined;
+      await peer.close();
+      await host.close();
+    }
+  },
+);
+
+test.each(["host", "peer"])("guarded %s lookup retains the inode before mapping", async (role) => {
+  const broker = new MockLockBroker();
+  const hub = new MockBroadcastHub();
+  const store = new MockSharedStore();
+  const name = "guarded-unlink-" + crypto.randomUUID();
+  const host = await openTab(broker, hub, store, { name, clientId: "host" });
+  const peer =
+    role === "peer" ? await openTab(broker, hub, store, { name, clientId: "peer" }) : host;
+  try {
+    await host.client.asyncCall("writeFile", ["/input"], new Uint8Array([19]));
+    const root = await peer.client.asyncCall("preopen", ["/"]);
+    const target = host.backend as unknown as Record<
+      string,
+      (...args: unknown[]) => Promise<unknown>
+    >;
+    const method = role === "peer" ? "executeHostPeerGeneralLoop" : "executeLocalHostGeneral";
+    const original = target[method]!.bind(target);
+    const spy = spyOn(target, method).mockImplementation(async (...args) => {
+      const resolved = await original(...args);
+      spy.mockRestore();
+      await host.client.asyncCall("remove", ["/input"]);
+      return resolved;
+    });
+    try {
+      const options = { expectedAlias: null, machineId: false };
+      const resolved = await peer.backend.execute(
+        "resolve",
+        [root, "input", true, options],
+        new Uint8Array(),
+      );
+      const { node } = resolved as { node: number };
+      expect((resolved as { kind: string }).kind).toBe("inode");
+      expect(typeof node).toBe("number");
+      let retained = false;
+      try {
+        peer.backend.retain(node);
+        retained = true;
+        expect(await peer.backend.execute("read", [node, 1, 0], new Uint8Array())).toEqual(
+          new Uint8Array([19]),
+        );
+      } finally {
+        if (retained) peer.backend.release(node);
+        peer.backend.settleResult("resolve", resolved);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  } finally {
+    if (peer !== host) await peer.close();
+    await host.close();
+  }
+});
 
 // =============================================================================
 // 1. Protocol Helpers, Cookies, Replay Classification, & Bounded Wire Builder

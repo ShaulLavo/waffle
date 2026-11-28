@@ -1,4 +1,5 @@
 import { Int32ArrayConstructor } from "../proc/intrinsics.js";
+import { cooperativeResolveOptions } from "../core/filesystem.js";
 import { FilesystemClient, type FilesystemCompletion } from "./client.js";
 import { localPublication } from "./publication-internal.js";
 import { mutationIntent, mutationValue, type MutationId } from "./publication.js";
@@ -104,7 +105,10 @@ export function workspaceRequest(
     return { operation, args, input: data.input, ...(data.id ? { id: identity(data.id) } : {}) };
   if (operation === "lookup") text(args[0]);
   else if (operation !== "flush") integer(args[0]);
-  if (operation === "resolve") text(args[1]);
+  if (operation === "resolve") {
+    text(args[1]);
+    if (typeof args[3] === "object") cooperativeResolveOptions(args[3]);
+  }
   if (operation === "read") {
     integer(args[1], inputBound);
     integer(args[2]);

@@ -2,8 +2,7 @@
 use crate::executor::{Cancel, Event, yield_now};
 use futures::future::LocalBoxFuture;
 use std::{
-    borrow::Cow,
-    cell::{Cell, RefCell},
+    cell::{Cell, RefCell, RefMut},
     collections::{BTreeMap, VecDeque},
     rc::{Rc, Weak},
     time::{SystemTime, UNIX_EPOCH},
@@ -28,6 +27,9 @@ pub trait HostEndpoint {
     fn runtime_fd(&self) -> Option<u32> {
         None
     }
+    fn reopen(&self, _options: &OpenOptions) -> Result<Endpoint, IoError> {
+        Err(IoError::Unsupported)
+    }
     /// Non-consuming readiness observation. Hosts that cannot provide an exact
     /// answer must report `Unsupported` rather than guessing readiness.
     fn read_ready(&self) -> Result<bool, IoError> {
@@ -42,6 +44,11 @@ pub trait HostEndpoint {
 }
 /// Live runtime filesystems may await service readiness but must never block an
 /// executor task. Callers race opens with their job's cancellation token.
+pub enum CooperativeOpen<T> {
+    Inode(T),
+    Alias(u32),
+}
+
 pub trait FileSystem {
     /// Pipeline endpoints must belong to the same host as spawned processes.
     fn pipe(&self) -> Result<(Endpoint, Endpoint), IoError> {
@@ -69,11 +76,24 @@ pub trait FileSystem {
     ) -> LocalBoxFuture<'a, Result<Rc<dyn Directory>, IoError>> {
         Box::pin(async { Err(IoError::Unsupported) })
     }
+    fn open_cooperative<'a>(
+        &'a self,
+        path: &'a str,
+        options: &'a OpenOptions,
+        expected_alias: Option<u32>,
+    ) -> LocalBoxFuture<'a, Result<CooperativeOpen<Endpoint>, IoError>>;
     fn open<'a>(
         &'a self,
         path: &'a str,
         options: &'a OpenOptions,
-    ) -> LocalBoxFuture<'a, Result<Endpoint, IoError>>;
+    ) -> LocalBoxFuture<'a, Result<Endpoint, IoError>> {
+        Box::pin(async move {
+            match self.open_cooperative(path, options, None).await? {
+                CooperativeOpen::Inode(endpoint) => Ok(endpoint),
+                CooperativeOpen::Alias(_) => Err(IoError::BadDescriptor),
+            }
+        })
+    }
 }
 
 /// Read one entry into caller-owned storage. Cookie zero starts enumeration;
@@ -343,6 +363,7 @@ struct FileOpen {
     fs: Rc<RefCell<FsState>>,
     offset: Cell<usize>,
     options: OpenOptions,
+    readonly_origin: bool,
 }
 struct BufferedInput {
     data: Vec<u8>,
@@ -426,6 +447,22 @@ pub fn pipe() -> (Endpoint, Endpoint) {
     )
 }
 impl Endpoint {
+    pub fn reopen(&self, options: &OpenOptions) -> Result<Self, IoError> {
+        let options = OpenOptions {
+            create: false,
+            ..*options
+        };
+        match self.0.as_ref() {
+            Open::File(file) => memory_file_open(
+                file.fs.clone(),
+                file.file.clone(),
+                &options,
+                file.readonly_origin,
+            ),
+            Open::Host(host) => host.reopen(&options),
+            _ => Ok(self.clone()),
+        }
+    }
     /// Observe this description without extending its last-close lifetime.
     pub fn downgrade(&self) -> WeakEndpoint {
         WeakEndpoint(Rc::downgrade(&self.0))
@@ -803,13 +840,66 @@ impl MemoryFs {
         Ok(metadata)
     }
     pub fn open(&self, path: &str, options: &OpenOptions) -> Result<Endpoint, IoError> {
+        let fs = self.0.borrow_mut();
+        let path = fs.resolve(path)?;
+        self.open_resolved(fs, path, options, false)
+    }
+
+    pub fn open_cooperative_with_policy(
+        &self,
+        path: &str,
+        options: &OpenOptions,
+        expected_alias: Option<u32>,
+        mut search: impl FnMut(&str) -> Result<(), IoError>,
+        readonly_origin: impl FnOnce(&str) -> bool,
+    ) -> Result<CooperativeOpen<Endpoint>, IoError> {
+        let fs = self.0.borrow_mut();
+        let resolved = walk_memory_path(path, path.ends_with('/'), |directory| {
+            search(directory)?;
+            if is_descriptor_path(directory) {
+                return Err(IoError::NotDirectory);
+            }
+            match fs.require_directory(directory) {
+                Err(IoError::NotFound)
+                    if expected_alias.is_some() && is_virtual_descriptor_directory(directory) =>
+                {
+                    Ok(())
+                }
+                result => result,
+            }
+        })?;
+        let logical = descriptor_number(&resolved);
+        if let Some(expected) = expected_alias {
+            if logical == Some(expected) && descriptor_number(path) == Some(expected) {
+                return Ok(CooperativeOpen::Alias(expected));
+            }
+            return Err(IoError::BadDescriptor);
+        }
+        if is_descriptor_path(&resolved) {
+            return Err(IoError::BadDescriptor);
+        }
+        let readonly = readonly_origin(&resolved);
+        self.open_resolved(fs, resolved, options, readonly)
+            .map(CooperativeOpen::Inode)
+    }
+
+    fn open_resolved(
+        &self,
+        mut fs: RefMut<'_, FsState>,
+        path: String,
+        options: &OpenOptions,
+        readonly_origin: bool,
+    ) -> Result<Endpoint, IoError> {
+        if readonly_origin
+            && (options.write || options.create || options.truncate || options.append)
+        {
+            return Err(IoError::Runtime(69));
+        }
         if (!options.read && !options.write)
             || ((options.truncate || options.append) && !options.write)
         {
             return Err(IoError::BadDescriptor);
         }
-        let mut fs = self.0.borrow_mut();
-        let path = fs.resolve(path)?;
         if fs.directories.contains_key(&path) {
             return Err(IoError::AlreadyExists);
         }
@@ -831,7 +921,7 @@ impl MemoryFs {
             None => return Err(IoError::NotFound),
         };
         drop(fs);
-        memory_file_open(self.0.clone(), file, options)
+        memory_file_open(self.0.clone(), file, options, readonly_origin)
     }
 
     pub fn mkdir(&self, path: &str, parents: bool) -> Result<(), IoError> {
@@ -952,7 +1042,12 @@ impl FileSystem for MemoryFs {
     ) -> LocalBoxFuture<'a, Result<Rc<dyn Directory>, IoError>> {
         Box::pin(async move {
             let fs = self.0.borrow();
-            let resolved = fs.resolve(path)?;
+            let resolved = walk_memory_path(path, true, |directory| {
+                if is_descriptor_path(directory) {
+                    return Err(IoError::NotDirectory);
+                }
+                fs.require_directory(directory)
+            })?;
             fs.require_directory(&resolved)?;
             Ok(Rc::new(MemoryDirectory {
                 fs: self.clone(),
@@ -974,12 +1069,15 @@ impl FileSystem for MemoryFs {
     ) -> LocalBoxFuture<'a, Result<(), IoError>> {
         Box::pin(async move { MemoryFs::mkdir(self, path, parents) })
     }
-    fn open<'a>(
+    fn open_cooperative<'a>(
         &'a self,
         path: &'a str,
         options: &'a OpenOptions,
-    ) -> LocalBoxFuture<'a, Result<Endpoint, IoError>> {
-        Box::pin(async move { MemoryFs::open(self, path, options) })
+        expected_alias: Option<u32>,
+    ) -> LocalBoxFuture<'a, Result<CooperativeOpen<Endpoint>, IoError>> {
+        Box::pin(async move {
+            self.open_cooperative_with_policy(path, options, expected_alias, |_| Ok(()), |_| false)
+        })
     }
 }
 
@@ -987,7 +1085,11 @@ fn memory_file_open(
     fs: Rc<RefCell<FsState>>,
     file: Rc<File>,
     options: &OpenOptions,
+    readonly_origin: bool,
 ) -> Result<Endpoint, IoError> {
+    if readonly_origin && (options.write || options.truncate || options.append) {
+        return Err(IoError::Runtime(69));
+    }
     if (!options.read && !options.write) || ((options.truncate || options.append) && !options.write)
     {
         return Err(IoError::BadDescriptor);
@@ -1003,20 +1105,12 @@ fn memory_file_open(
         fs,
         offset: Cell::new(0),
         options: *options,
+        readonly_origin,
     }))))
 }
 
 /// Shell descriptor names refer to the shell's logical table, not WASI's private fds.
 pub fn descriptor_number(path: &str) -> Option<u32> {
-    descriptor_alias(path).map(|(_, fd)| fd)
-}
-
-enum DescriptorNamespace {
-    Dev,
-    Proc,
-}
-
-fn descriptor_alias(path: &str) -> Option<(DescriptorNamespace, u32)> {
     let components = path.strip_prefix('/')?;
     let last = components.rsplit('/').next()?;
     if path.len() > MAX_PATH_BYTES || matches!(last, "" | "." | "..") {
@@ -1025,24 +1119,18 @@ fn descriptor_alias(path: &str) -> Option<(DescriptorNamespace, u32)> {
     let mut parts = components
         .split('/')
         .filter(|part| !matches!(*part, "" | "."));
-    let alias = match (parts.next()?, parts.next()?) {
-        ("dev", "stdin") => (DescriptorNamespace::Dev, 0),
-        ("dev", "stdout") => (DescriptorNamespace::Dev, 1),
-        ("dev", "stderr") => (DescriptorNamespace::Dev, 2),
-        ("dev", "fd") => (
-            DescriptorNamespace::Dev,
-            parse_descriptor_number(parts.next()?)?,
-        ),
+    let logical = match (parts.next()?, parts.next()?) {
+        ("dev", "stdin") => 0,
+        ("dev", "stdout") => 1,
+        ("dev", "stderr") => 2,
+        ("dev", "fd") => parse_descriptor_number(parts.next()?)?,
         ("proc", "self") => {
             parts.next().filter(|part| *part == "fd")?;
-            (
-                DescriptorNamespace::Proc,
-                parse_descriptor_number(parts.next()?)?,
-            )
+            parse_descriptor_number(parts.next()?)?
         }
         _ => return None,
     };
-    parts.next().is_none().then_some(alias)
+    parts.next().is_none().then_some(logical)
 }
 
 fn parse_descriptor_number(part: &str) -> Option<u32> {
@@ -1052,11 +1140,32 @@ fn parse_descriptor_number(part: &str) -> Option<u32> {
     part.parse().ok()
 }
 
+fn is_virtual_descriptor_directory(path: &str) -> bool {
+    matches!(
+        path,
+        "/dev" | "/dev/fd" | "/proc" | "/proc/self" | "/proc/self/fd"
+    )
+}
+
+fn is_descriptor_path(path: &str) -> bool {
+    if descriptor_number(path).is_some() {
+        return true;
+    }
+    let Some((parent, name)) = path.rsplit_once('/') else {
+        return false;
+    };
+    matches!(parent, "/dev/fd" | "/proc/self/fd")
+        && !name.is_empty()
+        && name.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 pub enum DescriptorOpen<'a> {
-    /// Reopen through the production host, preserving inode policy and open state.
-    RuntimePath(Cow<'a, str>),
-    /// In-process streams and unexported buffers retain their existing semantics.
-    Local(Endpoint),
+    Path(&'a str),
+    Alias {
+        path: &'a str,
+        logical: u32,
+        source: Endpoint,
+    },
 }
 
 impl DescriptorOpen<'_> {
@@ -1066,8 +1175,23 @@ impl DescriptorOpen<'_> {
         options: &OpenOptions,
     ) -> Result<Endpoint, IoError> {
         match self {
-            Self::RuntimePath(path) => fs.open(&path, options).await,
-            Self::Local(endpoint) => Ok(endpoint),
+            Self::Path(path) => fs.open(path, options).await,
+            Self::Alias {
+                path,
+                logical,
+                source,
+            } => {
+                let options = OpenOptions {
+                    create: false,
+                    ..*options
+                };
+                match fs.open_cooperative(path, &options, Some(logical)).await? {
+                    CooperativeOpen::Alias(verified) if verified == logical => {
+                        source.reopen(&options)
+                    }
+                    _ => Err(IoError::BadDescriptor),
+                }
+            }
         }
     }
 }
@@ -1075,44 +1199,17 @@ impl DescriptorOpen<'_> {
 pub fn open_path<'a>(
     path: &'a str,
     fds: &FdTable,
-    options: &OpenOptions,
+    _options: &OpenOptions,
 ) -> Result<DescriptorOpen<'a>, IoError> {
-    let Some((namespace, logical)) = descriptor_alias(path) else {
-        return Ok(DescriptorOpen::RuntimePath(Cow::Borrowed(path)));
+    let Some(logical) = descriptor_number(path) else {
+        return Ok(DescriptorOpen::Path(path));
     };
-    reopen_descriptor(
-        namespace,
-        fds.get(logical).ok_or(IoError::NotFound)?,
-        options,
-    )
-}
-
-fn reopen_descriptor(
-    namespace: DescriptorNamespace,
-    endpoint: Endpoint,
-    options: &OpenOptions,
-) -> Result<DescriptorOpen<'static>, IoError> {
-    if let Some(fd) = endpoint.runtime_fd() {
-        let prefix = match namespace {
-            DescriptorNamespace::Dev => "/dev/fd",
-            DescriptorNamespace::Proc => "/proc/self/fd",
-        };
-        return Ok(DescriptorOpen::RuntimePath(Cow::Owned(format!(
-            "{prefix}/{fd}"
-        ))));
-    }
-    match endpoint.0.as_ref() {
-        Open::File(file) => {
-            memory_file_open(file.fs.clone(), file.file.clone(), options).map(DescriptorOpen::Local)
-        }
-        Open::Host(_) => Err(IoError::Unsupported),
-        Open::PipeRead(_)
-        | Open::PipeWrite(_)
-        | Open::Capture(_)
-        | Open::Null
-        | Open::Bytes { .. }
-        | Open::BytesSource(_) => Ok(DescriptorOpen::Local(endpoint)),
-    }
+    let source = fds.get(logical).ok_or(IoError::NotFound)?;
+    Ok(DescriptorOpen::Alias {
+        path,
+        logical,
+        source,
+    })
 }
 
 #[cfg(test)]
@@ -1121,8 +1218,45 @@ mod tests {
     use crate::executor::Executor;
 
     #[test]
+    fn guarded_mount_endpoint_keeps_its_readonly_origin_after_reopen() {
+        let fs = MemoryFs::new(32);
+        fs.write_file("/tmp/input", b"retained").unwrap();
+        let read = OpenOptions::default();
+        let CooperativeOpen::Inode(source) = fs
+            .open_cooperative_with_policy("/tmp/input", &read, None, |_| Ok(()), |_| true)
+            .unwrap()
+        else {
+            panic!("expected the mounted file")
+        };
+        let reopened = source.reopen(&read).unwrap();
+        for options in [
+            OpenOptions {
+                write: true,
+                ..read
+            },
+            OpenOptions {
+                write: true,
+                append: true,
+                ..read
+            },
+            OpenOptions {
+                write: true,
+                truncate: true,
+                ..read
+            },
+        ] {
+            assert!(matches!(
+                reopened.reopen(&options),
+                Err(IoError::Runtime(69))
+            ));
+        }
+        assert_eq!(fs.read_file("/tmp/input").unwrap(), b"retained");
+    }
+
+    #[test]
     fn direct_descriptor_aliases_preserve_logical_binding() {
         let mut fds = FdTable::default();
+        let fs = MemoryFs::new(32);
         let input = Endpoint::bytes(b"logical".to_vec());
         fds.insert(7, input.clone());
         let options = OpenOptions::default();
@@ -1132,9 +1266,12 @@ mod tests {
             "//dev/./fd/7",
             "/proc/self//fd/7",
         ] {
-            let DescriptorOpen::Local(opened) = open_path(path, &fds, &options).unwrap() else {
-                panic!("{path} must use the logical descriptor table");
-            };
+            let opened = open_path(path, &fds, &options)
+                .unwrap()
+                .open(&fs, &options)
+                .now_or_never()
+                .unwrap()
+                .unwrap();
             assert!(opened.same_open(&input));
         }
         assert!(matches!(
@@ -1207,14 +1344,17 @@ mod tests {
     }
     #[test]
     fn local_pipe_duplication_and_unexported_buffer_boundary_are_explicit() {
+        let fs = MemoryFs::new(32);
         let (reader, writer) = pipe();
         let mut fds = FdTable::default();
         fds.insert(7, reader.clone());
         let options = OpenOptions::default();
-        let DescriptorOpen::Local(duplicate) = open_path("/dev/fd/7", &fds, &options).unwrap()
-        else {
-            panic!("native pipe stays local")
-        };
+        let duplicate = open_path("/dev/fd/7", &fds, &options)
+            .unwrap()
+            .open(&fs, &options)
+            .now_or_never()
+            .unwrap()
+            .unwrap();
         assert!(reader.same_open(&duplicate));
         assert_eq!(writer.write(b"ab").now_or_never(), Some(Ok(2)));
         let mut byte = [0];
@@ -1224,10 +1364,12 @@ mod tests {
         assert_eq!(&byte, b"b");
         let buffer = Endpoint::bytes(b"ab".to_vec());
         fds.insert(7, buffer.clone());
-        let DescriptorOpen::Local(retained) = open_path("/dev/fd/7", &fds, &options).unwrap()
-        else {
-            panic!("unexported buffers retain their old shared offset")
-        };
+        let retained = open_path("/dev/fd/7", &fds, &options)
+            .unwrap()
+            .open(&fs, &options)
+            .now_or_never()
+            .unwrap()
+            .unwrap();
         assert!(retained.same_open(&buffer));
     }
     #[test]

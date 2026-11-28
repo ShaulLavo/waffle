@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use waffle_program_support::{
     executor::Budget,
     io::{Endpoint, FdTable, IoError, OpenOptions, open_path},
-    path::absolute,
+    path::join_cwd,
 };
 
 const MAX_RETAINED_BYTES: usize = 16 * 1024 * 1024;
@@ -111,7 +111,7 @@ async fn open_input(
             message: "standard input is unavailable".into(),
         });
     }
-    let path = absolute(cwd, file);
+    let path = join_cwd(cwd, file);
     let options = OpenOptions::default();
     let opening = open_path(&path, fds, &options).map_err(|error| TailError::io(file, error))?;
     context

@@ -1,5 +1,11 @@
 # @waffle-os/runtime
 
+## 0.0.160
+
+### Patch Changes
+
+- Add guarded cooperative opens that validate the original path before confirming a declared logical descriptor alias. Cooperative guests reopen the retained endpoint through its descriptor, with root and source rights enforced. The standard Preview 1 open contract remains compatible.
+
 ## 0.0.159
 
 ### Patch Changes

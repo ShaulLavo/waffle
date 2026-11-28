@@ -1,7 +1,8 @@
 //! Minimal guest reactor over runtime_proc descriptors and a preview1 root.
 //! Shell process groups, spawning, job reaping and input pumps stay in Bash.
 use crate::io::{
-    DescriptorKind, Endpoint, FdTable, FileMetadata, FileSystem, HostEndpoint, IoError, OpenOptions,
+    CooperativeOpen, DescriptorKind, Endpoint, FdTable, FileMetadata, FileSystem, HostEndpoint,
+    IoError, OpenOptions,
 };
 use futures::{FutureExt, future::LocalBoxFuture};
 use std::{
@@ -139,7 +140,15 @@ pub trait Abi {
     fn read_dir(&self, _fd: u32, _cookie: u64, _output: &mut [u8]) -> Result<usize, i32> {
         Err(58)
     }
-    fn open(&self, path: &str, options: &OpenOptions) -> Result<u32, i32>;
+    fn open_cooperative(
+        &self,
+        path: &str,
+        options: &OpenOptions,
+        expected_alias: Option<u32>,
+    ) -> Result<CooperativeOpen<u32>, i32>;
+    fn reopen_alias(&self, _fd: u32, _options: &OpenOptions) -> Result<u32, i32> {
+        Err(58)
+    }
     fn read(&self, fd: u32, output: &mut [u8]) -> Result<usize, i32>;
     fn write(&self, fd: u32, input: &[u8]) -> Result<usize, i32>;
     fn poll(
@@ -338,6 +347,15 @@ impl Drop for RuntimeEndpoint {
 }
 
 impl HostEndpoint for RuntimeEndpoint {
+    fn reopen(&self, options: &OpenOptions) -> Result<Endpoint, IoError> {
+        self.runtime
+            .0
+            .abi
+            .reopen_alias(self.fd, options)
+            .map(|fd| self.runtime.endpoint(fd))
+            .map_err(io_error)
+    }
+
     fn runtime_fd(&self) -> Option<u32> {
         Some(self.fd)
     }
@@ -618,17 +636,22 @@ impl FileSystem for Runtime {
         Ok((self.endpoint(read), self.endpoint(write)))
     }
 
-    fn open<'a>(
+    fn open_cooperative<'a>(
         &'a self,
         path: &'a str,
         options: &'a OpenOptions,
-    ) -> LocalBoxFuture<'a, Result<Endpoint, IoError>> {
+        expected_alias: Option<u32>,
+    ) -> LocalBoxFuture<'a, Result<CooperativeOpen<Endpoint>, IoError>> {
         async move {
-            self.0
+            match self
+                .0
                 .abi
-                .open(path, options)
-                .map(|fd| self.endpoint(fd))
-                .map_err(io_error)
+                .open_cooperative(path, options, expected_alias)
+                .map_err(io_error)?
+            {
+                CooperativeOpen::Inode(fd) => Ok(CooperativeOpen::Inode(self.endpoint(fd))),
+                CooperativeOpen::Alias(logical) => Ok(CooperativeOpen::Alias(logical)),
+            }
         }
         .boxed_local()
     }
@@ -757,8 +780,13 @@ mod timer_readiness_tests {
             Err(58)
         }
 
-        fn open(&self, _: &str, _: &OpenOptions) -> Result<u32, i32> {
-            Ok(3)
+        fn open_cooperative(
+            &self,
+            _: &str,
+            _: &OpenOptions,
+            _: Option<u32>,
+        ) -> Result<CooperativeOpen<u32>, i32> {
+            Ok(CooperativeOpen::Inode(3))
         }
 
         fn read(&self, _: u32, _: &mut [u8]) -> Result<usize, i32> {

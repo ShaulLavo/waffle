@@ -96,6 +96,91 @@ export interface ResolvedPath {
   trailingSlash: boolean;
   terminalDot: boolean;
 }
+export interface CooperativeResolveOptions {
+  readonly expectedAlias: number | null;
+  readonly machineId: boolean;
+}
+export type CooperativePath =
+  | (ResolvedPath & { readonly kind: "inode" })
+  | { readonly kind: "alias"; readonly logical: number }
+  | { readonly kind: "null" | "machine-id" };
+export interface CooperativePathLease {
+  readonly result: CooperativePath;
+  release(): void;
+}
+
+export function cooperativeResolveOptions(value: unknown): CooperativeResolveOptions {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 2 ||
+    !Object.hasOwn(value, "expectedAlias") ||
+    !Object.hasOwn(value, "machineId")
+  )
+    throw new FilesystemError(28);
+  const { expectedAlias, machineId } = value as Partial<CooperativeResolveOptions>;
+  if (
+    typeof machineId !== "boolean" ||
+    (expectedAlias !== null &&
+      (typeof expectedAlias !== "number" ||
+        !Number.isInteger(expectedAlias) ||
+        expectedAlias < 0 ||
+        expectedAlias > 0xffff_ffff))
+  )
+    throw new FilesystemError(28);
+  return { expectedAlias, machineId };
+}
+
+export function isCooperativePath(value: unknown): value is CooperativePath {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Record<string, unknown>;
+  if (result.kind === "alias")
+    return (
+      typeof result.logical === "number" &&
+      Number.isInteger(result.logical) &&
+      result.logical >= 0 &&
+      result.logical <= 0xffff_ffff
+    );
+  if (result.kind === "null" || result.kind === "machine-id") return true;
+  return (
+    result.kind === "inode" &&
+    typeof result.name === "string" &&
+    typeof result.trailingSlash === "boolean" &&
+    typeof result.terminalDot === "boolean" &&
+    validLookupHandle(result.parent) &&
+    validLookupHandle(result.node)
+  );
+}
+
+function validLookupHandle(value: unknown): boolean {
+  return (
+    value === undefined || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+  );
+}
+
+/** Adopt final handles before discarding the previous owner's lookup result. */
+export function retainCooperativePath(
+  fs: Pick<FileSystem, "retain" | "release">,
+  result: CooperativePath,
+): CooperativePathLease {
+  if (result.kind !== "inode") return { result, release() {} };
+  const held: FileHandle[] = [];
+  const release = () => {
+    for (const handle of held.splice(0)) fs.release(handle);
+  };
+  try {
+    for (const handle of [result.parent, result.node]) {
+      if (handle === undefined || held.includes(handle)) continue;
+      fs.retain(handle);
+      held.push(handle);
+    }
+    return { result, release };
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
 /** Synchronous preview1 boundary; a worker-backed client can implement the same operations.
  * Path/status operations use positive WASI errno; I/O uses byte counts or negative errno.
  * No tree nodes or owned file buffers cross this interface.
@@ -114,6 +199,13 @@ export interface FileSystem {
     followFinal?: boolean,
     rooted?: boolean,
   ): ResolvedPath | number;
+  /** Single guarded lookup. Returned inode handles are held until release. */
+  resolveCooperative?(
+    directory: FileHandle,
+    path: string,
+    followFinal: boolean,
+    options: CooperativeResolveOptions,
+  ): CooperativePathLease | number;
   /** realpath(3) in one lookup: `path` from `directory` with every link followed. Rooted, an
    * absolute path from the root; otherwise relative to `directory` ("." for itself). Positive
    * WASI errno on failure. */

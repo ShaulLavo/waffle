@@ -17,6 +17,7 @@ import { type FileIdentity, type IdentityReservation, IdentityAllocator } from "
 import type { PublicationBuffers } from "./publication-internal.js";
 import { type FileHandle, type FileStat, type ResolvedPath } from "../core/index.js";
 import {
+  cooperativeResolveOptions,
   fileTimeMs,
   fileTimeNow,
   msFileTime,
@@ -490,6 +491,8 @@ export class MemoryBackend implements FilesystemBackend {
         return this.fs.connectSocket(a, b);
       case "resolve":
         this.check(a, "directory");
+        if (typeof args[3] === "object")
+          return this.fs.lookupCooperative(a, b, c === true, cooperativeResolveOptions(args[3]));
         return this.fs.resolve(a, b, c === true, args[3] === true);
       case "realpath":
         this.check(a, "directory");
