@@ -714,7 +714,7 @@ jobs:
           bun run --cwd packages/git test:unit
           bun run --cwd packages/waffle tsc -p ../../scripts/tsconfig.json
           bun run programs:tools
-          bun test scripts/program-release.test.ts scripts/program-rebind.test.ts scripts/host-interface.test.ts
+          bun test scripts/program-release.test.ts scripts/program-rebind.test.ts scripts/host-interface.test.ts scripts/publish-programs-npm.test.ts
           bun run programs:routes
           bun run programs:source
       - name: Record exact GNU date source and native compiler identity

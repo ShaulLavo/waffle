@@ -135,23 +135,44 @@ test("disposal between a guest's first checks and its post-park recheck reports 
     new URL("./fixtures/notification-revoke-window-worker.ts", import.meta.url).href,
     { type: "module" },
   );
+  const { promise: deadline, reject: expire } = Promise.withResolvers<never>();
+  const timer = setTimeout(() => expire(new Error("Notification worker did not finish")), 3000);
   try {
     const state = bridge.connection.state;
-    const reported = new Promise<unknown>((resolve) => {
-      worker.onmessage = ({ data }) => resolve(data);
-    });
+    const parked = Promise.withResolvers<void>();
+    const reported = Promise.withResolvers<unknown>();
+    worker.onmessage = ({ data }) => {
+      if (data?.parked === true) {
+        parked.resolve();
+        return;
+      }
+      parked.reject(new Error("Notification worker returned before acknowledging the park"));
+      reported.resolve(data);
+    };
     worker.postMessage({ filesystem: pair.client, notifications: bridge.connection }, [
       pair.client.port,
       bridge.connection.port,
     ]);
-    // The guest notifies index 2 once its park is active; dispose while its send is held.
-    for (let attempt = 0; attempt < 500 && !Atomics.load(state, 2); attempt++) await pause(2);
+    await Promise.race([parked.promise, deadline]);
     expect(Atomics.load(state, 2)).not.toBe(0);
-    await bridge.dispose();
-    expect(await reported).toEqual({ result: "closed" });
+    await Promise.race([bridge.dispose(), deadline]);
+    expect(await Promise.race([reported.promise, deadline])).toEqual({ result: "closed" });
   } finally {
+    clearTimeout(timer);
     worker.terminate();
-    await bridge.dispose();
-    await service.shutdown();
+    const cleanup = Promise.all([
+      Promise.resolve().then(() => service.shutdown()),
+      Promise.resolve().then(() => bridge.dispose()),
+    ]);
+    const { promise: cleanupDeadline, reject: expireCleanup } = Promise.withResolvers<never>();
+    const cleanupTimer = setTimeout(
+      () => expireCleanup(new Error("Notification cleanup did not finish")),
+      1000,
+    );
+    try {
+      await Promise.race([cleanup, cleanupDeadline]);
+    } finally {
+      clearTimeout(cleanupTimer);
+    }
   }
 });

@@ -26,13 +26,17 @@ on:
         default: ""
         type: string
       publish:
-        description: Create the GitHub release with the verified assets
+        description: Publish the verified packages to npm and attach their receipt to the GitHub release
         default: false
         type: boolean
 
 permissions:
   contents: write
   id-token: write
+
+concurrency:
+  group: program-release-${{ inputs.tag }}
+  cancel-in-progress: false
 
 env:
   GITHUB_TOKEN: ${{ github.token }}
@@ -58,6 +62,13 @@ jobs:
           git merge-base --is-ancestor HEAD origin/main
           # Python stages a qualified interpreter artifact; release it with the local CLI.
           [[ ",$FAMILIES," != *",python,"* ]]
+      - name: Verify the tag uses the workflow publisher
+        if: inputs.publish
+        run: |
+          if ! git diff --quiet "$GITHUB_WORKFLOW_SHA" HEAD -- scripts/publish-programs-npm.ts; then
+            echo 'The release tag must use the same npm publisher as the workflow revision.' >&2
+            exit 1
+          fi
       - uses: ./.github/actions/release-downloads
       - uses: ./.github/actions/setup-tools
         with:
@@ -102,7 +113,7 @@ jobs:
             packages/ripgrep/.sources
           key: ${{ runner.os }}-${{ runner.arch }}-program-release-${{ hashFiles('bun.lock', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-*.ts', 'tools/program-locales/**', 'packages/**/*.rs', 'packages/**/Cargo.toml', 'packages/**/Cargo.lock', 'packages/*/scripts/**', 'packages/*/patches/**') }}
       - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun test scripts/program-release.test.ts
+      - run: bun test scripts/program-release.test.ts scripts/publish-programs-npm.test.ts
       - name: Prepare every family in the closure with its own route
         run: |
           for directory in $(bun scripts/program-release.ts --list --families "$FAMILIES"); do
@@ -122,23 +133,84 @@ jobs:
           name: program-release-${{ inputs.tag }}
           path: .build/program-release/assets
           if-no-files-found: error
+      - name: Read the receipt for an existing release
+        id: prior_release
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -c --arg tag "$RELEASE_TAG" \
+              '[.[][] | select(.tag_name == $tag)] | if length > 1 then error("Multiple releases for the tag") else .[0] end')
+          if [ "$release" = null ]; then exit 0; fi
+          asset=$(jq -c '[.assets[] | select(.name == "program-release.json")]
+            | if length > 1 then error("Multiple assets for the receipt") else .[0] end' \
+            <<< "$release")
+          asset_id=$(jq -r 'select(.state == "uploaded") | .id' <<< "$asset")
+          if [ -n "$asset_id" ]; then
+            gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
+              > .build/program-release/existing-receipt.json
+          else
+            if ! digest=$(jq -er 'select(.draft and (.assets == [] or (.assets | length == 1
+              and .[0].name == "program-release.json" and .[0].state == "starter" and .[0].size == 0)))
+              | (.body // "") | split("\n")[0]
+              | capture("^<!-- waffle-npm-receipt-sha256=(?<digest>[a-f0-9]{64}) -->$").digest' <<< "$release"); then
+              echo 'Expected an uploaded program release receipt or a draft with a receipt digest and no completed assets.' >&2
+              exit 1
+            fi
+            printf 'receipt_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+            starter_id=$(jq -r 'select(.state == "starter") | .id' <<< "$asset")
+            printf 'starter_id=%s\n' "$starter_id" >> "$GITHUB_OUTPUT"
+          fi
+          draft_id=$(jq -r 'select(.draft) | .id' <<< "$release")
+          printf 'draft_id=%s\n' "$draft_id" >> "$GITHUB_OUTPUT"
       - name: Publish program packages to npm
         if: inputs.publish
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          EXISTING_RECEIPT_SHA256: ${{ steps.prior_release.outputs.receipt_sha256 }}
         run: |
           set -euo pipefail
           if [ -n "${NPM_TOKEN:-}" ]; then
             npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
           fi
-          bun scripts/publish-programs-npm.ts .build/program-release/assets
-      - name: Create notes-only GitHub release
+          receipt_args=()
+          existing=.build/program-release/existing-receipt.json
+          if [ -f "$existing" ]; then
+            receipt_args=(--existing-receipt "$existing")
+          elif [ -n "$EXISTING_RECEIPT_SHA256" ]; then
+            receipt_args=(--existing-receipt-sha256 "$EXISTING_RECEIPT_SHA256")
+          fi
+          bun scripts/publish-programs-npm.ts .build/program-release/assets \
+            .build/program-release/program-release.json "${receipt_args[@]}"
+      - name: Publish the npm closure receipt
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
+          DRAFT_ID: ${{ steps.prior_release.outputs.draft_id }}
+          STARTER_ID: ${{ steps.prior_release.outputs.starter_id }}
+          EXISTING_RECEIPT_SHA256: ${{ steps.prior_release.outputs.receipt_sha256 }}
         run: |
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes
+          set -euo pipefail
+          receipt=.build/program-release/program-release.json
+          existing=.build/program-release/existing-receipt.json
+          if [ -n "$DRAFT_ID" ]; then
+            if [ -n "$STARTER_ID" ]; then
+              marker="<!-- waffle-npm-receipt-sha256=$EXISTING_RECEIPT_SHA256 -->"
+              gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_ID" |
+                jq -e --arg tag "$RELEASE_TAG" --arg marker "$marker" --argjson id "$STARTER_ID" \
+                  '.draft and .tag_name == $tag and (.body | split("\n")[0]) == $marker
+                    and (.assets | length == 1 and .[0].id == $id and .[0].name == "program-release.json"
+                    and .[0].state == "starter" and .[0].size == 0)' >/dev/null
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$STARTER_ID" >/dev/null
+            fi
+            if [ ! -f "$existing" ]; then gh release upload "$RELEASE_TAG" "$receipt"; fi
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$DRAFT_ID" -F draft=false >/dev/null
+          elif [ ! -f "$existing" ]; then
+            digest=$(sha256sum "$receipt")
+            gh release create "$RELEASE_TAG" "$receipt" --verify-tag --title "$RELEASE_TAG" \
+              --generate-notes --notes "<!-- waffle-npm-receipt-sha256=${digest%% *} -->"
           fi
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
