@@ -31,6 +31,7 @@ import {
   RIGHT_SOCK_SHUTDOWN,
   RIGHT_SOCK_ACCEPT,
 } from "./rights.js";
+import { descriptorFlagError, FDFLAG_APPEND, FDFLAG_NONBLOCK } from "./fd-flags.js";
 import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.js";
 import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
@@ -131,8 +132,6 @@ const O_CREAT = 1;
 const O_DIRECTORY = 2;
 const O_EXCL = 4;
 const O_TRUNC = 8;
-const FDFLAG_APPEND = 1;
-const FDFLAG_NONBLOCK = 4;
 
 // wasi-libc's isatty(): character device without seek/tell rights.
 const RIGHTS_TTY = RIGHTS_ALL & ~(RIGHT_FD_SEEK | RIGHT_FD_TELL);
@@ -488,7 +487,7 @@ export class Wasi {
     if ((out >>> 0) + 4 > this.bytes().length) return EFAULT;
     if (oflags & O_DIRECTORY) return ENOTDIR;
     if (oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
-    if (oflags & ~15 || fdflags & ~31) return EINVAL;
+    if (oflags & ~15) return EINVAL;
     return this.writeResult(
       this.descriptors.open(createNullDevice(fdflags), base, inheriting),
       out >>> 0,
@@ -505,7 +504,7 @@ export class Wasi {
     if ((out >>> 0) + 4 > this.bytes().length) return EFAULT;
     if (oflags & O_DIRECTORY) return ENOTDIR;
     if (oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
-    if (oflags & ~15 || fdflags & ~31) return EINVAL;
+    if (oflags & ~15) return EINVAL;
     if ((oflags & O_TRUNC) !== 0 || (base & RIGHT_FD_WRITE) !== 0n) return EACCES;
     const id = this.machineId();
     if (id === undefined) return ENOENT;
@@ -1334,7 +1333,8 @@ export class Wasi {
       fd_fdstat_set_flags: this.descriptorCall(
         RIGHT_FD_FDSTAT_SET_FLAGS,
         (resource, flags: number) => {
-          if (flags & ~31) return EINVAL;
+          const invalidFlags = descriptorFlagError(flags);
+          if (invalidFlags) return invalidFlags;
           if (resource.kind === "file") {
             resource.fdflags = flags;
             resource.append = (flags & FDFLAG_APPEND) !== 0;
@@ -1629,6 +1629,8 @@ export class Wasi {
         if (oflags & O_CREAT && !(dir.rightsBase & RIGHT_PATH_CREATE_FILE)) return ENOTCAPABLE;
         if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE))
           return ENOTCAPABLE;
+        const invalidFlags = descriptorFlagError(fdflags);
+        if (invalidFlags) return invalidFlags;
         fdOut >>>= 0;
         const name = this.str(ptr, len);
         const exclusive = (oflags & O_CREAT && oflags & O_EXCL) !== 0;

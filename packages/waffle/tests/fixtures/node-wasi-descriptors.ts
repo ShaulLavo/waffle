@@ -1,10 +1,12 @@
 /** @compileFixture Built and executed by node-wasi-descriptors.test.ts. */
 import assert from "node:assert/strict";
 import { WASI } from "node:wasi";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { constants, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DescriptorTable, OpenDescription } from "../../core/descriptors.js";
+import { FDFLAG_APPEND } from "../../core/fd-flags.js";
+import { RIGHT_FD_FDSTAT_SET_FLAGS } from "../../core/rights.js";
 import type { PipeEndpointHandle } from "../../proc/pipes.js";
 import {
   nodeWasiDescriptor,
@@ -101,11 +103,11 @@ function fixture(root: string) {
     if (!fn) throw new Error(`Missing WASI import ${name}`);
     return (fn as WasiCall)(...args);
   };
-  const open = () => {
+  const open = (flags = 0) => {
     const path = new TextEncoder().encode("data");
     bytes().set(path, 256);
-    const rights = 2n | 4n | 32n | 64n | (1n << 21n) | (1n << 27n);
-    assert.equal(call("path_open", 3, 0, 256, path.length, 0, rights, 0n, 0, 128), 0);
+    const rights = 2n | 4n | 32n | 64n | RIGHT_FD_FDSTAT_SET_FLAGS | (1n << 21n) | (1n << 27n);
+    assert.equal(call("path_open", 3, 0, 256, path.length, 0, rights, 0n, flags, 128), 0);
     return view().getUint32(128, true);
   };
   const poll = (subscriptions: readonly { type: number; fd: number; userdata?: bigint }[]) => {
@@ -130,10 +132,66 @@ function fixture(root: string) {
   return { broker, client, descriptors, view, bytes, call, open, poll, createPipe };
 }
 
+function checkSyncFlags(f: ReturnType<typeof fixture>, fd: number) {
+  const out = 256;
+  const setFlagsStatus = process.platform === "win32" ? 52 : 0;
+  assert.equal(f.call("fd_fdstat_get", fd, out), 0);
+  const originalFlags = f.view().getUint16(out + 2, true);
+  for (const flag of [2, 8, 16]) {
+    assert.equal(f.call("fd_fdstat_set_flags", fd, flag), 58);
+    assert.equal(f.call("fd_fdstat_get", fd, out), 0);
+    assert.equal(f.view().getUint16(out + 2, true), originalFlags);
+  }
+  assert.equal(
+    f.call("fd_fdstat_set_flags", fd, (originalFlags & 0xfff) | FDFLAG_APPEND),
+    setFlagsStatus,
+  );
+  assert.equal(f.call("fd_fdstat_get", fd, out), 0);
+  assert.equal(
+    f.view().getUint16(out + 2, true),
+    setFlagsStatus === 0 ? FDFLAG_APPEND : originalFlags,
+  );
+
+  if (!constants.O_SYNC) return;
+  const sync = 16;
+  const synchronous = f.open(sync);
+  assert.equal(f.call("fd_fdstat_get", synchronous, out), 0);
+  assert.equal(f.view().getUint16(out + 2, true), sync);
+  assert.equal(f.call("fd_fdstat_set_flags", synchronous, sync | FDFLAG_APPEND), setFlagsStatus);
+  assert.equal(f.call("fd_fdstat_get", synchronous, out), 0);
+  assert.equal(
+    f.view().getUint16(out + 2, true),
+    setFlagsStatus === 0 ? sync | FDFLAG_APPEND : sync,
+  );
+  assert.equal(f.call("fd_fdstat_set_flags", synchronous, FDFLAG_APPEND), 58);
+  assert.equal(f.call("fd_close", synchronous), 0);
+}
+
+function checkSyncOpenRejection(f: ReturnType<typeof fixture>, root: string) {
+  const out = 128;
+  const path = 256;
+  const rights = 2n | 64n;
+  const rsync = 8;
+  const descriptors = f.descriptors.inheritable();
+  const encoder = new TextEncoder();
+  f.view().setUint32(out, 0xffffffff, true);
+
+  f.bytes().set(encoder.encode("missing"), path);
+  assert.equal(f.call("path_open", 3, 0, path, 7, 1, rights, 0n, rsync, out), 58);
+  assert.equal(existsSync(join(root, "missing")), false);
+
+  f.bytes().set(encoder.encode("data"), path);
+  assert.equal(f.call("path_open", 3, 0, path, 4, 8, rights, 0n, rsync, out), 58);
+  assert.equal(readFileSync(join(root, "data"), "utf8"), "file-data");
+  assert.equal(f.view().getUint32(out, true), 0xffffffff);
+  assert.deepEqual(f.descriptors.inheritable(), descriptors);
+}
+
 const root = mkdtempSync(join(process.env.WAFFLE_SCRATCH_ROOT ?? tmpdir(), "waffle-node-wasi-"));
 writeFileSync(join(root, "data"), "file-data");
 const f = fixture(root);
 try {
+  checkSyncOpenRejection(f, root);
   const probe = f.open();
   const nativeFd = nodeWasiDescriptor(f.descriptors.get(probe));
   assert.notEqual(nativeFd, undefined);
@@ -143,6 +201,7 @@ try {
   const opened = f.open();
   assert.notEqual(opened, nativeFd);
   assert.equal(nodeWasiDescriptor(f.descriptors.get(opened)), nativeFd);
+  checkSyncFlags(f, opened);
   assert.equal(f.call("fd_seek", opened, 0n, 0, 160), 0);
   f.view().setUint32(192, 512, true);
   f.view().setUint32(196, 32, true);
@@ -158,12 +217,20 @@ try {
   const duplicate = f.descriptors.dup(opened);
   const duplicateNativeFd = nodeWasiDescriptor(f.descriptors.get(duplicate));
   assert.equal(f.call("fd_fdstat_set_rights", duplicate, 2n, 0n), 0);
+  assert.equal(f.call("fd_fdstat_set_flags", duplicate, 16), 76);
   assert.equal(f.call("fd_renumber", opened, duplicate), 0);
   assert.equal(nodeWasiDescriptor(f.descriptors.get(duplicate)), duplicateNativeFd);
   assert.equal(f.call("fd_close", duplicate), 0);
   assert.equal(f.call("fd_close", duplicate), 8);
   assert.equal(f.descriptors.get(nativeFd!)?.resource, reader);
-  const native = { kind: "file" as const, handle: 1, nodeWasiFd: 1, offset: 0, append: false };
+  const native = {
+    kind: "file" as const,
+    handle: 1,
+    nodeWasiFd: 1,
+    offset: 0,
+    append: false,
+    fdflags: 0,
+  };
   f.descriptors.inherit(7, {
     description: new OpenDescription(native),
     resource: native,

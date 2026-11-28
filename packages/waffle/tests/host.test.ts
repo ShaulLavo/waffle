@@ -344,6 +344,40 @@ test("fd_sync and fd_datasync invoke the filesystem durability barrier and repor
   expect(h.calls.fd_sync(999)).toBe(8);
 });
 
+test("WASI rejects unsupported synchronous I/O flags before changing files or descriptors", () => {
+  const fs = new MemFS();
+  fs.writeFile("/file", "saved");
+  const h = host(fs);
+  const fd = h.open("file");
+  const result = 1024;
+  const path = 256;
+  const savedResult = 0xffffffff;
+  const descriptors = h.wasi.descriptors.inheritable();
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  try {
+    expect(h.calls.fd_fdstat_set_flags(fd, 1)).toBe(0);
+    for (const sync of [2, 8, 16]) {
+      h.view.setUint32(result, savedResult, true);
+      expect(h.calls.fd_fdstat_set_flags(fd, sync)).toBe(58);
+      expect(fileResource(h.wasi, fd).append).toBe(true);
+      expect(h.wasi.fdReopen(fd, 8, sync, ALL, result)).toBe(58);
+
+      h.bytes.set(encoder.encode("file"), path);
+      expect(h.calls.path_open(3, 0, path, 4, 8, ALL, ALL, sync, result)).toBe(58);
+      expect(decoder.decode(fs.readFile("/file"))).toBe("saved");
+
+      h.bytes.set(encoder.encode("missing"), path);
+      expect(h.calls.path_open(3, 0, path, 7, 1, ALL, ALL, sync, result)).toBe(58);
+      expect(fs.readFile("/missing")).toBeUndefined();
+      expect(h.view.getUint32(result, true)).toBe(savedResult);
+      expect(h.wasi.descriptors.inheritable()).toEqual(descriptors);
+    }
+  } finally {
+    h.wasi.descriptors.dispose();
+  }
+});
+
 function fileResource(wasi: Wasi, fd: number): Extract<Resource, { kind: "file" }> {
   const resource = wasi.descriptors.get(fd)?.resource;
   assert.ok(resource?.kind === "file");

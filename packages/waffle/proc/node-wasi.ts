@@ -1,15 +1,27 @@
+import { constants } from "node:fs";
 import {
   OpenDescription,
   type Descriptor,
   type DescriptorTable,
   type Resource,
 } from "../core/descriptors.js";
+import {
+  descriptorFlagError,
+  FDFLAG_APPEND,
+  FDFLAG_DSYNC,
+  FDFLAG_RSYNC,
+  FDFLAG_SYNC,
+  FDFLAGS_MASK,
+} from "../core/fd-flags.js";
 import { memoryViews } from "../core/memory-views.js";
+import { RIGHT_FD_FDSTAT_SET_FLAGS } from "../core/rights.js";
 import type { WorkerProcessClient } from "./worker-client.js";
 
 const READ = 1n << 1n;
 const WRITE = 1n << 6n;
 const POLL = 1n << 27n;
+const UNSUPPORTED_SYNC_OPEN_FLAGS =
+  FDFLAG_RSYNC | (constants.O_DSYNC ? 0 : FDFLAG_DSYNC) | (constants.O_SYNC ? 0 : FDFLAG_SYNC);
 
 export interface NodeWasiImports {
   wasi_snapshot_preview1: Record<string, (...args: number[]) => number>;
@@ -18,10 +30,19 @@ export interface NodeWasiImports {
 
 export type NodeWasiGuard = (fn: (...args: number[]) => number) => (...args: number[]) => number;
 
-type NativeResource = Extract<Resource, { handle: number }> & { nodeWasiFd: number };
+type NativeResource = Extract<Resource, { handle: number }> & {
+  readonly nodeWasiFd: number;
+  fdflags: number;
+};
 
 function isNativeResource(resource: Resource): resource is NativeResource {
-  return "nodeWasiFd" in resource && Number.isInteger(resource.nodeWasiFd);
+  return (
+    (resource.kind === "file" || resource.kind === "directory") &&
+    "nodeWasiFd" in resource &&
+    Number.isInteger(resource.nodeWasiFd) &&
+    "fdflags" in resource &&
+    typeof resource.fdflags === "number"
+  );
 }
 
 export function nodeWasiDescriptor(entry: Descriptor | undefined): number | undefined {
@@ -56,12 +77,19 @@ export function installNodeWasiDescriptors(
   const wasi = imports.wasi_snapshot_preview1;
   const original = { ...wasi };
   const views = () => memoryViews(memory());
-  const native = (fd: number, directory: boolean): NativeResource =>
+  const native = (fd: number, directory: boolean, fdflags: number): NativeResource =>
     directory
-      ? { kind: "directory", handle: fd, nodeWasiFd: fd }
-      : { kind: "file", handle: fd, nodeWasiFd: fd, offset: 0, append: false };
-  const description = (fd: number, directory: boolean) =>
-    new OpenDescription(native(fd, directory), () => {
+      ? { kind: "directory", handle: fd, nodeWasiFd: fd, fdflags }
+      : {
+          kind: "file",
+          handle: fd,
+          nodeWasiFd: fd,
+          offset: 0,
+          append: (fdflags & FDFLAG_APPEND) !== 0,
+          fdflags,
+        };
+  const description = (fd: number, directory: boolean, fdflags = 0) =>
+    new OpenDescription(native(fd, directory, fdflags), () => {
       original.fd_close!(fd);
     });
   const all = (1n << 30n) - 1n;
@@ -99,12 +127,15 @@ export function installNodeWasiDescriptors(
     wasi.path_open = guard((...args) => {
       const directory = nodeWasiDescriptor(descriptors.get(args[0]! >>> 0));
       if (directory === undefined) return 8;
+      const flags = args[7]!;
+      if (flags & ~FDFLAGS_MASK) return 28;
+      if (flags & UNSUPPORTED_SYNC_OPEN_FLAGS) return 58;
       args[0] = directory;
       const result = original.path_open!(...args);
       if (result !== 0) return result;
       const ptr = args[8]!;
       const fd = views().view().getUint32(ptr, true);
-      const opened = description(fd, (args[4]! & 2) !== 0);
+      const opened = description(fd, (args[4]! & 2) !== 0, flags);
       try {
         const guest = descriptors.add(opened, {
           rightsBase: BigInt(args[5]!),
@@ -148,8 +179,15 @@ export function installNodeWasiDescriptors(
   ): number {
     const entry = descriptors.get(fd! >>> 0);
     if (!entry) return 8;
-    if (nodeWasiDescriptor(entry) !== undefined) return call?.(fd!, ptr!) ?? 8;
     const resource = entry.resource;
+    if (isNativeResource(resource)) {
+      const result = call?.(fd!, ptr!) ?? 8;
+      if (name === "fd_fdstat_get" && result === 0)
+        views()
+          .view()
+          .setUint16(ptr + 2, resource.fdflags, true);
+      return result;
+    }
     const nativeFd = "nativeFd" in resource ? resource.nativeFd : undefined;
     if (typeof nativeFd === "number") {
       const error = original[name]?.(nativeFd, ptr!) ?? 8;
@@ -192,15 +230,19 @@ export function installNodeWasiDescriptors(
     }
     return result;
   });
-  const setFlags = wasi.fd_fdstat_set_flags;
   wasi.fd_fdstat_set_flags = guard((fd, flags) => {
     const entry = descriptors.get(fd! >>> 0);
     if (!entry) return 8;
-    return nodeWasiDescriptor(entry) === undefined
-      ? flags === 0
-        ? 0
-        : 58
-      : (setFlags?.(fd!, flags!) ?? 8);
+    const resource = entry.resource;
+    if (!isNativeResource(resource)) return flags === 0 ? 0 : 58;
+    if (!(entry.rightsBase & RIGHT_FD_FDSTAT_SET_FLAGS)) return 76;
+    const invalidFlags = descriptorFlagError(flags!, resource.fdflags);
+    if (invalidFlags) return invalidFlags;
+    const result = original.fd_fdstat_set_flags?.(resource.nodeWasiFd, flags!) ?? 8;
+    if (result !== 0) return result;
+    resource.fdflags = flags!;
+    if (resource.kind === "file") resource.append = (flags! & FDFLAG_APPEND) !== 0;
+    return 0;
   });
   for (const name of ["fd_seek", "fd_tell", "fd_pread", "fd_pwrite"] as const) {
     const call = wasi[name];
