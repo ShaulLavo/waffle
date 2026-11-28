@@ -406,7 +406,6 @@ describe("archive validation before publication", () => {
     { ...file(), size: -1 },
     { ...file(), size: Number.MAX_SAFE_INTEGER + 1 },
     { ...file(), mtime: "bad" },
-    { ...file(), mode: 0o777 },
     { ...directory("/a"), size: 1 },
     { ...file(), kind: "symlink" },
     { ...file(), sourceIdentity: { ...file().sourceIdentity, workspace: "not-a-workspace" } },
@@ -415,6 +414,29 @@ describe("archive validation before publication", () => {
     { ...file(), targetIdentity: "not-importable" },
   ])("rejects unimportable metadata %#", async (entry) => {
     await rejectsOld(raw(rootFrames().concat(entryFrames(entry))), "INVALID");
+  });
+
+  test("preserves complete file and directory modes and rejects unsupported bits", async () => {
+    const root = { ...directory(), mode: 0o1777 };
+    const archive = (mode: number) =>
+      raw(
+        manifestFrames(manifest).concat(
+          entryFrames(root),
+          entryFrames({ ...file(), mode }, [new Uint8Array([0, 128, 255])]),
+          [[5, u64s(2n, 3n)]],
+        ),
+      );
+    const accepted = new RootModel();
+    await importWorkspaceArchive(archive(0o777), accepted);
+    expect(accepted.staged.map((entry) => entry.mode)).toEqual([0o1777, 0o777]);
+    expect(accepted.selected).toBe("new");
+
+    const rejected = new RootModel();
+    await expect(importWorkspaceArchive(archive(0o4777), rejected)).rejects.toMatchObject({
+      code: "INVALID",
+      message: "Unsupported mode bits",
+    });
+    expect(rejected.selected).toBe("old");
   });
 
   test("rejects foreign source workspace identity", async () => {

@@ -1,5 +1,5 @@
 import { FilesystemClient, type FilesystemConnection } from "../../fs/index.js";
-import { permissionsHost } from "./permissions-guest.js";
+import { modeGuest, permissionsHost } from "./permissions-guest.js";
 
 let state: { fs: FilesystemClient; handle: number; prior: Uint8Array } | undefined;
 self.onmessage = ({ data }: MessageEvent<FilesystemConnection | { inspect: true }>) => {
@@ -7,6 +7,7 @@ self.onmessage = ({ data }: MessageEvent<FilesystemConnection | { inspect: true 
     if (!state) throw new Error("worker not initialized");
     const { fs, handle, prior } = state;
     const host = permissionsHost(fs);
+    const modes = modeGuest(fs);
     try {
       const errno = host.call("file");
       self.postMessage({
@@ -17,9 +18,11 @@ self.onmessage = ({ data }: MessageEvent<FilesystemConnection | { inspect: true 
         write: fs.write(handle, [new Uint8Array([1])], 0),
         resize: fs.resize(handle, 0, true),
         prior: Array.from(prior),
+        chmod: modes.setPathMode("file", 0o001),
       });
     } finally {
       host.wasi.descriptors.dispose();
+      modes.wasi.descriptors.dispose();
       fs.release(handle);
       fs.dispose();
       state = undefined;

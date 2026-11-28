@@ -61,6 +61,7 @@ export function countingFs(inner: FileSystem): {
 const pathOpenModule = guestModule("wasi_snapshot_preview1", [
   { name: "fd_close", parameters: ["i32"] },
   { name: "fd_fdstat_get", parameters: ["i32", "i32"] },
+  { name: "fd_fdstat_set_rights", parameters: ["i32", "i64", "i64"] },
   { name: "fd_read", parameters: ["i32", "i32", "i32", "i32"] },
   { name: "fd_readdir", parameters: ["i32", "i32", "i32", "i64", "i32"] },
   {
@@ -89,6 +90,7 @@ export function createPathOpenHost(
   const pathOpen = guestFunction(instance, "path_open");
   const fdClose = guestFunction(instance, "fd_close");
   const fdFdstatGet = guestFunction(instance, "fd_fdstat_get");
+  const setRights = guestFunction(instance, "fd_fdstat_set_rights");
   const fdRead = guestFunction(instance, "fd_read");
   const fdReaddir = guestFunction(instance, "fd_readdir");
   const view = () => new DataView(memory.buffer);
@@ -150,5 +152,5 @@ export function createPathOpenHost(
     return view().getUint16(514, true);
   };
   const close = (fd: number) => fdClose(fd);
-  return { wasi, memory, pathOpen, openRaw, readAll, readDirNames, fdFlags, close };
+  return { wasi, memory, pathOpen, openRaw, readAll, readDirNames, fdFlags, close, setRights };
 }

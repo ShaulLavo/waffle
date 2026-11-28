@@ -685,7 +685,7 @@ test("saved metadata adoption persists defaults without payload reads or format 
   const path = await client.asyncCall("resolve", [root, "file"]);
   expect(await client.asyncCall("permissions", [path.node])).toEqual({
     mode: 0o600,
-    modeSupported: 0o600,
+    modeSupported: 0o777,
     access: 6,
     accessSupported: 6,
   });

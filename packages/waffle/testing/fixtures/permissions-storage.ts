@@ -35,15 +35,18 @@ export async function permissionStorageCase(open: () => Promise<StorageBackend>)
     const file = await fs.asyncCall("resolve", [root, "file"]);
     const target = await fs.asyncCall("resolve", [root, "target"]);
     const sticky = await fs.asyncCall("resolve", [root, "sticky"]);
-    assert((await fs.asyncCall("setMode", [file.node, 0o200])) === 0, "set write-only mode");
+    assert(
+      (await fs.asyncCall("setMode", [file.node, 0o377])) === 0,
+      "set owner write and execute",
+    );
     assert((await fs.asyncCall("setMode", [target.node, 0o400])) === 0, "set replaced inode mode");
     assert(
-      (await fs.asyncCall("setMode", [sticky.node, 0o1700])) === 0,
+      (await fs.asyncCall("setMode", [sticky.node, 0o1777])) === 0,
       "set real directory sticky mode",
     );
     await fs.asyncCall("writeFile", ["/file"], new TextEncoder().encode("replacement"));
     assert(
-      (await fs.asyncCall("permissions", [file.node])).mode === 0o200,
+      (await fs.asyncCall("permissions", [file.node])).mode === 0o377,
       "overwrite retains inode mode",
     );
     await fs.asyncCall("retain", [target.node]);
@@ -54,7 +57,7 @@ export async function permissionStorageCase(open: () => Promise<StorageBackend>)
     );
     const renamed = await fs.asyncCall("resolve", [root, "target"]);
     assert(
-      (await fs.asyncCall("permissions", [renamed.node])).mode === 0o200,
+      (await fs.asyncCall("permissions", [renamed.node])).mode === 0o377,
       "renamed inode keeps its mode",
     );
     await fs.asyncCall("release", [target.node]);
@@ -76,11 +79,11 @@ export async function permissionStorageCase(open: () => Promise<StorageBackend>)
     const file = await fs.asyncCall("resolve", [root, "target"]);
     const sticky = await fs.asyncCall("resolve", [root, "sticky"]);
     assert(
-      (await fs.asyncCall("permissions", [file.node])).mode === 0o200,
+      (await fs.asyncCall("permissions", [file.node])).mode === 0o377,
       "file mode survives reopen",
     );
     assert(
-      (await fs.asyncCall("permissions", [sticky.node])).mode === 0o1700,
+      (await fs.asyncCall("permissions", [sticky.node])).mode === 0o1777,
       "directory sticky mode survives reopen",
     );
     assert(reads === 0, "permission lookup must not read payloads");

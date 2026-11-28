@@ -1,5 +1,7 @@
 import { Wasi } from "../../core/wasi.js";
 import type { FileSystem } from "../../core/filesystem.js";
+import { guestFunction, guestModule } from "./publication-wasm.js";
+import { createPathOpenHost } from "./wasi-path-open-host.js";
 
 function text(value: string): number[] {
   const bytes = Array.from(new TextEncoder().encode(value));
@@ -52,4 +54,22 @@ export function permissionsHost(fs: FileSystem, shared = false) {
     return Array.from({ length: 4 }, (_, index) => view.getUint32(512 + index * 4, true));
   };
   return { wasi, memory, query, call, words };
+}
+
+const setModeModule = guestModule("runtime_fs", [
+  { name: "path_filestat_set_mode", parameters: ["i32", "i32", "i32", "i32", "i32"] },
+  { name: "fd_filestat_set_mode", parameters: ["i32", "i32"] },
+]);
+
+export function modeGuest(fs: FileSystem) {
+  const host = createPathOpenHost(fs);
+  const instance = new WebAssembly.Instance(setModeModule, host.wasi.imports(setModeModule));
+  const pathSetMode = guestFunction(instance, "path_filestat_set_mode");
+  const setFdMode = guestFunction(instance, "fd_filestat_set_mode");
+  const setPathMode = (path: string, mode: number, flags = 1, fd = 3) => {
+    const buffer = new TextEncoder().encode(path);
+    new Uint8Array(host.memory.buffer).set(buffer, 1024);
+    return pathSetMode(fd, 1024, buffer.length, flags, mode);
+  };
+  return { ...host, setPathMode, setFdMode, pathSetMode };
 }

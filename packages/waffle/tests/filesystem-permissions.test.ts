@@ -9,6 +9,14 @@ import {
 import { SharedFilesystemState } from "../fs/shared.js";
 import { validatePersistedNode } from "../fs/storage.js";
 import { statTimes, storedTimes } from "../testing/fixtures/file-times.js";
+import {
+  RIGHTS_ALL,
+  RIGHT_FD_FILESTAT_SET_MODE,
+  RIGHT_FD_FILESTAT_SET_TIMES,
+  RIGHT_FD_READ,
+  RIGHT_PATH_FILESTAT_SET_MODE,
+} from "../core/rights.js";
+import { modeGuest } from "./fixtures/permissions-guest.js";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -19,22 +27,24 @@ function file(fs: MemFS, path = "/file") {
   return fs.handleForNode(fs.lookup(path)!);
 }
 
-test("inode permissions describe actual read/write and directory search, not registry execution", () => {
+test("inode modes preserve execute, group and other bits with one effective principal", () => {
   const fs = new MemFS();
   const handle = file(fs);
   expect(fs.permissions(handle)).toEqual({
     mode: 0o600,
-    modeSupported: 0o600,
+    modeSupported: 0o777,
     access: 6,
     accessSupported: 6,
   });
   expect(fs.permissions(fs.preopen("/"))).toEqual({
     mode: 0o700,
-    modeSupported: 0o1700,
+    modeSupported: 0o1777,
     access: 7,
     accessSupported: 7,
   });
-  expect(fs.setMode(handle, 0o100)).toBe(58);
+  expect(fs.setMode(handle, 0o177)).toBe(0);
+  expect(fs.permissions(handle).mode).toBe(0o177);
+  expect(fs.permissions(handle).access).toBe(0);
   expect(fs.setMode(handle, 0o4000)).toBe(58);
   expect(fs.setMode(handle, -1)).toBe(28);
 });
@@ -46,7 +56,7 @@ test("R1 directory names keep ordinary modes and sticky remains real inode polic
     const handle = fs.handleForNode(fs.mkdirp(path));
     expect(fs.permissions(handle)).toEqual({
       mode: 0o700,
-      modeSupported: 0o1700,
+      modeSupported: 0o1777,
       access: 7,
       accessSupported: 7,
     });
@@ -116,9 +126,84 @@ test("absent mode metadata is unsupported, not a fabricated default", () => {
 test("persisted modes reject unsupported bits and retain old saved defaults explicitly", () => {
   const node = { ino: 1, kind: "file", ...storedTimes(1), size: 0 };
   expect(() => validatePersistedNode({ ...node, mode: 0o200 })).not.toThrow();
-  expect(() => validatePersistedNode({ ...node, mode: 0o777 })).toThrow();
+  expect(() => validatePersistedNode({ ...node, mode: 0o777 })).not.toThrow();
+  expect(() => validatePersistedNode({ ...node, mode: 0o4777 })).toThrow();
   expect(() => validatePersistedNode({ ...node, mode: -1 })).toThrow();
   expect(() => validatePersistedNode(node)).not.toThrow();
+});
+
+function modeHost(fs: MemFS) {
+  const host = modeGuest(fs);
+  cleanup.push(() => host.wasi.descriptors.dispose());
+  return host;
+}
+
+test("guest chmod follows symlinks and changes the shared hard-link inode", () => {
+  const fs = new MemFS();
+  const target = file(fs, "/target");
+  const original = fs.resolveAbsolute("/target");
+  const alias = fs.resolveAbsolute("/alias");
+  const link = fs.resolveAbsolute("/link");
+  if (typeof original === "number" || typeof alias === "number" || typeof link === "number")
+    throw new Error("could not resolve fixture paths");
+  expect(fs.link(original, alias)).toBe(0);
+  expect(fs.symlink(link, "alias")).toBe(0);
+  const host = modeHost(fs);
+  expect(host.setPathMode("link", 0o754)).toBe(0);
+  expect(fs.stat(target)).toMatchObject({ mode: 0o754, nlink: 2 });
+  expect(fs.stat(fs.handleForNode(fs.lookup("/link", false)!)).mode).toBe(0o600);
+  expect(host.setPathMode("link", 0o600, 0)).toBe(58);
+  expect(host.setPathMode("target/", 0o600)).toBe(54);
+  expect(host.setPathMode("target", 0o4754)).toBe(58);
+  expect(host.setPathMode("target", 0o600, 2)).toBe(58);
+  expect(host.setPathMode("absent", 0o600)).toBe(44);
+  expect(host.setPathMode("tar\0get", 0o600)).toBe(28);
+  expect(host.pathSetMode(3, 0xfffffff0, 32, 1, 0o600)).toBe(21);
+  expect(fs.stat(target).mode).toBe(0o754);
+  expect(host.setRights(3, RIGHTS_ALL, RIGHTS_ALL)).toBe(0);
+  expect(host.setPathMode("target", 0o400)).toBe(76);
+  expect(fs.stat(target).mode).toBe(0o754);
+});
+
+test("guest fchmod acts on a retained file after unlink and respects stripped rights", () => {
+  const fs = new MemFS();
+  const target = file(fs);
+  const host = modeHost(fs);
+  const fileModeRight = RIGHT_FD_FILESTAT_SET_MODE;
+  const base = RIGHT_FD_READ | RIGHT_FD_FILESTAT_SET_TIMES;
+  const other = host.openRaw(3, "file", { base, inheriting: 0n });
+  expect(other.errno).toBe(0);
+  expect(host.setFdMode(other.fd, 0o640)).toBe(76);
+  const retained = host.openRaw(3, "file", { base: base | fileModeRight, inheriting: 0n });
+  expect(retained.errno).toBe(0);
+  const path = fs.resolveAbsolute("/file");
+  if (typeof path === "number") throw new Error(`resolve errno ${path}`);
+  expect(fs.removePath(path, false)).toBe(0);
+  expect(host.setFdMode(retained.fd, 0o640)).toBe(0);
+  expect(fs.stat(target)).toMatchObject({ mode: 0o640, nlink: 0 });
+  expect(host.setRights(retained.fd, base, 0n)).toBe(0);
+  expect(host.setFdMode(retained.fd, 0o600)).toBe(76);
+  expect(
+    host.openRaw(3, `dev/fd/${retained.fd}`, { base: fileModeRight, inheriting: 0n }).errno,
+  ).toBe(76);
+  expect(host.wasi.fdReopen(retained.fd, 0, 0, fileModeRight, 128)).toBe(76);
+  expect(fs.stat(target).mode).toBe(0o640);
+});
+
+test("the path mode right works independently of file-stat and data access", () => {
+  const fs = new MemFS();
+  const target = file(fs, "/dir/file");
+  const dir = fs.handleForNode(fs.lookup("/dir")!);
+  const host = modeHost(fs);
+  expect(host.setRights(3, RIGHT_PATH_FILESTAT_SET_MODE, 0n)).toBe(0);
+  expect(host.setPathMode("dir", 0o1777)).toBe(0);
+  expect(fs.stat(dir).mode).toBe(0o1777);
+  expect(host.setPathMode("dir", 0o666)).toBe(0);
+  expect(host.setPathMode("dir/file", 0o700)).toBe(2);
+  expect(fs.stat(target).mode).toBe(0o600);
+  expect(host.setPathMode("dir", 0o700)).toBe(0);
+  expect(host.setPathMode("dir/file", 0o700)).toBe(0);
+  expect(fs.stat(target).mode).toBe(0o700);
 });
 
 test("worker service permissions are the same for distinct connection identities", async () => {
@@ -162,14 +247,14 @@ test("actual Wasm query distinguishes missing, denied, unsupported and capabilit
   const host = permissionsHost(fs);
   cleanup.push(() => host.wasi.descriptors.dispose());
   expect(host.call("dir/file")).toBe(0);
-  expect(host.words()).toEqual([0o600, 0o600, 6, 6]);
+  expect(host.words()).toEqual([0o600, 0o777, 6, 6]);
   expect(host.call("tmp")).toBe(0);
-  expect(host.words()).toEqual([0o700, 0o1700, 7, 7]);
+  expect(host.words()).toEqual([0o700, 0o1777, 7, 7]);
   expect(host.call("bin")).toBe(0);
-  expect(host.words()).toEqual([0o700, 0o1700, 7, 7]);
+  expect(host.words()).toEqual([0o700, 0o1777, 7, 7]);
   expect(fs.setMode(handle, 0)).toBe(0);
   expect(host.call("dir/file")).toBe(0);
-  expect(host.words()).toEqual([0, 0o600, 0, 6]);
+  expect(host.words()).toEqual([0, 0o777, 0, 6]);
   const bytes = new Uint8Array(host.memory.buffer);
   bytes.fill(0xa5, 512, 592);
   const unchanged = Array.from(bytes.subarray(512, 592));
@@ -197,7 +282,7 @@ test("actual Wasm query distinguishes missing, denied, unsupported and capabilit
   expect(host.call("dir/../tmp")).toBe(2);
   expect(Array.from(bytes.subarray(512, 592))).toEqual(unchanged);
   expect(host.call("dir")).toBe(0);
-  expect(host.words()).toEqual([0o600, 0o1700, 6, 7]);
+  expect(host.words()).toEqual([0o600, 0o1777, 6, 7]);
   bytes.fill(0xa5, 512, 592);
   host.wasi.descriptors.get(3)!.rightsBase = 0n;
   expect(host.call("dir/file")).toBe(76);
@@ -222,7 +307,7 @@ test("WASI permission queries use the requested final symlink lookup", async () 
   expect(host.call("link", 0)).toBe(0);
   expect(host.words()[0]).toBe(0o600);
   expect(host.call("link", 1)).toBe(0);
-  expect(host.words()).toEqual([0o400, 0o600, 4, 6]);
+  expect(host.words()).toEqual([0o400, 0o777, 4, 6]);
   expect(host.call("dangling", 0)).toBe(0);
   expect(host.call("dangling", 1)).toBe(44);
 });
@@ -268,14 +353,16 @@ test("a live worker cannot reuse cached direct I/O grants after mode change", as
   worker.postMessage({ inspect: true });
   expect(await result).toEqual({
     errno: 0,
-    words: [0, 0o600, 0, 6],
-    permissions: { mode: 0, modeSupported: 0o600, access: 0, accessSupported: 6 },
+    words: [0, 0o777, 0, 6],
+    permissions: { mode: 0, modeSupported: 0o777, access: 0, accessSupported: 6 },
     read: -2,
     write: -2,
     resize: 2,
     prior: Array.from(new TextEncoder().encode("secret")),
+    chmod: 0,
   });
   expect(backend.shared.snapshot(cached)?.data).toEqual(new TextEncoder().encode("secret"));
+  expect(backend.shared.stat(cached)?.mode).toBe(0o001);
 });
 
 test("WASI propagates inode directory denial separately from descriptor rights", async () => {
@@ -298,7 +385,7 @@ test("permission query snapshots UTF-8 paths from shared guest memory", async ()
   const host = permissionsHost(fs, true);
   cleanup.push(() => host.wasi.descriptors.dispose());
   expect(host.call("café")).toBe(0);
-  expect(host.words()).toEqual([0o600, 0o600, 6, 6]);
+  expect(host.words()).toEqual([0o600, 0o777, 6, 6]);
 });
 
 test("directory namespace denial retains EACCES through host creation", () => {
@@ -364,8 +451,8 @@ for (const shared of [false, true]) {
     const host = permissionsHost(fs, shared);
     cleanup.push(() => host.wasi.descriptors.dispose());
     expect(host.call("\ufefffile")).toBe(0);
-    expect(host.words()).toEqual([0, 0o600, 0, 6]);
+    expect(host.words()).toEqual([0, 0o777, 0, 6]);
     expect(host.call("file")).toBe(0);
-    expect(host.words()).toEqual([0o600, 0o600, 6, 6]);
+    expect(host.words()).toEqual([0o600, 0o777, 6, 6]);
   });
 }

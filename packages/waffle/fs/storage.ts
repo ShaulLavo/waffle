@@ -241,7 +241,7 @@ export function validInteger(value: unknown): value is number {
 
 function validateMode(node: PersistedNode): void {
   if (node.mode === undefined) return;
-  const mask = permissionsFor(node.kind === "dir" ? "directory" : "file", 0).modeSupported;
+  const mask = permissionsFor(node.kind === "dir" ? "directory" : node.kind, 0).modeSupported;
   if (!validInteger(node.mode) || node.mode > mask || (node.mode & ~mask) !== 0) invalid();
 }
 

@@ -30,6 +30,9 @@ import {
   RIGHT_POLL_FD_READWRITE,
   RIGHT_SOCK_SHUTDOWN,
   RIGHT_SOCK_ACCEPT,
+  RIGHT_FD_FILESTAT_SET_MODE,
+  RIGHT_PATH_FILESTAT_SET_MODE,
+  RIGHTS_SET_MODE,
 } from "./rights.js";
 import { descriptorFlagError, FDFLAG_APPEND, FDFLAG_NONBLOCK } from "./fd-flags.js";
 import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.js";
@@ -469,7 +472,8 @@ export class Wasi {
       if (fd > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
       const handle = opts.fs.preopen(path);
       if (name === "/" && path === "/") this.literalRoot = handle;
-      this.openFileAt(fd, { kind: "directory", handle }, RIGHTS_ALL, RIGHTS_ALL, name);
+      const rights = RIGHTS_ALL | RIGHTS_SET_MODE;
+      this.openFileAt(fd, { kind: "directory", handle }, rights, rights, name);
       fd++;
     }
     if (opts.fs.locks) {
@@ -644,6 +648,14 @@ export class Wasi {
     const impl: Record<string, (...args: never[]) => number | void> = this.functions();
     const filesystem: Record<string, (...args: never[]) => number> = {
       path_permissions_get: this.pathPermissions.bind(this),
+      path_filestat_set_mode: this.pathSetMode.bind(this),
+      fd_filestat_set_mode: this.descriptorCall(
+        RIGHT_FD_FILESTAT_SET_MODE,
+        (resource, mode: number) => {
+          if (resource.kind !== "file" && resource.kind !== "directory") return ENOTSUP;
+          return this.opts.fs.setMode?.(resource.handle, mode >>> 0) ?? ENOTSUP;
+        },
+      ),
       path_realpath: this.pathRealpath.bind(this),
       path_probe: this.pathProbe.bind(this),
       watch_open: this.watchOpen.bind(this),
@@ -1162,6 +1174,29 @@ export class Wasi {
     view.setUint32(out + 8, result.access, true);
     view.setUint32(out + 12, result.accessSupported, true);
     return SUCCESS;
+  }
+
+  private pathSetMode(fd: number, ptr: number, len: number, flags: number, mode: number): number {
+    if (flags & ~1) return ENOTSUP;
+    const entry = this.descriptors.get(fd >>> 0);
+    if (!entry) return EBADF;
+    if (entry.resource.kind !== "directory") return ENOTDIR;
+    if (!(entry.rightsBase & RIGHT_PATH_FILESTAT_SET_MODE)) return ENOTCAPABLE;
+    const bytes = this.bytes();
+    ptr >>>= 0;
+    len >>>= 0;
+    if (ptr + len > bytes.length) return EFAULT;
+    const path = guestPathname(bytes, ptr, len);
+    if (!path) return EINVAL;
+    const follow = followsFinal(lookupFlags(flags), path);
+    const fs = this.opts.fs;
+    const resolved = fs.resolve(entry.resource.handle, path, follow, this.rooted);
+    if (typeof resolved === "number") return resolved;
+    const handle = resolved.node;
+    if (handle === undefined) return ENOENT;
+    const { kind } = fs.stat(handle);
+    if (kind !== "file" && kind !== "directory") return ENOTSUP;
+    return fs.setMode?.(handle, mode >>> 0) ?? ENOTSUP;
   }
 
   private writeFilestat(ptr: number, node: FileStat | null, streamType = FT_CHAR): void {

@@ -2,13 +2,13 @@
 
 Waffle uses one virtual filesystem principal. All clients and processes act as that principal. Connection owner IDs are lock and lifetime identities, not users. Inodes belong to the virtual principal. Numeric ownership, groups, and setuid/setgid are unsupported.
 
-New files have mode `0600`; new directories have mode `0700`. Files support owner read/write bits, mask `0600`. Directories support owner read/write/search and sticky, mask `01700`. Waffle stores the directory sticky bit. Because the sole caller owns every directory and entry, that caller may remove its own entries in sticky directories. This does not implement multiple-user sticky-directory policy. No directory path receives a special mode based on its name, including `/tmp` and `/bin`.
+New files start with mode `0600`, and new directories start with mode `0700`. Regular files support mask `0777`, covering owner, group, and other read, write, and execute bits. Directories support mask `01777`, covering those nine bits plus the sticky bit `01000`. Symlinks and sockets support mask `0600`. Owner bits determine effective access for the sole virtual principal. Waffle stores and reports group, other, and regular-file execute bits. Because the sole caller owns every directory and entry, that caller may remove its own entries in sticky directories.
 
-`MemFS.setMode(handle, mode)` and the worker client's `setMode` operation change real inode policy. Invalid integers return `EINVAL`, errno 28. Unsupported bits return `ENOTSUP`, errno 58, without changing the inode. These are trusted host policy operations, not a guest chmod import. They are independent of descriptor rights; granting an inode permission never restores stripped descriptor rights.
+`MemFS.setMode(handle, mode)` and `FilesystemClient.setMode(handle, mode)` change the inode mode and update `ctime`. Host calls with a non-integer or a value outside `0..0xffffffff` return `EINVAL`, errno 28. Bits outside the inode's supported mask return `ENOTSUP`, errno 58. Guests running under the browser Waffle WASI adapter change regular-file and directory modes through `runtime_fs.path_filestat_set_mode` and `runtime_fs.fd_filestat_set_mode`. Each import requires its own descriptor right. See [inode mode mutation](host-abi.md#inode-mode-mutation).
 
 ## Query
 
-`FileSystem.permissions(handle)` returns `{ mode, modeSupported, access, accessSupported }`. An adapter without this operation or without authoritative mode returns unsupported. Values outside a supported mask carry no information. A supported clear bit means denied, not unknown. Access uses read `4`, write `2` and search-or-execute `1`. Directories support all three; files support read/write only. Regular-file execution is unsupported here; executable admission belongs to the separate program registry. Neither result may substitute for the other.
+`FileSystem.permissions(handle)` returns `{ mode, modeSupported, access, accessSupported }`. An adapter without authoritative mode returns `undefined`. In `access`, a clear bit within `accessSupported` means access is denied. Access uses read `4`, write `2`, and search `1`. Directories report `accessSupported` as `7`, covering read, write, and search. Regular files report `accessSupported` as `6`, covering read and write. Stored file execute bits appear in `mode`, and the separate program registry governs executable admission.
 
 Directory reads list names. Directory writes modify entries and require both write and search for actual mutations. Path resolution checks each traversed directory's search bit, including dot segments. Querying a directory's own metadata requires search on its ancestors, not read or search on that final directory. Missing paths and denied traversal remain different errors.
 
@@ -29,15 +29,16 @@ process-specific namespace entries. Opened root directories also recognize norma
 aliases; other directory bindings use ordinary resolution. Search permission on the root
 and existing real ancestor directories is checked before opening a virtual alias.
 
-A regular-file reopen checks the inode's current read/write policy, independent of the
-source descriptor's rights, but cannot grant rights beyond the live root preopen's
-path-open capabilities. It retains the inode across unlink and creates a new offset and
-flags. Pipes, terminals and directories instead share their existing description and may
-only narrow its rights. See [the reopen ABI](host-abi.md#reopen-an-existing-descriptor)
-for flag, error and redirection semantics.
+A regular-file reopen checks the inode's current read and write policy and bounds requested
+rights by the live root preopen's inheriting rights. It also checks the source descriptor
+for both mode-mutation rights and fails with `ENOTCAPABLE`, errno 76, when a requested mode
+right is missing. It retains the inode across unlink and creates a new offset and flags.
+Pipes, terminals, and directories share their existing description and may only narrow its
+rights. See [the reopen ABI](host-abi.md#reopen-an-existing-descriptor) for flag, error and
+redirection semantics.
 
 ## Saved metadata adoption
 
 Modes persist with inode metadata through overwrite, hard links, rename, retained unlinked handles and reload. The inode moved by a replacement rename keeps its own mode; an open replaced inode keeps its previous mode until its last reference closes.
 
-Saved entries without mode are an explicit metadata-adoption case. They receive the actual new enforced defaults, files `0600` and directories `0700`. The next checkpoint writes those values without reading or replacing payloads. Existing format identities and format version 1 remain unchanged. This is saved-data adoption, not a runtime version-skew fallback. Invalid or unsupported stored mode bits are rejected by storage validation.
+Saved entries without a stored mode adopt `0600` for files and `0700` for directories. The next checkpoint writes those values without reading or replacing payloads. Storage validation preserves saved modes within each entry kind's supported mask, `0777` for files, `01777` for directories, and `0600` for symlinks and sockets.

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { Wasi, type WasiOptions } from "../core/wasi.ts";
+import { RIGHTS_SET_MODE } from "../core/rights.ts";
 import { DescriptorTable, OpenDescription } from "../core/descriptors.ts";
 import { MemFS } from "../fs/memory.ts";
 import {
@@ -167,8 +168,8 @@ test("moved preopens preserve names, rights and lifetime while inherited files s
     expect(c.view.getUint32(4, true)).toBe(1);
     expect(c.calls.fd_prestat_dir_name!(4, 128, 1)).toBe(0);
     expect(c.bytes[128]).toBe(47);
-    expect(child.descriptors.get(4)?.rightsBase).toBe(all);
-    expect(child.descriptors.get(4)?.rightsInheriting).toBe(all);
+    expect(child.descriptors.get(4)?.rightsBase).toBe(all | RIGHTS_SET_MODE);
+    expect(child.descriptors.get(4)?.rightsInheriting).toBe(all | RIGHTS_SET_MODE);
     for (const m of [p, c]) {
       m.view.setUint32(0, 512, true);
       m.view.setUint32(4, 1, true);
