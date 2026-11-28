@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DescriptorTable, OpenDescription } from "../../core/descriptors.js";
+import { FDFLAG_APPEND } from "../../core/fd-flags.js";
 import { RIGHT_FD_FDSTAT_SET_FLAGS } from "../../core/rights.js";
 import type { PipeEndpointHandle } from "../../proc/pipes.js";
 import {
@@ -102,11 +103,11 @@ function fixture(root: string) {
     if (!fn) throw new Error(`Missing WASI import ${name}`);
     return (fn as WasiCall)(...args);
   };
-  const open = () => {
+  const open = (flags = 0) => {
     const path = new TextEncoder().encode("data");
     bytes().set(path, 256);
     const rights = 2n | 4n | 32n | 64n | RIGHT_FD_FDSTAT_SET_FLAGS | (1n << 21n) | (1n << 27n);
-    assert.equal(call("path_open", 3, 0, 256, path.length, 0, rights, 0n, 0, 128), 0);
+    assert.equal(call("path_open", 3, 0, 256, path.length, 0, rights, 0n, flags, 128), 0);
     return view().getUint32(128, true);
   };
   const poll = (subscriptions: readonly { type: number; fd: number; userdata?: bigint }[]) => {
@@ -140,6 +141,19 @@ function checkSyncFlags(f: ReturnType<typeof fixture>, fd: number) {
     assert.equal(f.call("fd_fdstat_get", fd, out), 0);
     assert.equal(f.view().getUint16(out + 2, true), originalFlags);
   }
+  assert.equal(f.call("fd_fdstat_set_flags", fd, (originalFlags & 0xfff) | FDFLAG_APPEND), 0);
+  assert.equal(f.call("fd_fdstat_get", fd, out), 0);
+  assert.equal(f.view().getUint16(out + 2, true), FDFLAG_APPEND);
+
+  const sync = 16;
+  const synchronous = f.open(sync);
+  assert.equal(f.call("fd_fdstat_get", synchronous, out), 0);
+  assert.equal(f.view().getUint16(out + 2, true), sync);
+  assert.equal(f.call("fd_fdstat_set_flags", synchronous, sync | FDFLAG_APPEND), 0);
+  assert.equal(f.call("fd_fdstat_get", synchronous, out), 0);
+  assert.equal(f.view().getUint16(out + 2, true), sync | FDFLAG_APPEND);
+  assert.equal(f.call("fd_fdstat_set_flags", synchronous, FDFLAG_APPEND), 58);
+  assert.equal(f.call("fd_close", synchronous), 0);
 }
 
 const root = mkdtempSync(join(process.env.WAFFLE_SCRATCH_ROOT ?? tmpdir(), "waffle-node-wasi-"));
@@ -177,7 +191,14 @@ try {
   assert.equal(f.call("fd_close", duplicate), 0);
   assert.equal(f.call("fd_close", duplicate), 8);
   assert.equal(f.descriptors.get(nativeFd!)?.resource, reader);
-  const native = { kind: "file" as const, handle: 1, nodeWasiFd: 1, offset: 0, append: false };
+  const native = {
+    kind: "file" as const,
+    handle: 1,
+    nodeWasiFd: 1,
+    offset: 0,
+    append: false,
+    fdflags: 0,
+  };
   f.descriptors.inherit(7, {
     description: new OpenDescription(native),
     resource: native,

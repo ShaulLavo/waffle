@@ -5,10 +5,10 @@ const FDFLAG_RSYNC = 8;
 const FDFLAG_SYNC = 16;
 
 const SYNCHRONOUS = FDFLAG_DSYNC | FDFLAG_RSYNC | FDFLAG_SYNC;
-const KNOWN = FDFLAG_APPEND | FDFLAG_NONBLOCK | SYNCHRONOUS;
+export const FDFLAGS_MASK = FDFLAG_APPEND | FDFLAG_NONBLOCK | SYNCHRONOUS;
 
-export function descriptorFlagError(flags: number): 0 | 28 | 58 {
-  if (flags & ~KNOWN) return 28;
-  if (flags & SYNCHRONOUS) return 58;
+export function descriptorFlagError(flags: number, current = 0): 0 | 28 | 58 {
+  if (flags & ~FDFLAGS_MASK) return 28;
+  if ((flags ^ current) & SYNCHRONOUS) return 58;
   return 0;
 }
