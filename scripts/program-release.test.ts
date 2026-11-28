@@ -106,10 +106,20 @@ function packedManifest(archive: string) {
 describe("base closure", () => {
   let root = "";
   let out = "";
+  let named = "";
   let manifest: ReleaseManifest;
 
   beforeAll(async () => {
-    root = preparedFixture("closure");
+    named = resolve(scratch, "closure-named");
+    mkdirSync(named);
+    const previous = process.env.WAFFLE_NAMED_PROGRAMS_DIR;
+    process.env.WAFFLE_NAMED_PROGRAMS_DIR = named;
+    try {
+      root = preparedFixture("closure");
+    } finally {
+      if (previous === undefined) delete process.env.WAFFLE_NAMED_PROGRAMS_DIR;
+      else process.env.WAFFLE_NAMED_PROGRAMS_DIR = previous;
+    }
     git(root, ["tag", tag]);
     out = resolve(scratch, "closure-out");
     manifest = await buildRelease({
@@ -118,6 +128,7 @@ describe("base closure", () => {
       version: "0.0.92",
       runtime: { url: runtimeUrl, sha256: runtimeSha256, tarball: await runtimeTarball() },
       families: ["base"],
+      namedProgramsDirectory: named,
       out,
     });
   }, 180_000);
@@ -132,6 +143,7 @@ describe("base closure", () => {
   });
 
   test("orders dependencies before base and records every asset", () => {
+    expect(readdirSync(named)).toHaveLength(baseGuestCount);
     expect(manifest.operation).toBe("release");
     expect(manifest.installCheck.runtimeRoots).toBe(1);
     expect(manifest.order.at(-1)).toBe("@waffle-os/base");
@@ -162,6 +174,24 @@ describe("base closure", () => {
     expect(manifest.dirty).toBe(false);
     expect(manifest.tagState).toBe("tagged");
     expect(manifest.assetBase).toBe(assetBase);
+  });
+
+  test("refuses a closure with missing named optimizer evidence before writing a receipt", async () => {
+    const empty = resolve(scratch, "empty-names");
+    mkdirSync(empty);
+    const missingOut = resolve(scratch, "missing-names-out");
+    await expect(
+      buildRelease({
+        root,
+        tag,
+        version: "0.0.92",
+        runtime: { url: runtimeUrl, sha256: runtimeSha256, tarball: runtimeArchive },
+        families: ["base"],
+        namedProgramsDirectory: empty,
+        out: missingOut,
+      }),
+    ).rejects.toThrow(/missing named program/);
+    expect(existsSync(resolve(missingOut, "assets/program-release.json"))).toBe(false);
   });
 
   test("the staged base closure passes npm repacking before publication", () => {

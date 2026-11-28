@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { resolve } from "node:path";
 import { test } from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
-import { stageProgram } from "./program-build-tools.ts";
+import { stageProgram, stripWasmNames } from "./program-build-tools.ts";
 import { programBytesIdentity, validateProgramDerivation } from "./program-derivation.ts";
 import { definitionNames, programSymbolsReference } from "./program-symbols.ts";
 import { cappedWasiFixture } from "../packages/python/scripts/wasi-artifact-fixture.ts";
@@ -256,6 +256,29 @@ function symbolFixture(run: (directory: string, source: string) => void) {
 
 const symbolPaths = (wasm: string) =>
   [".json", ".ts"].map((suffix) => wasm.replace(/\.wasm$/, `-symbols${suffix}`));
+
+test("release evidence preserves the exact named optimizer output outside the family package", () => {
+  symbolFixture((directory, source) => {
+    const output = resolve(directory, "dist/echo.wasm");
+    const evidence = resolve(directory, "evidence");
+    mkdirSync(resolve(output, ".."));
+    mkdirSync(evidence);
+    const previous = process.env.WAFFLE_NAMED_PROGRAMS_DIR;
+    process.env.WAFFLE_NAMED_PROGRAMS_DIR = evidence;
+    try {
+      const receipt = stageProgram(source, output);
+      const named = readFileSync(resolve(evidence, "echo-named.wasm"));
+      const stripped = readFileSync(output);
+      assert.deepEqual(programBytesIdentity(named), receipt.operations[0]?.output);
+      assert.deepEqual(programBytesIdentity(stripped), receipt.output);
+      assert.deepEqual(stripWasmNames(named), stripped);
+      assert.equal(existsSync(resolve(output, "../echo-named.wasm")), false);
+    } finally {
+      if (previous === undefined) delete process.env.WAFFLE_NAMED_PROGRAMS_DIR;
+      else process.env.WAFFLE_NAMED_PROGRAMS_DIR = previous;
+    }
+  });
+});
 
 test("opt-in staging binds a name sidecar without changing the stripped program", () => {
   symbolFixture((directory, source) => {
