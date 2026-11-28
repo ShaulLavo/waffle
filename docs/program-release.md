@@ -64,10 +64,22 @@ The command:
    `SHA256SUMS` into `OUT/assets`. The manifest retains source commits and trees, URLs, sizes,
    SHA-256 values, exact family edges, artifact hashes, and runtime and family interface integers.
 
-The `Program family release` workflow runs the same steps on a `programs-v*` tag that is already
-on main. It uploads the verified assets as a workflow artifact, and creates the GitHub release
-only when `publish` is set. Python stages a qualified interpreter artifact, so it is released
-with the local command rather than the workflow.
+The `Program family release` workflow runs the same build, pack, and verification steps on an
+existing `programs-v<version>` tag on `main`. It always uploads `.build/program-release/assets` as
+the `program-release-<tag>` workflow artifact, which holds the staged tarballs, `SHA256SUMS`, and
+staged manifest from qualification. Publishing is opt-in through the `publish` input. When `publish`
+is set, `scripts/publish-programs-npm.ts` checks each staged tarball, drops `private`, rewrites
+in-closure family dependencies from staged URLs to exact `major.minor.patch` versions, and repacks
+with `npm pack --ignore-scripts`. It then checks every admitted artifact's bytes inside the repacked
+tarball and publishes to npm with provenance, or verifies matching byte size and SHA-256 when that
+canonical npm URL already exists. From those published archives, the script writes a separate
+`program-release.json` manifest with `assetBase` set to `https://registry.npmjs.org`. Its package
+entries record each canonical npm tarball URL, archive byte size, SHA-256, and exact in-closure
+dependency versions. The workflow attaches that manifest to the versioned GitHub release for the
+tag, or checks byte-for-byte equality with `cmp` if the release already exists. That GitHub release
+manifest is the durable digest-pinnable receipt for the published npm archives, separate from the
+workflow's staged qualification artifact. The workflow rejects `python` in `families` because Python
+stages a qualified interpreter artifact and still ships through the local command.
 
 ## Final program bytes
 

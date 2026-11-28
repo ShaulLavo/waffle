@@ -26,13 +26,17 @@ on:
         default: ""
         type: string
       publish:
-        description: Create the GitHub release with the verified assets
+        description: Publish the verified packages to npm and attach their receipt to the GitHub release
         default: false
         type: boolean
 
 permissions:
   contents: write
   id-token: write
+
+concurrency:
+  group: program-release-${{ inputs.tag }}
+  cancel-in-progress: false
 
 env:
   GITHUB_TOKEN: ${{ github.token }}
@@ -102,7 +106,7 @@ jobs:
             packages/ripgrep/.sources
           key: ${{ runner.os }}-${{ runner.arch }}-program-release-${{ hashFiles('bun.lock', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-*.ts', 'tools/program-locales/**', 'packages/**/*.rs', 'packages/**/Cargo.toml', 'packages/**/Cargo.lock', 'packages/*/scripts/**', 'packages/*/patches/**') }}
       - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun test scripts/program-release.test.ts
+      - run: bun test scripts/program-release.test.ts scripts/publish-programs-npm.test.ts
       - name: Prepare every family in the closure with its own route
         run: |
           for directory in $(bun scripts/program-release.ts --list --families "$FAMILIES"); do
@@ -131,14 +135,21 @@ jobs:
           if [ -n "${NPM_TOKEN:-}" ]; then
             npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
           fi
-          bun scripts/publish-programs-npm.ts .build/program-release/assets
-      - name: Create notes-only GitHub release
+          bun scripts/publish-programs-npm.ts .build/program-release/assets .build/program-release/program-release.json
+      - name: Publish the npm closure receipt
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes
+          set -euo pipefail
+          receipt=.build/program-release/program-release.json
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            existing=$(mktemp "$RUNNER_TEMP/program-release-XXXXXX.json")
+            trap 'rm -f -- "$existing"' EXIT
+            gh release download "$RELEASE_TAG" --pattern program-release.json --output - > "$existing"
+            cmp "$receipt" "$existing"
+          else
+            gh release create "$RELEASE_TAG" "$receipt" --verify-tag --title "$RELEASE_TAG" --generate-notes
           fi
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

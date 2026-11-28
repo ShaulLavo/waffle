@@ -164,6 +164,17 @@ describe("base closure", () => {
     expect(manifest.assetBase).toBe(assetBase);
   });
 
+  test("the staged base closure passes npm repacking before publication", () => {
+    const npmReceipt = resolve(out, "program-release.json");
+    const publisher = resolve(repository, "scripts/publish-programs-npm.ts");
+    execFileSync("bun", [publisher, resolve(out, "assets"), npmReceipt, "--dry-run"], {
+      cwd: repository,
+      env: { ...process.env, TMPDIR: scratch },
+      timeout: 30_000,
+    });
+    expect(existsSync(npmReceipt)).toBe(false);
+  });
+
   test("records both compressed companions for every raw Wasm artifact", () => {
     const raw = manifest.packages.flatMap(rawArtifacts);
     expect(raw).toHaveLength(baseGuestCount);
