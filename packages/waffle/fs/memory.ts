@@ -292,30 +292,35 @@ function directLogicalAlias(path: string): number | undefined {
     return /^[0-9]+$/.test(last) ? Number(last) : undefined;
 }
 
-/** null means a confirmed absent directory. An unresolved link cannot certify absence. */
-function reservedDirectory(root: DirNode, path: string): DirNode | null | undefined {
-  let linked = false;
+function reservedDirectory(
+  root: DirNode,
+  path: string,
+  unresolvedLinks: Set<SymlinkNode>,
+): DirNode | undefined {
+  const links: SymlinkNode[] = [];
   const result = walkTree(root, path, {
     clampRoot: true,
     followFinal: true,
     search() {},
     child(parent, name) {
       const child = parent.children.get(name);
-      if (child?.kind === "symlink") linked = true;
+      if (child?.kind === "symlink") links.push(child);
       return child;
     },
   });
   if (typeof result !== "number" && result.node?.kind === "dir") return result.node;
-  if (linked) return undefined;
-  if (typeof result !== "number" || result === 44 || result === 54) return null;
+  // A physical probe may miss a directory the guarded walk reaches via virtual
+  // ancestors. Refuse that route when encountered, without hiding unrelated names.
+  for (const link of links) unresolvedLinks.add(link);
 }
 
 class CooperativeWalk {
-  private readonly dev: DirNode | null | undefined;
-  private readonly devFd: DirNode | null | undefined;
-  private readonly procFd: DirNode | null | undefined;
-  private readonly etc: DirNode | null | undefined;
+  private readonly dev: DirNode | undefined;
+  private readonly devFd: DirNode | undefined;
+  private readonly procFd: DirNode | undefined;
+  private readonly etc: DirNode | undefined;
   private readonly synthetic = new Set<DirNode>();
+  private readonly unresolvedLinks = new Set<SymlinkNode>();
   result?: Exclude<CooperativePath, { kind: "inode" }>;
 
   constructor(
@@ -323,10 +328,10 @@ class CooperativeWalk {
     private readonly options: CooperativeResolveOptions,
     private readonly direct: number | undefined,
   ) {
-    this.dev = reservedDirectory(root, "dev");
-    this.devFd = reservedDirectory(root, "dev/fd");
-    this.procFd = reservedDirectory(root, "proc/self/fd");
-    this.etc = options.machineId ? reservedDirectory(root, "etc") : null;
+    this.dev = reservedDirectory(root, "dev", this.unresolvedLinks);
+    this.devFd = reservedDirectory(root, "dev/fd", this.unresolvedLinks);
+    this.procFd = reservedDirectory(root, "proc/self/fd", this.unresolvedLinks);
+    this.etc = options.machineId ? reservedDirectory(root, "etc", this.unresolvedLinks) : undefined;
   }
 
   child(
@@ -351,6 +356,8 @@ class CooperativeWalk {
       return;
     }
     const physical = parent.children.get(name);
+    if (physical?.kind === "symlink" && (suffix || trailing) && this.unresolvedLinks.has(physical))
+      throw new FilesystemError(76);
     const device = this.device(parent, prefix, name, physical);
     if (device) {
       if (suffix || trailing) throw new FilesystemError(54);
@@ -362,13 +369,11 @@ class CooperativeWalk {
   }
 
   private alias(parent: DirNode, prefix: string, name: string): number | undefined {
-    const stdio = stdioAlias(name);
-    if (stdio !== undefined) {
-      if (this.dev === undefined) throw new FilesystemError(76);
-      if (prefix === "dev" || parent === this.dev) return stdio;
+    if (prefix === "dev" || parent === this.dev) {
+      const stdio = stdioAlias(name);
+      if (stdio !== undefined) return stdio;
     }
     if (!/^[0-9]+$/.test(name)) return undefined;
-    if (this.devFd === undefined || this.procFd === undefined) throw new FilesystemError(76);
     if (
       prefix === "dev/fd" ||
       prefix === "proc/self/fd" ||
@@ -381,7 +386,6 @@ class CooperativeWalk {
   private device(parent: DirNode, prefix: string, name: string, physical?: Node) {
     if (name === "null" && (prefix === "dev" || parent === this.dev)) return "null";
     if (!this.options.machineId || name !== "machine-id" || physical) return;
-    if (this.etc === undefined) throw new FilesystemError(76);
     if (prefix === "etc" || parent === this.etc) return "machine-id";
   }
 

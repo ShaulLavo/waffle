@@ -66,6 +66,23 @@ function openGuest(fs: MemFS) {
   return { wasi, memory, view, open };
 }
 
+test("an unresolved reserved-directory link does not hide ordinary numeric files", () => {
+  const fs = new MemFS();
+  fs.mkdirp("/dev");
+  fs.writeFile("/reports/2026", "ordinary");
+  const link = fs.resolveAbsolute("/dev/fd");
+  if (typeof link === "number") throw new Error("missing fixture parent");
+  expect(fs.symlink(link, "/proc/self/fd")).toBe(0);
+  const { wasi, open, view } = openGuest(fs);
+  try {
+    expect(open("reports/2026")).toBe(0);
+    expect(view.getUint32(512, true)).toBe(0);
+    expect(open("dev/fd/4", 4n)).toBe(76);
+  } finally {
+    wasi.descriptors.dispose();
+  }
+});
+
 test("the guarded WASI import confirms direct aliases without touching unrelated descriptor slots", () => {
   const fs = new MemFS();
   fs.writeFile("/ordinary", "hello");
