@@ -1,11 +1,6 @@
 # Releasing program families
 
-Program families ship as GitHub release tarballs, not npm packages. A consumer depends on the
-`base` tarball URL (and optionally `git`). Family-to-family edges inside that closure are exact
-release-asset URLs. Each family carries `waffleHostInterface` and a wildcard
-`peerDependencies.waffle`; the consumer manifest names the exact runtime archive separately.
-The closure uses exact release inputs, so no workspace label or unpublished `0.0.0` reaches an
-installer.
+Waffle publishes `@waffle-os/runtime` and its `@waffle-os/*` program families on npm. Each family package declares `"@waffle-os/runtime": "*"` in `peerDependencies`, omits `@waffle-os/runtime` from `dependencies` and `optionalDependencies`, and carries an exact integer `waffleHostInterface`.
 
 ## Build the closure
 
@@ -67,19 +62,19 @@ The command:
 The `Program family release` workflow runs the same build, pack, and verification steps on an
 existing `programs-v<version>` tag on `main`. It always uploads `.build/program-release/assets` as
 the `program-release-<tag>` workflow artifact, which holds the staged tarballs, `SHA256SUMS`, and
-staged manifest from qualification. Publishing is opt-in through the `publish` input. When `publish`
-is set, `scripts/publish-programs-npm.ts` checks each staged tarball, drops `private`, rewrites
-in-closure family dependencies from staged URLs to exact `major.minor.patch` versions, and repacks
-with `npm pack --ignore-scripts`. It then checks every admitted artifact's bytes inside the repacked
-tarball and publishes to npm with provenance, or verifies matching byte size and SHA-256 when that
-canonical npm URL already exists. From those published archives, the script writes a separate
-`program-release.json` manifest with `assetBase` set to `https://registry.npmjs.org`. Its package
-entries record each canonical npm tarball URL, archive byte size, SHA-256, and exact in-closure
-dependency versions. The workflow attaches that manifest to the versioned GitHub release for the
-tag, or checks byte-for-byte equality with `cmp` if the release already exists. That GitHub release
-manifest is the durable digest-pinnable receipt for the published npm archives, separate from the
-workflow's staged qualification artifact. The workflow rejects `python` in `families` because Python
-stages a qualified interpreter artifact and still ships through the local command.
+staged manifest from qualification.
+
+When `publish` is `true`, the workflow runs `scripts/publish-programs-npm.ts` and publishes the closure to npm:
+
+1. **Existing release lookup.** The workflow queries the GitHub release for `$RELEASE_TAG`. If the release already exists, it downloads the attached `program-release.json` to `.build/program-release/existing-receipt.json` and passes it via `--existing-receipt`. Any API error other than HTTP 404 stops the run.
+2. **Repack and artifact verification.** `scripts/publish-programs-npm.ts` reads `<assets>/program-release.json`, checks every staged tarball's byte count and SHA-256, and verifies each package name matches `@waffle-os/<slug>` with an exact semver version. For each package, it deletes `private`, sets `publishConfig` to `{ "access": "public", "provenance": true, "registry": "https://registry.npmjs.org" }`, rewrites inter-family closure URL edges to exact versions, and repacks with `npm pack --ignore-scripts`. It then extracts each repacked archive and confirms every admitted artifact in `pkg.artifacts` still matches its recorded size and SHA-256.
+3. **Receipt preflight.** The script builds the npm receipt in memory with schema `waffle-program-release/2` and `assetBase` set to `https://registry.npmjs.org`. Each package entry records the canonical npm filename `<slug>-<version>.tgz`, URL `https://registry.npmjs.org/@waffle-os/<slug>/-/<slug>-<version>.tgz`, npm archive `bytes` and `sha256`, exact `closureDependencies` version map, and admitted `artifacts`. When `--existing-receipt` is set, the script compares that file byte-for-byte against the newly built receipt and aborts on any difference. Running with `--dry-run` stops here without contacting npm or writing the output file.
+4. **Registry archive preflight.** Before calling `npm publish` for any package, the script fetches every package's canonical npm tarball URL on `registry.npmjs.org`. A 404 queues the package for publication. A 200 downloads the live npm tarball and checks its byte length and SHA-256 against the newly repacked archive. The script skips an identical archive and aborts before publishing anything on any mismatch or unexpected HTTP status.
+5. **Publication and GitHub receipt.** Only after both preflight checks pass does the script run `npm publish <archive> --provenance --access public` for each pending package and write the npm receipt to `.build/program-release/program-release.json`. When no GitHub release existed yet, the workflow creates the GitHub release for `$RELEASE_TAG` with only `.build/program-release/program-release.json` attached.
+
+The `program-release.json` on the GitHub release is an install-verification manifest for npm consumers. Its `assetBase` is `https://registry.npmjs.org`, and its package records identify the exact npm tarballs, SHA-256 digests, inter-family version pins, and admitted guest and notice artifacts installed from the registry.
+
+`.github/workflows/program-release.yml` rejects `python` in `families` because CI does not build CPython. Release `@waffle-os/python` locally from an externally qualified producer artifact.
 
 ## Final program bytes
 
@@ -99,9 +94,11 @@ producer or retroactively apply new C compiler flags to an accepted archive.
 
 ## Peer rebind
 
-A published family closure can move to a new Waffle runtime without rebuilding its guests. Use the
-explicit rebind tool with the immutable source assets and the runtime archive supplied by the
-runtime release lane:
+`scripts/program-rebind.ts` rebinds an existing program closure to a newer `@waffle-os/runtime` without rebuilding any guests. It rewrites only `package.json` and proves every other file in every tarball stays byte-identical.
+
+Rebind requires the staged GitHub-format qualification manifest with `assetBase` set to `https://github.com/<owner>/<name>/releases/download/<from-tag>`, along with its matching `SHA256SUMS` and staged tarballs. Do not pass the npm install-verification receipt from the GitHub release, whose `assetBase` is `https://registry.npmjs.org`.
+
+For releases built by `.github/workflows/program-release.yml`, those staged GitHub-format assets live in the `program-release-<from-tag>` GitHub Actions workflow artifact uploaded from `.build/program-release/assets`. Download and extract that artifact, or use a local `<out>/assets` directory from `scripts/program-release.ts`, and pass it with `--from-assets DIR`. The flag accepts either the `assets` directory itself or a parent directory containing `assets/`. For older releases whose GitHub release still hosts the GitHub-format tarballs and manifest directly, you can omit `--from-assets` and let `scripts/program-rebind.ts` download them from the tag's GitHub release URL.
 
 ```sh
 bun scripts/program-rebind.ts \

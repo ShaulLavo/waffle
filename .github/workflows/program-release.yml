@@ -126,6 +126,20 @@ jobs:
           name: program-release-${{ inputs.tag }}
           path: .build/program-release/assets
           if-no-files-found: error
+      - name: Read the receipt for an existing release
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          errors=.build/program-release/release-lookup.err
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" >/dev/null 2>"$errors"; then
+            gh release download "$RELEASE_TAG" --pattern program-release.json \
+              --output .build/program-release/existing-receipt.json
+          elif ! grep -q '(HTTP 404)$' "$errors"; then
+            cat "$errors" >&2
+            exit 1
+          fi
       - name: Publish program packages to npm
         if: inputs.publish
         env:
@@ -135,21 +149,20 @@ jobs:
           if [ -n "${NPM_TOKEN:-}" ]; then
             npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
           fi
-          bun scripts/publish-programs-npm.ts .build/program-release/assets .build/program-release/program-release.json
+          receipt_args=()
+          existing=.build/program-release/existing-receipt.json
+          if [ -f "$existing" ]; then receipt_args=(--existing-receipt "$existing"); fi
+          bun scripts/publish-programs-npm.ts .build/program-release/assets \
+            .build/program-release/program-release.json "${receipt_args[@]}"
       - name: Publish the npm closure receipt
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          receipt=.build/program-release/program-release.json
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            existing=$(mktemp "$RUNNER_TEMP/program-release-XXXXXX.json")
-            trap 'rm -f -- "$existing"' EXIT
-            gh release download "$RELEASE_TAG" --pattern program-release.json --output - > "$existing"
-            cmp "$receipt" "$existing"
-          else
-            gh release create "$RELEASE_TAG" "$receipt" --verify-tag --title "$RELEASE_TAG" --generate-notes
+          if [ ! -f .build/program-release/existing-receipt.json ]; then
+            gh release create "$RELEASE_TAG" .build/program-release/program-release.json \
+              --verify-tag --title "$RELEASE_TAG" --generate-notes
           fi
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

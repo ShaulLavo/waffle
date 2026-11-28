@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { parseArgs } from "node:util";
 import type { ReleasedPackage, ReleaseManifest } from "./program-release.ts";
 
 const registry = "https://registry.npmjs.org";
@@ -96,7 +97,12 @@ async function alreadyPublished(receipt: ReleasedPackage): Promise<boolean> {
   return true;
 }
 
-async function publishPrograms(assets: string, output: string, dryRun: boolean) {
+async function publishPrograms(
+  assets: string,
+  output: string,
+  dryRun: boolean,
+  existingReceipt: string | undefined,
+) {
   const manifest = JSON.parse(
     readFileSync(join(assets, "program-release.json"), "utf8"),
   ) as ReleaseManifest;
@@ -107,27 +113,48 @@ async function publishPrograms(assets: string, output: string, dryRun: boolean) 
       const directory = mkdtempSync(join(scratch, "package-"));
       return packNpmProgram(join(assets, pkg.filename), pkg, closure, directory);
     });
+    const packages = staged.map(({ receipt }) => receipt);
+    const receipt: ReleaseManifest = { ...manifest, assetBase: registry, packages };
+    const contents = `${JSON.stringify(receipt, null, 2)}\n`;
+    if (existingReceipt !== undefined) {
+      assert.ok(
+        readFileSync(existingReceipt, "utf8") === contents,
+        `Existing npm receipt differs for ${manifest.tag}`,
+      );
+    }
     if (dryRun) return;
-    for (const { archive, receipt } of staged) {
-      if (await alreadyPublished(receipt)) continue;
+    const pending: typeof staged = [];
+    for (const item of staged) {
+      if (!(await alreadyPublished(item.receipt))) pending.push(item);
+    }
+    for (const { archive } of pending) {
       execFileSync("npm", ["publish", archive, "--provenance", "--access", "public"], {
         cwd: scratch,
         stdio: "inherit",
         timeout: commandTimeout,
       });
     }
-    const packages = staged.map(({ receipt }) => receipt);
-    const receipt: ReleaseManifest = { ...manifest, assetBase: registry, packages };
-    writeFileSync(output, `${JSON.stringify(receipt, null, 2)}\n`);
+    writeFileSync(output, contents);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
 }
 
 if (import.meta.main) {
-  const args = process.argv.slice(2);
-  const [assets, output] = args.filter((arg) => arg !== "--dry-run");
-  const dryRun = args.includes("--dry-run");
+  const { positionals, values } = parseArgs({
+    allowPositionals: true,
+    options: {
+      "dry-run": { type: "boolean", default: false },
+      "existing-receipt": { type: "string" },
+    },
+  });
+  const [assets, output] = positionals;
+  const dryRun = values["dry-run"];
   assert.ok(assets && (output || dryRun), "Expected assets directory and npm receipt output path");
-  await publishPrograms(resolve(assets), resolve(output ?? assets), dryRun);
+  await publishPrograms(
+    resolve(assets),
+    resolve(output ?? assets),
+    dryRun,
+    values["existing-receipt"],
+  );
 }

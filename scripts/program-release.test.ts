@@ -175,6 +175,31 @@ describe("base closure", () => {
     expect(existsSync(npmReceipt)).toBe(false);
   });
 
+  test("a mismatched existing npm receipt stops the release preflight", () => {
+    const npmReceipt = resolve(out, "program-release.json");
+    const publisher = resolve(repository, "scripts/publish-programs-npm.ts");
+    const existing = resolve(out, "existing-npm-receipt.json");
+    writeFileSync(existing, "{}\n");
+    const result = Bun.spawnSync(
+      [
+        "bun",
+        publisher,
+        resolve(out, "assets"),
+        npmReceipt,
+        "--existing-receipt",
+        existing,
+        "--dry-run",
+      ],
+      {
+        cwd: repository,
+        env: { ...process.env, TMPDIR: scratch },
+      },
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain(`Existing npm receipt differs for ${tag}`);
+    expect(existsSync(npmReceipt)).toBe(false);
+  });
+
   test("records both compressed companions for every raw Wasm artifact", () => {
     const raw = manifest.packages.flatMap(rawArtifacts);
     expect(raw).toHaveLength(baseGuestCount);
