@@ -189,6 +189,11 @@ test("selection step resolves path filters, workflow dispatch and filter-failure
   }
 });
 
+test("the native WASI command harness and its guest select libc qualification", () => {
+  expect(selected("libc", "tools/program-wasi-command.ts")).toBe(true);
+  expect(selected("libc", "packages/waffle/tests/fixtures/wasi-command-guest.c")).toBe(true);
+});
+
 for (const name of ["browser", "libc"]) {
   test(`${name} selects runtime, dependency and workflow inputs`, () => {
     for (const path of [
