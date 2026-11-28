@@ -198,12 +198,13 @@ for the shared open description.
 Explicit `fd_sync` and `fd_datasync` still invoke the backend barrier. `CREAT` or `EXCL` returns `EINVAL` (28),
 `DIRECTORY` returns `ENOTDIR` (54), and unknown flag bits return `EINVAL`.
 
-The source's rights do not restrict a regular-file reopen: a write-only descriptor can
-reopen for reading if the inode allows it. Current [inode access policy](permissions.md)
-is authoritative (`EACCES`, 2). The caller's live `/` preopen must still allow `PATH_OPEN`,
-the requested rights must fit its inheriting rights, and `TRUNC` requires its
-`PATH_FILESTAT_SET_SIZE` right (`ENOTCAPABLE`, 76). No root preopen means no regular-file
-reopen. Rights stripped from the root are not restored by reopening another descriptor.
+Regular-file reopen checks [inode access policy](permissions.md) for read and write access.
+A write-only descriptor can reopen for reading when the inode permits reading. The caller's
+live `/` preopen must carry `PATH_OPEN`, every requested right must fit the root preopen's
+inheriting rights, and `TRUNC` requires the root preopen's `PATH_FILESTAT_SET_SIZE` right.
+The source descriptor must also carry any requested [mode-mutation rights](#inode-mode-mutation)
+in the corresponding base or inheriting mask. A missing root preopen or missing right returns
+`ENOTCAPABLE`, errno 76.
 
 Pipes, terminals, sockets and directories receive a new binding to the **same** description, like
 `dup`, rather than a new cursor or flags. Requested rights must fit the source's rights
@@ -1333,6 +1334,44 @@ access bits. Missing descriptor rights return `ENOTCAPABLE`, errno 76, not inode
 Unsupported adapter metadata returns `ENOTSUP`, errno 58. Invalid pointers return `EFAULT`,
 errno 21. Errors leave the output unchanged. This import does not extend or reinterpret the
 standard 64-byte Preview1 filestat record, perform open-based inference, or fetch payloads.
+
+## Inode mode mutation
+
+The browser Waffle WASI adapter exposes two `runtime_fs` imports for changing regular-file and
+directory permission modes. Both return zero on success or a positive WASI errno on failure.
+
+```text
+runtime_fs.path_filestat_set_mode(dirfd: u32, path_ptr: u32, path_len: u32, lookupflags: u32, mode: u32) -> i32
+runtime_fs.fd_filestat_set_mode(fd: u32, mode: u32) -> i32
+```
+
+Two extended 64-bit descriptor rights gate these imports independently of timestamp, stat, and
+data access rights.
+
+| Right                          | Mask            | Gates                               |
+| ------------------------------ | --------------- | ----------------------------------- |
+| `RIGHT_FD_FILESTAT_SET_MODE`   | `0x1_0000_0000` | `runtime_fs.fd_filestat_set_mode`   |
+| `RIGHT_PATH_FILESTAT_SET_MODE` | `0x2_0000_0000` | `runtime_fs.path_filestat_set_mode` |
+
+Normal preopened directories start with both rights in their base and inheriting masks.
+Callers receive a mode right through `path_open` when they request that bit and the parent
+directory's inheriting rights include it. `fd_fdstat_set_rights` can remove either bit.
+
+Both imports update the target inode's mode and `ctime`. Changes apply to the inode shared by
+hard links and open descriptors, including retained unlinked files. Regular files accept mode
+bits within `0777`, and directories accept bits within `01777`. Unsupported mode bits return
+`ENOTSUP`, errno 58. The sole virtual principal owns every inode and may change its mode even
+when the inode denies writes. See [inode policy](permissions.md) for effective access and persistence.
+
+`path_filestat_set_mode` accepts only `LOOKUPFLAGS_SYMLINK_FOLLOW` in bit 0. Setting it follows
+a final symbolic link. Zero leaves a final link unfollowed unless the path ends in `/`, which
+requires a directory. Pathnames must be nonempty, valid UTF-8, and free of NUL bytes. Traversal
+checks ancestor search permissions and follows the adapter's [symbolic link rules](#symbolic-links).
+
+A missing descriptor right returns `ENOTCAPABLE`, errno 76. A pathname span outside guest memory
+returns `EFAULT`, errno 21. An invalid pathname returns `EINVAL`, errno 28. Unknown flag bits,
+an unfollowed final symlink, a target of an unsupported kind, or a filesystem adapter without mode
+mutation support returns `ENOTSUP`, errno 58.
 
 ## Canonical path query
 

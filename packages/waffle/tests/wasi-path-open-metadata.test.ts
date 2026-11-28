@@ -260,11 +260,11 @@ test("path_permissions_get reuses its decoder across invalid UTF-8, BOM and vali
   globalThis.TextDecoder = CountingTextDecoder;
   try {
     expect(host.call("file")).toBe(0);
-    expect(host.words()).toEqual([0o600, 0o600, 6, 6]);
+    expect(host.words()).toEqual([0o600, 0o777, 6, 6]);
     new Uint8Array(host.memory.buffer).set([0xff], 256);
     expect(Number(host.query(3, 256, 1, 0, 512))).toBe(28);
     expect(host.call("\ufefffile")).toBe(0);
-    expect(host.words()).toEqual([0o600, 0o600, 6, 6]);
+    expect(host.words()).toEqual([0o600, 0o777, 6, 6]);
     expect(host.call("file")).toBe(0);
     expect(constructed).toBe(0);
   } finally {

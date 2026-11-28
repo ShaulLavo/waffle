@@ -801,7 +801,6 @@ export class MemFS implements FileSystem {
     const node = this.nodeForHandle(handle);
     return permissionsFor(nodeKind(node), node.mode);
   }
-  /** Host policy mutation. All inodes belong to the same virtual principal. */
   setMode(handle: FileHandle, mode: number, time = fileTimeNow()): number {
     if (!Number.isInteger(mode) || mode < 0 || mode > 0xffffffff) return 28;
     const node = this.nodeForHandle(handle);

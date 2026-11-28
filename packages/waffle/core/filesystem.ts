@@ -25,9 +25,12 @@ export interface FilePermissions {
 /** One virtual principal; regular-file execution belongs to the program registry. */
 export function permissionsFor(kind: FileStat["kind"], mode: number): FilePermissions {
   const accessSupported = kind === "directory" ? 7 : 6;
+  let modeSupported = 0o600;
+  if (kind === "file") modeSupported = 0o777;
+  if (kind === "directory") modeSupported = 0o1777;
   return {
     mode,
-    modeSupported: kind === "directory" ? 0o1700 : 0o600,
+    modeSupported,
     access: (mode >>> 6) & accessSupported,
     accessSupported,
   };
@@ -124,6 +127,8 @@ export interface FileSystem {
   stat(handle: FileHandle): FileStat;
   /** Supported clear bits deny access; unsupported bits carry no answer. */
   permissions?(handle: FileHandle): FilePermissions | undefined;
+  /** Change an inode's permission bits. Zero on success, positive WASI errno on failure. */
+  setMode?(handle: FileHandle, mode: number): number;
   /** Bytes transferred, or negative WASI errno; errors must not advance the open offset. */
   read(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number;
   /** Bytes transferred, or negative WASI errno; partial success returns its byte count. */
