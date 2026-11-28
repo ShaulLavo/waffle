@@ -135,25 +135,35 @@ test("disposal between a guest's first checks and its post-park recheck reports 
     new URL("./fixtures/notification-revoke-window-worker.ts", import.meta.url).href,
     { type: "module" },
   );
+  const { promise: deadline, reject: expire } = Promise.withResolvers<never>();
+  const timer = setTimeout(() => expire(new Error("Notification worker did not finish")), 3000);
   try {
     const state = bridge.connection.state;
     const parked = Promise.withResolvers<void>();
     const reported = Promise.withResolvers<unknown>();
     worker.onmessage = ({ data }) => {
-      if (data?.parked === true) parked.resolve();
-      else reported.resolve(data);
+      if (data?.parked === true) {
+        parked.resolve();
+        return;
+      }
+      parked.reject(new Error("Notification worker returned before acknowledging the park"));
+      reported.resolve(data);
     };
     worker.postMessage({ filesystem: pair.client, notifications: bridge.connection }, [
       pair.client.port,
       bridge.connection.port,
     ]);
-    await parked.promise;
+    await Promise.race([parked.promise, deadline]);
     expect(Atomics.load(state, 2)).not.toBe(0);
-    await bridge.dispose();
-    expect(await reported.promise).toEqual({ result: "closed" });
+    await Promise.race([bridge.dispose(), deadline]);
+    expect(await Promise.race([reported.promise, deadline])).toEqual({ result: "closed" });
   } finally {
+    clearTimeout(timer);
     worker.terminate();
-    await bridge.dispose();
-    await service.shutdown();
+    try {
+      await bridge.dispose();
+    } finally {
+      await service.shutdown();
+    }
   }
 });
