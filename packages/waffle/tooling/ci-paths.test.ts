@@ -848,8 +848,10 @@ test("grep and ripgrep use one real-guest streaming check in PR CI", () => {
   for (const path of [
     "packages/grep/src/index.ts",
     "packages/ripgrep/src/index.ts",
+    "rust-toolchain.toml",
     "tools/family-acceptance.ts",
     "tools/search-wasi.test.ts",
+    "tools/waffle-family-metadata.ts",
   ]) {
     expect(selected("search", path), path).toBe(true);
   }
