@@ -28,6 +28,7 @@ export function scriptedSocket(holdWrites = false, echo = false) {
   const writes: Uint8Array[] = [];
   const gate = Promise.withResolvers<void>();
   const reset = Promise.withResolvers<void>();
+  const readCancelled = Promise.withResolvers<void>();
   const stream: NetOutboundStream = {
     remote: { address: "203.0.113.7", port: 4321, family: "IPv4" },
     readable: new ReadableStream<Uint8Array>(
@@ -37,6 +38,7 @@ export function scriptedSocket(holdWrites = false, echo = false) {
         },
         cancel() {
           cancelled++;
+          readCancelled.resolve();
         },
       },
       { highWaterMark: 0 },
@@ -65,6 +67,7 @@ export function scriptedSocket(holdWrites = false, echo = false) {
     writes,
     gate,
     reset: reset.promise,
+    readCancelled: readCancelled.promise,
     data: (bytes: Uint8Array) => source.enqueue(bytes),
     end: () => source.close(),
     error: () => source.error(Error("target reset")),

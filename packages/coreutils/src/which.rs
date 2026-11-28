@@ -44,9 +44,14 @@ impl<F: Fn(&str, &str) -> Result<bool, i32>> Lookup<'_, F> {
         if !(self.registered)(path, self.cwd)? {
             return Ok(false);
         }
-        // Normalize only after the host has walked and admitted the original path.
-        let absolute = waffle_program_support::path::absolute(self.cwd, path);
-        writeln!(output, "{absolute}").map_err(|error| match error.kind() {
+        // Removing a parent component after a symlink can report a different executable.
+        let joined = waffle_program_support::path::join_cwd(self.cwd, path);
+        let display = joined
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect::<Vec<_>>()
+            .join("/");
+        writeln!(output, "/{display}").map_err(|error| match error.kind() {
             std::io::ErrorKind::BrokenPipe => 141,
             _ => 1,
         })?;
