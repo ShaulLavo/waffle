@@ -306,6 +306,11 @@ export function stageProgram(
       symbols,
     );
     const outputs = { ...compressedProgramOutputs(bytes), symbols };
+    const namedDirectory = process.env.WAFFLE_NAMED_PROGRAMS_DIR;
+    if (namedDirectory) {
+      const filename = `${basename(first, ".wasm")}-named.wasm`;
+      writeFileSync(resolve(namedDirectory, filename), named, { flag: "wx" });
+    }
     for (const path of destinations) publishProgram(path, outputs, receipt);
     return receipt;
   } finally {
