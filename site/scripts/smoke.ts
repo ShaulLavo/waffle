@@ -228,7 +228,7 @@ async function checkHome(browser: Browser, engine: string, viewport: Viewport) {
     assert.deepEqual(await overflowingText(page), [], `${label}: text spills past the right edge`);
     assert.deepEqual(await brokenLinks(page), [], `${label}: links without a target`);
     const links = await hrefs(page);
-    for (const doc of ["docs/getting-started.md", "docs/status.md"]) {
+    for (const doc of ["docs/getting-started.md", "docs/README.md#reference"]) {
       assert.ok(
         links.some((href) => href.endsWith(doc)),
         `${label}: missing link to ${doc}`,

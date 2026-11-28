@@ -70,7 +70,7 @@ The page calls `createRuntime()` once. The runtime starts a filesystem worker th
 
 ## Docs
 
-[Getting started](docs/getting-started.md) · [Guides](docs/README.md#guides) · [Concepts](docs/concepts.md) · [Reference](docs/README.md#reference) · [Status and limits](docs/status.md) · [Troubleshooting](docs/troubleshooting.md) · [ADRs](docs/adr) · [Development](docs/development.md) · [Landing site](https://waffle.shaulavo.dev/)
+[Getting started](docs/getting-started.md) · [Guides](docs/README.md#guides) · [Concepts](docs/concepts.md) · [Reference](docs/README.md#reference) · [Troubleshooting](docs/troubleshooting.md) · [ADRs](docs/adr) · [Development](docs/development.md) · [Landing site](https://waffle.shaulavo.dev/)
 
 ## Status
 
@@ -80,7 +80,7 @@ Pre-1.0 and experimental. `package.json` says `0.0.89` and `private: true`. Ther
 - Persistent storage has one writer at a time. A second tab waits or takes over.
 - CI runs the browser suites in Chromium, Firefox and WebKit on Linux. Nothing is verified on iOS or Android.
 
-[Status and limits](docs/status.md) has the full list and the numbers.
+Read the [reference index](docs/README.md#reference) for current behavior and limits. The [historical status snapshot](docs/status.md) preserves earlier notes from around `0.0.110`.
 
 ## License and contributing
 

@@ -16,4 +16,4 @@ waffle is pre-1.0. Only the `main` branch receives fixes.
 
 ## Scope
 
-A guest program reading or writing outside the filesystem and permissions the page granted, or reaching beyond the loopback network, is in scope. See [status](docs/status.md) for what is untested.
+A guest program reading or writing outside the filesystem and permissions the page granted, or reaching beyond the loopback network, is in scope. Read [Permissions](docs/permissions.md), [Networking](docs/network.md), and [Private process authority](docs/private-authority.md) for current boundaries, and [Development](docs/development.md#run-the-browser-suites) for the browser suites CI runs.

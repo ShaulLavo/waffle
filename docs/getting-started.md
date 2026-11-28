@@ -112,6 +112,6 @@ Opening the HTML file directly from disk does not work, and neither does a serve
 - [Run a WASI program](guides/run-a-wasi-program.md): register a program and spawn it from the page.
 - [Persist the filesystem](guides/persist-the-filesystem.md): keep files between page loads.
 - [Concepts](concepts.md): who owns what, and why a guest never creates its own runtime.
-- [Status and limits](status.md): what works today and what does not.
+- The [reference index](README.md#reference) covers current filesystem modes, networking, permissions, and limits.
 - [Architecture and API notes](architecture.md) and [Host ABI](host-abi.md): the full reference.
 - [Development](development.md): repository setup and checks.
