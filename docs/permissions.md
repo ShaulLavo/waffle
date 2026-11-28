@@ -1,6 +1,6 @@
 # Inode mode and effective access
 
-Waffle uses one virtual filesystem principal. All clients and processes act as that principal. Connection owner IDs are lock and lifetime identities, not users. Inodes belong to the virtual principal. Numeric ownership, groups, setuid/setgid and symlinks are unsupported.
+Waffle uses one virtual filesystem principal. All clients and processes act as that principal. Connection owner IDs are lock and lifetime identities, not users. Inodes belong to the virtual principal. Numeric ownership, groups, and setuid/setgid are unsupported.
 
 New files have mode `0600`; new directories have mode `0700`. Files support owner read/write bits, mask `0600`. Directories support owner read/write/search and sticky, mask `01700`. Waffle stores the directory sticky bit. Because the sole caller owns every directory and entry, that caller may remove its own entries in sticky directories. This does not implement multiple-user sticky-directory policy. No directory path receives a special mode based on its name, including `/tmp` and `/bin`.
 
