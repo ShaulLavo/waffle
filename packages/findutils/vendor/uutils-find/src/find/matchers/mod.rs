@@ -625,7 +625,18 @@ fn validate_wasi_predicate(
     arg: &str,
     index: usize,
 ) -> Result<(), ParseError> {
-    if matches!(predicate, Predicate::Exec | Predicate::Prompt) {
+    if matches!(
+        predicate,
+        Predicate::Exec
+            | Predicate::Prompt
+            | Predicate::User
+            | Predicate::Uid
+            | Predicate::NoUser
+            | Predicate::Group
+            | Predicate::Gid
+            | Predicate::NoGroup
+            | Predicate::Fstype
+    ) {
         return Err(ParseError::new(format!("{arg} is unsupported on WASI")).at(index));
     }
     Ok(())

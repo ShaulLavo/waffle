@@ -30,7 +30,7 @@
   "patches": {
     "find": {
       "path": "vendor/uutils-find/wasi.patch",
-      "sha256": "3f0604e0519aab89912455986984c84bf5e0e9ba381098e8343ea50b197d79b4"
+      "sha256": "49bbf7a6ab8b05685efc50ef892829cecb2091fe2830ea4ce859dcc2828000d7"
     },
     "xargs": {
       "path": "vendor/uutils-xargs/wasi.patch",

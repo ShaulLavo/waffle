@@ -29,6 +29,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `browser/net/network.buffer.js` (generated, ignored)                                                                                                     | Generated derivation  | Binaryen `src/wasm2js.h` and `src/tools/wasm2js.cpp` at `version_132`, npm `binaryen@132.0.0`. Generated runtime helpers, Apache-2.0. Local changes add only attribution/input header and factory export. See [Binaryen runtime helpers](#binaryen-runtime-helpers).                                                                                                                                                                                                                                           |
 | `tools/licenses/`                                                                                                                                        | License copy          | Exact upstream MIT license texts for fluent-langneg 0.13.1, intl_pluralrules 7.0.2, base64-simd and vsimd 0.8.0, and blake2b_simd 1.0.5, omitted from their registry archives. Source commits and SHA-256 records accompany the texts.                                                                                                                                                                                                                                                                         |
 | `packages/findutils/vendor/uutils-xargs/src/lib.rs`                                                                                                      | Adaptation            | uutils/findutils `src/xargs/mod.rs` at `505421d4e03586efeb7b9c55adf057599e192e0a`; original Waffle process-consumer adapter, owned EOF stdin, child status mapping, empty byte-delimited items and explicit unsupported-mode checks.                                                                                                                                                                                                                                                                           |
+| `packages/findutils/vendor/uutils-find/{Cargo.toml,wasi.patch,src/lib.rs,src/find/mod.rs,src/find/matchers/mod.rs}`                                      | Adaptation            | uutils/findutils 0.11.0 `Cargo.toml`, `src/lib.rs`, `src/find/mod.rs`, and `src/find/matchers/mod.rs` at `505421d4e03586efeb7b9c55adf057599e192e0a`, MIT. Find-only vendoring, `-files0-from` error handling, and WASI-only parser rejection of execution, user, group, and mount-type predicates before matching. See [Find WASI adaptation](#find-wasi-adaptation).                                                                                                                                          |
 | `packages/coreutils/crates/date/`                                                                                                                        | Original adapter      | Calls unchanged uutils/coreutils `src/uu/date` and `src/uucore` at `07763857f6b9a547742a994b58aef0ccd036198b`. Isolated entry, existing WASI cwd helper, and rejection of clock setting before upstream execution. See [External date entry](#external-date-entry).                                                                                                                                                                                                                                            |
 | `packages/coreutils/crates/echo/`                                                                                                                        | Original adapter      | Calls unchanged uutils/coreutils `src/uu/echo` at `07763857f6b9a547742a994b58aef0ccd036198b`; isolated entry and actual WASI write-failure observation, without flag/output logic.                                                                                                                                                                                                                                                                                                                             |
 | `tools/program-locales/patch.ts`                                                                                                                         | Adaptation            | Transforms only the hash-pinned uutils/coreutils `src/uucore/build.rs` at `dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69` and `07763857f6b9a547742a994b58aef0ccd036198b`. Retains target aliases and replaces catalog discovery with explicit English inputs.                                                                                                                                                                                                                                                       |
@@ -340,6 +341,27 @@ Empty byte-delimited items are retained. Default print-only echo and rejected
 replacement/parallel modes remain explicit. No shell, host fallback, copied
 process protocol or new runtime controller is introduced. The controlled C test
 utility is original test-only code, never a shipped command.
+
+## Find WASI adaptation
+
+`packages/findutils/vendor/uutils-find` adapts uutils/findutils 0.11.0 at
+`505421d4e03586efeb7b9c55adf057599e192e0a` under the MIT license, archive
+SHA-256 `6b2426289c34e78256c2e3de7ac9486d08227faf11b46ea004cf3cd1ae52a545`.
+`packages/findutils/provenance/find.source.json` pins the vendored files and
+`packages/findutils/vendor/uutils-find/wasi.patch`, and
+`packages/findutils/provenance/source.json` records the relocation from bash-web
+`9ef027d7b8544be7d2d84ee59beea8adf0b33cd8`. Local edits touch `Cargo.toml`,
+`src/lib.rs`, `src/find/mod.rs`, and `src/find/matchers/mod.rs`. The vendored
+crate exports only `find`, drops the upstream workspace marker to join the
+family workspace, and reports invalid `-files0-from` records with a failing
+status while stopping after read errors.
+
+In `src/find/matchers/mod.rs`, the WASI-only parser guard rejects unsupported
+predicates before matching or traversal begins. Alongside `-exec`, `-execdir`,
+`-ok`, and `-okdir`, it rejects `-uid`, `-gid`, `-user`, `-group`, `-nouser`,
+`-nogroup`, and `-fstype` because WASI has no file ownership or mount-type
+metadata. Rejecting them during parsing stops upstream's non-Unix matcher stubs
+from running against absent metadata.
 
 ## External echo entry
 

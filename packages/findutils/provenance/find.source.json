@@ -5,7 +5,7 @@
   "archiveSha256": "6b2426289c34e78256c2e3de7ac9486d08227faf11b46ea004cf3cd1ae52a545",
   "crate": "findutils",
   "entry": "findutils::find::find_main",
-  "localChanges": "Find-only vendoring with upstream dependencies; wrapper sets libc cwd from PWD. NUL starting-path input reports invalid records with a failing exit status, continues valid records, and stops after a read error. WASI parser rejects execution predicates before traversal or starting-path input; literal predicate operands remain valid.",
+  "localChanges": "Find-only vendoring with upstream dependencies; wrapper sets libc cwd from PWD. NUL starting-path input reports invalid records with a failing exit status, continues valid records, and stops after a read error. The WASI-only parser guard rejects unsupported execution, user, group, and mount-type predicates before matching or traversal begins. Literal predicate operands remain valid.",
   "supportedScope": "Traversal, logical expressions, name/path/regex matching, type, size, empty, min/max depth, prune, quit, print/print0, portable printf fields, file output and -files0-from.",
   "excludedScope": "-exec, -execdir, -ok, -okdir, -xdev, access predicates, and Unix ownership/group/mount/permission predicates.",
   "license": {
@@ -16,7 +16,7 @@
   "vendor": "vendor/uutils-find",
   "patch": {
     "path": "vendor/uutils-find/wasi.patch",
-    "sha256": "3f0604e0519aab89912455986984c84bf5e0e9ba381098e8343ea50b197d79b4"
+    "sha256": "49bbf7a6ab8b05685efc50ef892829cecb2091fe2830ea4ce859dcc2828000d7"
   },
   "files": {
     "Cargo.toml": "452fcb641a6139a5bf707b1def006c9e32f2c2e8a16a6a3767eb2444b3aa738c",
@@ -34,7 +34,7 @@
     "src/find/matchers/lname.rs": "3e59783cdaf09975eb5d7bec7c8325015835335da4408789839a5809cd54cfd9",
     "src/find/matchers/logical_matchers.rs": "9e8f16f416a8ea5c48e3ab5a15e983c64c73303991e48d2bbcd316e75c812799",
     "src/find/matchers/ls.rs": "66fa7a26c404e4de1267eb9fde4bf4e70113fbfd68f461afef88ad7ad45dd1f2",
-    "src/find/matchers/mod.rs": "78a0c9302e8b94726ec7789d76b749c9bab3ec38aacff691ceb7b2ada8afed4c",
+    "src/find/matchers/mod.rs": "db8608f01366f60bb9e22ec1a44823611edf937f97577b5c9a00a8ee1a40c496",
     "src/find/matchers/name.rs": "dbfd048e04758617db8bebbdf663cde6bc927eff7e6da71c35ce0ce5a1ddebb5",
     "src/find/matchers/path.rs": "533ae44f018a2cd517d905edabf89fa7c8ab7dc35f640ae0ca3e6fba89098549",
     "src/find/matchers/perm.rs": "7a550672bd60c400c400c4d5da804d4c6d02643f2ae191e6bae41678f087e88b",

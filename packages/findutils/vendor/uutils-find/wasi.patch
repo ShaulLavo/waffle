@@ -246,7 +246,7 @@
              &paths_and_matcher.config,
 --- a/src/find/matchers/mod.rs
 +++ b/src/find/matchers/mod.rs
-@@ -619,6 +619,18 @@
+@@ -619,6 +619,29 @@
          .map_or(Predicate::Other, |&(_, predicate)| predicate)
  }
  
@@ -256,7 +256,18 @@
 +    arg: &str,
 +    index: usize,
 +) -> Result<(), ParseError> {
-+    if matches!(predicate, Predicate::Exec | Predicate::Prompt) {
++    if matches!(
++        predicate,
++        Predicate::Exec
++            | Predicate::Prompt
++            | Predicate::User
++            | Predicate::Uid
++            | Predicate::NoUser
++            | Predicate::Group
++            | Predicate::Gid
++            | Predicate::NoGroup
++            | Predicate::Fstype
++    ) {
 +        return Err(ParseError::new(format!("{arg} is unsupported on WASI")).at(index));
 +    }
 +    Ok(())
@@ -265,7 +276,7 @@
  /// Turns one of the `logical_matchers` "binary operator with nothing before it"
  /// errors into a diagnostic pointing at the operator.
  fn binary_operator_error(err: &dyn Error, arg_index: usize) -> ParseError {
-@@ -676,7 +688,10 @@
+@@ -676,7 +699,10 @@
      let mut i = arg_index;
      let mut invert_next_matcher = false;
      while i < args.len() {
