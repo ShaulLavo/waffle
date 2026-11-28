@@ -1008,16 +1008,48 @@ fn memory_file_open(
 
 /// Shell descriptor names refer to the shell's logical table, not WASI's private fds.
 pub fn descriptor_number(path: &str) -> Option<u32> {
-    match path {
-        "/dev/stdin" => Some(0),
-        "/dev/stdout" => Some(1),
-        "/dev/stderr" => Some(2),
-        _ => path
-            .strip_prefix("/dev/fd/")
-            .or_else(|| path.strip_prefix("/proc/self/fd/"))?
-            .parse()
-            .ok(),
+    descriptor_alias(path).map(|(_, fd)| fd)
+}
+
+enum DescriptorNamespace {
+    Dev,
+    Proc,
+}
+
+fn descriptor_alias(path: &str) -> Option<(DescriptorNamespace, u32)> {
+    let components = path.strip_prefix('/')?;
+    let last = components.rsplit('/').next()?;
+    if path.len() > MAX_PATH_BYTES || matches!(last, "" | "." | "..") {
+        return None;
     }
+    let mut parts = components
+        .split('/')
+        .filter(|part| !matches!(*part, "" | "."));
+    let alias = match (parts.next()?, parts.next()?) {
+        ("dev", "stdin") => (DescriptorNamespace::Dev, 0),
+        ("dev", "stdout") => (DescriptorNamespace::Dev, 1),
+        ("dev", "stderr") => (DescriptorNamespace::Dev, 2),
+        ("dev", "fd") => (
+            DescriptorNamespace::Dev,
+            parse_descriptor_number(parts.next()?)?,
+        ),
+        ("proc", "self") => {
+            parts.next().filter(|part| *part == "fd")?;
+            (
+                DescriptorNamespace::Proc,
+                parse_descriptor_number(parts.next()?)?,
+            )
+        }
+        _ => return None,
+    };
+    parts.next().is_none().then_some(alias)
+}
+
+fn parse_descriptor_number(part: &str) -> Option<u32> {
+    if !part.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    part.parse().ok()
 }
 
 pub enum DescriptorOpen<'a> {
@@ -1045,22 +1077,25 @@ pub fn open_path<'a>(
     fds: &FdTable,
     options: &OpenOptions,
 ) -> Result<DescriptorOpen<'a>, IoError> {
-    let Some(logical) = descriptor_number(path) else {
+    let Some((namespace, logical)) = descriptor_alias(path) else {
         return Ok(DescriptorOpen::RuntimePath(Cow::Borrowed(path)));
     };
-    reopen_descriptor(path, fds.get(logical).ok_or(IoError::NotFound)?, options)
+    reopen_descriptor(
+        namespace,
+        fds.get(logical).ok_or(IoError::NotFound)?,
+        options,
+    )
 }
 
 fn reopen_descriptor(
-    path: &str,
+    namespace: DescriptorNamespace,
     endpoint: Endpoint,
     options: &OpenOptions,
 ) -> Result<DescriptorOpen<'static>, IoError> {
     if let Some(fd) = endpoint.runtime_fd() {
-        let prefix = if path.starts_with("/proc/") {
-            "/proc/self/fd"
-        } else {
-            "/dev/fd"
+        let prefix = match namespace {
+            DescriptorNamespace::Dev => "/dev/fd",
+            DescriptorNamespace::Proc => "/proc/self/fd",
         };
         return Ok(DescriptorOpen::RuntimePath(Cow::Owned(format!(
             "{prefix}/{fd}"
@@ -1084,6 +1119,37 @@ fn reopen_descriptor(
 mod tests {
     use super::*;
     use crate::executor::Executor;
+
+    #[test]
+    fn direct_descriptor_aliases_preserve_logical_binding() {
+        let mut fds = FdTable::default();
+        let input = Endpoint::bytes(b"logical".to_vec());
+        fds.insert(7, input.clone());
+        let options = OpenOptions::default();
+        for path in [
+            "/dev/fd/7",
+            "/dev//fd/7",
+            "//dev/./fd/7",
+            "/proc/self//fd/7",
+        ] {
+            let DescriptorOpen::Local(opened) = open_path(path, &fds, &options).unwrap() else {
+                panic!("{path} must use the logical descriptor table");
+            };
+            assert!(opened.same_open(&input));
+        }
+        assert!(matches!(
+            open_path("/dev//fd/8", &fds, &options),
+            Err(IoError::NotFound)
+        ));
+        for path in [
+            "/missing/../dev/fd/7",
+            "/dev/fd/7/",
+            "/dev/fd/7/.",
+            "/dev/fd/+7",
+        ] {
+            assert_eq!(descriptor_number(path), None, "{path}");
+        }
+    }
 
     #[test]
     fn buffered_input_charge_matches_the_two_shared_allocations() {

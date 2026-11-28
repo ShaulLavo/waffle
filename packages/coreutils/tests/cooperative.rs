@@ -1,6 +1,6 @@
 #![cfg(not(target_os = "wasi"))]
 
-use futures::FutureExt;
+use futures::{FutureExt, future::LocalBoxFuture};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::rc::Rc;
@@ -8,7 +8,7 @@ use waffle_coreutils::{Context, Invocation};
 use waffle_program_support::{
     DEFAULT_LINE_BYTES,
     executor::{Cancel, Executor},
-    io::{Capture, Endpoint, FdTable, MemoryFs, capture},
+    io::{Capture, Endpoint, FdTable, FileSystem, IoError, MemoryFs, OpenOptions, capture},
 };
 
 fn invocation(
@@ -76,12 +76,58 @@ fn cat_and_tail_preserve_exact_file_bytes() {
 }
 
 #[test]
+fn mkdir_rejects_a_regular_file_before_a_parent_component() {
+    let filesystem = MemoryFs::new(4096);
+    filesystem.mkdir("/work", false).unwrap();
+    filesystem.write_file("/work/input", b"data\n").unwrap();
+
+    let (input, _, errors) = invocation(&["-p", "input/../child"], None, &filesystem);
+    assert_eq!(run(waffle_coreutils::mkdir(input)), 1);
+    assert!(filesystem.stat("/work/child", true).is_err());
+    assert_eq!(errors.bytes(), b"mkdir: input/../child: not a directory\n");
+}
+
+#[test]
 fn mkdir_preserves_parent_creation_and_error_status() {
     let filesystem = MemoryFs::new(4096);
     let (input, _, errors) = invocation(&["-p", "a/b", ""], None, &filesystem);
     assert_eq!(run(waffle_coreutils::mkdir(input)), 1);
     assert!(filesystem.stat("/work/a/b", true).is_ok());
     assert_eq!(errors.bytes(), b"mkdir: : invalid path\n");
+}
+
+#[test]
+fn mkdir_passes_all_parent_components_to_the_filesystem_policy() {
+    const OPERAND: &str = "/usr/missing/../../tmp/target";
+    struct DirectoryPolicy;
+
+    impl FileSystem for DirectoryPolicy {
+        fn mkdir<'a>(
+            &'a self,
+            path: &'a str,
+            parents: bool,
+        ) -> LocalBoxFuture<'a, Result<(), IoError>> {
+            assert_eq!(path, OPERAND);
+            assert!(parents);
+            Box::pin(async { Err(IoError::Runtime(69)) })
+        }
+
+        fn open<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a OpenOptions,
+        ) -> LocalBoxFuture<'a, Result<Endpoint, IoError>> {
+            Box::pin(async { Err(IoError::Unsupported) })
+        }
+    }
+
+    let (mut input, _, errors) = invocation(&["-p", OPERAND], None, &MemoryFs::new(0));
+    input.context.filesystem = Rc::new(DirectoryPolicy);
+    assert_eq!(run(waffle_coreutils::mkdir(input)), 1);
+    assert_eq!(
+        errors.bytes(),
+        b"mkdir: /usr/missing/../../tmp/target: runtime I/O error: errno 69\n"
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! Original cat, mkdir and seq implementations extracted from bash-web 81205d0.
 use super::{Context, diagnostic, endpoint, write};
-use std::fmt::Write as _;
+use std::{borrow::Cow, fmt::Write as _};
 use waffle_program_support::{
     executor::Budget,
     io::{Endpoint, FdTable, IoError, OpenOptions, open_path},
@@ -73,11 +73,10 @@ pub(crate) async fn mkdir(
     let mut budget = Budget::default();
     for operand in operands {
         budget.checkpoint(&context.cancel).await.map_err(|_| 130)?;
-        // Empty operands must not turn into the current directory under -p.
-        let path = if operand.is_empty() {
-            String::new()
+        let path = if operand.is_empty() || operand.starts_with('/') {
+            Cow::Borrowed(operand.as_str())
         } else {
-            absolute(cwd, &operand)
+            Cow::Owned(format!("{}/{operand}", cwd.trim_end_matches('/')))
         };
         let result = context
             .cancel
