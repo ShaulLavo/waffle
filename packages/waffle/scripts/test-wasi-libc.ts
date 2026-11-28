@@ -62,6 +62,14 @@ async function buildFixtures(): Promise<void> {
         );
     }
   }
+  await run([
+    join(sdk, "bin/clang"),
+    "--target=wasm32-wasip1",
+    "-O2",
+    join(repo, "tests/fixtures/wasi-command-guest.c"),
+    "-o",
+    join(root, "wasi-command-guest.wasm"),
+  ]);
 }
 
 const cache = process.env.WASI_LIBC_FIXTURE_CACHE;
@@ -72,6 +80,7 @@ const fixtureNames = [
   "stock.wasm",
   "stock-start.wasm",
   "socket.wasm",
+  "wasi-command-guest.wasm",
 ];
 try {
   if (fixtures === root) await buildFixtures();
@@ -94,6 +103,13 @@ try {
     "--disable-warning=ExperimentalWarning",
     join(repo, "tests/fixtures/preopen-node-host.ts"),
     join(fixtures, "patched.wasm"),
+    root,
+  ]);
+  await run([
+    "node",
+    "--disable-warning=ExperimentalWarning",
+    join(repo, "tests/fixtures/wasi-command-host.ts"),
+    join(fixtures, "wasi-command-guest.wasm"),
     root,
   ]);
   if (cache && fixtures === root) {

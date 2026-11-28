@@ -409,6 +409,7 @@ jobs:
               - ".github/actions/save-release-downloads/**"
               - ".github/actions/setup-tools/**"
               - "tools/ci-*.ts"
+              - "tools/program-wasi-command.ts"
               - "packages/waffle/patches/**"
               - "packages/waffle/scripts/build-wasi-libc.sh"
               - "packages/waffle/scripts/test-wasi-libc.ts"
@@ -1187,6 +1188,7 @@ jobs:
               - ".github/actions/save-release-downloads/**"
               - ".github/actions/setup-tools/**"
               - "tools/ci-*.ts"
+              - "tools/program-wasi-command.ts"
               - "packages/waffle/patches/**"
               - "packages/waffle/scripts/build-wasi-libc.sh"
               - "packages/waffle/scripts/test-wasi-libc.ts"
@@ -1366,7 +1368,7 @@ jobs:
         if: steps.select.outputs.libc == 'true'
         with:
           path: ${{ runner.temp }}/libc-fixtures
-          key: ${{ runner.os }}-libc-sdk34-bun${{ env.BUN_VERSION }}-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/scripts/test-wasi-libc.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/patches/wasi-libc/**', 'packages/waffle/tests/fixtures/preopen-guest.c', 'packages/waffle/tests/fixtures/preview1-socket.c', 'packages/waffle/tests/fixtures/wasm-start-section.ts') }}
+          key: ${{ runner.os }}-libc-sdk34-bun${{ env.BUN_VERSION }}-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/scripts/test-wasi-libc.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/patches/wasi-libc/**', 'packages/waffle/tests/fixtures/preopen-guest.c', 'packages/waffle/tests/fixtures/preview1-socket.c', 'packages/waffle/tests/fixtures/wasi-command-guest.c', 'packages/waffle/tests/fixtures/wasm-start-section.ts') }}
       - uses: actions/cache@v4
         if: steps.select.outputs.libc == 'true' && steps.fixtures.outputs.cache-hit != 'true'
         with:
