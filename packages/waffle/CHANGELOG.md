@@ -1,5 +1,16 @@
 # @waffle-os/runtime
 
+## 0.0.158
+
+### Patch Changes
+
+- Browser `runtime_fs.path_permissions_get` accepts `LOOKUPFLAGS_SYMLINK_FOLLOW` in bit 0, aligning with `path_filestat_get` and Rust `WasiAbi::stat` in BashWeb. Bit 0 follows a final symbolic link. Passing zero leaves a final symbolic link unfollowed unless the path ends in `/`, which requires a directory. Other flag bits return `ENOTSUP`.
+
+  - Browser `path_open`, `fd_fdstat_set_flags`, and `runtime_proc.fd_reopen` reject unsupported `DSYNC`, `RSYNC`, and `SYNC` flags with `ENOTSUP` before changing files or descriptors. Explicit `fd_sync` and `fd_datasync` continue to invoke the backend barrier.
+  - The Node WASI adapter accepts `DSYNC` and `SYNC` at open when the corresponding native flags are available. It rejects `RSYNC`, unavailable flags, and attempts to change synchronous flags on an open descriptor. It reports tracked WASI flags so a guest can update other descriptor flags.
+  - Browser `runtime_fs.path_filestat_set_mode` and `runtime_fs.fd_filestat_set_mode` change regular-file and directory mode bits and update the inode's `ctime`, including across hard links or through a retained unlinked descriptor. Separate descriptor rights gate each operation and regular-file reopen preserves the source descriptor's mode-right restrictions.
+  - Inode metadata, persistent storage, and workspace archives support mode masks `0777` for regular files and `01777` for directories. Creation and saved-metadata defaults remain `0600` and `0700`. Owner bits govern effective read, write, and directory-search access, and the program registry continues to govern executable admission.
+
 ## 0.0.157
 
 ### Patch Changes
