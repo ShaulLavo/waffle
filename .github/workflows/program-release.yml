@@ -144,17 +144,28 @@ jobs:
             jq -c --arg tag "$RELEASE_TAG" \
               '[.[][] | select(.tag_name == $tag)] | if length > 1 then error("Multiple releases for the tag") else .[0] end')
           if [ "$release" = null ]; then exit 0; fi
-          asset_id=$(jq -er '[.assets[] | select(.name == "program-release.json")]
-            | if length == 1 then .[0].id else error("Expected one existing program release receipt") end' \
+          asset_id=$(jq -r '[.assets[] | select(.name == "program-release.json")]
+            | if length > 1 then error("Multiple assets for the receipt") else .[0].id // empty end' \
             <<< "$release")
-          gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
-            > .build/program-release/existing-receipt.json
+          if [ -n "$asset_id" ]; then
+            gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
+              > .build/program-release/existing-receipt.json
+          else
+            if ! digest=$(jq -er 'select(.draft and (.assets | length == 0))
+              | (.body // "") | split("\n")[0]
+              | capture("^<!-- waffle-npm-receipt-sha256=(?<digest>[a-f0-9]{64}) -->$").digest' <<< "$release"); then
+              echo 'Expected one existing program release receipt or an empty draft with a receipt digest.' >&2
+              exit 1
+            fi
+            printf 'receipt_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          fi
           draft_id=$(jq -r 'select(.draft) | .id' <<< "$release")
           printf 'draft_id=%s\n' "$draft_id" >> "$GITHUB_OUTPUT"
       - name: Publish program packages to npm
         if: inputs.publish
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          EXISTING_RECEIPT_SHA256: ${{ steps.prior_release.outputs.receipt_sha256 }}
         run: |
           set -euo pipefail
           if [ -n "${NPM_TOKEN:-}" ]; then
@@ -162,7 +173,11 @@ jobs:
           fi
           receipt_args=()
           existing=.build/program-release/existing-receipt.json
-          if [ -f "$existing" ]; then receipt_args=(--existing-receipt "$existing"); fi
+          if [ -f "$existing" ]; then
+            receipt_args=(--existing-receipt "$existing")
+          elif [ -n "$EXISTING_RECEIPT_SHA256" ]; then
+            receipt_args=(--existing-receipt-sha256 "$EXISTING_RECEIPT_SHA256")
+          fi
           bun scripts/publish-programs-npm.ts .build/program-release/assets \
             .build/program-release/program-release.json "${receipt_args[@]}"
       - name: Publish the npm closure receipt
@@ -172,11 +187,15 @@ jobs:
           DRAFT_ID: ${{ steps.prior_release.outputs.draft_id }}
         run: |
           set -euo pipefail
-          if [ ! -f .build/program-release/existing-receipt.json ]; then
-            gh release create "$RELEASE_TAG" .build/program-release/program-release.json \
-              --verify-tag --title "$RELEASE_TAG" --generate-notes
-          elif [ -n "$DRAFT_ID" ]; then
+          receipt=.build/program-release/program-release.json
+          existing=.build/program-release/existing-receipt.json
+          if [ -n "$DRAFT_ID" ]; then
+            if [ ! -f "$existing" ]; then gh release upload "$RELEASE_TAG" "$receipt"; fi
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$DRAFT_ID" -F draft=false >/dev/null
+          elif [ ! -f "$existing" ]; then
+            digest=$(sha256sum "$receipt")
+            gh release create "$RELEASE_TAG" "$receipt" --verify-tag --title "$RELEASE_TAG" \
+              --generate-notes --notes "<!-- waffle-npm-receipt-sha256=${digest%% *} -->"
           fi
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

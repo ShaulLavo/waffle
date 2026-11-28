@@ -94,6 +94,64 @@ gh() {
   }
 });
 
+test("an empty draft can resume only with the workflow's receipt digest", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "waffle-empty-release-draft-"));
+  try {
+    mkdirSync(join(cwd, ".build/program-release"), { recursive: true });
+    const digest = "a".repeat(64);
+    const output = join(cwd, "outputs");
+    const env = {
+      ...process.env,
+      RELEASE_TAG: "programs-v0.0.24",
+      GITHUB_REPOSITORY: "ShaulLavo/waffle",
+      GITHUB_OUTPUT: output,
+    };
+    const preflight = (body: string) =>
+      Bun.spawnSync(
+        [
+          "bash",
+          "-c",
+          'gh() { printf "%s\\n" "$RELEASES"; }\n' +
+            programReleaseStep("Read the receipt for an existing release"),
+        ],
+        {
+          cwd,
+          env: {
+            ...env,
+            RELEASES: JSON.stringify([
+              [{ tag_name: env.RELEASE_TAG, id: 24, draft: true, assets: [], body }],
+            ]),
+          },
+        },
+      );
+    const unmarked = preflight("Unrelated release notes");
+    expect(unmarked.exitCode).not.toBe(0);
+    expect(unmarked.stderr.toString()).toContain("empty draft with a receipt digest");
+    const marked = preflight(`<!-- waffle-npm-receipt-sha256=${digest} -->\n\nGenerated notes`);
+    expect(marked.exitCode, marked.stderr.toString()).toBe(0);
+    expect(readFileSync(output, "utf8")).toBe(`receipt_sha256=${digest}\ndraft_id=24\n`);
+
+    const receipt = ".build/program-release/program-release.json";
+    writeFileSync(join(cwd, receipt), '{"receipt":"verified"}\n');
+    const result = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        'gh() { printf "%s\\n" "$*" >&2; }\n' +
+          programReleaseStep("Publish the npm closure receipt"),
+      ],
+      { cwd, env: { ...env, DRAFT_ID: "24" } },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr.toString().split("\n").filter(Boolean)).toEqual([
+      `release upload ${env.RELEASE_TAG} ${receipt}`,
+      "api --method PATCH repos/ShaulLavo/waffle/releases/24 -F draft=false",
+    ]);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("program release rejects a source tag with a different publisher before publishing", () => {
   const cwd = mkdtempSync(join(tmpdir(), "waffle-publisher-version-"));
   try {

@@ -10,7 +10,7 @@ import type { ReleasedPackage, ReleaseManifest } from "./program-release.ts";
 const registry = "https://registry.npmjs.org";
 const commandTimeout = 120_000;
 
-function sha256(bytes: Uint8Array): string {
+function sha256(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
@@ -101,7 +101,7 @@ async function publishPrograms(
   assets: string,
   output: string,
   dryRun: boolean,
-  existingReceipt: string | undefined,
+  existingReceipt: { path?: string; sha256?: string },
 ) {
   const manifest = JSON.parse(
     readFileSync(join(assets, "program-release.json"), "utf8"),
@@ -116,10 +116,17 @@ async function publishPrograms(
     const packages = staged.map(({ receipt }) => receipt);
     const receipt: ReleaseManifest = { ...manifest, assetBase: registry, packages };
     const contents = `${JSON.stringify(receipt, null, 2)}\n`;
-    if (existingReceipt !== undefined) {
+    if (existingReceipt.path !== undefined) {
       assert.ok(
-        readFileSync(existingReceipt, "utf8") === contents,
+        readFileSync(existingReceipt.path, "utf8") === contents,
         `Existing npm receipt differs for ${manifest.tag}`,
+      );
+    }
+    if (existingReceipt.sha256 !== undefined) {
+      assert.equal(
+        sha256(contents),
+        existingReceipt.sha256,
+        `Draft receipt SHA-256 differs for ${manifest.tag}`,
       );
     }
     if (dryRun) return;
@@ -146,15 +153,14 @@ if (import.meta.main) {
     options: {
       "dry-run": { type: "boolean", default: false },
       "existing-receipt": { type: "string" },
+      "existing-receipt-sha256": { type: "string" },
     },
   });
   const [assets, output] = positionals;
   const dryRun = values["dry-run"];
   assert.ok(assets && (output || dryRun), "Expected assets directory and npm receipt output path");
-  await publishPrograms(
-    resolve(assets),
-    resolve(output ?? assets),
-    dryRun,
-    values["existing-receipt"],
-  );
+  await publishPrograms(resolve(assets), resolve(output ?? assets), dryRun, {
+    path: values["existing-receipt"],
+    sha256: values["existing-receipt-sha256"],
+  });
 }

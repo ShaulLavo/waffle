@@ -200,6 +200,26 @@ describe("base closure", () => {
     expect(existsSync(npmReceipt)).toBe(false);
   });
 
+  test("an interrupted draft cannot resume with different npm receipt bytes", () => {
+    const npmReceipt = resolve(out, "program-release.json");
+    const publisher = resolve(repository, "scripts/publish-programs-npm.ts");
+    const result = Bun.spawnSync(
+      [
+        "bun",
+        publisher,
+        resolve(out, "assets"),
+        npmReceipt,
+        "--dry-run",
+        "--existing-receipt-sha256",
+        "0".repeat(64),
+      ],
+      { cwd: repository, env: { ...process.env, TMPDIR: scratch } },
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain(`Draft receipt SHA-256 differs for ${tag}`);
+    expect(existsSync(npmReceipt)).toBe(false);
+  });
+
   test("records both compressed companions for every raw Wasm artifact", () => {
     const raw = manifest.packages.flatMap(rawArtifacts);
     expect(raw).toHaveLength(baseGuestCount);
