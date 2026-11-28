@@ -635,6 +635,46 @@ const realWorldCases: readonly GrepCase[] = [
     expectedStdout: "!\na\n",
     stderrPresent: false,
   },
+  {
+    name: "--exclude matches directory-qualified explicit file operand",
+    args: ["--exclude=dir/file", "hit", "dir/file"],
+    files: { "dir/file": "hit\n" },
+    expectedExit: 1,
+    expectedStdout: "",
+    stderrPresent: false,
+  },
+  {
+    name: "--include matches directory-qualified explicit file operand",
+    args: ["--include=dir/file", "hit", "dir/file"],
+    files: { "dir/file": "hit\n" },
+    expectedExit: 0,
+    expectedStdout: "hit\n",
+    stderrPresent: false,
+  },
+  {
+    name: "--exclude wildcard matches directory-qualified explicit file operand",
+    args: ["--exclude=dir/*", "hit", "dir/file"],
+    files: { "dir/file": "hit\n" },
+    expectedExit: 1,
+    expectedStdout: "",
+    stderrPresent: false,
+  },
+  {
+    name: "-r --exclude matches directory-qualified explicit file operand at FTS_ROOTLEVEL",
+    args: ["-r", "--exclude=dir/file", "hit", "dir/file"],
+    files: { "dir/file": "hit\n" },
+    expectedExit: 1,
+    expectedStdout: "",
+    stderrPresent: false,
+  },
+  {
+    name: "-r --include matches directory-qualified explicit file operand at FTS_ROOTLEVEL",
+    args: ["-r", "--include=dir/file", "hit", "dir/file"],
+    files: { "dir/file": "hit\n" },
+    expectedExit: 0,
+    expectedStdout: "hit\n",
+    stderrPresent: false,
+  },
 ];
 
 async function proveQuietEarlyBail(session: FamilyAcceptanceSession): Promise<void> {

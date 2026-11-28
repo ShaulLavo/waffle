@@ -601,17 +601,40 @@
  #ifdef WITH_INTERNAL_NOSPEC
  static int litexec(const struct pat *pat, const char *string,
      size_t nmatch, regmatch_t pmatch[]);
-@@ -88,8 +131,7 @@
+@@ -75,8 +118,8 @@
+ static void printline(struct parsec *pc, int sep);
+ static void printline_metadata(struct str *line, int sep);
+ 
+-bool
+-file_matching(const char *fname)
++static bool
++file_matching_mode(const char *fname, bool match_full)
+ {
+ 	char *fname_base, *fname_buf;
+ 	bool ret;
+@@ -88,7 +131,7 @@
  	fname_base = basename(fname_buf);
  
  	for (unsigned int i = 0; i < fpatterns; ++i) {
 -		if (fnmatch(fpattern[i].pat, fname, 0) == 0 ||
--		    fnmatch(fpattern[i].pat, fname_base, 0) == 0)
-+		if (fnmatch(fpattern[i].pat, fname_base, 0) == 0)
++		if ((match_full && fnmatch(fpattern[i].pat, fname, 0) == 0) ||
+ 		    fnmatch(fpattern[i].pat, fname_base, 0) == 0)
  			/*
  			 * The last pattern matched wins exclusion/inclusion
- 			 * rights, so we can't reasonably bail out early here.
-@@ -136,16 +178,16 @@
+@@ -100,6 +143,12 @@
+ 	return (ret);
+ }
+ 
++bool
++file_matching(const char *fname)
++{
++	return (file_matching_mode(fname, true));
++}
++
+ static inline bool
+ dir_matching(const char *dname)
+ {
+@@ -136,16 +185,16 @@
  	/* This switch effectively initializes 'fts_flags' */
  	switch(linkbehave) {
  	case LINK_EXPLICIT:
@@ -631,7 +654,7 @@
  
  	fts = fts_open((argv[0] == NULL) ?
  	    __DECONST(char * const *, wd) : argv, fts_flags, NULL);
-@@ -173,20 +215,33 @@
+@@ -173,20 +222,34 @@
  			warnx("warning: %s: recursive directory loop",
  			    p->fts_path);
  			break;
@@ -646,7 +669,9 @@
  			/* Check for file exclusion/inclusion */
  			ok = true;
  			if (fexclude || finclude)
- 				ok &= file_matching(p->fts_path);
+-				ok &= file_matching(p->fts_path);
++				ok &= file_matching_mode(p->fts_path,
++				    p->fts_level == FTS_ROOTLEVEL);
  
 -			if (ok && procfile(p->fts_path))
 +			if (ok && procfile(p->fts_path)) {
@@ -666,7 +691,7 @@
  	fts_close(fts);
  	return (matched);
  }
-@@ -293,7 +348,7 @@
+@@ -293,7 +356,7 @@
  	struct stat sb;
  	mode_t s;
  	int lines;
@@ -675,7 +700,7 @@
  
  	if (strcmp(fn, "-") == 0) {
  		fn = label != NULL ? label : errstr[1];
-@@ -302,8 +357,16 @@
+@@ -302,8 +365,16 @@
  		if (stat(fn, &sb) == 0) {
  			/* Check if we need to process the file */
  			s = sb.st_mode & S_IFMT;
@@ -693,7 +718,7 @@
  			if (devbehave == DEV_SKIP && (s == S_IFIFO ||
  			    s == S_IFCHR || s == S_IFBLK || s == S_IFSOCK))
  				return (false);
-@@ -334,8 +397,9 @@
+@@ -334,8 +405,9 @@
  	if (mc.printmatch && (Aflag != 0 || Bflag != 0 || mflag || nflag))
  		pc.cntlines = true;
  	mcount = mlimit;
@@ -704,7 +729,7 @@
  		/*
  		 * XXX TODO: We need to revisit this in a chunking world. We're
  		 * not going to be doing per-line statistics because of the
-@@ -348,12 +412,21 @@
+@@ -348,12 +420,21 @@
  		pc.ln.boff = 0;
  		pc.ln.off += pc.ln.len + 1;
  		/* XXX TODO: Grab a chunk */
@@ -729,7 +754,7 @@
  		pc.ln.line_no++;
  
  		/* Return if we need to skip a binary file */
-@@ -385,19 +458,20 @@
+@@ -385,19 +466,20 @@
  		clearqueue();
  	grep_close(f);
  
@@ -752,7 +777,7 @@
  	free(pc.ln.file);
  	free(f);
  	return (lines != 0);
-@@ -411,51 +485,142 @@
+@@ -411,51 +493,142 @@
   * config, but in other scenarios such as building against libgnuregex or on
   * some non-FreeBSD OSes.
   */
@@ -924,7 +949,7 @@
  	if (n > 0 && nmatch > 0)
  		for (n = idx; n < nmatch; ++n)
  			pmatch[n].rm_so = pmatch[n].rm_eo = -1;
-@@ -529,12 +694,17 @@
+@@ -529,12 +702,17 @@
  			pmatch.rm_so = st;
  			pmatch.rm_eo = pc->ln.len;
  #ifdef WITH_INTERNAL_NOSPEC
@@ -943,7 +968,7 @@
  			if (r != 0)
  				continue;
  			/* Check for full match */
-@@ -705,6 +875,7 @@
+@@ -705,6 +883,7 @@
  	printline_metadata(line, sep);
  	fwrite(line->dat, line->len, 1, stdout);
  	putchar(fileeol);
@@ -951,7 +976,7 @@
  }
  
  static void
-@@ -792,5 +963,6 @@
+@@ -792,5 +971,6 @@
  		}
  	} else
  		grep_printline(&pc->ln, sep);
