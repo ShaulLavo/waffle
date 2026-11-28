@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
+import { commandCwdImport } from "../../../../tools/program-wasi-command.ts";
+
+assert.throws(
+  () => commandCwdImport(() => new WebAssembly.Memory({ initial: 1 }), "/\ud800"),
+  /well-formed guest cwd/,
+);
 
 const [, , guest, preopen] = process.argv;
 assert.ok(guest && preopen, "Expected a guest module and host preopen directory");
 const runner = resolve(import.meta.dirname, "../../../../tools/program-wasi-command.ts");
 const result = spawnSync(
-  "node",
+  process.execPath,
   [
     "--disable-warning=ExperimentalWarning",
     runner,

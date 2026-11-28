@@ -106,7 +106,8 @@ try {
     root,
   ]);
   await run([
-    "bun",
+    "node",
+    "--disable-warning=ExperimentalWarning",
     join(repo, "tests/fixtures/wasi-command-host.ts"),
     join(fixtures, "wasi-command-guest.wasm"),
     root,

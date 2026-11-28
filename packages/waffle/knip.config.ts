@@ -122,6 +122,7 @@ export default {
         "tests/filesystem-{shutdown,ready-disposal}-browser-runner.ts",
         "tests/fixtures/filesystem-shutdown-{page,worker}.ts",
         "tests/fixtures/{browser-cell-clone,interrupt-browser-worker,preopen-node-host,startup-pool-worker}.ts",
+        "tests/fixtures/wasi-command-host.ts",
         "tests/fixtures/opfs-close-{page,worker}.ts",
         "tests/opfs-range-browser-runner.ts",
         "tests/indexeddb-chunks-browser-runner.ts",

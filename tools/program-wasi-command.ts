@@ -5,7 +5,8 @@ import { WASI } from "node:wasi";
 const EFAULT = 21;
 
 export function commandCwdImport(memory: () => WebAssembly.Memory, cwd: string) {
-  if (!cwd.startsWith("/") || cwd.includes("\0")) throw new Error("Expected an absolute guest cwd");
+  if (!cwd.startsWith("/") || cwd.includes("\0") || !cwd.isWellFormed())
+    throw new Error("Expected an absolute, well-formed guest cwd without NUL bytes");
   const bytes = new TextEncoder().encode(cwd);
   return (ptr: number, capacity: number): number => {
     ptr >>>= 0;
