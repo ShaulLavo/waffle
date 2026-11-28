@@ -1,9 +1,12 @@
 # Group futex retirement: release a stopped group's parked members
 
-Status: Approved design. Managing approved D1 on November 16 only for irreversible whole-group
-teardown, with admission sealed and exact generation accounting. Independent design reviews are
-complete; the coordinator incorporated the bounded lifecycle corrections below from
-`DESIGN-REVIEW-REVISION.md`. Implementation is authorized, followed by independent code review.
+Status: Done. Sealed whole-group futex teardown merged on November 16, 2026 in
+[PR #532](https://github.com/ShaulLavo/waffle/pull/532) and shipped in `waffle-v0.0.138`.
+[PR #544](https://github.com/ShaulLavo/waffle/pull/544) closed wait records at release.
+[PR #548](https://github.com/ShaulLavo/waffle/pull/548) gated busy-member page reuse on
+per-incarnation exit locks. Managing accepted Gap 2, an absorbed counted wake on individual
+stops with live siblings, without extra wakes.
+
 Design by Claude Opus 5.5, revised
 2026-11-16 after review `/work/reports/goals/waffle-20261116/group-futex-retirement/DESIGN-REVIEW.md`.
 Base: `main` at `27b03a8c519b4d48d00d3723b4ee2993d735f27d` (`waffle-v0.0.137`). Line numbers are

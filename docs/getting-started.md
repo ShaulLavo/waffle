@@ -1,26 +1,16 @@
 # Getting started
 
-In this tutorial you build a small page that starts a Waffle runtime, writes a file into its filesystem, reads it back, and prints it. It takes a few minutes and needs [Bun](https://bun.sh), because Waffle's `prepare` step runs `bun prepare.ts` and the tutorial bundles and serves with Bun. The steps were run with Bun 1.4.4, the version CI uses.
+In this tutorial you build a small page that starts a Waffle runtime, writes a file into its filesystem, reads it back, and prints it. The tutorial bundles and serves the page with [Bun](https://bun.sh). The steps use Bun 1.4.4, the version CI uses.
 
 Waffle is a library for a browser app, not a command-line shell. The page creates one runtime. Bash Web and Bun are programs that borrow that runtime. See [Bash Web](https://github.com/ShaulLavo/bash-web) and [the Bun browser demo](https://bun.sprockt.dev/) for complete applications.
 
 ## Install
 
-Install `waffle` as an exact Git dependency and trust its build step:
+Install the runtime from npm.
 
 ```sh
-bun add github:ShaulLavo/waffle#4b9b6c668a59bd5aa52f0b87c3d76090b03706c3 --trust
+bun add @waffle-os/runtime
 ```
-
-You should see the package line and no "Blocked 1 postinstall" warning:
-
-```text
-installed waffle@github:ShaulLavo/waffle#4b9b6c6
-
-1 package installed
-```
-
-The command writes the `waffle` dependency and `trustedDependencies` into `package.json`. The commit above is a real revision, not a moving branch. Change the pin when you adopt a newer Waffle revision. The `prepare` step that `--trust` allows writes the Node entry points under `dist/`. Browser bundlers read the TypeScript source and do not need them.
 
 ## Write the page
 
@@ -112,6 +102,6 @@ Opening the HTML file directly from disk does not work, and neither does a serve
 - [Run a WASI program](guides/run-a-wasi-program.md): register a program and spawn it from the page.
 - [Persist the filesystem](guides/persist-the-filesystem.md): keep files between page loads.
 - [Concepts](concepts.md): who owns what, and why a guest never creates its own runtime.
-- [Status and limits](status.md): what works today and what does not.
+- The [reference index](README.md#reference) covers current filesystem modes, networking, permissions, and limits.
 - [Architecture and API notes](architecture.md) and [Host ABI](host-abi.md): the full reference.
 - [Development](development.md): repository setup and checks.

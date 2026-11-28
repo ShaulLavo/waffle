@@ -1,6 +1,10 @@
 # Status and limits
 
-Waffle is pre-1.0 and experimental. This page lists what the code does today, with the numbers and where they come from. It states facts and gives no advice. The [guides](README.md#guides) show how to work within these limits.
+> **Historical snapshot.** This page records Waffle in early November 2026, around version `0.0.110`.
+>
+> For current contracts and limits, read the [reference index](README.md#reference), starting with
+> [Host ABI](host-abi.md), [Architecture and API notes](architecture.md), and
+> [Filesystem modes](vfs.md). For current usage, see the [guides](README.md#guides).
 
 ## Current delivery
 

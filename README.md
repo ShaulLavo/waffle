@@ -8,7 +8,7 @@
 A page creates one runtime. Programs borrow its filesystem, processes, pipes and network instead of each bringing their own. [Bash Web](https://github.com/ShaulLavo/bash-web) and [our browser build of Bun](https://bun.sprockt.dev/) run on it.
 
 ```ts
-import { createRuntime } from "waffle";
+import { createRuntime } from "@waffle-os/runtime";
 
 const runtime = createRuntime({ filesystem: { workerURL: "/fs-worker.js", mode: "memory" } });
 try {
@@ -41,15 +41,15 @@ The page owns every service. Guests only borrow them, and they never create a se
 
 ## Quick start
 
-Waffle is a library for a browser app, so there is no CLI. Install it with [Bun](https://bun.sh), because Waffle's `prepare` step runs `bun prepare.ts`. Nothing is published to npm, so the command pins an exact commit and trusts Waffle's build step:
+Install the runtime with [Bun](https://bun.sh).
 
 ```sh
-bun add github:ShaulLavo/waffle#4b9b6c668a59bd5aa52f0b87c3d76090b03706c3 --trust
+bun add @waffle-os/runtime
 ```
 
 Then:
 
-1. Add `fs-worker.ts` (`import "waffle/browser/fs-worker";`) and the example above as `app.ts`.
+1. Add `fs-worker.ts` (`import "@waffle-os/runtime/browser/fs-worker";`) and the example above as `app.ts`.
 2. Bundle both entries with `bun build ./app.ts ./fs-worker.ts --outdir ./public --target browser --splitting`.
 3. Serve `public/` with the `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers, then open the page and its console. The runtime needs `SharedArrayBuffer`, which browsers give only to cross-origin isolated pages.
 
@@ -70,17 +70,17 @@ The page calls `createRuntime()` once. The runtime starts a filesystem worker th
 
 ## Docs
 
-[Getting started](docs/getting-started.md) · [Guides](docs/README.md#guides) · [Concepts](docs/concepts.md) · [Reference](docs/README.md#reference) · [Status and limits](docs/status.md) · [Troubleshooting](docs/troubleshooting.md) · [ADRs](docs/adr) · [Development](docs/development.md) · [Landing site](https://waffle.shaulavo.dev/)
+[Getting started](docs/getting-started.md) · [Guides](docs/README.md#guides) · [Concepts](docs/concepts.md) · [Reference](docs/README.md#reference) · [Troubleshooting](docs/troubleshooting.md) · [ADRs](docs/adr) · [Development](docs/development.md) · [Landing site](https://waffle.shaulavo.dev/)
 
 ## Status
 
-Pre-1.0 and experimental. `package.json` says `0.0.89` and `private: true`. There are no tags or releases and nothing on npm, so consumers pin a commit. Waffle promises no compatibility with older revisions.
+Waffle is pre-1.0 and experimental. `@waffle-os/runtime` ships on npm as `0.0.x` patch releases.
 
 - SAFE filesystem mode is reserved. `mode: "safe"` throws `UNSUPPORTED_VFS`.
-- Persistent storage has one writer at a time. A second tab waits or takes over.
-- CI runs the browser suites in Chromium, Firefox and WebKit on Linux. Nothing is verified on iOS or Android.
+- Persistent storage uses one owner at a time. IndexedDB defaults to `whenBusy: "takeover"`, queues with `"wait"`, or shares one elected host across same-origin tabs with `"attach"`.
+- CI runs the browser suites in Chromium, Firefox, and WebKit on Linux. Separate macOS runs passed the experimental M1 threads suite in desktop Safari and iPhone Simulator Safari.
 
-[Status and limits](docs/status.md) has the full list and the numbers.
+Read the [reference index](docs/README.md#reference) for current behavior and limits. The [historical status snapshot](docs/status.md) preserves earlier notes from around `0.0.110`.
 
 ## License and contributing
 

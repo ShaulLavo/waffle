@@ -5,7 +5,7 @@ Start with [Getting started](getting-started.md). It builds a page that runs a r
 ## Start here
 
 - [Getting started](getting-started.md): tutorial. Build and serve a page that writes and reads a file.
-- [Status and limits](status.md): what works, what does not, with numbers.
+- [Historical status snapshot](status.md) preserves November 2026 notes around `0.0.110`.
 - [Troubleshooting](troubleshooting.md): the messages you can hit and their fixes.
 
 ## Guides

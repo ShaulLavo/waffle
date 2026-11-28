@@ -4,13 +4,11 @@ Working plans for the agents and people who build Waffle. These files are not us
 
 Live plans: `001-vfs-family.md` (approved, in progress) and `browser-runtime.md` (boundaries overview plus two merged admission repairs). A finished plan becomes an ADR in `docs/adr/`, a public doc, or gets deleted.
 
-Approved: [Group futex retirement](group-futex-retirement.md), preserving native waits and allowing cancellation only after an irreversible whole-group admission seal.
-
-Approved (2026-11-20): [File times](file-times.md), independent nanosecond atime and mtime and a Linux-style ctime for guests.
-
-Approved work: [Native guest threads](wasi-threads.md), with
-[toolchain research and prior-art references](wasi-threads-references.md). This is an implementation
-plan for execution; thread support is not yet delivered.
+Shipped milestone: [Native guest threads](wasi-threads.md) M1 delivered the experimental
+source-admitted Runtime thread path and browser CI coverage, documented in
+[Run the Runtime thread fixture](../docs/threads-runtime-runner.md).
+[Toolchain research and prior-art references](wasi-threads-references.md) keeps the background
+notes. General launch, broader import support, and physical iPhone qualification remain follow-up work.
 
 Approved (owner, 2026-11-02): [Guest graphics](guest-graphics.md), an overview of three plans that
 let a WASI guest open a window and draw with WebGPU: [windows, input and a winit backend](guest-windows.md),

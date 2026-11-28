@@ -8,7 +8,7 @@ const BASH_WEB = "https://github.com/ShaulLavo/bash-web";
 const BUN_DEMO = "https://bun.sprockt.dev/";
 const START = `${DOCS}/getting-started.md`;
 
-const snippet = `import { createRuntime } from "waffle";
+const snippet = `import { createRuntime } from "@waffle-os/runtime";
 
 const runtime = createRuntime({
   filesystem: { workerURL: "/fs-worker.js", mode: "memory" },
@@ -362,11 +362,12 @@ const docs = [
       <aside class="status" aria-label="Project status">
         <span class="tag">pre-1.0</span>
         <p>
-          <strong>Waffle is experimental.</strong> It is not on npm, and revisions promise no
-          compatibility with each other. CI runs the browser suites in Chromium, Firefox and WebKit
-          on Linux. Nothing is verified on iOS or Android yet.
+          <strong>Waffle is experimental.</strong> <code>@waffle-os/runtime</code> ships on npm as
+          pre-1.0 patch releases. CI runs the browser suites in Chromium, Firefox, and WebKit on
+          Linux. Separate macOS runs passed the experimental M1 threads suite in desktop Safari
+          and iPhone Simulator Safari.
         </p>
-        <a class="link" href={`${DOCS}/status.md`}>Status and limits</a>
+        <a class="link" href={`${DOCS}/README.md#reference`}>Reference docs</a>
       </aside>
     </div>
   </section>
