@@ -144,14 +144,21 @@ jobs:
               bun run --cwd "packages/$directory" --if-present prepare:package
           done
       - name: Stage, pack and verify the release closure
+        id: closure
         env:
           RUNTIME_URL: ${{ inputs.runtime_url }}
           RUNTIME_SHA256: ${{ inputs.runtime_sha256 }}
           REGISTRY: ${{ inputs.registry }}
         run: |
+          set -euo pipefail
+          named_programs="$RUNNER_TEMP/waffle-named-programs"
           bun scripts/program-release.ts --tag "$RELEASE_TAG" --require-tag --families "$FAMILIES" \
             --runtime-url "$RUNTIME_URL" --runtime-sha256 "$RUNTIME_SHA256" \
+            --named-programs-dir "$named_programs" \
             ${REGISTRY:+--registry "$REGISTRY"} --out .build/program-release
+          if compgen -G "$named_programs/*-named.wasm" >/dev/null; then
+            printf 'named=true\n' >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/upload-artifact@v4
         id: staged
         with:
@@ -159,10 +166,11 @@ jobs:
           path: .build/program-release/assets
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
+        if: steps.closure.outputs.named == 'true'
         with:
           name: program-named-${{ inputs.tag }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/waffle-named-programs
-          if-no-files-found: ignore
+          if-no-files-found: error
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
 

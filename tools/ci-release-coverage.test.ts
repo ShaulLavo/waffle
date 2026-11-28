@@ -82,6 +82,21 @@ test("the program publish job retries from the qualified artifact without buildi
   );
 });
 
+test("program qualification requires and uploads the named Wasm evidence", () => {
+  const build = steps(record(programReleaseJobs().release).steps);
+  const qualifier = build.findIndex((step) => step.id === "closure");
+  const upload = build.findIndex(
+    (step) =>
+      step.uses === "actions/upload-artifact@v4" &&
+      String(record(step.with).name).startsWith("program-named-"),
+  );
+  expect(qualifier).toBeGreaterThanOrEqual(0);
+  expect(upload).toBeGreaterThan(qualifier);
+  expect(build[qualifier]?.run).toContain('--named-programs-dir "$named_programs"');
+  expect(build[upload]?.if).toBe("steps.closure.outputs.named == 'true'");
+  expect(record(build[upload]?.with)["if-no-files-found"]).toBe("error");
+});
+
 test("program release preflight downloads a matching draft receipt across release pages", () => {
   const cwd = mkdtempSync(join(tmpdir(), "waffle-draft-receipt-"));
   try {

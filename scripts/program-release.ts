@@ -26,6 +26,8 @@ import {
   assertPackedSymbols,
   verifyProgramTarball,
 } from "../tools/program-package.ts";
+import { stripWasmNames } from "../tools/program-build-tools.ts";
+import { programBytesIdentity } from "../tools/program-derivation.ts";
 import { releaseDownload } from "../tools/ci-release-download.ts";
 import {
   assertExactHostInterface,
@@ -72,6 +74,7 @@ export interface ReleaseOptions {
   /** Optional consumer program, bundled against the installed closure and run after install. */
   readonly acceptance?: string;
   readonly acceptanceBrowser?: string;
+  readonly namedProgramsDirectory?: string;
   /** Refuse an untagged candidate; the release workflow packs only an existing tag. */
   readonly requireTag?: boolean;
   /** Cancels fetches and terminates owned child process groups before staging is removed. */
@@ -553,6 +556,37 @@ interface StagedPackage {
   readonly rewrite: ReturnType<typeof rewriteManifest>;
   readonly audit: ImportAudit;
   readonly artifacts: string[];
+}
+
+function verifyNamedPackage(directory: string, item: StagedPackage, remaining: Set<string>): void {
+  for (const file of item.artifacts.filter((path) => path.endsWith(".wasm"))) {
+    const name = `${basename(file, ".wasm")}-named.wasm`;
+    assert.ok(remaining.delete(name), `${item.entry.name}: missing named program ${name}`);
+    const named = readFileSync(resolve(directory, name));
+    const receipt = readJson(resolve(item.staged, file.replace(/\.wasm$/, "-program.json")));
+    assert.ok(
+      Array.isArray(receipt.operations) && receipt.operations[0],
+      `${file}: optimizer receipt`,
+    );
+    assert.deepEqual(
+      programBytesIdentity(named),
+      receipt.operations[0].output,
+      `${name}: named identity`,
+    );
+    assert.ok(
+      readFileSync(resolve(item.staged, file)).equals(stripWasmNames(named)),
+      `${name}: name stripping differs from the staged guest`,
+    );
+  }
+}
+
+function verifyNamedPrograms(directory: string, staged: readonly StagedPackage[]): void {
+  const remaining = new Set(readdirSync(directory));
+  for (const item of staged) {
+    if (item.entry.name === "@waffle-os/python") continue;
+    verifyNamedPackage(directory, item, remaining);
+  }
+  assert.equal(remaining.size, 0, `Unexpected named programs: ${Array.from(remaining).join(", ")}`);
 }
 
 interface PackPlan {
@@ -1281,6 +1315,8 @@ export async function buildRelease(options: ReleaseOptions): Promise<ReleaseMani
       { ...plan, work: productionWork, destination: assets },
       control,
     );
+    if (options.namedProgramsDirectory !== undefined)
+      verifyNamedPrograms(options.namedProgramsDirectory, staged);
     const closure = {
       root,
       workspace,
@@ -1351,6 +1387,7 @@ function cliOptions(argv: string[]): ReleaseOptions {
       registry: { type: "string" },
       acceptance: { type: "string" },
       "workload-browser": { type: "string" },
+      "named-programs-dir": { type: "string" },
       "require-tag": { type: "boolean", default: false },
       "timeout-ms": { type: "string" },
     },
@@ -1380,6 +1417,7 @@ function cliOptions(argv: string[]): ReleaseOptions {
       ? resolve(values.root, "tools/family-workload.ts")
       : values.acceptance,
     acceptanceBrowser,
+    namedProgramsDirectory: values["named-programs-dir"],
     requireTag: values["require-tag"],
     commandTimeoutMs: values["timeout-ms"] ? Number(values["timeout-ms"]) : undefined,
   };
@@ -1390,7 +1428,7 @@ const usage = `Usage: bun scripts/program-release.ts --list [--families F]
   --runtime-url URL --runtime-sha256 HEX [--runtime-tarball FILE] \\
   [--families base,python,git] [--repository OWNER/NAME] [--registry URL] \\
   [--acceptance FILE | --workload-browser chromium|firefox|webkit]
-  [--require-tag] [--timeout-ms MS] [--allow-dirty]`;
+  [--require-tag] [--named-programs-dir DIR] [--timeout-ms MS] [--allow-dirty]`;
 
 /** `--list --families F` prints the dependency-ordered package directories to prepare. */
 function listClosure(argv: string[]) {
