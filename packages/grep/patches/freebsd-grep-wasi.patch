@@ -452,7 +452,7 @@
  
  	if ((aargc == 0 || aargc == 1) && !Hflag)
  		hflag = true;
-@@ -701,24 +953,28 @@
+@@ -701,24 +953,37 @@
  	initqueue();
  
  	if (aargc == 0 && dirbehave != DIR_RECURSE)
@@ -464,9 +464,19 @@
  		matched = grep_tree(aargv);
  	else
  		for (matched = false; aargc--; ++aargv) {
- 			if ((finclude || fexclude) && !file_matching(*aargv))
+-			if ((finclude || fexclude) && !file_matching(*aargv))
++			if ((finclude || fexclude) &&
++			    strcmp(*aargv, "-") != 0 &&
++			    !file_matching(*aargv)) {
++				struct stat sb;
++				if (stat(*aargv, &sb) != 0) {
++					file_err = true;
++					if (!sflag)
++						warn("%s", *aargv);
++				}
  				continue;
 -			if (procfile(*aargv))
++			}
 +			if (procfile(*aargv)) {
  				matched = true;
 +				if (qflag)
@@ -601,27 +611,58 @@
  #ifdef WITH_INTERNAL_NOSPEC
  static int litexec(const struct pat *pat, const char *string,
      size_t nmatch, regmatch_t pmatch[]);
-@@ -75,8 +118,8 @@
+@@ -75,21 +118,46 @@
  static void printline(struct parsec *pc, int sep);
  static void printline_metadata(struct str *line, int sep);
  
 -bool
 -file_matching(const char *fname)
 +static bool
++fnmatch_path_suffix(const char *pat, const char *path)
++{
++	const char *s = path;
++
++	for (;;) {
++		if (fnmatch(pat, s, 0) == 0)
++			return (true);
++		const char *slash = strchr(s, '/');
++		if (slash == NULL)
++			return (false);
++		while (*slash == '/')
++			slash++;
++		if (*slash == '\0')
++			return (false);
++		s = slash;
++	}
++}
++
++static bool
 +file_matching_mode(const char *fname, bool match_full)
  {
  	char *fname_base, *fname_buf;
  	bool ret;
-@@ -88,7 +131,7 @@
+ 
+ 	ret = finclude ? false : true;
++	if (match_full) {
++		for (unsigned int i = 0; i < fpatterns; ++i) {
++			if (fnmatch_path_suffix(fpattern[i].pat, fname))
++				ret = (fpattern[i].mode != EXCL_PAT);
++		}
++		return (ret);
++	}
+ 	fname_buf = strdup(fname);
+ 	if (fname_buf == NULL)
+ 		err(2, "strdup");
  	fname_base = basename(fname_buf);
  
  	for (unsigned int i = 0; i < fpatterns; ++i) {
 -		if (fnmatch(fpattern[i].pat, fname, 0) == 0 ||
-+		if ((match_full && fnmatch(fpattern[i].pat, fname, 0) == 0) ||
- 		    fnmatch(fpattern[i].pat, fname_base, 0) == 0)
+-		    fnmatch(fpattern[i].pat, fname_base, 0) == 0)
++		if (fnmatch(fpattern[i].pat, fname_base, 0) == 0)
  			/*
  			 * The last pattern matched wins exclusion/inclusion
-@@ -100,6 +143,12 @@
+ 			 * rights, so we can't reasonably bail out early here.
+@@ -100,6 +168,12 @@
  	return (ret);
  }
  
@@ -634,7 +675,7 @@
  static inline bool
  dir_matching(const char *dname)
  {
-@@ -136,16 +185,16 @@
+@@ -136,16 +210,16 @@
  	/* This switch effectively initializes 'fts_flags' */
  	switch(linkbehave) {
  	case LINK_EXPLICIT:
@@ -654,7 +695,28 @@
  
  	fts = fts_open((argv[0] == NULL) ?
  	    __DECONST(char * const *, wd) : argv, fts_flags, NULL);
-@@ -173,20 +222,34 @@
+@@ -156,6 +230,20 @@
+ 		case FTS_DNR:
+ 			/* FALLTHROUGH */
+ 		case FTS_ERR:
++			/* FALLTHROUGH */
++		case FTS_NS:
++			if (p->fts_info == FTS_NS &&
++			    strcmp(p->fts_path, "-") == 0 &&
++			    p->fts_level == FTS_ROOTLEVEL) {
++				if (procfile(p->fts_path)) {
++					matched = true;
++					if (qflag) {
++						errno = 0;
++						goto done;
++					}
++				}
++				break;
++			}
+ 			file_err = true;
+ 			if(!sflag)
+ 				warnx("%s: %s", p->fts_path, strerror(p->fts_errno));
+@@ -173,20 +261,34 @@
  			warnx("warning: %s: recursive directory loop",
  			    p->fts_path);
  			break;
@@ -691,7 +753,7 @@
  	fts_close(fts);
  	return (matched);
  }
-@@ -293,7 +356,7 @@
+@@ -293,7 +395,7 @@
  	struct stat sb;
  	mode_t s;
  	int lines;
@@ -700,7 +762,7 @@
  
  	if (strcmp(fn, "-") == 0) {
  		fn = label != NULL ? label : errstr[1];
-@@ -302,8 +365,16 @@
+@@ -302,8 +404,16 @@
  		if (stat(fn, &sb) == 0) {
  			/* Check if we need to process the file */
  			s = sb.st_mode & S_IFMT;
@@ -718,7 +780,7 @@
  			if (devbehave == DEV_SKIP && (s == S_IFIFO ||
  			    s == S_IFCHR || s == S_IFBLK || s == S_IFSOCK))
  				return (false);
-@@ -334,8 +405,9 @@
+@@ -334,8 +444,9 @@
  	if (mc.printmatch && (Aflag != 0 || Bflag != 0 || mflag || nflag))
  		pc.cntlines = true;
  	mcount = mlimit;
@@ -729,7 +791,7 @@
  		/*
  		 * XXX TODO: We need to revisit this in a chunking world. We're
  		 * not going to be doing per-line statistics because of the
-@@ -348,12 +420,21 @@
+@@ -348,12 +459,21 @@
  		pc.ln.boff = 0;
  		pc.ln.off += pc.ln.len + 1;
  		/* XXX TODO: Grab a chunk */
@@ -754,7 +816,7 @@
  		pc.ln.line_no++;
  
  		/* Return if we need to skip a binary file */
-@@ -385,19 +466,20 @@
+@@ -385,19 +505,20 @@
  		clearqueue();
  	grep_close(f);
  
@@ -777,7 +839,7 @@
  	free(pc.ln.file);
  	free(f);
  	return (lines != 0);
-@@ -411,51 +493,142 @@
+@@ -411,51 +532,142 @@
   * config, but in other scenarios such as building against libgnuregex or on
   * some non-FreeBSD OSes.
   */
@@ -949,7 +1011,7 @@
  	if (n > 0 && nmatch > 0)
  		for (n = idx; n < nmatch; ++n)
  			pmatch[n].rm_so = pmatch[n].rm_eo = -1;
-@@ -529,12 +702,17 @@
+@@ -529,12 +741,17 @@
  			pmatch.rm_so = st;
  			pmatch.rm_eo = pc->ln.len;
  #ifdef WITH_INTERNAL_NOSPEC
@@ -968,7 +1030,7 @@
  			if (r != 0)
  				continue;
  			/* Check for full match */
-@@ -705,6 +883,7 @@
+@@ -705,6 +922,7 @@
  	printline_metadata(line, sep);
  	fwrite(line->dat, line->len, 1, stdout);
  	putchar(fileeol);
@@ -976,7 +1038,7 @@
  }
  
  static void
-@@ -792,5 +971,6 @@
+@@ -792,5 +1010,6 @@
  		}
  	} else
  		grep_printline(&pc->ln, sep);

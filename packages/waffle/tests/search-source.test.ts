@@ -136,7 +136,7 @@ test("grep explicit file operands apply include/exclude filters and release skip
         plan: {
           ...plan,
           tool,
-          operands: ["dir/file", "dir/keep.txt"],
+          operands: ["dir/file", "outer/dir/keep.txt"],
           walk: {
             include: [{ kind: "basename", glob: "dir*" }],
             exclude: [{ kind: "basename", glob: "file" }],
@@ -167,10 +167,10 @@ test("grep explicit file operands apply include/exclude filters and release skip
     const page = source.next(16);
     expect(page.done).toBe(true);
     if (tool === "grep") {
-      expect(page.entries.map((entry) => entry.path)).toEqual(["dir/keep.txt"]);
+      expect(page.entries.map((entry) => entry.path)).toEqual(["outer/dir/keep.txt"]);
       expect(released).toEqual([11]);
     } else {
-      expect(page.entries.map((entry) => entry.path)).toEqual(["dir/file", "dir/keep.txt"]);
+      expect(page.entries.map((entry) => entry.path)).toEqual(["dir/file", "outer/dir/keep.txt"]);
       expect(released).toEqual([]);
     }
     source.close();

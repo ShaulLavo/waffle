@@ -82,6 +82,18 @@ function matchStarGlob(glob: string, text: string): boolean {
   return g === glob.length;
 }
 
+function matchPathSuffix(glob: string, path: string): boolean {
+  let offset = 0;
+  for (;;) {
+    if (matchStarGlob(glob, path.slice(offset))) return true;
+    let slash = path.indexOf("/", offset);
+    if (slash === -1) return false;
+    while (slash < path.length && path[slash] === "/") slash++;
+    if (slash >= path.length) return false;
+    offset = slash;
+  }
+}
+
 /** One source belongs to one SearchRun. Its entry sequence is SearchRun's candidate index. */
 export class WalkSource implements CandidateSource {
   private readonly leases = new Map<number, Lease>();
@@ -166,9 +178,7 @@ export class WalkSource implements CandidateSource {
     if (this.context.request.plan.tool !== "grep") return true;
     const { include, exclude } = this.context.request.plan.walk;
     if (include.length === 0 && exclude.length === 0) return true;
-    const base = path.slice(path.lastIndexOf("/") + 1);
-    const matches = (pattern: { readonly glob: string }) =>
-      matchStarGlob(pattern.glob, path) || matchStarGlob(pattern.glob, base);
+    const matches = (pattern: { readonly glob: string }) => matchPathSuffix(pattern.glob, path);
     if (include.length > 0 && !include.some(matches)) return false;
     return !exclude.some(matches);
   }

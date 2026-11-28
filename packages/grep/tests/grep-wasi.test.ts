@@ -675,6 +675,30 @@ const realWorldCases: readonly GrepCase[] = [
     expectedStdout: "dir/file:hit\n",
     stderrPresent: false,
   },
+  {
+    name: "--exclude still reports missing explicit operand as status 2 (non-recursive)",
+    args: ["--exclude=missing*", "hit", "missing.txt", "good.txt"],
+    files: { "good.txt": "hit\n" },
+    expectedExit: 2,
+    expectedStdout: "good.txt:hit\n",
+    stderrIncludes: "missing.txt",
+  },
+  {
+    name: "-r --exclude still reports missing explicit operand as status 2",
+    args: ["-r", "--exclude=missing*", "hit", "missing.txt", "good.txt"],
+    files: { "good.txt": "hit\n" },
+    expectedExit: 2,
+    expectedStdout: "good.txt:hit\n",
+    stderrIncludes: "missing.txt",
+  },
+  {
+    name: "-r preserves explicit stdin operand -",
+    args: ["-r", "hit", "-"],
+    stdin: "hit\n",
+    expectedExit: 0,
+    expectedStdout: "(standard input):hit\n",
+    stderrPresent: false,
+  },
 ];
 
 async function proveQuietEarlyBail(session: FamilyAcceptanceSession): Promise<void> {
@@ -1084,6 +1108,7 @@ interface ParityVector {
   readonly expectFast: boolean;
   readonly expectedExit: number;
   readonly expectedStdout: string;
+  readonly stderrIncludes?: string;
 }
 
 const parityFiles: Readonly<Record<string, string>> = {
@@ -1096,9 +1121,35 @@ const parityFiles: Readonly<Record<string, string>> = {
   "visible.txt": "dotval\n",
   ".hidden": "dotval\n",
   "dir/file": "fval\n",
+  "outer/dir/file.txt": "fval\n",
 };
 
 const parityVectors: readonly ParityVector[] = [
+  {
+    label: "-raH --include=dir* matches intermediate suffix of explicit operand",
+    args: ["-raH", "--include=dir*", "fval", "outer/dir/file.txt"],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "outer/dir/file.txt:fval\n",
+  },
+  {
+    label: "-raH --exclude=dir* excludes intermediate suffix of explicit operand",
+    args: ["-raH", "--exclude=dir*", "fval", "outer/dir/file.txt"],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 1,
+    expectedStdout: "",
+  },
+  {
+    label: "-raH --exclude=missing* still reports missing explicit operand with status 2",
+    args: ["-raH", "--exclude=missing*", "one", "missing.txt", "f"],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 2,
+    expectedStdout: "f:one\nf:one\n",
+    stderrIncludes: "missing.txt",
+  },
   {
     label: "-raH --exclude=dir* filters explicit file operand by full path",
     args: ["-raH", "--exclude=dir*", "fval", "dir/file"],
@@ -1330,9 +1381,25 @@ test("FreeBSD grep WASI binary matches fastGrep output and exit status on admitt
   const wasiResults = await collectParityResults(grep);
   const fastResults = await collectParityResults(fastCatalog);
   for (const [index, vector] of parityVectors.entries()) {
-    const expected = { status: vector.expectedExit, stdout: vector.expectedStdout, stderr: "" };
-    assert.deepEqual(wasiResults[index], expected, `${vector.label}: FreeBSD grep.wasm`);
-    assert.deepEqual(fastResults[index], expected, `${vector.label}: fastGrep`);
+    const wasi = wasiResults[index]!;
+    const fast = fastResults[index]!;
+    assert.equal(wasi.status, vector.expectedExit, `${vector.label}: FreeBSD grep.wasm status`);
+    assert.equal(fast.status, vector.expectedExit, `${vector.label}: fastGrep status`);
+    assert.equal(wasi.stdout, vector.expectedStdout, `${vector.label}: FreeBSD grep.wasm stdout`);
+    assert.equal(fast.stdout, vector.expectedStdout, `${vector.label}: fastGrep stdout`);
+    if (vector.stderrIncludes !== undefined) {
+      assert.ok(
+        wasi.stderr.includes(vector.stderrIncludes),
+        `${vector.label}: FreeBSD grep.wasm stderr=${JSON.stringify(wasi.stderr)}`,
+      );
+      assert.ok(
+        fast.stderr.includes(vector.stderrIncludes),
+        `${vector.label}: fastGrep stderr=${JSON.stringify(fast.stderr)}`,
+      );
+      continue;
+    }
+    assert.equal(wasi.stderr, "", `${vector.label}: FreeBSD grep.wasm stderr`);
+    assert.equal(fast.stderr, "", `${vector.label}: fastGrep stderr`);
   }
 }, 90_000);
 
