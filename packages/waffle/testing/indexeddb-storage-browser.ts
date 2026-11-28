@@ -2001,6 +2001,7 @@ function indexedDBCases(
     }
 
     const committedName = `${name}-committed`;
+    await allocation?.allocate({ kind: "indexeddb", name: committedName });
     try {
       const seeded = await IndexedDBStorage.openCommitted(committedName);
       await seeded.close();
@@ -2051,6 +2052,7 @@ function indexedDBCases(
 
     for (let round = 0; round < 10; round++) {
       const target = `${name}-race-${round}`;
+      await allocation?.allocate({ kind: "indexeddb", name: target });
       const writer = await IndexedDBStorage.open(target, { compactEvery: 2 });
       await writer.persist(batch(1));
       await writer.close();
