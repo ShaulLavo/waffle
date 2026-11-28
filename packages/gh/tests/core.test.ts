@@ -2,6 +2,7 @@ import { createScratch } from "./scratch.ts";
 import assert from "node:assert/strict";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { test } from "node:test";
+import packageInfo from "../package.json" with { type: "json" };
 import { prepareFields } from "../src/api-fields.ts";
 import { runGh } from "../src/cli.ts";
 import { nodeFileSystem } from "../src/filesystem.ts";
@@ -9,6 +10,15 @@ import { decode, encode } from "../src/json.ts";
 import { executeJq } from "../src/jq.ts";
 import { PlaceholderResolver, discoverGit } from "../src/repository.ts";
 import type { HttpRequest, HttpResponse, Invocation } from "../src/types.ts";
+
+test("--version reports the Waffle package name and version", async () => {
+  const result = await execute({ argv: ["--version"], responses: [] });
+  assert.deepEqual(result, {
+    exit: 0,
+    stdout: `${packageInfo.name} ${packageInfo.version}\n`,
+    stderr: "",
+  });
+});
 
 test("invalid jq fails explicitly after the API response", async () => {
   const result = await execute({
