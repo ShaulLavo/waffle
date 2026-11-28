@@ -26,6 +26,7 @@ import {
   assertPackedSymbols,
   verifyProgramTarball,
 } from "../tools/program-package.ts";
+import { releaseDownload } from "../tools/ci-release-download.ts";
 import {
   assertExactHostInterface,
   assertWaffleFamilyManifest,
@@ -684,7 +685,7 @@ export async function readRuntime(runtime: RuntimeAsset, work: string, control: 
 async function fetchOk(url: string, control: Control) {
   const deadline = AbortSignal.timeout(control.timeoutMs);
   const signal = control.signal ? AbortSignal.any([control.signal, deadline]) : deadline;
-  const response = await fetch(url, { signal });
+  const response = await releaseDownload(url, { signal });
   assert.ok(response.ok, `GET ${url}: ${response.status}`);
   return response;
 }

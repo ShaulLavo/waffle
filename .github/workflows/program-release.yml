@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing programs-v<version> tag on main
+        description: Existing programs-v<version> tag on main with npm runtime-input support
         required: true
         type: string
       runtime_url:
