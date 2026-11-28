@@ -292,35 +292,12 @@ function directLogicalAlias(path: string): number | undefined {
     return /^[0-9]+$/.test(last) ? Number(last) : undefined;
 }
 
-function reservedDirectory(
-  root: DirNode,
-  path: string,
-  unresolvedLinks: Set<SymlinkNode>,
-): DirNode | undefined {
-  const links: SymlinkNode[] = [];
-  const result = walkTree(root, path, {
-    clampRoot: true,
-    followFinal: true,
-    search() {},
-    child(parent, name) {
-      const child = parent.children.get(name);
-      if (child?.kind === "symlink") links.push(child);
-      return child;
-    },
-  });
-  if (typeof result !== "number" && result.node?.kind === "dir") return result.node;
-  // A physical probe may miss a directory the guarded walk reaches via virtual
-  // ancestors. Refuse that route when encountered, without hiding unrelated names.
-  for (const link of links) unresolvedLinks.add(link);
-}
-
 class CooperativeWalk {
   private readonly dev: DirNode | undefined;
   private readonly devFd: DirNode | undefined;
   private readonly procFd: DirNode | undefined;
   private readonly etc: DirNode | undefined;
   private readonly synthetic = new Set<DirNode>();
-  private readonly unresolvedLinks = new Set<SymlinkNode>();
   result?: Exclude<CooperativePath, { kind: "inode" }>;
 
   constructor(
@@ -328,10 +305,25 @@ class CooperativeWalk {
     private readonly options: CooperativeResolveOptions,
     private readonly direct: number | undefined,
   ) {
-    this.dev = reservedDirectory(root, "dev", this.unresolvedLinks);
-    this.devFd = reservedDirectory(root, "dev/fd", this.unresolvedLinks);
-    this.procFd = reservedDirectory(root, "proc/self/fd", this.unresolvedLinks);
-    this.etc = options.machineId ? reservedDirectory(root, "etc", this.unresolvedLinks) : undefined;
+    this.dev = this.reservedDirectory(root, "dev");
+    this.devFd = this.reservedDirectory(root, "dev/fd");
+    this.procFd = this.reservedDirectory(root, "proc/self/fd");
+    this.etc = options.machineId ? this.reservedDirectory(root, "etc") : undefined;
+  }
+
+  private reservedDirectory(root: DirNode, path: string): DirNode | undefined {
+    // Classify parent identities in the same namespace as the guarded walk,
+    // including links whose targets pass through synthetic ancestors.
+    const result = walkTree(root, path, {
+      clampRoot: true,
+      followFinal: true,
+      search() {},
+      child: (parent, name, _origin, ancestors, currentPath, next) => {
+        const physical = parent.children.get(name);
+        return physical ?? this.virtualChild(ancestors.join("/"), name, currentPath, next);
+      },
+    });
+    if (typeof result !== "number" && result.node?.kind === "dir") return result.node;
   }
 
   child(
@@ -356,15 +348,17 @@ class CooperativeWalk {
       return;
     }
     const physical = parent.children.get(name);
-    if (physical?.kind === "symlink" && (suffix || trailing) && this.unresolvedLinks.has(physical))
-      throw new FilesystemError(76);
     const device = this.device(parent, prefix, name, physical);
     if (device) {
       if (suffix || trailing) throw new FilesystemError(54);
       this.result = { kind: device };
       return;
     }
-    if (physical || !suffix) return physical;
+    return physical ?? this.virtualChild(prefix, name, path, next);
+  }
+
+  private virtualChild(prefix: string, name: string, path: string, next: number) {
+    if (!/[^/]/.test(path.slice(next))) return;
     return this.virtualDirectory(prefix ? prefix + "/" + name : name);
   }
 

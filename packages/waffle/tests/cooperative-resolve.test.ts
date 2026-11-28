@@ -83,6 +83,37 @@ test("an unresolved reserved-directory link does not hide ordinary numeric files
   }
 });
 
+test("a symlinked reserved ancestor permits ordinary opens when its fd child is missing", () => {
+  const fs = new MemFS();
+  fs.writeFile("/devices/config", "ordinary");
+  const link = fs.resolveAbsolute("/dev");
+  if (typeof link === "number") throw new Error("missing fixture parent");
+  expect(fs.symlink(link, "/devices")).toBe(0);
+  const { wasi, open, view } = openGuest(fs);
+  try {
+    expect(open("dev/config")).toBe(0);
+    expect(view.getUint32(512, true)).toBe(0);
+  } finally {
+    wasi.descriptors.dispose();
+  }
+});
+
+test("reserved-parent identity follows the same synthetic ancestors as a guarded open", () => {
+  const fs = new MemFS();
+  fs.mkdirp("/dev");
+  fs.writeFile("/device-files/config", "ordinary");
+  const link = fs.resolveAbsolute("/dev/fd");
+  if (typeof link === "number") throw new Error("missing fixture parent");
+  expect(fs.symlink(link, "/proc/self/fd/../../../device-files")).toBe(0);
+  const { wasi, open } = openGuest(fs);
+  try {
+    expect(open("dev/fd/config")).toBe(0);
+    expect(open("device-files/4", 4n)).toBe(76);
+  } finally {
+    wasi.descriptors.dispose();
+  }
+});
+
 test("the guarded WASI import confirms direct aliases without touching unrelated descriptor slots", () => {
   const fs = new MemFS();
   fs.writeFile("/ordinary", "hello");
