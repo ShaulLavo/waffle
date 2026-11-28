@@ -30,7 +30,7 @@
   },
   "patch": {
     "path": "patches/freebsd-grep-wasi.patch",
-    "sha256": "1888b3203d46d0c6a916ccc273cb786d508b78c546d56a9473a0206925ed49d3"
+    "sha256": "fe54da8e57ab1069e628d69f1420589f448f64f50dadd3132697801ac9114a5a"
   },
   "finalization": "Shared stageProgram runs pinned Binaryen optimization, validates the named guest, strips names, and stages derivation and compression receipts.",
   "optimizationPolicy": "waffle-program-size-v2"

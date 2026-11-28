@@ -106,7 +106,7 @@
  
  bool		 matchall;
  
-@@ -135,6 +141,144 @@
+@@ -135,6 +141,181 @@
  
  /* Housekeeping */
  bool	 file_err;	/* file reading error */
@@ -120,6 +120,43 @@
 +			_exit(141);
 +		err(2, "stdout");
 +	}
++}
++
++static bool
++is_literal_pattern(const char *pat, int len, int mode)
++{
++	if (mode == GREP_FIXED)
++		return (true);
++	for (int i = 0; i < len; i++) {
++		char ch = pat[i];
++		if (ch == '\\' || ch == '.' || ch == '[' || ch == '*' ||
++		    ch == '^' || ch == '$')
++			return (false);
++		if (mode == GREP_EXTENDED && (ch == '+' || ch == '?' ||
++		    ch == '(' || ch == ')' || ch == '{' || ch == '}' ||
++		    ch == '|'))
++			return (false);
++	}
++	return (true);
++}
++
++static bool
++is_ere_literal_alternation(const char *pat, int len)
++{
++	bool has_pipe = false;
++
++	for (int i = 0; i < len; i++) {
++		char ch = pat[i];
++		if (ch == '|') {
++			has_pipe = true;
++			continue;
++		}
++		if (ch == '\\' || ch == '.' || ch == '[' || ch == '*' ||
++		    ch == '^' || ch == '$' || ch == '+' || ch == '?' ||
++		    ch == '(' || ch == ')' || ch == '{' || ch == '}')
++			return (false);
++	}
++	return (has_pipe);
 +}
 +
 +#ifndef __FreeBSD__
@@ -251,7 +288,7 @@
  
  /*
   * Prints usage information and returns 2.
-@@ -188,6 +332,7 @@
+@@ -188,6 +369,7 @@
  	{"only-matching",	no_argument,		NULL, 'o'},
  	{"quiet",		no_argument,		NULL, 'q'},
  	{"silent",		no_argument,		NULL, 'q'},
@@ -259,10 +296,33 @@
  	{"recursive",		no_argument,		NULL, 'r'},
  	{"no-messages",		no_argument,		NULL, 's'},
  	{"binary",		no_argument,		NULL, 'U'},
-@@ -320,6 +465,12 @@
+@@ -224,6 +406,7 @@
+ 	pattern[patterns].pat = grep_malloc(len + 1);
+ 	memcpy(pattern[patterns].pat, pat, len);
+ 	pattern[patterns].len = len;
++	pattern[patterns].is_literal = false;
+ 	pattern[patterns].pat[len] = '\0';
+ 	++patterns;
+ }
+@@ -319,7 +502,27 @@
+ 	int c, lastc, needpattern, newarg, prevoptind;
  	bool matched;
  
++#ifdef __wasi__
++	{
++		const char *lc_all = getenv("LC_ALL");
++		const char *lc_ctype = getenv("LC_CTYPE");
++		const char *lang = getenv("LANG");
++		if ((lc_all == NULL || lc_all[0] == '\0') &&
++		    (lc_ctype == NULL || lc_ctype[0] == '\0') &&
++		    (lang == NULL || lang[0] == '\0'))
++			setlocale(LC_ALL, "C");
++		else
++			setlocale(LC_ALL, "");
++	}
++#else
  	setlocale(LC_ALL, "");
++#endif
 +#ifndef __FreeBSD__
 +	grep_setprogname(argc > 0 ? argv[0] : NULL);
 +#endif
@@ -272,7 +332,7 @@
  
  	/*
  	 * Check how we've bene invoked to determine the behavior we should
-@@ -476,6 +627,7 @@
+@@ -476,6 +679,7 @@
  			break;
  		case 'H':
  			Hflag = true;
@@ -280,7 +340,7 @@
  			break;
  		case 'h':
  			Hflag = false;
-@@ -514,6 +666,7 @@
+@@ -514,6 +718,7 @@
  			break;
  		case 'O':
  			linkbehave = LINK_EXPLICIT;
@@ -288,7 +348,7 @@
  			break;
  		case 'o':
  			oflag = true;
-@@ -521,17 +674,26 @@
+@@ -521,17 +726,26 @@
  			break;
  		case 'p':
  			linkbehave = LINK_SKIP;
@@ -315,8 +375,79 @@
  			break;
  		case 's':
  			sflag = true;
-@@ -693,7 +855,7 @@
+@@ -674,26 +888,67 @@
+ 		usage();
  	}
+ 
++#ifdef WITH_INTERNAL_NOSPEC
++	if (grepbehave == GREP_EXTENDED && patterns > 0) {
++		unsigned int orig = patterns;
++		for (i = 0; i < orig; ++i) {
++			if (!is_ere_literal_alternation(pattern[i].pat,
++			    pattern[i].len))
++				continue;
++			char *copy = grep_strdup(pattern[i].pat);
++			char *cursor = copy;
++			char *branch;
++			bool first = true;
++			while ((branch = strsep(&cursor, "|")) != NULL) {
++				size_t blen = strlen(branch);
++				if (blen == 0) {
++					matchall = true;
++					continue;
++				}
++				if (first) {
++					free(pattern[i].pat);
++					pattern[i].pat = grep_strdup(branch);
++					pattern[i].len = (int)blen;
++					first = false;
++				} else {
++					add_pattern(branch, blen);
++				}
++			}
++			if (first) {
++				pattern[i].pat[0] = '\0';
++				pattern[i].len = 0;
++			}
++			free(copy);
++		}
++	}
++#endif
++
+ 	r_pattern = grep_calloc(patterns, sizeof(*r_pattern));
+ 
+ #ifdef WITH_INTERNAL_NOSPEC
+-	if (grepbehave != GREP_FIXED) {
++	for (i = 0; i < patterns; ++i) {
++		pattern[i].is_literal = is_literal_pattern(pattern[i].pat,
++		    pattern[i].len, grepbehave);
++		if (pattern[i].is_literal)
++			continue;
++		c = regcomp(&r_pattern[i], pattern[i].pat, cflags);
++		if (c != 0) {
++			regerror(c, &r_pattern[i], re_error, RE_ERROR_BUF);
++			errx(2, "%s", re_error);
++		}
++	}
+ #else
+-	{
+-#endif
+-		/* Check if cheating is allowed (always is for fgrep). */
+-		for (i = 0; i < patterns; ++i) {
+-			c = regcomp(&r_pattern[i], pattern[i].pat, cflags);
+-			if (c != 0) {
+-				regerror(c, &r_pattern[i], re_error,
+-				    RE_ERROR_BUF);
+-				errx(2, "%s", re_error);
+-			}
++	for (i = 0; i < patterns; ++i) {
++		c = regcomp(&r_pattern[i], pattern[i].pat, cflags);
++		if (c != 0) {
++			regerror(c, &r_pattern[i], re_error, RE_ERROR_BUF);
++			errx(2, "%s", re_error);
+ 		}
+ 	}
++#endif
  
  	if (lbflag)
 -		setlinebuf(stdout);
@@ -324,7 +455,7 @@
  
  	if ((aargc == 0 || aargc == 1) && !Hflag)
  		hflag = true;
-@@ -701,9 +863,8 @@
+@@ -701,24 +956,28 @@
  	initqueue();
  
  	if (aargc == 0 && dirbehave != DIR_RECURSE)
@@ -336,8 +467,14 @@
  		matched = grep_tree(aargv);
  	else
  		for (matched = false; aargc--; ++aargv) {
-@@ -713,12 +874,14 @@
+ 			if ((finclude || fexclude) && !file_matching(*aargv))
+ 				continue;
+-			if (procfile(*aargv))
++			if (procfile(*aargv)) {
  				matched = true;
++				if (qflag)
++					break;
++			}
  		}
  
 -	if (Lflag)
@@ -386,6 +523,14 @@
  #define	GREP_FIXED	0
  #define	GREP_BASIC	1
  #define	GREP_EXTENDED	2
+@@ -89,6 +99,7 @@
+ struct pat {
+ 	char		*pat;
+ 	int		 len;
++	bool		 is_literal;
+ };
+ 
+ struct epat {
 --- a/queue.c
 +++ b/queue.c
 @@ -34,9 +34,7 @@
@@ -479,7 +624,7 @@
  
  	fts = fts_open((argv[0] == NULL) ?
  	    __DECONST(char * const *, wd) : argv, fts_flags, NULL);
-@@ -173,6 +216,13 @@
+@@ -173,20 +216,33 @@
  			warnx("warning: %s: recursive directory loop",
  			    p->fts_path);
  			break;
@@ -493,7 +638,37 @@
  		default:
  			/* Check for file exclusion/inclusion */
  			ok = true;
-@@ -302,8 +352,16 @@
+ 			if (fexclude || finclude)
+ 				ok &= file_matching(p->fts_path);
+ 
+-			if (ok && procfile(p->fts_path))
++			if (ok && procfile(p->fts_path)) {
+ 				matched = true;
++				if (qflag) {
++					errno = 0;
++					goto done;
++				}
++			}
+ 			break;
+ 		}
+ 	}
+ 	if (errno != 0)
+ 		err(2, "fts_read");
+ 
++done:
+ 	fts_close(fts);
+ 	return (matched);
+ }
+@@ -293,7 +349,7 @@
+ 	struct stat sb;
+ 	mode_t s;
+ 	int lines;
+-	bool line_matched;
++	bool line_matched, read_err;
+ 
+ 	if (strcmp(fn, "-") == 0) {
+ 		fn = label != NULL ? label : errstr[1];
+@@ -302,8 +358,16 @@
  		if (stat(fn, &sb) == 0) {
  			/* Check if we need to process the file */
  			s = sb.st_mode & S_IFMT;
@@ -511,8 +686,29 @@
  			if (devbehave == DEV_SKIP && (s == S_IFIFO ||
  			    s == S_IFCHR || s == S_IFBLK || s == S_IFSOCK))
  				return (false);
-@@ -352,8 +410,10 @@
- 		    pc.ln.len == 0)
+@@ -334,6 +398,7 @@
+ 	if (mc.printmatch && (Aflag != 0 || Bflag != 0 || mflag || nflag))
+ 		pc.cntlines = true;
+ 	mcount = mlimit;
++	read_err = false;
+ 
+ 	for (lines = 0; lines == 0 || !(lflag || qflag); ) {
+ 		/*
+@@ -348,12 +413,21 @@
+ 		pc.ln.boff = 0;
+ 		pc.ln.off += pc.ln.len + 1;
+ 		/* XXX TODO: Grab a chunk */
+-		if ((pc.ln.dat = grep_fgetln(f, &pc)) == NULL ||
+-		    pc.ln.len == 0)
++		pc.ln.dat = grep_fgetln(f, &pc);
++		if (pc.ln.dat == NULL) {
++			read_err = true;
++			file_err = true;
++			if (!sflag)
++				warn("%s", fn);
++			break;
++		}
++		if (pc.ln.len == 0)
  			break;
  
 -		if (pc.ln.len > 0 && pc.ln.dat[pc.ln.len - 1] == fileeol)
@@ -523,7 +719,22 @@
  		pc.ln.line_no++;
  
  		/* Return if we need to skip a binary file */
-@@ -398,6 +458,7 @@
+@@ -385,19 +459,20 @@
+ 		clearqueue();
+ 	grep_close(f);
+ 
+-	if (cflag && !qflag) {
++	if (cflag && !qflag && !lflag && !Lflag) {
+ 		if (!hflag)
+ 			printf("%s:", pc.ln.file);
+ 		printf("%u\n", lines);
+ 	}
+ 	if (lflag && !qflag && lines != 0)
+ 		printf("%s%c", fn, nullflag ? 0 : '\n');
+-	if (Lflag && !qflag && lines == 0)
++	if (Lflag && !qflag && lines == 0 && !read_err)
+ 		printf("%s%c", fn, nullflag ? 0 : '\n');
+ 	if (lines != 0 && !cflag && !lflag && !Lflag &&
  	    binbehave == BINFILE_BIN && f->binary && !qflag)
  		printf(errstr[7], fn);
  
@@ -531,7 +742,73 @@
  	free(pc.ln.file);
  	free(f);
  	return (lines != 0);
-@@ -415,47 +476,46 @@
+@@ -411,51 +486,142 @@
+  * config, but in other scenarios such as building against libgnuregex or on
+  * some non-FreeBSD OSes.
+  */
++static size_t
++decode_unit(const char *s, size_t len, wchar_t *out_wc, bool *out_valid)
++{
++	unsigned char b = (unsigned char)s[0];
++
++	if (b < 0x80) {
++		*out_wc = (wchar_t)b;
++		*out_valid = true;
++		return (1);
++	}
++	mbstate_t st;
++	memset(&st, 0, sizeof(st));
++	size_t n = mbrtowc(out_wc, s, len, &st);
++	if (n == (size_t)-1 || n == (size_t)-2 || n == 0) {
++		*out_wc = (wchar_t)b;
++		*out_valid = false;
++		return (1);
++	}
++	*out_valid = true;
++	return (n);
++}
++
++static bool
++match_icase_mb(const char *str, size_t str_len, size_t start,
++    const char *pat, size_t pat_len, size_t *out_end)
++{
++	size_t sp = start, pp = 0;
++
++	while (pp < pat_len) {
++		wchar_t swc, pwc;
++		bool sv, pv;
++		size_t sstep, pstep;
++
++		if (sp >= str_len)
++			return (false);
++		sstep = decode_unit(str + sp, str_len - sp, &swc, &sv);
++		pstep = decode_unit(pat + pp, pat_len - pp, &pwc, &pv);
++		if (sv && pv) {
++			if (swc != pwc &&
++			    towupper((wint_t)swc) != towupper((wint_t)pwc))
++				return (false);
++		} else if (sv != pv || swc != pwc) {
++			return (false);
++		}
++		sp += sstep;
++		pp += pstep;
++	}
++	*out_end = sp;
++	return (true);
++}
++
++static bool
++match_icase_ascii(const char *str, size_t start, const char *pat, size_t pat_len)
++{
++	for (size_t k = 0; k < pat_len; k++) {
++		if (tolower((unsigned char)str[start + k]) !=
++		    tolower((unsigned char)pat[k]))
++			return (false);
++	}
++	return (true);
++}
++
+ static int
  litexec(const struct pat *pat, const char *string, size_t nmatch,
      regmatch_t pmatch[])
  {
@@ -549,16 +826,24 @@
  	idx = 0;
 -	ofs = pmatch[0].rm_so;
 -	stringlen = pmatch[0].rm_eo;
--	if (ofs >= stringlen)
 +	ofs = (size_t)pmatch[0].rm_so;
 +	stringlen = (size_t)pmatch[0].rm_eo;
 +	patlen = (size_t)pat->len;
-+	if (ofs >= stringlen || patlen > stringlen - ofs)
++	if (patlen == 0) {
++		if (ofs > stringlen)
++			return (REG_NOMATCH);
++		if (nmatch > 0) {
++			pmatch[0].rm_so = (regoff_t)ofs;
++			pmatch[0].rm_eo = (regoff_t)ofs;
++		}
++		return (0);
++	}
+ 	if (ofs >= stringlen)
  		return (REG_NOMATCH);
 -	subject = strndup(string, stringlen);
 -	if (subject == NULL)
 -		return (REG_ESPACE);
--	for (n = 0; ofs < stringlen;) {
+ 	for (n = 0; ofs < stringlen;) {
 -		search = (subject + ofs);
 -		if ((unsigned long)pat->len > strlen(search))
 -			break;
@@ -567,39 +852,60 @@
 -		 * Ignoring the empty string possibility due to context: grep optimizes
 -		 * for empty patterns and will never reach this point.
 -		 */
-+	for (n = 0; ofs < stringlen && patlen <= stringlen - ofs;) {
-+		const char *sub = NULL;
+-		if (sub == NULL)
++		size_t match_so = 0, match_eo = 0;
++		bool found = false;
 +
-+		if (cflags & REG_ICASE) {
-+			size_t pos = ofs;
-+			while (pos < stringlen) {
-+				const char *seg = string + pos;
-+				size_t seglen = strlen(seg);
-+				if (pos + seglen > stringlen)
-+					seglen = stringlen - pos;
-+				if (patlen <= seglen) {
-+					sub = strcasestr(seg, pat->pat);
-+					if (sub != NULL)
-+						break;
++		if (!(cflags & REG_ICASE)) {
++			if (patlen > stringlen - ofs)
++				break;
++			const char *sub = memmem(string + ofs, stringlen - ofs,
++			    pat->pat, patlen);
++			if (sub != NULL) {
++				found = true;
++				match_so = (size_t)(sub - string);
++				match_eo = match_so + patlen;
++			}
++		} else if (MB_CUR_MAX <= 1) {
++			if (patlen > stringlen - ofs)
++				break;
++			for (size_t pos = ofs; pos + patlen <= stringlen; pos++) {
++				if (match_icase_ascii(string, pos, pat->pat, patlen)) {
++					found = true;
++					match_so = pos;
++					match_eo = pos + patlen;
++					break;
 +				}
-+				pos += seglen + 1;
 +			}
 +		} else {
-+			sub = memmem(string + ofs, stringlen - ofs, pat->pat, patlen);
++			for (size_t pos = ofs; pos < stringlen;) {
++				size_t end = 0;
++				if (match_icase_mb(string, stringlen, pos,
++				    pat->pat, patlen, &end)) {
++					found = true;
++					match_so = pos;
++					match_eo = end;
++					break;
++				}
++				wchar_t skip_wc;
++				bool skip_valid;
++				pos += decode_unit(string + pos, stringlen - pos,
++				    &skip_wc, &skip_valid);
++			}
 +		}
- 		if (sub == NULL)
++		if (!found)
  			break;
  		++n;
 -		/* Fill in pmatch if necessary */
  		if (nmatch > 0) {
 -			pmatch[idx].rm_so = ofs + (sub - search);
 -			pmatch[idx].rm_eo = pmatch[idx].rm_so + pat->len;
-+			pmatch[idx].rm_so = (regoff_t)(sub - string);
-+			pmatch[idx].rm_eo = pmatch[idx].rm_so + (regoff_t)patlen;
++			pmatch[idx].rm_so = (regoff_t)match_so;
++			pmatch[idx].rm_eo = (regoff_t)match_eo;
  			if (++idx == nmatch)
  				break;
 -			ofs = pmatch[idx].rm_so + 1;
-+			ofs = (size_t)pmatch[idx - 1].rm_so + 1;
++			ofs = match_so + 1;
  		} else
 -			/* We only needed to know if we match or not */
  			break;
@@ -608,7 +914,12 @@
  	if (n > 0 && nmatch > 0)
  		for (n = idx; n < nmatch; ++n)
  			pmatch[n].rm_so = pmatch[n].rm_eo = -1;
-@@ -533,8 +593,13 @@
+@@ -529,12 +695,17 @@
+ 			pmatch.rm_so = st;
+ 			pmatch.rm_eo = pc->ln.len;
+ #ifdef WITH_INTERNAL_NOSPEC
+-			if (grepbehave == GREP_FIXED)
++			if (pattern[i].is_literal)
  				r = litexec(&pattern[i], pc->ln.dat, 1, &pmatch);
  			else
  #endif
@@ -622,7 +933,7 @@
  			if (r != 0)
  				continue;
  			/* Check for full match */
-@@ -705,6 +770,7 @@
+@@ -705,6 +876,7 @@
  	printline_metadata(line, sep);
  	fwrite(line->dat, line->len, 1, stdout);
  	putchar(fileeol);
@@ -630,7 +941,7 @@
  }
  
  static void
-@@ -792,5 +858,6 @@
+@@ -792,5 +964,6 @@
  		}
  	} else
  		grep_printline(&pc->ln, sep);

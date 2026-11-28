@@ -23,7 +23,7 @@ grep -C 2 'error' app.log
 
 `patches/freebsd-grep-wasi.patch` keeps upstream matching and CLI parsing intact while adapting only host boundaries:
 
-- Initializes libc working directory from Waffle's `runtime_proc.cwd` import (`PWD` is ordinary environment and does not override or break launch cwd)
-- Uses `read(2)` stdio buffering instead of FreeBSD-only `mmap`
-- Emulates `REG_STARTEND` via NUL-segmented calls on musl `regex(3)` and NUL-safe literal scanning (`memmem` / segmented `strcasestr`); under `-a`, regex matches wholly before or wholly after embedded NUL bytes match, while a single regex match spanning across an embedded NUL byte does not match under musl `regex(3)`
-- Reports `EISDIR` on directory operands when directory action is `read`, distinguishes `-r` from `-R` symlink following, lets a later `-H` clear `-h`, matches GNU `-L` exit status (`0` if any input line matched, `1` if none matched), exits `141` silently on stdout `EPIPE`, and exits `2` on non-`EPIPE` stdout errors
+- Initializes libc working directory from Waffle's `runtime_proc.cwd` import (`PWD` is ordinary environment and does not override or break launch cwd) and defaults unset locale to `C` (matching POSIX and `fastGrep`)
+- Uses `read(2)` stdio buffering instead of FreeBSD-only `mmap` and propagates mid-stream read failures separately from EOF with status `2` (while preserving `-q` match precedence)
+- Emulates `REG_STARTEND` via NUL-segmented calls on musl `regex(3)` and uses NUL-safe, locale-aware UTF-8 multibyte `towupper()` case folding for literal patterns (matching GNU `grep` and `fastGrep` under both `C` and `C.UTF-8`); under `-a`, regex matches wholly before or wholly after embedded NUL bytes match, while a single regex match spanning across an embedded NUL byte does not match under musl `regex(3)`
+- Reports `EISDIR` on directory operands when directory action is `read`, distinguishes `-r` from `-R` symlink following, short-circuits `-q` across operands and recursive traversal, lets a later `-H` clear `-h`, suppresses `-c` output when `-l`/`-L` is active (matching GNU `grep` and `fastGrep`), matches GNU `-L` exit status (`0` if any input line matched, `1` if none matched), exits `141` silently on stdout `EPIPE`, and exits `2` on non-`EPIPE` stdout errors

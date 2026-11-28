@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "bun:test";
 import { createRuntime } from "@waffle-os/runtime";
+import type { Stream } from "../../waffle/core/descriptors.ts";
+import { Wasi } from "../../waffle/core/wasi.ts";
 import { FilesystemClient } from "../../waffle/fs/client.ts";
+import { MemFS } from "../../waffle/fs/memory.ts";
 import {
   runFamilyAcceptance,
   type FamilyAcceptanceSession,
@@ -17,6 +21,7 @@ const empty = (name: string) => ({ name, programs: [] });
 interface GrepCase {
   readonly name: string;
   readonly args: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
   readonly stdin?: string | Uint8Array;
   readonly cwd?: string;
   readonly files?: Readonly<Record<string, string | Uint8Array>>;
@@ -96,7 +101,7 @@ async function runCase(session: FamilyAcceptanceSession, fixture: GrepCase, inde
     executable: fixture.executable ?? "/usr/bin/grep",
     argv: ["grep"].concat(fixture.args),
     cwd,
-    env: { PATH: "/usr/bin:/bin", PWD: cwd, LC_ALL: "C" },
+    env: fixture.env ? { ...fixture.env } : { PATH: "/usr/bin:/bin", PWD: cwd, LC_ALL: "C" },
     fds,
   };
   try {
@@ -545,7 +550,135 @@ const realWorldCases: readonly GrepCase[] = [
     expectedStdout: "",
     stderrPresent: false,
   },
+  {
+    name: "-Fi folds non-ASCII UTF-8 characters under LC_ALL=C.UTF-8",
+    args: ["-Fi", "ä"],
+    env: { PATH: "/usr/bin:/bin", LC_ALL: "C.UTF-8" },
+    stdin: "Ä\n",
+    expectedExit: 0,
+    expectedStdout: "Ä\n",
+    stderrPresent: false,
+  },
+  {
+    name: "-Fi stays byte-wise under LC_ALL=C",
+    args: ["-Fi", "ä"],
+    env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+    stdin: "Ä\n",
+    expectedExit: 1,
+    expectedStdout: "",
+    stderrPresent: false,
+  },
+  {
+    name: "-oFi emits the full multibyte UTF-8 span for U+017F long s",
+    args: ["-oFi", "s"],
+    env: { PATH: "/usr/bin:/bin", LC_ALL: "C.UTF-8" },
+    stdin: "ſ\n",
+    expectedExit: 0,
+    expectedStdout: "ſ\n",
+    stderrPresent: false,
+  },
+  {
+    name: "-Fi folds dotless i under LC_ALL=C.UTF-8 and rejects non-towupper pairs",
+    args: ["-Fi", "i"],
+    env: { PATH: "/usr/bin:/bin", LC_ALL: "C.UTF-8" },
+    stdin: "ı\nİ\n",
+    expectedExit: 0,
+    expectedStdout: "ı\n",
+    stderrPresent: false,
+  },
+  {
+    name: "-Fi rejects Kelvin sign for k under LC_ALL=C.UTF-8 matching GNU and fastGrep",
+    args: ["-Fi", "k"],
+    env: { PATH: "/usr/bin:/bin", LC_ALL: "C.UTF-8" },
+    stdin: "K\n",
+    expectedExit: 1,
+    expectedStdout: "",
+    stderrPresent: false,
+  },
+  {
+    name: "-cl suppresses counts and prints matching filenames only",
+    args: ["-cl", "hit", "a.txt", "b.txt"],
+    files: { "a.txt": "hit\nhit\n", "b.txt": "miss\n" },
+    expectedExit: 0,
+    expectedStdout: "a.txt\n",
+    stderrPresent: false,
+  },
+  {
+    name: "-cL suppresses counts and prints non-matching filenames only",
+    args: ["-cL", "hit", "a.txt", "b.txt"],
+    files: { "a.txt": "hit\n", "b.txt": "miss\n" },
+    expectedExit: 0,
+    expectedStdout: "b.txt\n",
+    stderrPresent: false,
+  },
 ];
+
+async function proveQuietEarlyBail(session: FamilyAcceptanceSession): Promise<void> {
+  await session.filesystem.mkdirp("/quiet-bail/tree");
+  await session.filesystem.writeFile("/quiet-bail/hit.txt", "hit\n");
+  await session.filesystem.writeFile("/quiet-bail/tree/a.txt", "hit\n");
+  await session.filesystem.writeFile("/quiet-bail/tree/b.txt", "miss\n");
+  const [reader, writer] = session.pipe();
+  const stdinFd = session.descriptors.open(reader, 2n | 0x0820_0000n, 0n);
+  const openPipeLaunch: LaunchRequest = {
+    executable: "/usr/bin/grep",
+    argv: ["grep", "-q", "hit", "/quiet-bail/hit.txt", "-"],
+    cwd: "/",
+    env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+    fds: [
+      { child: 0, parent: stdinFd },
+      { child: 1, parent: 1 },
+      { child: 2, parent: 2 },
+    ],
+  };
+  try {
+    const result = await bounded(
+      "quiet stops before open stdin",
+      session.exec(openPipeLaunch),
+      5_000,
+    );
+    assert.deepEqual(result.exit, { kind: "exited", code: 0, status: 0 });
+    assert.equal(decoder.decode(result.stdout), "");
+    assert.equal(decoder.decode(result.stderr), "");
+  } finally {
+    writer.close?.();
+    session.descriptors.close(stdinFd);
+  }
+  const followups: readonly { readonly label: string; readonly argv: readonly string[] }[] = [
+    {
+      label: "quiet stops before later missing operand",
+      argv: ["grep", "-q", "hit", "/quiet-bail/hit.txt", "/quiet-bail/absent.txt"],
+    },
+    {
+      label: "quiet recursive stops cleanly on first matching file",
+      argv: ["grep", "-qr", "hit", "/quiet-bail/tree"],
+    },
+  ];
+  for (const item of followups) {
+    const emptyStdin = session.filledPipe("");
+    try {
+      const result = await bounded(
+        item.label,
+        session.exec({
+          executable: "/usr/bin/grep",
+          argv: item.argv,
+          cwd: "/",
+          env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+          fds: [
+            { child: 0, parent: emptyStdin },
+            { child: 1, parent: 1 },
+            { child: 2, parent: 2 },
+          ],
+        }),
+      );
+      assert.deepEqual(result.exit, { kind: "exited", code: 0, status: 0 }, item.label);
+      assert.equal(decoder.decode(result.stdout), "", item.label);
+      assert.equal(decoder.decode(result.stderr), "", item.label);
+    } finally {
+      session.descriptors.close(emptyStdin);
+    }
+  }
+}
 
 async function proveBrokenStdoutPipe(session: FamilyAcceptanceSession): Promise<void> {
   await session.filesystem.writeFile("/broken-pipe-large.txt", "hit payload line\n".repeat(4000));
@@ -724,10 +857,322 @@ test("FreeBSD grep WASI binary passes core usage cases, real-world flags, EISDIR
           family: "grep",
           run: proveRuntimeProcCwd,
         },
+        {
+          name: "quiet mode stops before later operands and open stdin",
+          family: "grep",
+          run: proveQuietEarlyBail,
+        },
       ],
     });
   } finally {
     await runtime.dispose();
+  }
+}, 90_000);
+
+function concatChunks(chunks: readonly Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const chunk of chunks) total += chunk.length;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+function createFaultyReadPipe(payload: Uint8Array, errno: number): Stream {
+  let offset = 0;
+  const readInto = (iovecs: readonly Uint8Array[]): number => {
+    if (offset >= payload.length) return -errno;
+    let written = 0;
+    for (const chunk of iovecs) {
+      if (offset >= payload.length) break;
+      const take = Math.min(chunk.length, payload.length - offset);
+      chunk.set(payload.subarray(offset, offset + take));
+      offset += take;
+      written += take;
+    }
+    return written;
+  };
+  return {
+    kind: "pipe",
+    read: readInto,
+    tryRead: readInto,
+    write: () => -9,
+    tryWrite: () => -9,
+    readiness: () => ({ readable: true, writable: false, hangup: false }),
+  };
+}
+
+function runDirectGrepWithFaultyStdin(
+  module: WebAssembly.Module,
+  args: readonly string[],
+  payload: Uint8Array,
+  errno: number,
+): { readonly status: number; readonly stdout: string; readonly stderr: string } {
+  const stdoutChunks: Uint8Array[] = [];
+  const stderrChunks: Uint8Array[] = [];
+  let memory: WebAssembly.Memory | undefined;
+  const wasi = new Wasi({
+    args: ["grep"].concat(args),
+    env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+    fs: new MemFS(),
+    preopens: { "/": "/" },
+    stdio: { 0: createFaultyReadPipe(payload, errno) },
+    namespaces: {
+      runtime_proc: {
+        cwd: (ptr: number, cap: number) => {
+          if (cap === 0) return 1;
+          if (!memory || cap < 1) return -68;
+          new Uint8Array(memory.buffer)[ptr >>> 0] = 0x2f;
+          return 1;
+        },
+      },
+    },
+    stdout: (chunk) => stdoutChunks.push(chunk.slice()),
+    stderr: (chunk) => stderrChunks.push(chunk.slice()),
+    sleep() {},
+  });
+  const instance = new WebAssembly.Instance(module, wasi.imports(module));
+  memory = instance.exports.memory as WebAssembly.Memory;
+  const status = wasi.start(instance);
+  return {
+    status,
+    stdout: decoder.decode(concatChunks(stdoutChunks)),
+    stderr: decoder.decode(concatChunks(stderrChunks)),
+  };
+}
+
+test("mid-stream stdin read failure reports error status 2 and preserves -q match precedence", () => {
+  const bytes = readFileSync(new URL("../dist/grep.wasm", import.meta.url));
+  const module = new WebAssembly.Module(bytes);
+  const EIO = 29;
+  const hitPayload = encoder.encode("hit\n".repeat(10_000));
+  const missPayload = encoder.encode("miss\n".repeat(8_000));
+
+  const countResult = runDirectGrepWithFaultyStdin(module, ["-c", "hit"], hitPayload, EIO);
+  assert.equal(countResult.status, 2, `count stderr=${JSON.stringify(countResult.stderr)}`);
+  assert.ok(
+    countResult.stderr.includes("I/O error"),
+    `expected I/O error diagnostic, got ${JSON.stringify(countResult.stderr)}`,
+  );
+
+  const quietResult = runDirectGrepWithFaultyStdin(module, ["-q", "hit"], hitPayload, EIO);
+  assert.equal(quietResult.status, 0);
+  assert.equal(quietResult.stdout, "");
+  assert.equal(quietResult.stderr, "");
+
+  const filesWithoutMatch = runDirectGrepWithFaultyStdin(module, ["-L", "hit"], missPayload, EIO);
+  assert.equal(
+    filesWithoutMatch.status,
+    2,
+    `-L stderr=${JSON.stringify(filesWithoutMatch.stderr)}`,
+  );
+  assert.equal(filesWithoutMatch.stdout, "");
+  assert.ok(
+    filesWithoutMatch.stderr.includes("I/O error"),
+    `expected I/O error diagnostic, got ${JSON.stringify(filesWithoutMatch.stderr)}`,
+  );
+});
+
+interface ParityVector {
+  readonly label: string;
+  readonly args: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+  readonly expectFast: boolean;
+  readonly expectedExit: number;
+  readonly expectedStdout: string;
+}
+
+const parityFiles: Readonly<Record<string, string>> = {
+  f: "one\ntwo\none\n",
+  u: "ſ\n",
+  dotless: "ı\n",
+  umlaut: "Ä\n",
+  turkish: "İ\n",
+  kelvin: "K\n",
+};
+
+const parityVectors: readonly ParityVector[] = [
+  {
+    label: "-raclF suppresses counts and prints matching filename",
+    args: ["-raclF", "one", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "./f\n",
+  },
+  {
+    label: "-ralcF matches regardless of flag order",
+    args: ["-ralcF", "one", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "./f\n",
+  },
+  {
+    label: "-raHFi folds long s under LC_ALL=C.UTF-8",
+    args: ["-raHFi", "s", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "./u:ſ\n",
+  },
+  {
+    label: "-raHi literal BRE folds long s under LC_ALL=C.UTF-8",
+    args: ["-raHi", "s", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "./u:ſ\n",
+  },
+  {
+    label: "-raHiE literal ERE folds long s under LC_ALL=C.UTF-8",
+    args: ["-raHiE", "s", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "./u:ſ\n",
+  },
+  {
+    label: "-raHiE literal ERE alternation folds long s under LC_ALL=C.UTF-8",
+    args: ["-raHiE", "s|nomatch", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "./u:ſ\n",
+  },
+  {
+    label: "-raHFi folds dotless i under LC_ALL=C.UTF-8 without matching U+0130",
+    args: ["-raHFi", "i", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "./dotless:ı\n",
+  },
+  {
+    label: "-raHFi does not match Kelvin sign for k under LC_ALL=C.UTF-8",
+    args: ["-raHFi", "k", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
+    expectFast: true,
+    expectedExit: 1,
+    expectedStdout: "",
+  },
+  {
+    label: "-raHFi stays ASCII-only under LC_ALL=C",
+    args: ["-raHFi", "s", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 1,
+    expectedStdout: "",
+  },
+  {
+    label: "-raHFi defaults to C locale when locale variables are unset",
+    args: ["-raHFi", "s", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity" },
+    expectFast: true,
+    expectedExit: 1,
+    expectedStdout: "",
+  },
+  {
+    label: "-raHFi non-ASCII pattern falls back cleanly and matches under C.UTF-8",
+    args: ["-raHFi", "ä", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C.UTF-8" },
+    expectFast: false,
+    expectedExit: 0,
+    expectedStdout: "./umlaut:Ä\n",
+  },
+];
+
+async function collectParityResults(
+  catalog: typeof grep,
+): Promise<
+  readonly { readonly status: number; readonly stdout: string; readonly stderr: string }[]
+> {
+  const results: { readonly status: number; readonly stdout: string; readonly stderr: string }[] =
+    [];
+  const runtime = createRuntime({
+    filesystem: {
+      mode: "memory",
+      workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),
+    },
+    programs: { onDemand: [catalog] },
+  });
+  try {
+    await bounded("parity catalog ready", runtime.programs.ready);
+    await runFamilyAcceptance({
+      runtime,
+      workerUrl: new URL("../../waffle/browser/preview1-worker.ts", import.meta.url),
+      assets: {
+        coreutils: empty("coreutils"),
+        findutils: empty("findutils"),
+        grep: empty("grep"),
+        sed: empty("sed"),
+        ripgrep: empty("ripgrep"),
+      },
+      cases: [
+        {
+          name: "parity vectors",
+          family: "grep",
+          async run(session) {
+            await session.filesystem.mkdirp("/parity");
+            await writeFixtureFiles(session, "/parity", parityFiles);
+            for (const vector of parityVectors) {
+              const stdinFd = session.filledPipe("");
+              try {
+                const outcome = await bounded(
+                  vector.label,
+                  session.exec({
+                    executable: "/usr/bin/grep",
+                    argv: ["grep"].concat(vector.args),
+                    cwd: "/parity",
+                    env: { ...vector.env },
+                    fds: [
+                      { child: 0, parent: stdinFd },
+                      { child: 1, parent: 1 },
+                      { child: 2, parent: 2 },
+                    ],
+                  }),
+                );
+                results.push({
+                  status: outcome.exit.status,
+                  stdout: decoder.decode(outcome.stdout),
+                  stderr: decoder.decode(outcome.stderr),
+                });
+              } finally {
+                session.descriptors.close(stdinFd);
+              }
+            }
+          },
+        },
+      ],
+    });
+  } finally {
+    await runtime.dispose();
+  }
+  return results;
+}
+
+test("FreeBSD grep WASI binary matches fastGrep output and exit status on admitted workloads", async () => {
+  for (const vector of parityVectors) {
+    const plan = planGrep(vector.args, vector.env);
+    assert.equal(
+      plan.kind,
+      vector.expectFast ? "fast" : "fallback",
+      `${vector.label}: unexpected planGrep admission`,
+    );
+  }
+  const fastCatalog = fastGrep({
+    search: new URL("../../waffle/search/search-worker.ts", import.meta.url).href,
+    shard: new URL("../../waffle/search/shard-worker.ts", import.meta.url).href,
+  });
+  const wasiResults = await collectParityResults(grep);
+  const fastResults = await collectParityResults(fastCatalog);
+  for (const [index, vector] of parityVectors.entries()) {
+    const expected = { status: vector.expectedExit, stdout: vector.expectedStdout, stderr: "" };
+    assert.deepEqual(wasiResults[index], expected, `${vector.label}: FreeBSD grep.wasm`);
+    assert.deepEqual(fastResults[index], expected, `${vector.label}: fastGrep`);
   }
 }, 90_000);
 
