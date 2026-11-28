@@ -426,6 +426,16 @@ test("socket duplication shares flags and closes only the last descriptor refere
     await iovec(guest, bytes("duplicate"));
     expect(await guest.call("sock_send", duplicate, 0, 1, 0, 32)).toBe(0);
     expect(await guest.call("fd_close", duplicate)).toBe(0);
+    const { promise: deadline, reject: expire } = Promise.withResolvers<never>();
+    const timer = setTimeout(
+      () => expire(new Error("Last socket close did not cancel its reader")),
+      2000,
+    );
+    try {
+      await Promise.race([stream.readCancelled, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
     expect(stream.cancelled).toBe(1);
     expect(await guest.call("fd_close", duplicate)).toBe(8);
   } finally {
