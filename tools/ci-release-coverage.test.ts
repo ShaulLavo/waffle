@@ -1,6 +1,8 @@
 import { YAML } from "bun";
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,6 +46,91 @@ const workflows = workflowFiles(join(root, ".github/workflows")).map((path) => (
   path,
   workflow: record(YAML.parse(readFileSync(path, "utf8"))),
 }));
+
+function programReleaseStep(name: string): string {
+  const workflow = workflows.find(({ path }) => path.endsWith("/program-release.yml"))?.workflow;
+  const release = record(record(workflow?.jobs).release);
+  const script = steps(release.steps).find((step) => step.name === name)?.run;
+  if (typeof script !== "string") throw new Error(`Missing program release step ${name}`);
+  return script;
+}
+
+test("program release preflight downloads a matching draft receipt across release pages", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "waffle-draft-receipt-"));
+  try {
+    mkdirSync(join(cwd, ".build/program-release"), { recursive: true });
+    const ghFixture = `
+gh() {
+  if [ "$1 $2 $3 $4" = 'api --paginate --slurp repos/ShaulLavo/waffle/releases?per_page=100' ]; then
+    printf '%s\\n' '[[{"tag_name":"other-tag","id":6,"draft":false}],[{"tag_name":"programs-v0.0.24","id":24,"draft":true,"assets":[{"id":125,"name":"program-release.json"}]}]]'
+    return
+  fi
+  [ "$1 $2 $3 $4" = 'api -H Accept: application/octet-stream repos/ShaulLavo/waffle/releases/assets/125' ] || return 1
+  printf '%s\\n' '{"receipt":"draft"}'
+}`;
+    const result = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        ghFixture + "\n" + programReleaseStep("Read the receipt for an existing release"),
+      ],
+      {
+        cwd,
+        env: {
+          ...process.env,
+          RELEASE_TAG: "programs-v0.0.24",
+          GITHUB_REPOSITORY: "ShaulLavo/waffle",
+          GITHUB_OUTPUT: join(cwd, "outputs"),
+        },
+      },
+    );
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(readFileSync(join(cwd, ".build/program-release/existing-receipt.json"), "utf8")).toBe(
+      '{"receipt":"draft"}\n',
+    );
+    expect(readFileSync(join(cwd, "outputs"), "utf8")).toBe("draft_id=24\n");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("program release rejects a source tag with a different publisher before publishing", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "waffle-publisher-version-"));
+  try {
+    const git = (...args: string[]) =>
+      execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    git("init", "-q");
+    mkdirSync(join(cwd, "scripts"));
+    const publisher = join(cwd, "scripts/publish-programs-npm.ts");
+    const commit = (label: string) => {
+      writeFileSync(publisher, label + "\n");
+      git("add", publisher);
+      git("-c", "user.name=fixture", "-c", "user.email=fixture@invalid", "commit", "-qm", label);
+      return git("rev-parse", "HEAD");
+    };
+    const old = commit("old publisher");
+    const workflow = commit("current publisher");
+    const run = () =>
+      Bun.spawnSync(
+        ["bash", "-c", programReleaseStep("Verify the tag uses the workflow publisher")],
+        {
+          cwd,
+          env: { ...process.env, GITHUB_WORKFLOW_SHA: workflow },
+        },
+      );
+    expect(run().exitCode).toBe(0);
+    git("checkout", "--detach", old);
+    const result = run();
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain("same npm publisher as the workflow revision");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 const safeActions = new Set([
   "actions/cache",
   "actions/cache/restore",

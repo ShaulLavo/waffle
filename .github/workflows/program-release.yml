@@ -62,6 +62,13 @@ jobs:
           git merge-base --is-ancestor HEAD origin/main
           # Python stages a qualified interpreter artifact; release it with the local CLI.
           [[ ",$FAMILIES," != *",python,"* ]]
+      - name: Verify the tag uses the workflow publisher
+        if: inputs.publish
+        run: |
+          if ! git diff --quiet "$GITHUB_WORKFLOW_SHA" HEAD -- scripts/publish-programs-npm.ts; then
+            echo 'The release tag must use the same npm publisher as the workflow revision.' >&2
+            exit 1
+          fi
       - uses: ./.github/actions/release-downloads
       - uses: ./.github/actions/setup-tools
         with:
@@ -127,19 +134,23 @@ jobs:
           path: .build/program-release/assets
           if-no-files-found: error
       - name: Read the receipt for an existing release
+        id: prior_release
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          errors=.build/program-release/release-lookup.err
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" >/dev/null 2>"$errors"; then
-            gh release download "$RELEASE_TAG" --pattern program-release.json \
-              --output .build/program-release/existing-receipt.json
-          elif ! grep -q '(HTTP 404)$' "$errors"; then
-            cat "$errors" >&2
-            exit 1
-          fi
+          release=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -c --arg tag "$RELEASE_TAG" \
+              '[.[][] | select(.tag_name == $tag)] | if length > 1 then error("Multiple releases for the tag") else .[0] end')
+          if [ "$release" = null ]; then exit 0; fi
+          asset_id=$(jq -er '[.assets[] | select(.name == "program-release.json")]
+            | if length == 1 then .[0].id else error("Expected one existing program release receipt") end' \
+            <<< "$release")
+          gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
+            > .build/program-release/existing-receipt.json
+          draft_id=$(jq -r 'select(.draft) | .id' <<< "$release")
+          printf 'draft_id=%s\n' "$draft_id" >> "$GITHUB_OUTPUT"
       - name: Publish program packages to npm
         if: inputs.publish
         env:
@@ -158,11 +169,14 @@ jobs:
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
+          DRAFT_ID: ${{ steps.prior_release.outputs.draft_id }}
         run: |
           set -euo pipefail
           if [ ! -f .build/program-release/existing-receipt.json ]; then
             gh release create "$RELEASE_TAG" .build/program-release/program-release.json \
               --verify-tag --title "$RELEASE_TAG" --generate-notes
+          elif [ -n "$DRAFT_ID" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$DRAFT_ID" -F draft=false >/dev/null
           fi
       - uses: ./.github/actions/save-release-downloads
         if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
