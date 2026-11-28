@@ -108,7 +108,24 @@ test("reserved-parent identity follows the same synthetic ancestors as a guarded
   const { wasi, open } = openGuest(fs);
   try {
     expect(open("dev/fd/config")).toBe(0);
-    expect(open("device-files/4", 4n)).toBe(76);
+    expect(open("device-files/4")).toBe(76);
+  } finally {
+    wasi.descriptors.dispose();
+  }
+});
+
+test("a guarded terminal endpoint cannot give a reserved parent a physical identity", () => {
+  const fs = new MemFS();
+  fs.mkdirp("/dev/null");
+  fs.mkdirp("/proc/self");
+  fs.writeFile("/reports/2026", "ordinary");
+  const link = fs.resolveAbsolute("/proc/self/fd");
+  if (typeof link === "number") throw new Error("missing fixture parent");
+  expect(fs.symlink(link, "/dev/null/../../reports")).toBe(0);
+  const { wasi, open } = openGuest(fs);
+  try {
+    expect(open("reports/2026")).toBe(0);
+    expect(open("proc/self/fd/2026")).toBe(54);
   } finally {
     wasi.descriptors.dispose();
   }

@@ -292,35 +292,54 @@ function directLogicalAlias(path: string): number | undefined {
     return /^[0-9]+$/.test(last) ? Number(last) : undefined;
 }
 
+type CooperativeEndpoint = Exclude<CooperativePath, { kind: "inode" }>;
+
+interface CooperativeParents {
+  dev?: DirNode;
+  devFd?: DirNode;
+  procFd?: DirNode;
+  etc?: DirNode;
+}
+
 class CooperativeWalk {
-  private readonly dev: DirNode | undefined;
-  private readonly devFd: DirNode | undefined;
-  private readonly procFd: DirNode | undefined;
-  private readonly etc: DirNode | undefined;
+  private readonly parents: CooperativeParents;
   private readonly synthetic = new Set<DirNode>();
-  result?: Exclude<CooperativePath, { kind: "inode" }>;
+  result?: CooperativeEndpoint;
 
   constructor(
     root: DirNode,
     private readonly options: CooperativeResolveOptions,
     private readonly direct: number | undefined,
   ) {
-    this.dev = this.reservedDirectory(root, "dev");
-    this.devFd = this.reservedDirectory(root, "dev/fd");
-    this.procFd = this.reservedDirectory(root, "proc/self/fd");
-    this.etc = options.machineId ? this.reservedDirectory(root, "etc") : undefined;
+    const candidates = this.discoverParents(root, {});
+    // A candidate reached through another candidate's terminal endpoint
+    // cannot claim a physical directory in the guarded namespace.
+    this.parents = this.discoverParents(root, candidates);
   }
 
-  private reservedDirectory(root: DirNode, path: string): DirNode | undefined {
-    // Classify parent identities in the same namespace as the guarded walk,
-    // including links whose targets pass through synthetic ancestors.
+  private discoverParents(root: DirNode, candidates: CooperativeParents): CooperativeParents {
+    return {
+      dev: this.reservedDirectory(root, "dev", candidates),
+      devFd: this.reservedDirectory(root, "dev/fd", candidates),
+      procFd: this.reservedDirectory(root, "proc/self/fd", candidates),
+      etc: this.options.machineId ? this.reservedDirectory(root, "etc", candidates) : undefined,
+    };
+  }
+
+  private reservedDirectory(
+    root: DirNode,
+    path: string,
+    candidates: CooperativeParents,
+  ): DirNode | undefined {
     const result = walkTree(root, path, {
       clampRoot: true,
       followFinal: true,
       search() {},
       child: (parent, name, _origin, ancestors, currentPath, next) => {
+        const prefix = ancestors.join("/");
+        if (this.endpoint(candidates, parent, prefix, name)) return;
         const physical = parent.children.get(name);
-        return physical ?? this.virtualChild(ancestors.join("/"), name, currentPath, next);
+        return physical ?? this.virtualChild(prefix, name, currentPath, next);
       },
     });
     if (typeof result !== "number" && result.node?.kind === "dir") return result.node;
@@ -335,26 +354,19 @@ class CooperativeWalk {
     next: number,
     expandedLink: boolean,
   ): Node | undefined {
-    const suffix = /[^/]/.test(path.slice(next));
-    const trailing = path.endsWith("/");
     const prefix = ancestors.join("/");
-    const logical = this.alias(parent, prefix, name);
-    if (logical !== undefined) {
-      if (suffix || trailing) throw new FilesystemError(54);
-      if (logical > 0xffff_ffff) throw new FilesystemError(44);
-      if (expandedLink || logical !== this.direct || logical !== this.options.expectedAlias)
-        throw new FilesystemError(76);
-      this.result = { kind: "alias", logical };
-      return;
-    }
-    const physical = parent.children.get(name);
-    const device = this.device(parent, prefix, name, physical);
-    if (device) {
-      if (suffix || trailing) throw new FilesystemError(54);
-      this.result = { kind: device };
-      return;
-    }
-    return physical ?? this.virtualChild(prefix, name, path, next);
+    const endpoint = this.endpoint(this.parents, parent, prefix, name);
+    if (endpoint === undefined)
+      return parent.children.get(name) ?? this.virtualChild(prefix, name, path, next);
+    if (/[^/]/.test(path.slice(next)) || path.endsWith("/")) throw new FilesystemError(54);
+    if (endpoint.kind === "alias") this.confirmAlias(endpoint.logical, expandedLink);
+    this.result = endpoint;
+  }
+
+  private confirmAlias(logical: number, expandedLink: boolean): void {
+    if (logical > 0xffff_ffff) throw new FilesystemError(44);
+    if (expandedLink || logical !== this.direct || logical !== this.options.expectedAlias)
+      throw new FilesystemError(76);
   }
 
   private virtualChild(prefix: string, name: string, path: string, next: number) {
@@ -362,25 +374,32 @@ class CooperativeWalk {
     return this.virtualDirectory(prefix ? prefix + "/" + name : name);
   }
 
-  private alias(parent: DirNode, prefix: string, name: string): number | undefined {
-    if (prefix === "dev" || parent === this.dev) {
+  private endpoint(
+    parents: CooperativeParents,
+    parent: DirNode,
+    prefix: string,
+    name: string,
+  ): CooperativeEndpoint | undefined {
+    if (prefix === "dev" || parent === parents.dev) {
+      if (name === "null") return { kind: "null" };
       const stdio = stdioAlias(name);
-      if (stdio !== undefined) return stdio;
+      if (stdio !== undefined) return { kind: "alias", logical: stdio };
     }
-    if (!/^[0-9]+$/.test(name)) return undefined;
     if (
-      prefix === "dev/fd" ||
-      prefix === "proc/self/fd" ||
-      parent === this.devFd ||
-      parent === this.procFd
+      (prefix === "dev/fd" ||
+        prefix === "proc/self/fd" ||
+        parent === parents.devFd ||
+        parent === parents.procFd) &&
+      /^[0-9]+$/.test(name)
     )
-      return Number(name);
-  }
-
-  private device(parent: DirNode, prefix: string, name: string, physical?: Node) {
-    if (name === "null" && (prefix === "dev" || parent === this.dev)) return "null";
-    if (!this.options.machineId || name !== "machine-id" || physical) return;
-    if (prefix === "etc" || parent === this.etc) return "machine-id";
+      return { kind: "alias", logical: Number(name) };
+    if (
+      this.options.machineId &&
+      name === "machine-id" &&
+      (prefix === "etc" || parent === parents.etc) &&
+      !parent.children.has(name)
+    )
+      return { kind: "machine-id" };
   }
 
   private virtualDirectory(path: string): DirNode | undefined {
