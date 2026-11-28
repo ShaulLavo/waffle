@@ -1004,7 +1004,7 @@ async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
       "tagged",
       "Original release tag identity differs",
     );
-    const runtime = await readRuntime(options.runtime, options.repository, work, control);
+    const runtime = await readRuntime(options.runtime, work, control);
     assertExactHostInterface(requiredHostInterface, runtime.hostInterface, "rebind requirement");
     assert.ok(
       runtime.input.kind !== "local-candidate" || !options.runtimePublished,

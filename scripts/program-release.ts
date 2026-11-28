@@ -1,4 +1,3 @@
-import { releaseDownload } from "../tools/ci-release-download.ts";
 // Stages, packs and verifies the GitHub release-tarball closure of the program families.
 // Workspace edges become immutable release-asset URLs inside disposable staging copies only;
 // the source checkout is never modified. See docs/program-release.md.
@@ -27,6 +26,7 @@ import {
   assertPackedSymbols,
   verifyProgramTarball,
 } from "../tools/program-package.ts";
+import { releaseDownload } from "../tools/ci-release-download.ts";
 import {
   assertExactHostInterface,
   assertWaffleFamilyManifest,
@@ -238,19 +238,18 @@ export function releaseAssetBase(repository: string, tag: string): string {
   return `https://github.com/${repository}/releases/download/${tag}`;
 }
 
-/** The runtime's own per-version release asset; mutable aliases and other tags are refused. */
-export function runtimeReleaseUrl(repository: string, version: string): string {
+export function runtimeReleaseUrl(version: string): string {
   assert.ok(/^\d+\.\d+\.\d+$/.test(version), `Runtime version is not exact: ${version}`);
-  return `${releaseAssetBase(repository, `waffle-v${version}`)}/${assetFilename(runtimePackageName, version)}`;
+  return `https://registry.npmjs.org/${runtimePackageName}/-/runtime-${version}.tgz`;
 }
 
 function runtimeUrlVersion(url: string) {
-  const match =
-    /\/releases\/download\/waffle-v(\d+\.\d+\.\d+)\/(?:waffle-os-runtime|waffle)-\1\.tgz$/.exec(
-      url,
-    );
-  assert.ok(match?.[1], `Runtime URL is not a waffle-v<version> release asset: ${url}`);
-  return match[1];
+  const version = /\/runtime-(\d+\.\d+\.\d+)\.tgz$/.exec(url)?.[1];
+  assert.ok(
+    version && url === runtimeReleaseUrl(version),
+    `Runtime URL is not an exact npm ${runtimePackageName} tarball (${url})`,
+  );
+  return version;
 }
 
 export function assetFilename(name: string, version: string): string {
@@ -642,7 +641,7 @@ export function assertTwin(
   }
 }
 
-function runtimeInput(runtime: RuntimeAsset, repository: string): RuntimeInput {
+function runtimeInput(runtime: RuntimeAsset): RuntimeInput {
   if (runtime.candidateSourceCommit !== undefined) {
     assert.match(
       runtime.candidateSourceCommit,
@@ -657,18 +656,12 @@ function runtimeInput(runtime: RuntimeAsset, repository: string): RuntimeInput {
     );
     return { kind: "local-candidate", sourceCommit: runtime.candidateSourceCommit };
   }
-  const urlVersion = runtimeUrlVersion(runtime.url);
-  assert.equal(runtime.url, runtimeReleaseUrl(repository, urlVersion), "Runtime URL is not ours");
+  runtimeUrlVersion(runtime.url);
   return { kind: "published-release" };
 }
 
-export async function readRuntime(
-  runtime: RuntimeAsset,
-  repository: string,
-  work: string,
-  control: Control,
-) {
-  const input = runtimeInput(runtime, repository);
+export async function readRuntime(runtime: RuntimeAsset, work: string, control: Control) {
+  const input = runtimeInput(runtime);
 
   const bytes = runtime.tarball
     ? readFileSync(runtime.tarball)
@@ -1272,7 +1265,7 @@ export async function buildRelease(options: ReleaseOptions): Promise<ReleaseMani
   const work = prepareOutput(out);
   let retained = false;
   try {
-    const runtime = await readRuntime(options.runtime, repository, work, control);
+    const runtime = await readRuntime(options.runtime, work, control);
     const urls = closureUrls(order, options.version, assetBase, options.runtime.url);
     assertUniqueFilenames(urls);
     const assets = resolve(out, "assets");

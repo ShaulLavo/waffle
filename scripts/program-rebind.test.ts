@@ -36,8 +36,7 @@ const fromTag = "programs-v0.0.13";
 const targetTag = "programs-v0.0.14";
 const sourceRuntimeUrl =
   "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.105/waffle-os-runtime-0.0.105.tgz";
-const targetRuntimeUrl =
-  "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.106/waffle-os-runtime-0.0.106.tgz";
+const targetRuntimeUrl = runtimeReleaseUrl("0.0.106");
 let scratch = "";
 
 function sha256(path: string) {
@@ -941,7 +940,7 @@ describe("program peer rebind", () => {
     commit(root, "historical fixture checker");
     git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
     git(root, ["tag", fromTag]);
-    const oldUrl = runtimeReleaseUrl("ShaulLavo/waffle", runtime.version);
+    const oldUrl = runtimeReleaseUrl(runtime.version);
     const fromOut = resolve(scratch, "normal-release");
     const normal = await buildRelease({
       root,
@@ -975,7 +974,7 @@ describe("program peer rebind", () => {
       out: resolve(scratch, "rebuilt-metadata"),
       hostInterface: runtimeHostInterface,
       runtime: {
-        url: runtimeReleaseUrl("ShaulLavo/waffle", nextVersion),
+        url: runtimeReleaseUrl(nextVersion),
         sha256: sha256(nextArchive),
         tarball: nextArchive,
       },
