@@ -2,11 +2,11 @@
 
 ## Current M1 addendum, November 14, 2026
 
-Status: Approved. Independent Sol review of this addendum precedes implementation.
-Inspected current main is `5cf130c45621c676e593b0e31092baa640ea5e46`. Preserve the original
-design below as history. This addendum defines the current bounded milestone and takes
-precedence over its estimates, proposed growth mediation, and statements about absent code.
-No runtime implementation or browser qualification is part of this design commit.
+Status: Done for M1. [PR #512](https://github.com/ShaulLavo/waffle/pull/512) wired the stock Rust
+`wasm32-wasip1-threads` fixture into normal browser CI, added the iOS and Safari runners, and documented
+the [experimental suite](../docs/threads-runtime-runner.md). All nine Runtime cases passed in Chromium,
+Firefox, Linux WebKit, desktop Safari 26.4, and C4D2 iPhone Simulator Safari 26.5. The original M1
+addendum and full implementation plan remain below as history.
 
 ### What is already implemented
 

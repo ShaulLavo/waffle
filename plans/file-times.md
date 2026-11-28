@@ -1,6 +1,8 @@
 # File access, modification and change times
 
-Status: Approved (coordinator, 2026-11-20). One PR.
+Status: Done. Shipped on November 20, 2026 in [PR #566](https://github.com/ShaulLavo/waffle/pull/566)
+and released in `waffle-v0.0.144`. Guests get independent nanosecond `atime`, `mtime`, and `ctime`
+across memory, shared slots, `setTimes` publication intents, and OPFS and IndexedDB persistence.
 
 ## Problem
 

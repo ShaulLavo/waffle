@@ -1,9 +1,9 @@
 # Metadata and directory enumeration
 
-Status: Approved. All numbered metadata and directory-page source hunks below were
-granted on October 25, 2026. Implementation starts from main
-`cc885cd5f6fb0016b8ec61ff5a1a71a1a1ca3976`. Read preparation, watcher publication,
-revision, resize, protocol, and persistence formats remain outside this lane.
+Status: Done. Both fixes merged on October 25, 2026. [PR #133](https://github.com/ShaulLavo/waffle/pull/133)
+shipped [file link counts](../docs/file-link-counts.md). [PR #136](https://github.com/ShaulLavo/waffle/pull/136)
+shipped [directory pages](../docs/directory-pages.md) and bounded WASI `fd_readdir`.
+The original plan and source grants remain below as history.
 
 ## Deliver independent fixes
 
