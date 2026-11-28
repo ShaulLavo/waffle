@@ -160,10 +160,19 @@ test("disposal between a guest's first checks and its post-park recheck reports 
   } finally {
     clearTimeout(timer);
     worker.terminate();
+    const cleanup = Promise.all([
+      Promise.resolve().then(() => service.shutdown()),
+      Promise.resolve().then(() => bridge.dispose()),
+    ]);
+    const { promise: cleanupDeadline, reject: expireCleanup } = Promise.withResolvers<never>();
+    const cleanupTimer = setTimeout(
+      () => expireCleanup(new Error("Notification cleanup did not finish")),
+      1000,
+    );
     try {
-      await bridge.dispose();
+      await Promise.race([cleanup, cleanupDeadline]);
     } finally {
-      await service.shutdown();
+      clearTimeout(cleanupTimer);
     }
   }
 });
