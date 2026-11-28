@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use waffle_program_support::{
     executor::Budget,
     io::{Endpoint, FdTable, IoError, OpenOptions, open_path},
-    path::absolute,
+    path::join_cwd,
 };
 
 async fn copy(input: Endpoint, fds: &FdTable, context: &Context) -> Result<(), i32> {
@@ -38,7 +38,7 @@ pub(crate) async fn cat(
     Ok(())
 }
 async fn cat_path(path: &str, cwd: &str, fds: &FdTable, context: &Context) -> Result<(), i32> {
-    let path = absolute(cwd, path);
+    let path = join_cwd(cwd, path);
     let options = OpenOptions::default();
     let opening = open_path(&path, fds, &options).map_err(|error| error.status())?;
     let input = context
@@ -73,12 +73,7 @@ pub(crate) async fn mkdir(
     let mut budget = Budget::default();
     for operand in operands {
         budget.checkpoint(&context.cancel).await.map_err(|_| 130)?;
-        // Empty operands must not turn into the current directory under -p.
-        let path = if operand.is_empty() {
-            String::new()
-        } else {
-            absolute(cwd, &operand)
-        };
+        let path = join_cwd(cwd, &operand);
         let result = context
             .cancel
             .run(context.fs().mkdir(&path, parents))

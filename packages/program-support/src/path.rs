@@ -1,30 +1,19 @@
-//! Lexical absolute paths shared by guests; no shell variable or alias state.
-pub fn absolute(cwd: &str, path: &str) -> String {
-    let path = if path.starts_with('/') {
-        path.to_owned()
-    } else {
-        format!("{cwd}/{path}")
-    };
-    let mut components = Vec::new();
-    for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                components.pop();
-            }
-            _ => components.push(part),
-        }
+pub fn join_cwd(cwd: &str, path: &str) -> String {
+    if path.is_empty() || path.starts_with('/') {
+        return path.to_owned();
     }
-    format!("/{}", components.join("/"))
+    format!("{}/{path}", cwd.trim_end_matches('/'))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::absolute;
+    use super::join_cwd;
 
     #[test]
-    fn resolves_relative_and_parent_components() {
-        assert_eq!(absolute("/work", "./a/../b"), "/work/b");
-        assert_eq!(absolute("/work", "/tmp/x"), "/tmp/x");
+    fn joins_without_altering_operands() {
+        assert_eq!(join_cwd("/work", "./a/../b/"), "/work/./a/../b/");
+        assert_eq!(join_cwd("/work", "/tmp//x"), "/tmp//x");
+        assert_eq!(join_cwd("/", "file"), "/file");
+        assert_eq!(join_cwd("/work", ""), "");
     }
 }

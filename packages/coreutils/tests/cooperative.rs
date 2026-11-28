@@ -76,6 +76,26 @@ fn cat_and_tail_preserve_exact_file_bytes() {
 }
 
 #[test]
+fn guest_file_operands_preserve_components_for_filesystem_lookup() {
+    let filesystem = MemoryFs::new(4096);
+    filesystem.mkdir("/work", false).unwrap();
+    filesystem.write_file("/work/input", b"data\n").unwrap();
+
+    let (input, output, _) = invocation(&["./input/"], None, &filesystem);
+    assert_eq!(run(waffle_coreutils::cat(input)), 1);
+    assert!(output.is_empty());
+
+    let (input, output, _) = invocation(&["missing/../input"], None, &filesystem);
+    assert_eq!(run(waffle_coreutils::tail(input)), 1);
+    assert!(output.is_empty());
+
+    let (input, _, errors) = invocation(&["-p", "input/../child"], None, &filesystem);
+    assert_eq!(run(waffle_coreutils::mkdir(input)), 1);
+    assert!(filesystem.stat("/work/child", true).is_err());
+    assert_eq!(errors.bytes(), b"mkdir: input/../child: not a directory\n");
+}
+
+#[test]
 fn mkdir_preserves_parent_creation_and_error_status() {
     let filesystem = MemoryFs::new(4096);
     let (input, _, errors) = invocation(&["-p", "a/b", ""], None, &filesystem);

@@ -1,5 +1,7 @@
 //! Lookup of Waffle-registered programs, without loading or running candidates.
 use std::io::Write;
+use std::path::{Path, PathBuf};
+use waffle_program_support::path::join_cwd;
 
 struct Options {
     all: bool,
@@ -44,9 +46,9 @@ impl<F: Fn(&str, &str) -> Result<bool, i32>> Lookup<'_, F> {
         if !(self.registered)(path, self.cwd)? {
             return Ok(false);
         }
-        // Normalize only after the host has walked and admitted the original path.
-        let absolute = waffle_program_support::path::absolute(self.cwd, path);
-        writeln!(output, "{absolute}").map_err(|error| match error.kind() {
+        let joined = join_cwd(self.cwd, path);
+        let absolute: PathBuf = Path::new(&joined).components().collect();
+        writeln!(output, "{}", absolute.display()).map_err(|error| match error.kind() {
             std::io::ErrorKind::BrokenPipe => 141,
             _ => 1,
         })?;
