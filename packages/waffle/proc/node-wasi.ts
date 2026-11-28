@@ -4,7 +4,9 @@ import {
   type DescriptorTable,
   type Resource,
 } from "../core/descriptors.js";
+import { descriptorFlagError } from "../core/fd-flags.js";
 import { memoryViews } from "../core/memory-views.js";
+import { RIGHT_FD_FDSTAT_SET_FLAGS } from "../core/rights.js";
 import type { WorkerProcessClient } from "./worker-client.js";
 
 const READ = 1n << 1n;
@@ -192,15 +194,15 @@ export function installNodeWasiDescriptors(
     }
     return result;
   });
-  const setFlags = wasi.fd_fdstat_set_flags;
   wasi.fd_fdstat_set_flags = guard((fd, flags) => {
     const entry = descriptors.get(fd! >>> 0);
     if (!entry) return 8;
-    return nodeWasiDescriptor(entry) === undefined
-      ? flags === 0
-        ? 0
-        : 58
-      : (setFlags?.(fd!, flags!) ?? 8);
+    const nativeFd = nodeWasiDescriptor(entry);
+    if (nativeFd === undefined) return flags === 0 ? 0 : 58;
+    if (!(entry.rightsBase & RIGHT_FD_FDSTAT_SET_FLAGS)) return 76;
+    const invalidFlags = descriptorFlagError(flags!);
+    if (invalidFlags) return invalidFlags;
+    return original.fd_fdstat_set_flags?.(nativeFd, flags!) ?? 8;
   });
   for (const name of ["fd_seek", "fd_tell", "fd_pread", "fd_pwrite"] as const) {
     const call = wasi[name];

@@ -89,7 +89,7 @@ export const LEGACY_NESTED_TERNARY_BASELINE: NestedTernaryBaseline = {
   "proc/access.ts": ["3f2970128f2a", "541be76a1439", "750e7b1fb77c", "78116993f921"],
   "proc/command-stdio.ts": ["4d565fd49ac6", "e76f2b329448"],
   "proc/directory.ts": ["2ecdd768502b"],
-  "proc/node-wasi.ts": ["161e459946b4", "19b55831a646", "5981356ef7d7", "e26cd0ee1a55"],
+  "proc/node-wasi.ts": ["161e459946b4", "5981356ef7d7", "e26cd0ee1a55"],
   "proc/observation.ts": ["5840a29a354c"],
   "proc/outcome.ts": ["5840a29a354c", "e29c00d88bc6"],
   "proc/registry.ts": ["153fe84c3ab3", "1ef7e706acec", "a5a12cb1e348"],

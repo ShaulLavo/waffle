@@ -189,9 +189,10 @@ are zero for this import. `fd_kind` on success reports the source's kind.
 For regular files, the new description retains the same inode, even after unlink, starts
 at offset zero, and owns its flags independently of the source description. `TRUNC` resizes
 the inode to zero, `APPEND` selects EOF for each write, and fdstat retains `NONBLOCK`.
-Preview 1 `path_open`, `fd_fdstat_set_flags`, and `runtime_proc.fd_reopen` return `ENOTSUP`
-(58) for `DSYNC`, `RSYNC`, or `SYNC` before changing files or descriptors. Explicit `fd_sync`
-and `fd_datasync` still invoke the backend barrier. `CREAT` or `EXCL` returns `EINVAL` (28),
+Browser `path_open`, `fd_fdstat_set_flags`, and `runtime_proc.fd_reopen` return `ENOTSUP`
+(58) for `DSYNC`, `RSYNC`, or `SYNC` before changing files or descriptors. The Node WASI
+adapter rejects the same flags for `fd_fdstat_set_flags` and passes `path_open` flags to Node.
+Explicit `fd_sync` and `fd_datasync` still invoke the backend barrier. `CREAT` or `EXCL` returns `EINVAL` (28),
 `DIRECTORY` returns `ENOTDIR` (54), and unknown flag bits return `EINVAL`.
 
 The source's rights do not restrict a regular-file reopen: a write-only descriptor can
