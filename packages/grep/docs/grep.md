@@ -1,6 +1,6 @@
 # Grep
 
-`@waffle-os/grep` ships upstream FreeBSD `usr.bin/grep` (`2.6.0-FreeBSD`, BSD-2-Clause, pinned in `sources.lock.json`) compiled to `wasm32-wasip1` against Waffle's patched `wasi-libc` sysroot. Import `grep` (or `fastGrep` for parallel search-worker acceleration on the proven recursive `-a` subset) and pass it to Waffle's program installer.
+`@waffle-os/grep` compiles upstream FreeBSD `usr.bin/grep` `2.6.0-FreeBSD` to `wasm32-wasip1` against Waffle's patched `wasi-libc` sysroot. `sources.lock.json` pins its BSD-2-Clause source files and checksums. Import `grep` from `@waffle-os/grep` and pass it to `installPrograms` from `@waffle-os/runtime/programs` to register `/usr/bin/grep` and `/bin/grep` and run the WASI binary.
 
 ## Supported capabilities
 

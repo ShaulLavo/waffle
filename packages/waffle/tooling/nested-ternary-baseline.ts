@@ -243,7 +243,6 @@ export const LEGACY_NESTED_TERNARY_BASELINE: NestedTernaryBaseline = {
   "tests/process-spawn-errno.test.ts": ["4948593519ca"],
   "tests/process-start-failed.test.ts": ["3662f48e4e90", "c668fd91ba7f"],
   "tests/process-worker-ownership.test.ts": ["6b5e8626ce8e", "cddf81946621"],
-  "tests/search-program-browser-runner.ts": ["0a92e7b3ecda", "59912f8cfa4e", "b8f1a2541cb9"],
   "tests/sender-admission.test.ts": ["d21bf0ad2ecc"],
   "tests/start-failure-quiet-browser.ts": ["51ecddc1cfb8", "987ac12548fd"],
   "tests/storage-crash-r2-opfs.ts": ["1e5b84641114"],

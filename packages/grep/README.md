@@ -1,9 +1,12 @@
 # Waffle grep
 
-Real FreeBSD `grep` (`2.6.0-FreeBSD`, BSD-2-Clause) compiled to `wasm32-wasip1` for Waffle runtimes, with optional `fastGrep` search-worker acceleration.
+`@waffle-os/grep` packages FreeBSD `grep` `2.6.0-FreeBSD` under the BSD-2-Clause license, compiled to `wasm32-wasip1` for Waffle runtimes. Pass the `grep` catalog to `installPrograms` to install `/usr/bin/grep` and `/bin/grep`.
 
 ```ts
-import { grep, fastGrep } from "@waffle-os/grep";
+import { grep } from "@waffle-os/grep";
+import { installPrograms } from "@waffle-os/runtime/programs";
+
+await installPrograms(runtime, [grep], { launcher });
 ```
 
 Build and test:
