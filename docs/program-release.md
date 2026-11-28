@@ -74,7 +74,9 @@ When `publish` is `true`, the workflow runs `scripts/publish-programs-npm.ts` an
 
 The `program-release.json` on the GitHub release is an install-verification manifest for npm consumers. Its `assetBase` is `https://registry.npmjs.org`, and its package records identify the exact npm tarballs, SHA-256 digests, inter-family version pins, and admitted guest and notice artifacts installed from the registry.
 
-`.github/workflows/program-release.yml` rejects `python` in `families` because CI does not build CPython. Release `@waffle-os/python` locally from an externally qualified producer artifact.
+`.github/workflows/program-release.yml` accepts `base,git,python` in `families`. Pass an npm registry URL in `registry` when `families` includes `git`, because Git needs its declared third-party pins. When `families` includes `python`, the workflow runs `packages/python/scripts/build-python.ts` to build and qualify native and WASI CPython, hashes the resulting `python-build.json`, and stages `@waffle-os/python` through `packages/python`'s `prepare:package --receipt-sha256` route. You can still stage `@waffle-os/python` locally from an externally qualified producer artifact through that same route.
+
+For the Wasm program families other than Python, the workflow sets `WAFFLE_NAMED_PROGRAMS_DIR` during `prepare:package` and uploads their exact named optimizer outputs as the `program-named-<tag>` GitHub Actions artifact. That artifact holds only those named binaries, separate from the staged rebind inputs in `program-release-<tag>` and the npm receipt on the GitHub release.
 
 ## Final program bytes
 
