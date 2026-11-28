@@ -40,7 +40,7 @@ const runtimeHostInterface = parseHostInterface(
 );
 const runtimeVersion: unknown = runtimeManifest.version;
 if (typeof runtimeVersion !== "string") throw new Error("Runtime fixture needs a package version");
-const runtimeUrl = runtimeReleaseUrl("ShaulLavo/waffle", runtimeVersion);
+const runtimeUrl = runtimeReleaseUrl(runtimeVersion);
 let runtimeSha256 = "";
 let runtimeArchive = "";
 const baseFamilies = ["coreutils", "findutils", "grep", "sed", "ripgrep", "base"];
@@ -217,7 +217,7 @@ describe("base closure", () => {
     expect(check.registry).toBe("none");
     const served = new Set(check.requests);
     for (const item of manifest.packages) expect(served.has(`/${item.filename}`)).toBe(true);
-    expect(served.has(`/waffle-os-runtime-${runtimeVersion}.tgz`)).toBe(true);
+    expect(served.has(`/runtime-${runtimeVersion}.tgz`)).toBe(true);
     expect(check.imports).toContain("@waffle-os/base");
     const wasm = manifest.packages.flatMap(packedGuests);
     expect(wasm).toHaveLength(baseGuestCount);
@@ -550,22 +550,28 @@ describe("review r621 refusals", () => {
     ).toThrow(/is not admitted/);
   });
 
-  test("asset and runtime URLs are bound to their release tags and the runtime version", async () => {
+  test("family URLs use release tags and runtime inputs use the exact npm tarball", async () => {
     expect(releaseAssetBase("ShaulLavo/waffle", tag)).toBe(assetBase);
-    expect(runtimeReleaseUrl("ShaulLavo/waffle", "0.0.91")).toBe(
-      "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.91/waffle-os-runtime-0.0.91.tgz",
+    expect(runtimeReleaseUrl("0.0.91")).toBe(
+      "https://registry.npmjs.org/@waffle-os/runtime/-/runtime-0.0.91.tgz",
     );
     expect(() => releaseAssetBase("https://example.invalid/latest", tag)).toThrow(/owner\/name/);
-    expect(() => runtimeReleaseUrl("ShaulLavo/waffle", "latest")).toThrow(/not exact/);
+    expect(() => runtimeReleaseUrl("latest")).toThrow(/not exact/);
     const root = preparedFixture("urls");
     const options = await fixtureOptions(root, "urls");
     const withRuntime = (url: string) => ({ ...options, runtime: { ...options.runtime, url } });
-    await expect(buildRelease(withRuntime("https://example.invalid/latest.tgz"))).rejects.toThrow(
-      /not a waffle-v<version> release asset/,
-    );
-    const other = "https://example.invalid/releases/download/waffle-v0.0.91/waffle-0.0.91.tgz";
-    await expect(buildRelease(withRuntime(other))).rejects.toThrow(/Runtime URL is not ours/);
-    const older = runtimeReleaseUrl("ShaulLavo/waffle", "0.0.90");
+    for (const invalid of [
+      "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.91/waffle-os-runtime-0.0.91.tgz",
+      "https://example.invalid/@waffle-os/runtime/-/runtime-0.0.91.tgz",
+      "http://registry.npmjs.org/@waffle-os/runtime/-/runtime-0.0.91.tgz",
+      "https://registry.npmjs.org/@waffle-os/relay/-/relay-0.0.91.tgz",
+      `${runtimeUrl}?latest=1`,
+    ]) {
+      await expect(buildRelease(withRuntime(invalid))).rejects.toThrow(
+        /not an exact npm @waffle-os\/runtime tarball/,
+      );
+    }
+    const older = runtimeReleaseUrl("0.0.90");
     await expect(buildRelease(withRuntime(older))).rejects.toThrow(
       `Runtime URL names 0.0.90, its package is ${runtimeVersion}`,
     );

@@ -4,27 +4,33 @@ Program families ship as GitHub release tarballs, not npm packages. A consumer d
 `base` tarball URL (and optionally `git`). Family-to-family edges inside that closure are exact
 release-asset URLs. Each family carries `waffleHostInterface` and a wildcard
 `peerDependencies.waffle`; the consumer manifest names the exact runtime archive separately.
-Nothing in the closure resolves through npm, so no workspace label or unpublished `0.0.0` reaches
-an installer.
+The closure uses exact release inputs, so no workspace label or unpublished `0.0.0` reaches an
+installer.
 
 ## Build the closure
 
-Prepare each family with its own `prepare:package` route first (see
-[program-package-builds.md](program-package-builds.md)). Then, from a clean checkout:
+Prepare each family with its own `prepare:package` route first, as in
+[program-package-builds.md](program-package-builds.md). Then run the release command from a clean
+checkout.
 
 ```sh
 bun scripts/program-release.ts --tag "$PROGRAM_TAG" --out "$OUTPUT" \
-  --runtime-url "$RUNTIME_URL" --runtime-sha256 "$RUNTIME_SHA256" --families base
+  --runtime-url "https://registry.npmjs.org/@waffle-os/runtime/-/runtime-${RUNTIME_VERSION}.tgz" \
+  --runtime-sha256 "$RUNTIME_SHA256" --families base
 ```
 
 `--list --families base,git` prints the dependency-ordered package directories to prepare.
 
-Production URLs are derived, not supplied: program assets live under
-`https://github.com/<repository>/releases/download/<tag>/`, and the runtime URL must be that
-repository's `waffle-v<version>/waffle-<version>.tgz`, where `<version>` is the version inside the
-hash-checked runtime tarball. `--repository` defaults to `ShaulLavo/waffle`. If the tag already
-exists it must name exactly the packed, clean commit (`tagState: tagged`); otherwise the manifest
-says `untagged-candidate`, and `--require-tag` refuses it.
+The script derives program family asset URLs under
+`https://github.com/<repository>/releases/download/<tag>/`. The default repository is
+`ShaulLavo/waffle`. For a published runtime, `--runtime-url` must be the canonical npm tarball URL
+for an exact `major.minor.patch` version. The script fetches that tarball or reads
+`--runtime-tarball`, checks the archive bytes against `--runtime-sha256`, and verifies the package
+name, version, and host-interface metadata.
+
+When the program tag exists, it must name the exact packed, clean commit, and the manifest sets
+`tagState` to `tagged`. When the tag is absent, the manifest sets `tagState` to
+`untagged-candidate`, and `--require-tag` refuses the run.
 
 The command:
 
@@ -91,7 +97,8 @@ bun scripts/program-rebind.ts \
   --from-manifest-sha256 <source-manifest-sha256> \
   --from-assets /work/tmp/programs-v0.0.13 \
   --tag "$NEW_PROGRAM_TAG" --out "$OUTPUT" \
-  --runtime-url "$RUNTIME_URL" --runtime-sha256 "$RUNTIME_SHA256" \
+  --runtime-url "https://registry.npmjs.org/@waffle-os/runtime/-/runtime-${RUNTIME_VERSION}.tgz" \
+  --runtime-sha256 "$RUNTIME_SHA256" \
   --runtime-tarball "$RUNTIME_ARCHIVE" --host-interface "$HOST_INTERFACE" \
   --runtime-source-commit "$RUNTIME_SOURCE_COMMIT" \
   --historical-root /work/worktrees/waffle/checker-3050f69 \
@@ -139,5 +146,5 @@ To qualify unpublished interface-bearing bytes without promising a public runtim
 rebind commands accept this explicit candidate mode. The runtime package version stays unchanged.
 The output records `runtime.input.kind: "local-candidate"` and the supplied source commit.
 A candidate cannot use a public release URL or be marked published. This creates no tag or release
-and does not modify an existing runtime archive. The public release path still requires its exact
-immutable URL and archive hash.
+and does not modify an existing runtime archive. Published runtime inputs require their canonical
+versioned npm tarball URL and exact archive hash.

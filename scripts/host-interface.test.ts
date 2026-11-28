@@ -54,7 +54,7 @@ test("new package recipes preserve exact Git and registry edges without interpre
 
 test("new release recipes reject historical exact peers, dependencies, and missing integers", () => {
   const context = { workspace: new Map(), urls: new Map(), runtimeHostInterface: provided };
-  const exact = runtimeReleaseUrl("ShaulLavo/waffle", "0.0.106");
+  const exact = runtimeReleaseUrl("0.0.106");
   for (const peers of [
     undefined,
     { "@waffle-os/runtime": exact },
@@ -143,12 +143,7 @@ test("runtime reader validates actual archive metadata and marks a local candida
         sha256: createHash("sha256").update(readFileSync(archive)).digest("hex"),
         candidateSourceCommit: "a".repeat(40),
       };
-      const result = readRuntime(
-        runtime,
-        "ShaulLavo/waffle",
-        resolve(root, String(value)),
-        control,
-      );
+      const result = readRuntime(runtime, resolve(root, String(value)), control);
       if (value !== 1) {
         await expect(result).rejects.toThrow(/positive safe integer/);
         continue;
@@ -160,8 +155,7 @@ test("runtime reader validates actual archive metadata and marks a local candida
       });
       await expect(
         readRuntime(
-          { ...runtime, url: runtimeReleaseUrl("ShaulLavo/waffle", "0.0.107") },
-          "ShaulLavo/waffle",
+          { ...runtime, url: runtimeReleaseUrl("0.0.107") },
           resolve(root, "false-public"),
           control,
         ),

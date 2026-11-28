@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       runtime_url:
-        description: This repository's waffle-v<version>/waffle-<version>.tgz release asset URL
+        description: Exact @waffle-os/runtime npm tarball URL
         required: true
         type: string
       runtime_sha256:
