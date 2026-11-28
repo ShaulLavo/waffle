@@ -230,23 +230,9 @@ struct FsState {
 }
 impl FsState {
     fn resolve(&self, path: &str) -> Result<String, IoError> {
-        if !path.starts_with('/') || path.len() > MAX_PATH_BYTES || path.contains('\0') {
-            return Err(IoError::InvalidPath);
-        }
-        let mut resolved = String::new();
-        resolved
-            .try_reserve_exact(path.len())
-            .map_err(|_| IoError::LimitExceeded)?;
-        resolved.push('/');
-        let trailing_slash = path.ends_with('/');
-        let mut components = path.split('/').filter(|part| !part.is_empty()).peekable();
-        while let Some(component) = components.next() {
-            resolve_memory_component(&mut resolved, component);
-            if components.peek().is_some() || trailing_slash {
-                self.require_directory(&resolved)?;
-            }
-        }
-        Ok(resolved)
+        walk_memory_path(path, path.ends_with('/'), |directory| {
+            self.require_directory(directory)
+        })
     }
     fn require_directory(&self, path: &str) -> Result<(), IoError> {
         if self.files.contains_key(path) {
@@ -255,6 +241,25 @@ impl FsState {
         if !self.directories.contains_key(path) {
             return Err(IoError::NotFound);
         }
+        Ok(())
+    }
+    fn create_directory(&mut self, path: &str, parents: bool) -> Result<(), IoError> {
+        if self.files.contains_key(path) {
+            return Err(IoError::AlreadyExists);
+        }
+        if self.directories.contains_key(path) {
+            return if parents {
+                Ok(())
+            } else {
+                Err(IoError::AlreadyExists)
+            };
+        }
+        if self.directories.len() >= MAX_MEMORY_FILES {
+            return Err(IoError::LimitExceeded);
+        }
+        let metadata = self.metadata(FileKind::Directory);
+        self.directories.insert(path.to_owned(), metadata);
+        self.child_created(path);
         Ok(())
     }
     fn child_created(&mut self, path: &str) {
@@ -296,6 +301,28 @@ impl FsState {
             owned_by_effective_gid: Some(true),
         }
     }
+}
+fn walk_memory_path(
+    path: &str,
+    require_final_directory: bool,
+    mut visit_directory: impl FnMut(&str) -> Result<(), IoError>,
+) -> Result<String, IoError> {
+    if !path.starts_with('/') || path.len() > MAX_PATH_BYTES || path.contains('\0') {
+        return Err(IoError::InvalidPath);
+    }
+    let mut resolved = String::new();
+    resolved
+        .try_reserve_exact(path.len())
+        .map_err(|_| IoError::LimitExceeded)?;
+    resolved.push('/');
+    let mut components = path.split('/').filter(|part| !part.is_empty()).peekable();
+    while let Some(component) = components.next() {
+        resolve_memory_component(&mut resolved, component);
+        if components.peek().is_some() || require_final_directory {
+            visit_directory(&resolved)?;
+        }
+    }
+    Ok(resolved)
 }
 fn resolve_memory_component(path: &mut String, component: &str) {
     if component == "." {
@@ -808,56 +835,19 @@ impl MemoryFs {
     }
 
     pub fn mkdir(&self, path: &str, parents: bool) -> Result<(), IoError> {
-        if !path.starts_with('/') || path.len() > MAX_PATH_BYTES || path.contains('\0') {
-            return Err(IoError::InvalidPath);
-        }
-        let path = path.trim_end_matches('/');
-        let path = if path.is_empty() { "/" } else { path };
         let mut fs = self.0.borrow_mut();
-        let mut create = |directory: &str, allow_existing: bool| {
-            if fs.files.contains_key(directory) {
-                return Err(IoError::AlreadyExists);
+        let path = walk_memory_path(path, false, |directory| {
+            if parents && !fs.files.contains_key(directory) {
+                return fs.create_directory(directory, true);
             }
-            if fs.directories.contains_key(directory) {
-                return if allow_existing {
-                    Ok(())
-                } else {
-                    Err(IoError::AlreadyExists)
-                };
-            }
-            let parent = directory
-                .rsplit_once('/')
-                .map(|(p, _)| if p.is_empty() { "/" } else { p })
-                .unwrap();
-            if fs.files.contains_key(parent) {
-                return Err(IoError::NotDirectory);
-            }
-            if !fs.directories.contains_key(parent) {
-                return Err(IoError::NotFound);
-            }
-            if fs.directories.len() >= MAX_MEMORY_FILES {
-                return Err(IoError::LimitExceeded);
-            }
-            let metadata = fs.metadata(FileKind::Directory);
-            fs.directories.insert(directory.to_owned(), metadata);
-            fs.child_created(directory);
-            Ok(())
-        };
-        if parents {
-            for (index, _) in path.match_indices('/').filter(|(index, _)| *index > 0) {
-                create(&path[..index], true)?;
-            }
-        }
-        create(path, parents)
+            fs.require_directory(directory)
+        })?;
+        fs.create_directory(&path, parents)
     }
     pub fn set_executable(&self, path: &str, executable: bool) -> Result<(), IoError> {
-        let file = self
-            .0
-            .borrow()
-            .files
-            .get(path)
-            .cloned()
-            .ok_or(IoError::NotFound)?;
+        let fs = self.0.borrow();
+        let path = fs.resolve(path)?;
+        let file = fs.files.get(&path).ok_or(IoError::NotFound)?;
         let mut metadata = file.metadata.get();
         metadata.executable = Some(executable);
         metadata.mode = Some(FileMode {
@@ -869,25 +859,24 @@ impl MemoryFs {
     }
     pub fn read_file(&self, path: &str) -> Result<Vec<u8>, IoError> {
         let fs = self.0.borrow();
-        let file = fs.files.get(path).ok_or(IoError::NotFound)?;
+        let path = fs.resolve(path)?;
+        let file = fs.files.get(&path).ok_or(IoError::NotFound)?;
         let bytes = file.data.borrow().clone();
         file.accessed();
         Ok(bytes)
     }
     pub fn write_file(&self, path: &str, input: &[u8]) -> Result<(), IoError> {
-        if path.is_empty() || path.len() > MAX_PATH_BYTES || path.contains('\0') {
-            return Err(IoError::InvalidPath);
-        }
         let mut fs = self.0.borrow_mut();
-        if fs.directories.contains_key(path) {
+        let path = fs.resolve(path)?;
+        if fs.directories.contains_key(&path) {
             return Err(IoError::AlreadyExists);
         }
         let old = fs
             .files
-            .get(path)
+            .get(&path)
             .map(|file| file.data.borrow().len())
             .unwrap_or(0);
-        if !fs.files.contains_key(path) && fs.files.len() >= MAX_MEMORY_FILES {
+        if !fs.files.contains_key(&path) && fs.files.len() >= MAX_MEMORY_FILES {
             return Err(IoError::LimitExceeded);
         }
         if input.len() > fs.limit - (fs.used - old) {
@@ -897,7 +886,7 @@ impl MemoryFs {
         data.try_reserve_exact(input.len())
             .map_err(|_| IoError::LimitExceeded)?;
         data.extend_from_slice(input);
-        let file = if let Some(file) = fs.files.get(path) {
+        let file = if let Some(file) = fs.files.get(&path) {
             file.clone()
         } else {
             let metadata = fs.metadata(FileKind::Regular);
@@ -905,8 +894,8 @@ impl MemoryFs {
                 data: RefCell::new(Vec::new()),
                 metadata: Cell::new(metadata),
             });
-            fs.files.insert(path.to_owned(), file.clone());
-            fs.child_created(path);
+            fs.child_created(&path);
+            fs.files.insert(path, file.clone());
             file
         };
         *file.data.borrow_mut() = data;
@@ -1299,6 +1288,31 @@ mod tests {
         }
         assert_eq!(fs.read_file("/home/guest/answer").unwrap(), b"x");
         assert_eq!(fs.used_bytes(), 1);
+    }
+    #[test]
+    fn memory_file_helpers_and_mkdir_share_open_path_traversal() {
+        let fs = MemoryFs::new(8);
+        fs.mkdir("/tmp/./sub//deep/", true).unwrap();
+        fs.write_file("/tmp/sub/deep/.././answer", b"x").unwrap();
+        fs.set_executable("/tmp/sub/./answer", true).unwrap();
+        let input = fs.open("/tmp/sub/answer", &OpenOptions::default()).unwrap();
+        let mut byte = [0];
+        assert_eq!(input.read(&mut byte).now_or_never(), Some(Ok(1)));
+        assert_eq!(&byte, b"x");
+        assert_eq!(fs.read_file("//tmp/sub/./answer").unwrap(), b"x");
+        assert_eq!(
+            fs.stat("/tmp/sub/answer", true).unwrap().executable,
+            Some(true)
+        );
+        assert_eq!(fs.write_file("/work/input", b"x"), Err(IoError::NotFound));
+        assert_eq!(
+            fs.write_file("/tmp/sub/answer/", b"x"),
+            Err(IoError::NotDirectory)
+        );
+        assert_eq!(
+            fs.mkdir("/tmp/sub/answer/child", true),
+            Err(IoError::NotDirectory)
+        );
     }
     #[test]
     fn filesystem_metadata_updates_directory_time_only_for_new_children() {
