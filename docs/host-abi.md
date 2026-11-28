@@ -1302,8 +1302,10 @@ that wildcard.
 returns zero or a positive WASI errno. The WASI adapter supplies the namespace without activating
 process services. It checks the directory descriptor's `PATH_FILESTAT_GET` right, resolves the
 UTF-8 relative pathname from that capability and checks ancestor search permissions. The path
-must be nonempty, valid UTF-8 and contain no NUL. Flags must be zero; follow-link or other flags
-return `ENOTSUP`, errno 58, because symlinks are unsupported.
+must be nonempty, valid UTF-8 and contain no NUL. `flags` uses the same final-symlink rules as
+`path_filestat_get`. Bit 0, `LOOKUPFLAGS_SYMLINK_FOLLOW`, follows a final symbolic link. Zero
+leaves a final link alone unless the path ends in `/`, which demands a directory. Any other
+flag bit returns `ENOTSUP`, errno 58.
 
 Success writes exactly 16 bytes, four little-endian u32 words:
 

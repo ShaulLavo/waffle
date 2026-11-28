@@ -1126,7 +1126,7 @@ export class Wasi {
     flags: number,
     out: number,
   ): number {
-    if (flags !== 0) return ENOTSUP;
+    if (flags & ~1) return ENOTSUP;
     const bytes = this.bytes();
     ptr >>>= 0;
     len >>>= 0;
@@ -1143,14 +1143,15 @@ export class Wasi {
     if (!entry) return EBADF;
     if (entry.resource.kind !== "directory") return ENOTDIR;
     if (!(entry.rightsBase & RIGHT_PATH_FILESTAT_GET)) return ENOTCAPABLE;
-    const resolved = this.opts.fs.resolve(entry.resource.handle, path, false, this.rooted);
+    const follow = followsFinal(lookupFlags(flags), path);
+    const resolved = this.opts.fs.resolve(entry.resource.handle, path, follow, this.rooted);
     let result =
       typeof resolved !== "number" && resolved.node !== undefined
         ? this.opts.fs.permissions?.(resolved.node)
         : undefined;
     if (typeof resolved === "number" || resolved.node === undefined) {
       if (typeof resolved === "number" && resolved !== ENOENT) return resolved;
-      const virtual = this.resolveVirtualMachineId(entry, path, false);
+      const virtual = this.resolveVirtualMachineId(entry, path, follow);
       if (typeof virtual === "number") return virtual;
       if (virtual !== "machine-id") return ENOENT;
       result = permissionsFor("file", 0o444);
