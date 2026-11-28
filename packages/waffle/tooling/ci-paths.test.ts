@@ -110,7 +110,7 @@ test("selection step resolves path filters, workflow dispatch and filter-failure
           P_COREUTILS: "false",
           P_CHECKSUMS: "false",
           P_FINDUTILS: "false",
-          P_GREP: "false",
+          P_SEARCH: "false",
           P_DIFFUTILS: "false",
           P_GH: "false",
           P_JQ: "false",
@@ -146,6 +146,13 @@ test("selection step resolves path filters, workflow dispatch and filter-failure
   expect(echoOnly.need_wasi_sdk).toBe("true");
   expect(echoOnly.need_rust_wasip1).toBe("true");
   expect(echoOnly.browser).toBe("false");
+
+  const searchOnly = runSelect({ P_SEARCH: "true" });
+  expect(searchOnly.search).toBe("true");
+  expect(searchOnly.need_wasi_sdk).toBe("true");
+  expect(searchOnly.need_wasi_libc).toBe("true");
+  expect(searchOnly.need_rust_wasip1).toBe("true");
+  expect(searchOnly.need_optimizer).toBe("true");
 
   const browserOnly = runSelect({ P_BROWSER: "true" });
   expect(browserOnly.browser).toBe("true");
@@ -275,8 +282,7 @@ const consumerFilters = [
   "coreutils",
   "sed",
   "findutils",
-  "grep",
-  "ripgrep",
+  "search",
   "base",
   "programs",
   "diffutils",
@@ -836,6 +842,24 @@ test("leaf filters stay isolated from unrelated packages", () => {
     true,
   );
   expect(selected("checksums", "packages/coreutils/crates/date/src/main.rs")).toBe(false);
+});
+
+test("grep and ripgrep use one real-guest streaming check in PR CI", () => {
+  for (const path of [
+    "packages/grep/src/index.ts",
+    "packages/ripgrep/src/index.ts",
+    "tools/family-acceptance.ts",
+    "tools/search-wasi.test.ts",
+  ]) {
+    expect(selected("search", path), path).toBe(true);
+  }
+  const step = coreSteps.find((item) => item.name === "Build and qualify grep and ripgrep");
+  expect(step?.if).toBe("steps.select.outputs.search == 'true'");
+  expect(String(step?.run).trim().split("\n")).toEqual([
+    "bun run programs:grep",
+    "bun run --cwd packages/ripgrep build",
+    "bun test tools/search-wasi.test.ts",
+  ]);
 });
 
 import "../../../tools/ci-release-coverage.test.ts";

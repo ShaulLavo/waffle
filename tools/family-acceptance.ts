@@ -86,7 +86,6 @@ export interface FamilyAcceptanceOptions {
   readonly workerUrl: URL;
   readonly assets: FamilyAcceptanceAssets;
   readonly cases?: readonly FamilyAcceptanceCase[];
-  readonly redirectFiles?: boolean;
 }
 
 interface InstalledSession {
@@ -574,7 +573,7 @@ async function ripgrep(session: FamilyAcceptanceSession) {
   expectExecution(result, launched, fixture.status, fixture.stdout, fixture.error);
 }
 
-async function largeSearch(
+export async function checkSearchStreams(
   session: FamilyAcceptanceSession,
   tool: "grep" | "rg",
   flags: readonly string[],
@@ -588,8 +587,8 @@ async function largeSearch(
     `${cwd}/large`,
     `${"x".padEnd(1023, " ")}\n`.repeat(largeLines),
   );
-  const count = request([tool].concat(flags, "--no-filename", "-c", "x", "large"), cwd);
-  expectExecution(await session.exec(count), count, 0, `${largeLines}\n`);
+  const count = request([tool].concat(flags, "-H", "-c", "x", "large"), cwd);
+  expectExecution(await session.exec(count), count, 0, `large:${largeLines}\n`);
 
   const outputLines = 200_000;
   await session.filesystem.writeFile(`${cwd}/${file}`, "x\n".repeat(outputLines));
@@ -658,17 +657,6 @@ export const familyAcceptanceCases: readonly FamilyAcceptanceCase[] = [
   { name: "grep numbered inverted bytes", family: "grep", run: grep },
   { name: "sed unterminated output", family: "sed", run: sed },
   { name: "ripgrep explicit stdin", family: "ripgrep", run: ripgrep },
-  {
-    name: "grep streams large inputs and outputs",
-    family: "grep",
-    run: (session) => largeSearch(session, "grep", ["-raF"]),
-  },
-  {
-    name: "ripgrep streams large inputs and outputs",
-    family: "ripgrep",
-    run: (session) =>
-      largeSearch(session, "rg", ["--color=never", "--no-ignore", "--hidden", "--text", "-F"]),
-  },
   {
     name: "env forwards descriptors and unbound fd fails",
     family: "coreutils",

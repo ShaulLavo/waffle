@@ -42,9 +42,8 @@ export async function runLazyBaseAcceptance(runtime: Runtime, workerUrl: URL) {
       runtime,
       workerUrl,
       assets: { coreutils, findutils, grep, ripgrep, sed },
-      redirectFiles: true,
     });
-    assert.equal(completed.length, 13);
+    assert.equal(completed.length, 11);
     console.log(JSON.stringify({ runtime: "one borrowed Waffle Runtime", completed }));
     assert.equal(
       fetches.filter((url) => url.endsWith("/cat.wasm")).length,
