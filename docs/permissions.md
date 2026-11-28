@@ -30,12 +30,13 @@ aliases; other directory bindings use ordinary resolution. Search permission on 
 and existing real ancestor directories is checked before opening a virtual alias.
 
 A regular-file reopen checks the inode's current read and write policy and bounds requested
-rights by the live root preopen's inheriting rights. It also checks the source descriptor
-for both mode-mutation rights and fails with `ENOTCAPABLE`, errno 76, when a requested mode
-right is missing. It retains the inode across unlink and creates a new offset and flags.
-Pipes, terminals, and directories share their existing description and may only narrow its
-rights. See [the reopen ABI](host-abi.md#reopen-an-existing-descriptor) for flag, error and
-redirection semantics.
+rights by the live root preopen's inheriting rights. Reopening an alias through `path_open`
+keeps requested mode-mutation rights that the source holds in its corresponding base or
+inheriting mask. Explicit `runtime_proc.fd_reopen` returns `ENOTCAPABLE`, errno 76, when the
+source lacks a requested mode right. Both paths retain the inode across unlink and give the
+reopened descriptor a separate offset and flags. Pipes, terminals, and directories share
+their existing description and may only narrow its rights. See [the reopen ABI](host-abi.md#reopen-an-existing-descriptor)
+for flag, error and redirection semantics.
 
 ## Saved metadata adoption
 

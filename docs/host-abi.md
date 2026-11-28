@@ -228,6 +228,14 @@ while also checking the path-open directory's rights and the requested inheritin
 A missing descriptor returns `ENOENT` (44), not `EBADF`. These are WASI-only virtual names:
 no per-process entries or symlinks are installed in shared MemFS.
 
+A `wasi-libc` pathname open requests rights derived from the root preopen's inheriting mask,
+which includes both extended [mode-mutation rights](#inode-mode-mutation). When `path_open`
+reopens a regular-file descriptor alias, Waffle keeps requested mode-mutation bits that the
+source descriptor holds in the corresponding base or inheriting mask. The other requested
+rights still need authorization from the live root preopen and inode policy. Explicit
+`runtime_proc.fd_reopen` calls return `ENOTCAPABLE`, errno 76, when the source descriptor
+lacks a requested mode right.
+
 A regular-file stdout/stderr opened with `APPEND` does not force a later reopen to append.
 For example, redirecting `echo x >/dev/stderr` with `TRUNC` leaves exactly `x\n`, even when
 stderr's original description had `APPEND`. Reopening with `APPEND` (`>>`) preserves old

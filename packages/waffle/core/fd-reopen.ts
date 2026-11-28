@@ -85,8 +85,11 @@ export function reopenDescriptor(
   if (!root || !(root.rightsBase & PATH_OPEN)) return -76;
   if ((base & root.rightsInheriting) !== base) return -76;
   if ((inheriting & root.rightsInheriting) !== inheriting) return -76;
-  if (base & RIGHTS_SET_MODE & ~source.rightsBase) return -76;
-  if (inheriting & RIGHTS_SET_MODE & ~source.rightsInheriting) return -76;
+  const unavailableBaseMode = base & RIGHTS_SET_MODE & ~source.rightsBase;
+  const unavailableInheritingMode = inheriting & RIGHTS_SET_MODE & ~source.rightsInheriting;
+  if (!intersectCapabilities && (unavailableBaseMode || unavailableInheritingMode)) return -76;
+  base &= ~unavailableBaseMode;
+  inheriting &= ~unavailableInheritingMode;
   if (oflags & 8 && !(root.rightsBase & PATH_RESIZE)) return -76;
   return openInode(table, fs, source.resource.handle, "file", oflags, fdflags, base, inheriting);
 }

@@ -11,9 +11,11 @@ import { validatePersistedNode } from "../fs/storage.js";
 import { statTimes, storedTimes } from "../testing/fixtures/file-times.js";
 import {
   RIGHTS_ALL,
+  RIGHTS_SET_MODE,
   RIGHT_FD_FILESTAT_SET_MODE,
   RIGHT_FD_FILESTAT_SET_TIMES,
   RIGHT_FD_READ,
+  RIGHT_FD_WRITE,
   RIGHT_PATH_FILESTAT_SET_MODE,
 } from "../core/rights.js";
 import { modeGuest } from "./fixtures/permissions-guest.js";
@@ -183,11 +185,51 @@ test("guest fchmod acts on a retained file after unlink and respects stripped ri
   expect(fs.stat(target)).toMatchObject({ mode: 0o640, nlink: 0 });
   expect(host.setRights(retained.fd, base, 0n)).toBe(0);
   expect(host.setFdMode(retained.fd, 0o600)).toBe(76);
-  expect(
-    host.openRaw(3, `dev/fd/${retained.fd}`, { base: fileModeRight, inheriting: 0n }).errno,
-  ).toBe(76);
   expect(host.wasi.fdReopen(retained.fd, 0, 0, fileModeRight, 128)).toBe(76);
   expect(fs.stat(target).mode).toBe(0o640);
+});
+
+test.each(["dev/fd", "proc/self/fd", "dev//fd"])(
+  "regular-file %s opens with the libc rights request and an independent offset",
+  (directory) => {
+    const fs = new MemFS();
+    fs.writeFile("/file", "one\ntwo\n");
+    const host = modeHost(fs);
+    const original = host.openRaw(3, "file", { base: RIGHT_FD_READ, inheriting: 0n });
+    expect(original.errno).toBe(0);
+    expect(host.readAll(original.fd, 4)).toBe("one\n");
+
+    const inheriting = host.wasi.descriptors.get(3)!.rightsInheriting;
+    const base = inheriting & ~RIGHT_FD_WRITE;
+    const reopened = host.openRaw(3, `${directory}/${original.fd}`, { base, inheriting });
+    expect(reopened.errno).toBe(0);
+    expect(host.wasi.descriptors.get(reopened.fd)?.rightsBase).toBe(base & ~RIGHTS_SET_MODE);
+    expect(host.wasi.descriptors.get(reopened.fd)?.rightsInheriting).toBe(
+      inheriting & ~RIGHTS_SET_MODE,
+    );
+    expect(host.setFdMode(reopened.fd, 0o644)).toBe(76);
+    expect(host.readAll(reopened.fd)).toBe("one\ntwo\n");
+    expect(host.readAll(original.fd)).toBe("two\n");
+  },
+);
+
+test("regular-file aliases preserve requested mode rights from the source", () => {
+  const fs = new MemFS();
+  file(fs);
+  const host = modeHost(fs);
+  const base = RIGHT_FD_READ | RIGHT_FD_FILESTAT_SET_MODE;
+  const source = host.openRaw(3, "file", { base, inheriting: RIGHT_PATH_FILESTAT_SET_MODE });
+  expect(source.errno).toBe(0);
+  const reopened = host.openRaw(3, `dev/fd/${source.fd}`, {
+    base: base | RIGHT_PATH_FILESTAT_SET_MODE,
+    inheriting: RIGHTS_SET_MODE,
+  });
+  expect(reopened.errno).toBe(0);
+  expect(host.wasi.descriptors.get(reopened.fd)?.rightsBase).toBe(base);
+  expect(host.wasi.descriptors.get(reopened.fd)?.rightsInheriting).toBe(
+    RIGHT_PATH_FILESTAT_SET_MODE,
+  );
+  expect(host.setFdMode(reopened.fd, 0o640)).toBe(0);
 });
 
 test("the path mode right works independently of file-stat and data access", () => {

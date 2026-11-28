@@ -122,9 +122,9 @@ export function createPathOpenHost(
     );
     return { errno, fd: errno === 0 ? view().getUint32(out >>> 0, true) : -1 };
   };
-  const readAll = (fd: number) => {
+  const readAll = (fd: number, length = 256) => {
     view().setUint32(256, 4096, true);
-    view().setUint32(260, 256, true);
+    view().setUint32(260, length, true);
     const errno = fdRead(fd, 256, 1, 264);
     if (errno !== 0) throw new Error(`fd_read failed: ${errno}`);
     const n = view().getUint32(264, true);
