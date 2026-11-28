@@ -20,7 +20,7 @@ family with the other everyday programs. See [installing program packages](../..
 - Search exported `PATH` entries in order. Print the first match, or every matching entry with `-a` or `--all`. Repeated PATH entries produce repeated results in all-match mode.
 - An empty PATH entry means the current directory. Relative entries resolve from the process cwd. An unset PATH searches nowhere. An empty PATH searches only cwd.
 - Names containing `/` bypass PATH and query that path directly.
-- Print normalized absolute paths, one per line. The host walks the original path before normalization, so a non-directory component cannot disappear through `..`.
+- Print one absolute path per line after the host authorizes the original operand. `which` joins relative matches onto the process cwd, removes redundant slashes and `.` segments, and keeps `..` parent components intact.
 - Process every name. Return 0 when every name matches, 1 if any name is missing, and 2 for usage or host-query errors. Missing names produce no diagnostic. Waffle owns cancellation and its signal-derived status. A broken output pipe returns 141; other output errors return 1.
 
 Waffle owns executable registration, symlink resolution and admission policy; this utility only queries that metadata. It does not prove that the candidate can compile or start. A registered program with a failing loader can still appear. Ordinary files, persisted installer markers without registration, directories, builtins, shell functions, aliases, and the shell command cache do not count.
