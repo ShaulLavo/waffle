@@ -2,6 +2,7 @@ import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { Wasi } from "../core/wasi.ts";
+import { RIGHTS_SET_MODE } from "../core/rights.ts";
 import { DescriptorTable, type Stream } from "../core/descriptors.ts";
 import { MemFS } from "../fs/memory.ts";
 import { bootstrap, type RuntimeWorkerMessage } from "../browser/worker.ts";
@@ -85,8 +86,8 @@ describe.skipIf(!fixtures)("real wasi-sdk 34 libc preopen discovery (bun run tes
           while (reserved.includes(root)) root++;
           const rootEntry = wasi.descriptors.get(root)!;
           expect(rootEntry.preopen).toBe("/");
-          expect(rootEntry.rightsBase).toBe(all);
-          expect(rootEntry.rightsInheriting).toBe(all);
+          expect(rootEntry.rightsBase).toBe(all | RIGHTS_SET_MODE);
+          expect(rootEntry.rightsInheriting).toBe(all | RIGHTS_SET_MODE);
           expect(released).toBe(0);
           const module = await guest("patched", start);
           const instance = new WebAssembly.Instance(module, wasi.imports(module));
