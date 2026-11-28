@@ -1,5 +1,11 @@
 # @waffle-os/runtime
 
+## 0.0.159
+
+### Patch Changes
+
+- Restore ordinary `wasi-libc` opens of regular-file aliases such as `/dev/fd/N` and `/proc/self/fd/N`. The reopened descriptor has a fresh offset and receives requested mode-mutation rights only when the source descriptor holds those rights. Root preopen and inode access checks still apply. Explicit `runtime_proc.fd_reopen` returns `ENOTCAPABLE` when the source descriptor lacks a requested mode right.
+
 ## 0.0.158
 
 ### Patch Changes
