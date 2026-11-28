@@ -1,7 +1,7 @@
 /** @compileFixture Built and executed by node-wasi-descriptors.test.ts. */
 import assert from "node:assert/strict";
 import { WASI } from "node:wasi";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { constants, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DescriptorTable, OpenDescription } from "../../core/descriptors.js";
@@ -134,6 +134,7 @@ function fixture(root: string) {
 
 function checkSyncFlags(f: ReturnType<typeof fixture>, fd: number) {
   const out = 256;
+  const setFlagsStatus = process.platform === "win32" ? 52 : 0;
   assert.equal(f.call("fd_fdstat_get", fd, out), 0);
   const originalFlags = f.view().getUint16(out + 2, true);
   for (const flag of [2, 8, 16]) {
@@ -141,25 +142,56 @@ function checkSyncFlags(f: ReturnType<typeof fixture>, fd: number) {
     assert.equal(f.call("fd_fdstat_get", fd, out), 0);
     assert.equal(f.view().getUint16(out + 2, true), originalFlags);
   }
-  assert.equal(f.call("fd_fdstat_set_flags", fd, (originalFlags & 0xfff) | FDFLAG_APPEND), 0);
+  assert.equal(
+    f.call("fd_fdstat_set_flags", fd, (originalFlags & 0xfff) | FDFLAG_APPEND),
+    setFlagsStatus,
+  );
   assert.equal(f.call("fd_fdstat_get", fd, out), 0);
-  assert.equal(f.view().getUint16(out + 2, true), FDFLAG_APPEND);
+  assert.equal(
+    f.view().getUint16(out + 2, true),
+    setFlagsStatus === 0 ? FDFLAG_APPEND : originalFlags,
+  );
 
+  if (!constants.O_SYNC) return;
   const sync = 16;
   const synchronous = f.open(sync);
   assert.equal(f.call("fd_fdstat_get", synchronous, out), 0);
   assert.equal(f.view().getUint16(out + 2, true), sync);
-  assert.equal(f.call("fd_fdstat_set_flags", synchronous, sync | FDFLAG_APPEND), 0);
+  assert.equal(f.call("fd_fdstat_set_flags", synchronous, sync | FDFLAG_APPEND), setFlagsStatus);
   assert.equal(f.call("fd_fdstat_get", synchronous, out), 0);
-  assert.equal(f.view().getUint16(out + 2, true), sync | FDFLAG_APPEND);
+  assert.equal(
+    f.view().getUint16(out + 2, true),
+    setFlagsStatus === 0 ? sync | FDFLAG_APPEND : sync,
+  );
   assert.equal(f.call("fd_fdstat_set_flags", synchronous, FDFLAG_APPEND), 58);
   assert.equal(f.call("fd_close", synchronous), 0);
+}
+
+function checkSyncOpenRejection(f: ReturnType<typeof fixture>, root: string) {
+  const out = 128;
+  const path = 256;
+  const rights = 2n | 64n;
+  const rsync = 8;
+  const descriptors = f.descriptors.inheritable();
+  const encoder = new TextEncoder();
+  f.view().setUint32(out, 0xffffffff, true);
+
+  f.bytes().set(encoder.encode("missing"), path);
+  assert.equal(f.call("path_open", 3, 0, path, 7, 1, rights, 0n, rsync, out), 58);
+  assert.equal(existsSync(join(root, "missing")), false);
+
+  f.bytes().set(encoder.encode("data"), path);
+  assert.equal(f.call("path_open", 3, 0, path, 4, 8, rights, 0n, rsync, out), 58);
+  assert.equal(readFileSync(join(root, "data"), "utf8"), "file-data");
+  assert.equal(f.view().getUint32(out, true), 0xffffffff);
+  assert.deepEqual(f.descriptors.inheritable(), descriptors);
 }
 
 const root = mkdtempSync(join(process.env.WAFFLE_SCRATCH_ROOT ?? tmpdir(), "waffle-node-wasi-"));
 writeFileSync(join(root, "data"), "file-data");
 const f = fixture(root);
 try {
+  checkSyncOpenRejection(f, root);
   const probe = f.open();
   const nativeFd = nodeWasiDescriptor(f.descriptors.get(probe));
   assert.notEqual(nativeFd, undefined);

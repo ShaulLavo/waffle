@@ -1,10 +1,18 @@
+import { constants } from "node:fs";
 import {
   OpenDescription,
   type Descriptor,
   type DescriptorTable,
   type Resource,
 } from "../core/descriptors.js";
-import { descriptorFlagError, FDFLAG_APPEND, FDFLAGS_MASK } from "../core/fd-flags.js";
+import {
+  descriptorFlagError,
+  FDFLAG_APPEND,
+  FDFLAG_DSYNC,
+  FDFLAG_RSYNC,
+  FDFLAG_SYNC,
+  FDFLAGS_MASK,
+} from "../core/fd-flags.js";
 import { memoryViews } from "../core/memory-views.js";
 import { RIGHT_FD_FDSTAT_SET_FLAGS } from "../core/rights.js";
 import type { WorkerProcessClient } from "./worker-client.js";
@@ -12,6 +20,8 @@ import type { WorkerProcessClient } from "./worker-client.js";
 const READ = 1n << 1n;
 const WRITE = 1n << 6n;
 const POLL = 1n << 27n;
+const UNSUPPORTED_SYNC_OPEN_FLAGS =
+  FDFLAG_RSYNC | (constants.O_DSYNC ? 0 : FDFLAG_DSYNC) | (constants.O_SYNC ? 0 : FDFLAG_SYNC);
 
 export interface NodeWasiImports {
   wasi_snapshot_preview1: Record<string, (...args: number[]) => number>;
@@ -119,6 +129,7 @@ export function installNodeWasiDescriptors(
       if (directory === undefined) return 8;
       const flags = args[7]!;
       if (flags & ~FDFLAGS_MASK) return 28;
+      if (flags & UNSUPPORTED_SYNC_OPEN_FLAGS) return 58;
       args[0] = directory;
       const result = original.path_open!(...args);
       if (result !== 0) return result;

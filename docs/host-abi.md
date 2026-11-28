@@ -191,8 +191,10 @@ at offset zero, and owns its flags independently of the source description. `TRU
 the inode to zero, `APPEND` selects EOF for each write, and fdstat retains `NONBLOCK`.
 Browser `path_open`, `fd_fdstat_set_flags`, and `runtime_proc.fd_reopen` return `ENOTSUP`
 (58) for `DSYNC`, `RSYNC`, or `SYNC` before changing files or descriptors. The Node WASI
-adapter passes `path_open` flags to Node and returns `ENOTSUP` when `fd_fdstat_set_flags`
-would change a synchronous flag. It reports WASI flags for the shared open description.
+adapter permits `DSYNC` and `SYNC` at open when Node exposes the corresponding host flags.
+It returns `ENOTSUP` for `RSYNC` and unavailable synchronous flags before opening the file,
+and for any change to synchronous flags via `fd_fdstat_set_flags`. It reports WASI flags
+for the shared open description.
 Explicit `fd_sync` and `fd_datasync` still invoke the backend barrier. `CREAT` or `EXCL` returns `EINVAL` (28),
 `DIRECTORY` returns `ENOTDIR` (54), and unknown flag bits return `EINVAL`.
 
