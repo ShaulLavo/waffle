@@ -58,6 +58,42 @@ function displayPath(root: string, relative: string, tool: SearchPlan["tool"]): 
   return prefix.endsWith("/") ? `${prefix}${relative}` : `${prefix}/${relative}`;
 }
 
+/** Matches a literal-plus-`*` glob with fnmatch(pat, text, 0) semantics (`*` crosses `/`). */
+function matchStarGlob(glob: string, text: string): boolean {
+  let g = 0;
+  let t = 0;
+  let star = -1;
+  let match = 0;
+  while (t < text.length) {
+    if (g < glob.length && glob[g] === "*") {
+      star = g++;
+      match = t;
+    } else if (g < glob.length && glob[g] === text[t]) {
+      g++;
+      t++;
+    } else if (star !== -1) {
+      g = star + 1;
+      t = ++match;
+    } else {
+      return false;
+    }
+  }
+  while (g < glob.length && glob[g] === "*") g++;
+  return g === glob.length;
+}
+
+function matchPathSuffix(glob: string, path: string): boolean {
+  let offset = 0;
+  for (;;) {
+    if (matchStarGlob(glob, path.slice(offset))) return true;
+    let slash = path.indexOf("/", offset);
+    if (slash === -1) return false;
+    while (slash < path.length && path[slash] === "/") slash++;
+    if (slash >= path.length) return false;
+    offset = slash;
+  }
+}
+
 /** One source belongs to one SearchRun. Its entry sequence is SearchRun's candidate index. */
 export class WalkSource implements CandidateSource {
   private readonly leases = new Map<number, Lease>();
@@ -120,6 +156,10 @@ export class WalkSource implements CandidateSource {
         return;
       }
       if (opened.kind === "file") {
+        if (!this.matchesExplicitFile(path)) {
+          this.context.fs.release(opened.handle);
+          return;
+        }
         this.add(
           entries,
           { kind: "file", path, handle: opened.handle, size: opened.size },
@@ -132,6 +172,15 @@ export class WalkSource implements CandidateSource {
       this.operandErrors.add(this.index);
       this.add(entries, { kind: "error", path, errno: errnoOf(error) });
     }
+  }
+
+  private matchesExplicitFile(path: string): boolean {
+    if (this.context.request.plan.tool !== "grep") return true;
+    const { include, exclude } = this.context.request.plan.walk;
+    if (include.length === 0 && exclude.length === 0) return true;
+    const matches = (pattern: { readonly glob: string }) => matchPathSuffix(pattern.glob, path);
+    if (include.length > 0 && !include.some(matches)) return false;
+    return !exclude.some(matches);
   }
 
   private openWalk(path: string, handle: number): void {

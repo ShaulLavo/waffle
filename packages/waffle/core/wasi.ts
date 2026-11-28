@@ -567,6 +567,7 @@ export class Wasi {
     base: bigint,
     inheriting: bigint,
     out: number,
+    intersectCapabilities = false,
   ): number {
     if ((out >>> 0) + 4 > this.bytes().length) return 21;
     const result = reopenDescriptor(
@@ -577,6 +578,7 @@ export class Wasi {
       fdflags,
       base,
       inheriting,
+      intersectCapabilities,
     );
     return this.writeResult(result, out >>> 0);
   }
@@ -1654,7 +1656,15 @@ export class Wasi {
           }
           if (!this.descriptors.get(alias.source)) return ENOENT;
           if (fdOut + 4 > this.bytes().length) return EFAULT;
-          return this.reopen(alias.source, oflags, fdflags, rightsBase, rightsInheriting, fdOut);
+          return this.reopen(
+            alias.source,
+            oflags,
+            fdflags,
+            rightsBase,
+            rightsInheriting,
+            fdOut,
+            true,
+          );
         }
         const path =
           alias?.resolved ?? this.opts.fs.resolve(dir.resource.handle, name, follow, this.rooted);

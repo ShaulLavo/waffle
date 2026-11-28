@@ -16,6 +16,22 @@ export type DescriptorPath =
   | { virtualFile: "machine-id" }
   | { resolved: ResolvedPath };
 
+function resolveNonFileRights(
+  source: Descriptor,
+  base: bigint,
+  inheriting: bigint,
+  intersectCapabilities: boolean,
+  accessMask: bigint,
+): { readonly base: bigint; readonly inheriting: bigint } | number {
+  if (intersectCapabilities) {
+    if ((base & accessMask & ~source.rightsBase) !== 0n) return -2;
+    return { base: base & source.rightsBase, inheriting: inheriting & source.rightsInheriting };
+  }
+  if ((base & source.rightsBase) !== base) return -2;
+  if ((inheriting & source.rightsInheriting) !== inheriting) return -2;
+  return { base, inheriting };
+}
+
 /** Open the inode again, not its old pathname. Negative results are WASI errno. */
 export function reopenDescriptor(
   table: DescriptorTable,
@@ -25,6 +41,7 @@ export function reopenDescriptor(
   fdflags: number,
   base: bigint,
   inheriting = 0n,
+  intersectCapabilities = false,
 ): number {
   const source = table.get(fd);
   if (!source) return -8;
@@ -34,20 +51,30 @@ export function reopenDescriptor(
   if (source.resource.kind === "device" && source.resource.virtualFile) {
     if (oflags & 2) return -54;
     if ((oflags & 8) !== 0 || (base & WRITE) !== 0n) return -2;
-    if ((base & source.rightsBase) !== base) return -2;
-    if ((inheriting & source.rightsInheriting) !== inheriting) return -2;
-    return table.open(
-      createMachineIdFile(source.resource.virtualFile.machineId, fdflags),
+    const rights = resolveNonFileRights(
+      source,
       base,
       inheriting,
+      intersectCapabilities,
+      READ | WRITE,
+    );
+    if (typeof rights === "number") return rights;
+    return table.open(
+      createMachineIdFile(source.resource.virtualFile.machineId, fdflags),
+      rights.base,
+      rights.inheriting,
     );
   }
   if (source.resource.kind !== "file") {
     if (oflags & 2 && source.resource.kind !== "directory") return -54;
     if (oflags & 8 && source.resource.kind === "directory") return -31;
-    if ((base & source.rightsBase) !== base) return -2;
-    if ((inheriting & source.rightsInheriting) !== inheriting) return -2;
-    return table.add(source.description, { rightsBase: base, rightsInheriting: inheriting });
+    const access = source.resource.kind === "directory" ? WRITE : READ | WRITE;
+    const rights = resolveNonFileRights(source, base, inheriting, intersectCapabilities, access);
+    if (typeof rights === "number") return rights;
+    return table.add(source.description, {
+      rightsBase: rights.base,
+      rightsInheriting: rights.inheriting,
+    });
   }
   if (oflags & 2) return -54;
   const root = table.rootPreopen();

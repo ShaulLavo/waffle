@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "name": "FreeBSD grep",
+    "version": "2.6.0-FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src",
+    "branch": "releng/14.2",
+    "revision": "16a79708d089423ec0c3d32f25e7ca97ae58e97b",
+    "license": "BSD-2-Clause",
+    "licensePath": "licenses/LICENSE.freebsd-grep",
+    "licenseSha256": "1692069a101281774c801c524faca5437328bc7a90cf58415345f65083a59f32",
+    "baseUrl": "https://raw.githubusercontent.com/freebsd/freebsd-src/16a79708d089423ec0c3d32f25e7ca97ae58e97b/usr.bin/grep",
+    "files": {
+      "grep.h": {
+        "sha256": "abdeeeefe32b377a605607d9122e8b6f84a8f9bb599768a27758b2baf737952e"
+      },
+      "grep.c": {
+        "sha256": "94de48e6ebd4094a3ef322a4770647aadb6a84159ca7e52fb5ba660aa1ad50db"
+      },
+      "file.c": {
+        "sha256": "d6534e875953d16e5738e069d2f2f10d28695f55bdb2e2bc05c036ab4081a2ca"
+      },
+      "queue.c": {
+        "sha256": "628b5d9c5fee2fa0ee3ba3a494549f6e2ddf711ff4bd97c414f5b83c88989517"
+      },
+      "util.c": {
+        "sha256": "5a9df9802947ee3e195771d932f3decde10ecdd9da53a0d3c4e14bc8d8c063d2"
+      }
+    }
+  },
+  "localAdaptation": "FreeBSD usr.bin/grep compiled to wasm32-wasip1 with Waffle's patched wasi-libc sysroot. patches/freebsd-grep-wasi.patch drops unused bzlib/zlib/sys/cdefs/sys/queue headers, disables FreeBSD-only mmap in favor of stdio read, initializes libc cwd from Waffle's runtime_proc.cwd import, aligns unset locale default to C, provides getprogname and WASI err/warn helpers, emulates REG_STARTEND via NUL-segmented musl regex(3) calls (matches spanning across an embedded NUL byte are not matched under musl regex), implements NUL-safe and locale-aware UTF-8 multibyte case folding via towupper() for literal patterns and non-empty literal ERE alternations (matching GNU grep and fastGrep under C and C.UTF-8), matches --include/--exclude globs against file basenames for recursively discovered files while retaining path matching for explicit operands, short-circuits -q across operands/recursive walks and -L on first match per file, propagates mid-stream read errors separately from EOF with status 2, reports EISDIR on directory operands unless -r/-R/-d skip is active, distinguishes -r (command-line symlinks only) from -R (follow all symlinks), clears -h when -H appears later, suppresses -c counts when -l/-L is active, matches GNU -L exit status (0 if any line matched, 1 otherwise), and exits 141 on stdout EPIPE while reporting non-EPIPE stdout write failures with status 2."
+}

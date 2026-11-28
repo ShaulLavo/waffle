@@ -2104,16 +2104,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "waffle-grep"
-version = "0.0.2"
-dependencies = [
- "futures",
- "regex",
- "serde_json",
- "waffle-program-support",
-]
-
-[[package]]
 name = "waffle-process-consumer"
 version = "0.0.1"
 dependencies = [
