@@ -672,7 +672,7 @@ const realWorldCases: readonly GrepCase[] = [
     args: ["-r", "--include=dir/file", "hit", "dir/file"],
     files: { "dir/file": "hit\n" },
     expectedExit: 0,
-    expectedStdout: "hit\n",
+    expectedStdout: "dir/file:hit\n",
     stderrPresent: false,
   },
 ];
