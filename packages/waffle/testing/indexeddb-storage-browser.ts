@@ -24,16 +24,27 @@ import { rootedSymlinkStorageCase } from "./fixtures/rooted-symlinks-storage.js"
 import { fileTimesStorageCase } from "./fixtures/file-times-storage.js";
 import { withVfsImplementation, type VfsImplementation } from "../fs/vfs-internal.js";
 /** Real browser storage tests. Shared contract cases run unchanged against both backends. */
-import { createRuntime, VfsError, type RuntimeStartupStage } from "../index.js";
+import {
+  createRuntime,
+  deleteWorkspace,
+  openIdleWorkspace,
+  VfsError,
+  type RuntimeStartupStage,
+} from "../index.js";
 import {
   FilesystemClient,
   FilesystemService,
   PersistentBackend,
   createFilesystemConnection,
 } from "../fs/index.js";
+import { existingDatabase } from "../fs/idle-database.js";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { CHUNK_SIZE } from "../fs/indexeddb-chunks.js";
-import { IndexedDBStorage } from "../fs/indexeddb.js";
+import {
+  IndexedDBStorage,
+  IndexedDBStorageBusyError,
+  IndexedDBStorageMissingError,
+} from "../fs/indexeddb.js";
 import { FilesystemError, PAGE } from "../fs/protocol.js";
 import { gatedIndexedDB } from "./gated-indexeddb.js";
 import { assertRuntimeStartupTrace } from "./runtime-startup-proof.js";
@@ -1916,6 +1927,166 @@ function indexedDBCases(
       new TextDecoder().decode(await reopened.read("file:4")) === "v4",
       "latest payload readable",
     );
+  });
+
+  test("open with createIfMissing false rejects absent database without creating it", async (name) => {
+    const assertAbsent = async (phase: string) => {
+      const existing = await existingDatabase(name);
+      existing?.close();
+      assert(existing === undefined, `${phase}: database must remain absent`);
+      if (typeof indexedDB.databases === "function") {
+        const names = (await indexedDB.databases()).map((entry) => entry.name);
+        assert(!names.includes(name), `${phase}: indexedDB.databases() must not list ${name}`);
+      }
+    };
+    await assertAbsent("initial");
+    let openError: unknown;
+    try {
+      await IndexedDBStorage.open(name, { createIfMissing: false });
+    } catch (error) {
+      openError = error;
+    }
+    assert(
+      openError instanceof IndexedDBStorageMissingError &&
+        openError.name === "IndexedDBStorageMissingError",
+      `expected IndexedDBStorageMissingError from open, got ${String(openError)}`,
+    );
+    await assertAbsent("after open");
+
+    let committedError: unknown;
+    try {
+      await IndexedDBStorage.openCommitted(name, { createIfMissing: false });
+    } catch (error) {
+      committedError = error;
+    }
+    assert(
+      committedError instanceof IndexedDBStorageMissingError,
+      `expected IndexedDBStorageMissingError from openCommitted, got ${String(committedError)}`,
+    );
+    await assertAbsent("after openCommitted");
+    assert(
+      (await deleteWorkspace({ mode: "fast", name })) === "missing",
+      "maintenance lock must already be released after missing rejection",
+    );
+  });
+
+  test("open with createIfMissing false opens existing workspace for writes and respects busy locks", async (name, open) => {
+    const initial = await open();
+    await initial.persist(batch(1));
+    await initial.close();
+
+    const writable = await IndexedDBStorage.open(name, { createIfMissing: false });
+    try {
+      assert((await writable.load())?.generation === 1, "existing generation 1 loaded");
+      let busyError: unknown;
+      try {
+        await IndexedDBStorage.open(name, { createIfMissing: false, whenBusy: "ifAvailable" });
+      } catch (error) {
+        busyError = error;
+      }
+      assert(
+        busyError instanceof IndexedDBStorageBusyError,
+        `expected IndexedDBStorageBusyError while writer holds lock, got ${String(busyError)}`,
+      );
+      await writable.persist(batch(2));
+    } finally {
+      await writable.close();
+    }
+
+    const reopened = await IndexedDBStorage.open(name, { createIfMissing: false });
+    try {
+      assert((await reopened.load())?.generation === 2, "persisted generation 2 recovered");
+    } finally {
+      await reopened.close();
+    }
+
+    const committedName = `${name}-committed`;
+    await allocation?.allocate({ kind: "indexeddb", name: committedName });
+    try {
+      const seeded = await IndexedDBStorage.openCommitted(committedName);
+      await seeded.close();
+      const committed = await IndexedDBStorage.openCommitted(committedName, {
+        createIfMissing: false,
+      });
+      try {
+        assert(
+          (await committed.recoverCommitted()).index === undefined,
+          "existing committed database opens cleanly",
+        );
+      } finally {
+        await committed.close();
+      }
+    } finally {
+      await request(indexedDB.deleteDatabase(committedName));
+    }
+  });
+
+  test("delete-vs-open race with createIfMissing false never recreates an absent database", async (name, open) => {
+    const seed = await open();
+    await seed.persist(batch(1));
+    await seed.close();
+
+    const idle = await openIdleWorkspace({ mode: "fast", name });
+    assert(typeof idle !== "string", `expected idle handle, got ${String(idle)}`);
+    const waiting = Promise.withResolvers<void>();
+    const queuedOpen = IndexedDBStorage.open(name, {
+      createIfMissing: false,
+      onWaiting: () => waiting.resolve(),
+    });
+    await waiting.promise;
+    await idle.delete();
+    let queuedError: unknown;
+    try {
+      const storage = await queuedOpen;
+      await storage.close();
+    } catch (error) {
+      queuedError = error;
+    }
+    assert(
+      queuedError instanceof IndexedDBStorageMissingError,
+      `queued existing-only open after idle.delete() must throw IndexedDBStorageMissingError, got ${String(queuedError)}`,
+    );
+    const afterIdleDelete = await existingDatabase(name);
+    afterIdleDelete?.close();
+    assert(afterIdleDelete === undefined, "idle.delete() race must not recreate database");
+
+    for (let round = 0; round < 10; round++) {
+      const target = `${name}-race-${round}`;
+      await allocation?.allocate({ kind: "indexeddb", name: target });
+      const writer = await IndexedDBStorage.open(target, { compactEvery: 2 });
+      await writer.persist(batch(1));
+      await writer.close();
+      const [deleteOutcome, openOutcome] = await Promise.allSettled([
+        deleteWorkspace({ mode: "fast", name: target }),
+        IndexedDBStorage.open(target, { createIfMissing: false }),
+      ]);
+      assert(deleteOutcome.status === "fulfilled", `round ${round}: deleteWorkspace must fulfill`);
+      if (deleteOutcome.value === "deleted") {
+        assert(
+          openOutcome.status === "rejected" &&
+            openOutcome.reason instanceof IndexedDBStorageMissingError,
+          `round ${round}: open after delete must reject with IndexedDBStorageMissingError`,
+        );
+        const probe = await existingDatabase(target);
+        probe?.close();
+        assert(probe === undefined, `round ${round}: deleted database must never be recreated`);
+        continue;
+      }
+      assert(deleteOutcome.value === "busy", `round ${round}: unexpected delete outcome`);
+      assert(openOutcome.status === "fulfilled", `round ${round}: winning open must fulfill`);
+      try {
+        assert(
+          (await openOutcome.value.load())?.generation === 1,
+          `round ${round}: winning open reads existing workspace`,
+        );
+      } finally {
+        await openOutcome.value.close();
+      }
+      assert(
+        (await deleteWorkspace({ mode: "fast", name: target })) === "deleted",
+        `round ${round}: cleanup delete`,
+      );
+    }
   });
 
   return cases;

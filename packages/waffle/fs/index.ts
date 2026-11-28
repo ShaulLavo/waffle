@@ -37,7 +37,12 @@ export {
 } from "./shared.js";
 
 export { PersistentBackend } from "./persistent.js";
-export { IndexedDBStorage } from "./indexeddb.js";
+export {
+  IndexedDBStorage,
+  IndexedDBStorageBusyError,
+  IndexedDBStorageMissingError,
+  type IndexedDBStorageOptions,
+} from "./indexeddb.js";
 export { OpfsStorage, type OpfsStorageOptions } from "./opfs.js";
 export type { StorageBackend, PersistedIndex, PersistedNode, PersistenceBatch } from "./storage.js";
 

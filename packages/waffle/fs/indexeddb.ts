@@ -88,6 +88,13 @@ export class IndexedDBStorageBusyError extends Error {
   }
 }
 
+export class IndexedDBStorageMissingError extends Error {
+  override readonly name = "IndexedDBStorageMissingError";
+  constructor(message = "IndexedDB storage database does not exist") {
+    super(message);
+  }
+}
+
 export interface IndexedDBStorageOptions {
   readonly retainOpeningDebt?: (debt: Promise<void>) => void;
   indexedDB?: IDBFactory;
@@ -107,6 +114,12 @@ export interface IndexedDBStorageOptions {
   expectedEpoch?: number;
   /** Verified under exclusive arbLock before submitting steal:true on the writer lock. */
   verifyStealTarget?: (snapshot: LockManagerSnapshot) => boolean;
+  /**
+   * When false, opening an absent database aborts the upgrade transaction while holding the
+   * maintenance lock and rejects with IndexedDBStorageMissingError without creating the database
+   * or allocating epoch 1. Defaults to true.
+   */
+  createIfMissing?: boolean;
 }
 /** Retains physical native completion independently of caller-visible startup rejection. */
 class NativeDatabaseOpening {
@@ -116,6 +129,7 @@ class NativeDatabaseOpening {
   private database: IDBDatabase | undefined;
   private closing: Promise<void> | undefined;
   private blocked = false;
+  private missing = false;
   private readonly abort = () => this.outcome.reject(this.signal?.reason);
 
   constructor(
@@ -133,10 +147,18 @@ class NativeDatabaseOpening {
       this.completion.resolve();
       return;
     }
+    const createIfMissing = options.createIfMissing ?? true;
     try {
       const request = factory.open(name, 1);
       signal?.addEventListener("abort", this.abort, { once: true });
-      request.onupgradeneeded = () => createStores(request.result);
+      request.onupgradeneeded = () => {
+        if (createIfMissing) {
+          createStores(request.result);
+          return;
+        }
+        this.missing = true;
+        request.transaction?.abort();
+      };
       request.onsuccess = () => this.delivered(request.result);
       request.onerror = () => this.failed(request.error);
       request.onblocked = () => this.blockedRequest();
@@ -153,6 +175,11 @@ class NativeDatabaseOpening {
   private delivered(database: IDBDatabase): void {
     this.stopObserving();
     this.database = database;
+    if (this.missing) {
+      this.outcome.reject(new IndexedDBStorageMissingError());
+      void this.retire().catch(() => {});
+      return;
+    }
     if (this.signal?.aborted || this.blocked) {
       void this.retire().catch(() => {});
       return;
@@ -165,6 +192,11 @@ class NativeDatabaseOpening {
   }
   private failed(error: DOMException | null): void {
     this.stopObserving();
+    if (this.missing) {
+      this.outcome.reject(new IndexedDBStorageMissingError());
+      this.completion.resolve();
+      return;
+    }
     this.outcome.reject(
       error?.name === "VersionError"
         ? new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Incompatible IndexedDB database version")
@@ -1237,9 +1269,11 @@ export class IndexedDBStorage implements StorageBackend {
         () => maintenance.release(),
       );
     } catch (error) {
-      void Promise.all(debts)
+      const cleanup = Promise.all(debts)
         .then(() => maintenance.release())
         .catch(() => {});
+      if (error instanceof IndexedDBStorageMissingError) await cleanup;
+      else void cleanup;
       throw error;
     }
   }
