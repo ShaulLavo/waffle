@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use waffle_coreutils::which::Lookup;
-use waffle_program_support::path::absolute;
+use waffle_program_support::path::join_cwd;
 
 fn run(args: &[&str], path: Option<&str>, error: Option<i32>) -> (i32, String, String) {
     let queries = RefCell::new(Vec::new());
@@ -12,10 +12,15 @@ fn run(args: &[&str], path: Option<&str>, error: Option<i32>) -> (i32, String, S
             if let Some(error) = error.filter(|_| path == "/bin/tool") {
                 return Err(error);
             }
-            let absolute = absolute(cwd, path);
+            let joined = join_cwd(cwd, path);
             Ok(matches!(
-                absolute.as_str(),
-                "/bin/tool" | "/other/tool" | "/work/tool" | "/work/local/tool" | "/bin/-tool"
+                joined.as_ref(),
+                "/bin/tool"
+                    | "/other/tool"
+                    | "/work/tool"
+                    | "/work/./tool"
+                    | "/work/local/tool"
+                    | "/bin/-tool"
             ))
         },
     };
@@ -73,6 +78,24 @@ fn misses_do_not_hide_later_operands_or_accept_directories() {
         run(&["--", "-tool"], Some("/bin"), None),
         (0, "/bin/-tool\n".into(), "".into())
     );
+}
+
+#[test]
+fn reported_parent_components_preserve_the_admitted_path() {
+    let lookup = Lookup {
+        cwd: "/work",
+        path: Some("links/bin-link/.."),
+        registered: |path: &str, cwd: &str| {
+            assert_eq!(path, "links/bin-link/../tool");
+            assert_eq!(cwd, "/work");
+            Ok(true)
+        },
+    };
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    assert_eq!(lookup.run(&["tool".into()], &mut output, &mut errors), 0);
+    assert_eq!(output, b"/work/links/bin-link/../tool\n");
+    assert!(errors.is_empty());
 }
 
 #[test]
