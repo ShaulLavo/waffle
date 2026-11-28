@@ -20,7 +20,9 @@ async function runFind(module: WebAssembly.Module, scratch: string, args: string
     stdout: stdout.fd,
     stderr: stderr.fd,
   });
-  const instance = await WebAssembly.instantiate(module, wasi.getImportObject());
+  const instance = await WebAssembly.instantiate(module, {
+    wasi_snapshot_preview1: wasi.wasiImport,
+  });
   const status = wasi.start(instance);
   return {
     status,
