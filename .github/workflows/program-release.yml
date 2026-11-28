@@ -142,6 +142,10 @@ jobs:
               bun run --cwd packages/python prepare:package --receipt-sha256 "${checksum%% *}" "$producer"
               continue
             fi
+            if [ "$directory" = coreutils ]; then
+              node packages/coreutils/scripts/prepare-checksum-source.ts
+              cargo fetch --locked --manifest-path packages/coreutils/crates/checksums/Cargo.toml
+            fi
             WAFFLE_NAMED_PROGRAMS_DIR="$named_programs" \
               bun run --cwd "packages/$directory" --if-present prepare:package
           done
