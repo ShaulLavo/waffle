@@ -611,6 +611,30 @@ const realWorldCases: readonly GrepCase[] = [
     expectedStdout: "b.txt\n",
     stderrPresent: false,
   },
+  {
+    name: "-oE with empty alternation branch keeps non-empty matches on regex path",
+    args: ["-oE", "a|"],
+    stdin: "a\nb\n",
+    expectedExit: 0,
+    expectedStdout: "a\n",
+    stderrPresent: false,
+  },
+  {
+    name: "-oE with leading empty alternation branch keeps non-empty matches",
+    args: ["-oE", "|a"],
+    stdin: "a\nb\n",
+    expectedExit: 0,
+    expectedStdout: "a\n",
+    stderrPresent: false,
+  },
+  {
+    name: "-wE with empty alternation branch preserves non-word line matches",
+    args: ["-wE", "a|"],
+    stdin: "!\na\n",
+    expectedExit: 0,
+    expectedStdout: "!\na\n",
+    stderrPresent: false,
+  },
 ];
 
 async function proveQuietEarlyBail(session: FamilyAcceptanceSession): Promise<void> {
@@ -643,6 +667,33 @@ async function proveQuietEarlyBail(session: FamilyAcceptanceSession): Promise<vo
   } finally {
     writer.close?.();
     session.descriptors.close(stdinFd);
+  }
+  const [listReader, listWriter] = session.pipe();
+  const listStdinFd = session.descriptors.open(listReader, 2n | 0x0820_0000n, 0n);
+  const hitChunk = encoder.encode("hit\n");
+  assert.equal(listWriter.write([hitChunk]), hitChunk.length);
+  try {
+    const result = await bounded(
+      "-L stops reading open stdin on first match",
+      session.exec({
+        executable: "/usr/bin/grep",
+        argv: ["grep", "-L", "hit"],
+        cwd: "/",
+        env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+        fds: [
+          { child: 0, parent: listStdinFd },
+          { child: 1, parent: 1 },
+          { child: 2, parent: 2 },
+        ],
+      }),
+      5_000,
+    );
+    assert.deepEqual(result.exit, { kind: "exited", code: 0, status: 0 });
+    assert.equal(decoder.decode(result.stdout), "");
+    assert.equal(decoder.decode(result.stderr), "");
+  } finally {
+    listWriter.close?.();
+    session.descriptors.close(listStdinFd);
   }
   const followups: readonly { readonly label: string; readonly argv: readonly string[] }[] = [
     {
@@ -963,6 +1014,16 @@ test("mid-stream stdin read failure reports error status 2 and preserves -q matc
   assert.equal(quietResult.stdout, "");
   assert.equal(quietResult.stderr, "");
 
+  const filesWithoutMatchMatched = runDirectGrepWithFaultyStdin(
+    module,
+    ["-L", "hit"],
+    hitPayload,
+    EIO,
+  );
+  assert.equal(filesWithoutMatchMatched.status, 0);
+  assert.equal(filesWithoutMatchMatched.stdout, "");
+  assert.equal(filesWithoutMatchMatched.stderr, "");
+
   const filesWithoutMatch = runDirectGrepWithFaultyStdin(module, ["-L", "hit"], missPayload, EIO);
   assert.equal(
     filesWithoutMatch.status,
@@ -992,9 +1053,27 @@ const parityFiles: Readonly<Record<string, string>> = {
   umlaut: "Ä\n",
   turkish: "İ\n",
   kelvin: "K\n",
+  "visible.txt": "dotval\n",
+  ".hidden": "dotval\n",
 };
 
 const parityVectors: readonly ParityVector[] = [
+  {
+    label: "-raH --exclude=.* matches basename only and keeps visible files",
+    args: ["-raH", "--exclude=.*", "dotval", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "./visible.txt:dotval\n",
+  },
+  {
+    label: "-raH --include=.* matches dotfiles only by basename",
+    args: ["-raH", "--include=.*", "dotval", "."],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "./.hidden:dotval\n",
+  },
   {
     label: "-raclF suppresses counts and prints matching filename",
     args: ["-raclF", "one", "."],
