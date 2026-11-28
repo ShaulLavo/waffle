@@ -106,7 +106,7 @@
  
  bool		 matchall;
  
-@@ -135,6 +141,186 @@
+@@ -135,6 +141,206 @@
  
  /* Housekeeping */
  bool	 file_err;	/* file reading error */
@@ -120,6 +120,26 @@
 +			_exit(141);
 +		err(2, "stdout");
 +	}
++}
++
++static bool
++grep_recurse_operands(int argc, char **argv)
++{
++	bool matched = false;
++
++	if (argc == 0)
++		return (grep_tree(argv));
++	for (; argc--; ++argv) {
++		char *one[2] = { *argv, NULL };
++		bool hit = (strcmp(*argv, "-") == 0) ?
++		    procfile("-") : grep_tree(one);
++		if (!hit)
++			continue;
++		matched = true;
++		if (qflag)
++			break;
++	}
++	return (matched);
 +}
 +
 +static bool
@@ -293,7 +313,7 @@
  
  /*
   * Prints usage information and returns 2.
-@@ -188,6 +374,7 @@
+@@ -188,6 +394,7 @@
  	{"only-matching",	no_argument,		NULL, 'o'},
  	{"quiet",		no_argument,		NULL, 'q'},
  	{"silent",		no_argument,		NULL, 'q'},
@@ -301,7 +321,7 @@
  	{"recursive",		no_argument,		NULL, 'r'},
  	{"no-messages",		no_argument,		NULL, 's'},
  	{"binary",		no_argument,		NULL, 'U'},
-@@ -224,6 +411,7 @@
+@@ -224,6 +431,7 @@
  	pattern[patterns].pat = grep_malloc(len + 1);
  	memcpy(pattern[patterns].pat, pat, len);
  	pattern[patterns].len = len;
@@ -309,7 +329,7 @@
  	pattern[patterns].pat[len] = '\0';
  	++patterns;
  }
-@@ -319,7 +507,27 @@
+@@ -319,7 +527,27 @@
  	int c, lastc, needpattern, newarg, prevoptind;
  	bool matched;
  
@@ -337,7 +357,7 @@
  
  	/*
  	 * Check how we've bene invoked to determine the behavior we should
-@@ -476,6 +684,7 @@
+@@ -476,6 +704,7 @@
  			break;
  		case 'H':
  			Hflag = true;
@@ -345,7 +365,7 @@
  			break;
  		case 'h':
  			Hflag = false;
-@@ -514,6 +723,7 @@
+@@ -514,6 +743,7 @@
  			break;
  		case 'O':
  			linkbehave = LINK_EXPLICIT;
@@ -353,7 +373,7 @@
  			break;
  		case 'o':
  			oflag = true;
-@@ -521,17 +731,26 @@
+@@ -521,17 +751,26 @@
  			break;
  		case 'p':
  			linkbehave = LINK_SKIP;
@@ -380,7 +400,7 @@
  			break;
  		case 's':
  			sflag = true;
-@@ -674,26 +893,59 @@
+@@ -674,26 +913,59 @@
  		usage();
  	}
  
@@ -452,7 +472,7 @@
  
  	if ((aargc == 0 || aargc == 1) && !Hflag)
  		hflag = true;
-@@ -701,24 +953,54 @@
+@@ -701,24 +973,37 @@
  	initqueue();
  
  	if (aargc == 0 && dirbehave != DIR_RECURSE)
@@ -460,28 +480,10 @@
 -
 -	if (dirbehave == DIR_RECURSE)
 -		matched = grep_tree(aargv);
--	else
 +		matched = procfile("-");
-+	else if (dirbehave == DIR_RECURSE) {
-+		if (aargc == 0) {
-+			matched = grep_tree(aargv);
-+		} else {
-+			for (matched = false; aargc--; ++aargv) {
-+				bool hit;
-+				if (strcmp(*aargv, "-") == 0) {
-+					hit = procfile("-");
-+				} else {
-+					char *one[2] = { *aargv, NULL };
-+					hit = grep_tree(one);
-+				}
-+				if (hit) {
-+					matched = true;
-+					if (qflag)
-+						break;
-+				}
-+			}
-+		}
-+	} else
++	else if (dirbehave == DIR_RECURSE)
++		matched = grep_recurse_operands(aargc, aargv);
+ 	else
  		for (matched = false; aargc--; ++aargv) {
 -			if ((finclude || fexclude) && !file_matching(*aargv))
 +			if ((finclude || fexclude) &&
