@@ -127,3 +127,52 @@ test("output reservations fit the fixed per-file budget", () => {
   expect(outputBound({ kind: "count", withFilename: true, zeroCounts: true }, 100, 10)).toBe(35);
   expect(outputBound({ kind: "files-with-matches" }, 100, 10)).toBe(11);
 });
+
+test("grep explicit file operands apply include/exclude filters and release skipped handles while rg keeps them", () => {
+  for (const tool of ["grep", "rg"] as const) {
+    const released: number[] = [];
+    const source = new WalkSource({
+      request: {
+        plan: {
+          ...plan,
+          tool,
+          operands: ["dir/file", "dir/keep.txt"],
+          walk: {
+            include: [{ kind: "basename", glob: "dir*" }],
+            exclude: [{ kind: "basename", glob: "file" }],
+            excludeDirectories: [],
+            hidden: true,
+            maxDepth: null,
+          },
+        },
+      },
+      checkActive() {},
+      open(path) {
+        return { kind: "file", handle: path === "dir/file" ? 11 : 12, size: 4 };
+      },
+      fs: {
+        walkOpen() {
+          throw new Error("unexpected directory walk");
+        },
+        walkPage() {
+          throw new Error("unexpected walk page");
+        },
+        walkRelease() {},
+        walkClose() {},
+        release(handle) {
+          released.push(handle);
+        },
+      },
+    });
+    const page = source.next(16);
+    expect(page.done).toBe(true);
+    if (tool === "grep") {
+      expect(page.entries.map((entry) => entry.path)).toEqual(["dir/keep.txt"]);
+      expect(released).toEqual([11]);
+    } else {
+      expect(page.entries.map((entry) => entry.path)).toEqual(["dir/file", "dir/keep.txt"]);
+      expect(released).toEqual([]);
+    }
+    source.close();
+  }
+});

@@ -1095,9 +1095,50 @@ const parityFiles: Readonly<Record<string, string>> = {
   kelvin: "K\n",
   "visible.txt": "dotval\n",
   ".hidden": "dotval\n",
+  "dir/file": "fval\n",
 };
 
 const parityVectors: readonly ParityVector[] = [
+  {
+    label: "-raH --exclude=dir* filters explicit file operand by full path",
+    args: ["-raH", "--exclude=dir*", "fval", "dir/file"],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 1,
+    expectedStdout: "",
+  },
+  {
+    label: "-raH --include=dir* includes explicit file operand by full path",
+    args: ["-raH", "--include=dir*", "fval", "dir/file"],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "dir/file:fval\n",
+  },
+  {
+    label: "-raH --include=*.txt excludes non-matching explicit file operand",
+    args: ["-raH", "--include=*.txt", "fval", "dir/file"],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 1,
+    expectedStdout: "",
+  },
+  {
+    label: "-raH --include=file includes explicit file operand by basename",
+    args: ["-raH", "--include=file", "fval", "dir/file"],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 0,
+    expectedStdout: "dir/file:fval\n",
+  },
+  {
+    label: "-raH --exclude=.* excludes ./-prefixed explicit file operand",
+    args: ["-raH", "--exclude=.*", "fval", "./dir/file"],
+    env: { PATH: "/usr/bin:/bin", PWD: "/parity", LC_ALL: "C" },
+    expectFast: true,
+    expectedExit: 1,
+    expectedStdout: "",
+  },
   {
     label: "-raH --exclude=.* matches basename only and keeps visible files",
     args: ["-raH", "--exclude=.*", "dotval", "."],
