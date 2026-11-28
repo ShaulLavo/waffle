@@ -82,8 +82,13 @@ impl Abi for FakeAbi {
         output[..count].copy_from_slice(&bytes[..count]);
         Ok(count)
     }
-    fn open(&self, _: &str, _: &OpenOptions) -> Result<u32, i32> {
-        Ok(88)
+    fn open_cooperative(
+        &self,
+        _: &str,
+        _: &OpenOptions,
+        _: Option<u32>,
+    ) -> Result<waffle_program_support::io::CooperativeOpen<u32>, i32> {
+        Ok(waffle_program_support::io::CooperativeOpen::Inode(88))
     }
     fn read(&self, _: u32, output: &mut [u8]) -> Result<usize, i32> {
         self.reads.set(self.reads.get() + 1);

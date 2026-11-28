@@ -297,6 +297,40 @@ Any other preopen layout, such as `/` mapped to a subdirectory or only non-root 
 keeps each lookup beneath the directory it starts from: an absolute target or a `..` that
 would leave it returns `EPERM` (63).
 
+## Cooperative descriptor opens
+
+Guests with a logical descriptor table use these `runtime_fs` imports. Both return zero on
+success or a positive WASI errno.
+
+```text
+path_open_cooperative(dirfd:u32, dirflags:u32, path_ptr:u32, path_len:u32, oflags:u32,
+                      rights_base:u64, rights_inheriting:u64, fdflags:u32,
+                      expected_alias:i64, out_ptr:u32) -> i32
+fd_reopen_alias(fd:u32, oflags:u32, fdflags:u32, rights_base:u64, out_fd_ptr:u32) -> i32
+```
+
+`path_open_cooperative` requires the live `/` preopen backed by the filesystem root and a
+relative UTF-8 path free of NUL bytes. It validates the pathname and the full eight-byte
+result span before lookup. Directory search permissions and the symlink limit apply to
+the original components. The filesystem holds the final inode and parent through the open.
+
+An `expected_alias` of `-1` requests an ordinary open. Its result is two little-endian
+`u32` words `[0, fd]`. Ordinary lookup includes `/dev/null` and virtual `/etc/machine-id`.
+
+An `expected_alias` in `0..0xffffffff` confirms a direct logical alias and returns
+`[1, logical]`. Direct aliases include `dev/stdin`, `dev/stdout`, `dev/stderr`, `dev/fd/N`,
+and `proc/self/fd/N`, with repeated slashes or interior dots allowed. Confirmation rejects
+`O_CREAT` and `O_EXCL` and performs no open or truncate. A mismatched or indirect alias
+returns `ENOTCAPABLE` (76). Alias continuation or a trailing slash returns `ENOTDIR` (54).
+A backend without guarded lookup support returns `ENOTSUP` (58).
+
+After confirmation the guest resolves the logical number in its own table and passes the
+retained endpoint’s WASI descriptor to `fd_reopen_alias`. Reopen checks the live root
+preopen’s `PATH_OPEN` and inheriting rights, plus `PATH_FILESTAT_SET_SIZE` for truncation.
+It rejects create and exclusive flags. Regular files reopen at offset zero with inode
+access checks. Streams and virtual files intersect rights with the source description.
+Standard Preview 1 `path_open` retains its four-byte result and process descriptor semantics.
+
 ## Executable access queries
 
 `runtime_proc.access_start(path_ptr, path_len, cwd_ptr, cwd_len, mode)` copies both UTF-8

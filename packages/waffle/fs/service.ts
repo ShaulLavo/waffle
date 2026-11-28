@@ -1658,6 +1658,7 @@ export class FilesystemService {
       );
     }
     if (operation === "resolve" && session.socketScope && this.backend instanceof MemoryBackend) {
+      if (typeof args[3] === "object") throw new FilesystemError(58);
       const result = this.backend.fs.resolveSocket(a, b, c === true);
       return this.finishResult(session, id, operation, result, args);
     }

@@ -38,8 +38,12 @@ import {
 } from "./publication.js";
 import {
   fileTimeNow,
+  isCooperativePath,
   isFileTime,
   permissionsFor,
+  retainCooperativePath,
+  type CooperativePathLease,
+  type CooperativeResolveOptions,
   type FileLockConflict,
   type FileLockRange,
   type FileLockSystem,
@@ -2228,6 +2232,26 @@ export class FilesystemClient implements FileSystem {
       return { path: Object.freeze({ ...resolved }), release };
     } catch (error) {
       release();
+      return errno(error);
+    } finally {
+      completion?.release();
+    }
+  }
+
+  resolveCooperative(
+    directory: FileHandle,
+    path: string,
+    followFinal: boolean,
+    options: CooperativeResolveOptions,
+  ): CooperativePathLease | number {
+    let completion: FilesystemCompletion | undefined;
+    try {
+      completion = this.submit("resolve", [directory, path, followFinal, options]);
+      const result: unknown = completion.wait();
+      if (typeof result === "number") return result;
+      if (!isCooperativePath(result)) return 58;
+      return retainCooperativePath(this, result);
+    } catch (error) {
       return errno(error);
     } finally {
       completion?.release();

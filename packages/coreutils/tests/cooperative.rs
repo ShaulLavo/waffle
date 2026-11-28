@@ -112,11 +112,15 @@ fn mkdir_passes_all_parent_components_to_the_filesystem_policy() {
             Box::pin(async { Err(IoError::Runtime(69)) })
         }
 
-        fn open<'a>(
+        fn open_cooperative<'a>(
             &'a self,
             _: &'a str,
             _: &'a OpenOptions,
-        ) -> LocalBoxFuture<'a, Result<Endpoint, IoError>> {
+            _: Option<u32>,
+        ) -> LocalBoxFuture<
+            'a,
+            Result<waffle_program_support::io::CooperativeOpen<Endpoint>, IoError>,
+        > {
             Box::pin(async { Err(IoError::Unsupported) })
         }
     }
@@ -128,6 +132,22 @@ fn mkdir_passes_all_parent_components_to_the_filesystem_policy() {
         errors.bytes(),
         b"mkdir: /usr/missing/../../tmp/target: runtime I/O error: errno 69\n"
     );
+}
+
+#[test]
+fn cat_and_tail_validate_the_original_file_components() {
+    let filesystem = MemoryFs::new(4096);
+    filesystem
+        .write_file("/home/guest/present", b"data")
+        .unwrap();
+    for operand in ["missing/../present", "present/"] {
+        let (input, output, _) = invocation(&[operand], None, &filesystem);
+        assert_eq!(run(waffle_coreutils::cat(input)), 1);
+        assert!(output.is_empty());
+        let (input, output, _) = invocation(&[operand], None, &filesystem);
+        assert_eq!(run(waffle_coreutils::tail(input)), 1);
+        assert!(output.is_empty());
+    }
 }
 
 #[test]

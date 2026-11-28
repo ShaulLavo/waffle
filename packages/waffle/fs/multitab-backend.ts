@@ -1,5 +1,10 @@
 import type { FileHandle, ResolvedPath } from "../core/index.js";
-import { fileTimeMs } from "../core/filesystem.js";
+import {
+  fileTimeMs,
+  isCooperativePath,
+  retainCooperativePath,
+  type CooperativePathLease,
+} from "../core/filesystem.js";
 import type { FilesystemBackend, MemoryBackendSharedRoot } from "./backend.js";
 import { IndexedDBStorage, readIndexedDBEpochMetadata } from "./indexeddb.js";
 import type { MemoryBudget } from "./memory-budget.js";
@@ -100,6 +105,31 @@ const MUTATION_OPS = new Set([
   "move",
   "grow",
 ]);
+
+function guardedResolve(operation: string, args: readonly unknown[]): boolean {
+  return operation === "resolve" && typeof args[3] === "object";
+}
+
+interface GuardedLookup {
+  lease?: CooperativePathLease;
+}
+
+type GuardedInode<Handle> = Omit<ResolvedPath, "parent" | "node"> & {
+  kind: "inode";
+  parent?: Handle;
+  node?: Handle;
+};
+
+function returnedPinTokens(value: unknown): Set<number> {
+  const pins = new Set<number>();
+  if (!value || typeof value !== "object") return pins;
+  const { parent, node } = value as Partial<WireResolveResult>;
+  for (const handle of [parent, node]) {
+    if (handle && Number.isSafeInteger(handle.pinToken) && handle.pinToken >= 0)
+      pins.add(handle.pinToken);
+  }
+  return pins;
+}
 
 const UNSUPPORTED_ATTACH_OPS = new Set([
   "bindSocket",
@@ -668,6 +698,7 @@ export class MultiTabBackend implements FilesystemBackend {
   private peerHeartbeatTimer?: ReturnType<typeof setInterval>;
   private peerLatestSeenWakeSeq = 0;
   private peerInFlightRpcs = new Map<number, PendingRpc>();
+  private readonly deliveredResolvePins = new WeakMap<object, Set<number>>();
   private peerRetryQueue: QueuedPeerOp[] = [];
   private peerFailoverQueue: QueuedPeerOp[] = [];
   private readonly failoverReadyWaiters = new Set<() => void>();
@@ -4559,8 +4590,8 @@ export class MultiTabBackend implements FilesystemBackend {
         "kind" | "hostTerm" | "sessionId" | "reqId" | "creditFrames" | "creditBytes"
       >,
     ) => {
-      if (session.revoked) return;
-      this.sendPeerFrame(session.peerId, session.channel, {
+      if (session.revoked) return false;
+      return this.sendPeerFrame(session.peerId, session.channel, {
         kind: "res",
         hostTerm: formatTerm(admittedTerm),
         sessionId: session.sessionId,
@@ -4703,7 +4734,7 @@ export class MultiTabBackend implements FilesystemBackend {
         Extract<PeerMessage, { kind: "res" }>,
         "kind" | "hostTerm" | "sessionId" | "reqId" | "creditFrames" | "creditBytes"
       >,
-    ) => void,
+    ) => boolean,
     budget: LeaseRenewalBudget,
   ): Promise<void> {
     if (msg.op === "__rebind") {
@@ -5134,8 +5165,8 @@ export class MultiTabBackend implements FilesystemBackend {
     persistent: PersistentBackend,
     op: string,
     result: unknown,
+    mintedTokens: number[] = [],
   ): { wireValue: unknown; mintedTokens: number[] } {
-    const mintedTokens: number[] = [];
     if (op === "preopen" || (op === "create" && typeof result === "number")) {
       const remoteHandle = result as number;
       const node = persistent.fs.nodeForHandle(remoteHandle);
@@ -5145,8 +5176,11 @@ export class MultiTabBackend implements FilesystemBackend {
       return { wireValue: pinned, mintedTokens };
     }
     if (op === "resolve" && result && typeof result === "object") {
+      if (isCooperativePath(result) && result.kind !== "inode")
+        return { wireValue: result, mintedTokens };
       const res = result as ResolvedPath;
       const wire: {
+        kind?: "inode";
         parent?: WirePinnedHandle;
         node?: WirePinnedHandle;
         name: string;
@@ -5157,6 +5191,7 @@ export class MultiTabBackend implements FilesystemBackend {
         trailingSlash: res.trailingSlash,
         terminalDot: res.terminalDot,
       };
+      if (isCooperativePath(result)) wire.kind = "inode";
       if (res.parent !== undefined) {
         const pNode = persistent.fs.nodeForHandle(res.parent);
         const pPin = this.mintHostPeerPin(session, res.parent, persistent.ensureIdentity(pNode).id);
@@ -5194,6 +5229,7 @@ export class MultiTabBackend implements FilesystemBackend {
     msg: Extract<PeerMessage, { kind: "req" }>,
     data: Uint8Array,
     budget: LeaseRenewalBudget,
+    guarded?: GuardedLookup,
   ): Promise<unknown> {
     for (;;) {
       await this.ensurePeerLease(session, admittedTerm, budget);
@@ -5212,6 +5248,7 @@ export class MultiTabBackend implements FilesystemBackend {
             return;
           }
           result = step.result;
+          this.retainGuardedLookup(persistent, guarded, result);
         }),
       );
 
@@ -5235,10 +5272,20 @@ export class MultiTabBackend implements FilesystemBackend {
         Extract<PeerMessage, { kind: "res" }>,
         "kind" | "hostTerm" | "sessionId" | "reqId" | "creditFrames" | "creditBytes"
       >,
-    ) => void,
+    ) => boolean,
     budget: LeaseRenewalBudget,
   ): Promise<void> {
     const persistent = this.persistent!;
+    if (guardedResolve(msg.op, msg.args))
+      return this.publishGuardedPeerLookup(
+        session,
+        admittedTerm,
+        persistent,
+        msg,
+        data,
+        reply,
+        budget,
+      );
     const result = MUTATION_OPS.has(msg.op)
       ? await this.barrier.runMutation(() =>
           this.executeHostPeerGeneralLoop(session, admittedTerm, persistent, msg, data, budget),
@@ -5265,6 +5312,51 @@ export class MultiTabBackend implements FilesystemBackend {
       this.rollbackMintedPeerTokens(session, persistent, mintedTokens);
       throw error;
     }
+  }
+
+  private async publishGuardedPeerLookup(
+    session: HostPeerSession,
+    term: bigint,
+    persistent: PersistentBackend,
+    msg: Extract<PeerMessage, { kind: "req" }>,
+    data: Uint8Array,
+    reply: (value: { ok: true; value: unknown }) => boolean,
+    budget: LeaseRenewalBudget,
+  ): Promise<void> {
+    const guarded: GuardedLookup = {};
+    const pins: number[] = [];
+    let sent = false;
+    try {
+      const result = await this.executeHostPeerGeneralLoop(
+        session,
+        term,
+        persistent,
+        msg,
+        data,
+        budget,
+        guarded,
+      );
+      const { wireValue } = this.wrapHostPeerResult(session, persistent, msg.op, result, pins);
+      await this.hooks.beforeHostReplyPublish?.(msg.op, msg.reqId);
+      await this.ensurePeerLeaseAndPublish(session, term, budget, () => {
+        sent = reply({ ok: true, value: wireValue });
+        if (!sent) throw new FilesystemError(29, "guarded lookup reply was not sent");
+      });
+    } finally {
+      if (!sent) this.rollbackMintedPeerTokens(session, persistent, pins);
+      guarded.lease?.release();
+    }
+  }
+
+  private retainGuardedLookup(
+    persistent: PersistentBackend,
+    lookup: GuardedLookup | undefined,
+    result: unknown,
+  ): void {
+    if (!lookup || typeof result === "number") return;
+    if (!isCooperativePath(result)) throw new FilesystemError(58);
+    lookup.lease?.release();
+    lookup.lease = retainCooperativePath(persistent, result);
   }
 
   private executePersistentOrDirtyRetry(
@@ -6061,6 +6153,7 @@ export class MultiTabBackend implements FilesystemBackend {
     const translated = this.translateArgsToHost(operation, args);
     if (!translated) throw new FilesystemError(8);
 
+    const guarded: GuardedLookup | undefined = guardedResolve(operation, args) ? {} : undefined;
     this.enterHostAdmitted();
     try {
       if (operation === "flush" || operation === "sync") {
@@ -6086,10 +6179,14 @@ export class MultiTabBackend implements FilesystemBackend {
           data,
           responseCookieTag,
           cancelled,
+          guarded,
         ),
       );
+      if (guarded && isCooperativePath(result))
+        return this.mapLocalGuardedLookup(persistent, admittedTerm, result);
       return this.mapLocalHostHandles(persistent, admittedTerm, operation, result);
     } finally {
+      guarded?.lease?.release();
       this.leaveHostAdmitted();
     }
   }
@@ -6134,6 +6231,7 @@ export class MultiTabBackend implements FilesystemBackend {
     data: Uint8Array,
     responseCookieTag?: bigint,
     cancelled?: () => boolean,
+    guarded?: GuardedLookup,
   ): Promise<unknown> {
     const assertValid = () => this.assertLocalAttempt(admittedTerm, cancelled);
     for (;;) {
@@ -6158,6 +6256,7 @@ export class MultiTabBackend implements FilesystemBackend {
           return;
         }
         result = step.result;
+        this.retainGuardedLookup(persistent, guarded, result);
       });
       if (dirtyRetryChange !== undefined) {
         await persistent.waitForDirtyCapacity(dirtyRetryChange, () =>
@@ -6166,6 +6265,54 @@ export class MultiTabBackend implements FilesystemBackend {
         continue;
       }
       return result;
+    }
+  }
+
+  private mapLocalGuardedLookup(
+    persistent: PersistentBackend,
+    term: bigint,
+    result: import("../core/filesystem.js").CooperativePath,
+  ): unknown {
+    if (result.kind !== "inode") return result;
+    return this.mapGuardedInode(result, (handle) => {
+      const node = persistent.fs.nodeForHandle(handle);
+      const fileId = persistent.ensureIdentity(node).id;
+      const existing = this.byFileId.get(fileId);
+      if (existing && (existing.remoteTerm !== term || existing.remoteHandle !== handle))
+        throw new FilesystemError(8);
+      return this.ensureLocalHandle(
+        fileId,
+        handle,
+        term,
+        undefined,
+        undefined,
+        persistent.shared.isUnlinked(handle),
+      );
+    });
+  }
+
+  private mapGuardedInode<Handle>(
+    result: GuardedInode<Handle>,
+    adopt: (handle: Handle) => LocalHandleEntry,
+  ): GuardedInode<number> {
+    const held = new Set<LocalHandleEntry>();
+    const map = (handle: Handle | undefined) => {
+      if (handle === undefined) return undefined;
+      const entry = adopt(handle);
+      if (!held.has(entry)) {
+        held.add(entry);
+        entry.provisional++;
+      }
+      return entry.localHandle;
+    };
+    try {
+      return { ...result, parent: map(result.parent), node: map(result.node) };
+    } catch (error) {
+      for (const entry of held) {
+        entry.provisional--;
+        this.maybeReleaseLocalHandle(entry);
+      }
+      throw error;
     }
   }
 
@@ -6542,6 +6689,8 @@ export class MultiTabBackend implements FilesystemBackend {
       rpc.reject(new FilesystemError(code, msg.message));
       return;
     }
+    if (guardedResolve(rpc.op, rpc.localArgs))
+      this.deliveredResolvePins.set(msg, returnedPinTokens(msg.value));
     rpc.resolve(msg);
   }
 
@@ -6649,6 +6798,7 @@ export class MultiTabBackend implements FilesystemBackend {
 
     let uploadId: string | undefined;
     let finalValue: unknown;
+    let deliveredPins: Set<number> | undefined;
     try {
       const uploaded = await this.uploadPeerDataIfChunked(sessionId, term, data, cancelled);
       uploadId = uploaded.uploadId;
@@ -6667,12 +6817,16 @@ export class MultiTabBackend implements FilesystemBackend {
         cancelled,
       );
       uploadId = undefined;
+      deliveredPins = this.deliveredResolvePins.get(res);
+      this.deliveredResolvePins.delete(res);
       finalValue = await this.decodePeerResponseValue(
         sessionId,
         term,
         res,
         isReplayableRead(operation, args),
       );
+      if (guardedResolve(operation, args))
+        return this.mapPeerGuardedLookup(term, sessionId, finalValue, deliveredPins);
     } catch (error) {
       if (uploadId) this.abortPeerUpload(sessionId, term, uploadId);
       if (error instanceof RetryOnHostReadyError || error instanceof FailoverReplayError) {
@@ -6681,9 +6835,62 @@ export class MultiTabBackend implements FilesystemBackend {
         return this.enqueuePeerOp(queue, operation, args, data, responseCookieTag, cancelled);
       }
       throw error;
+    } finally {
+      if (deliveredPins) {
+        for (const pinToken of deliveredPins)
+          this.enqueueSettlement(sessionId, { kind: "unpin", pinToken });
+      }
     }
 
     return this.mapPeerReturnedHandles(operation, term, sessionId, finalValue);
+  }
+
+  private mapPeerGuardedLookup(
+    term: bigint,
+    session: string,
+    value: unknown,
+    pins: Set<number> | undefined,
+  ): unknown {
+    if (typeof value === "number") return value;
+    if (isCooperativePath(value) && value.kind !== "inode") return value;
+    if (!value || typeof value !== "object" || !pins) throw new FilesystemError(58);
+    const result = value as GuardedInode<WirePinnedHandle>;
+    if (
+      result.kind !== "inode" ||
+      typeof result.name !== "string" ||
+      typeof result.trailingSlash !== "boolean" ||
+      typeof result.terminalDot !== "boolean"
+    )
+      throw new FilesystemError(58);
+    return this.mapGuardedInode(result, (wire) => {
+      if (
+        !wire ||
+        !pins.has(wire.pinToken) ||
+        typeof wire.fileId !== "bigint" ||
+        !Number.isSafeInteger(wire.remoteHandle) ||
+        wire.remoteHandle < 0
+      )
+        throw new FilesystemError(28);
+      const existing = this.byFileId.get(wire.fileId);
+      if (
+        existing &&
+        (existing.remoteTerm !== term ||
+          existing.remoteSessionId !== session ||
+          existing.stale ||
+          existing.pinToken === undefined)
+      )
+        throw new FilesystemError(8);
+      const entry = this.ensureLocalHandle(
+        wire.fileId,
+        wire.remoteHandle,
+        term,
+        session,
+        wire.pinToken,
+        wire.unlinked,
+      );
+      pins.delete(wire.pinToken);
+      return entry;
+    });
   }
 
   private enqueuePeerOp(
